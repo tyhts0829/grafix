@@ -6,8 +6,8 @@ CANVAS_HEIGHT = 297
 
 
 def draw(t):
-    char = G.text(text="*")
-    e = E.weave().buffer()
+    char = G.polygon()
+    e = E.fill().dash().collapse()
     return e(char)
 
 
@@ -20,6 +20,6 @@ if __name__ == "__main__":
         render_scale=3.5,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        midi_port_name="Grid",
-        midi_mode="14bit",
+        # midi_port_name="Grid",
+        # midi_mode="14bit",
     )
