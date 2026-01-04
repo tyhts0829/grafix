@@ -20,7 +20,7 @@
 - 出力の接続性を変える（部分的に「繋げる」など）。
 - `subdivisions` 自体を局所的に変えて出力本数を変動させる（必要なら別案として検討）。
 
-## 仕様（案A: 崩し量マスク = intensity 乗算、推奨）
+## 仕様（案 A: 崩し量マスク = intensity 乗算、推奨）
 
 ### 追加パラメータ（案）
 
@@ -56,18 +56,18 @@
 - `p_eff=0` の領域は「崩し量 0」だが、出力は非接続サブセグメントのまま（線は分割される）。
 - `p_eff` が増えるほどサブセグメントの平行移動量（崩し量）が大きくなる。
 
-## 代替案（案B: subdivisions の局所変化）
+## 代替案（案 B: subdivisions の局所変化）
 
 - `p_eff` に応じて `divisions_eff = round(subdivisions * p_eff)` のように「サブセグメント数」を変える。
 - 長所: 「分割そのもの」が傾斜し、密度感が分かりやすい。
 - 短所: 出力配列サイズが位置依存になり、現状の 2 パス事前確保（`_collapse_count`）を作り直す必要がある。
-- 判断: まず案A（intensity 乗算）で最小実装→必要なら案Bを別タスクで追加。
+- 判断: まず案 A（intensity 乗算）で最小実装 → 必要なら案 B を別タスクで追加。
 
 ## 仕様（事前確認したい点）
 
-- [ ] まずは案A（intensity 乗算）で良いか。案B（局所 subdivisions）まで要るか。
-- [ ] マスク合成は OR 合成（`partition/drop` と同じ）で良いか。それとも `max` / `avg` の方が直感的か。
-- [ ] `auto_center/pivot` を `collapse` にも追加して良いか（`partition` と揃える想定）。
+- [ ] まずは案 A（intensity 乗算）で良いか。案 B（局所 subdivisions）まで要るか。；まずは A のみ
+- [ ] マスク合成は OR 合成（`partition/drop` と同じ）で良いか。それとも `max` / `avg` の方が直感的か。；同じでいい
+- [ ] `auto_center/pivot` を `collapse` にも追加して良いか（`partition` と揃える想定）。；はい
 
 ## 実装チェックリスト（進捗）
 
