@@ -6,11 +6,15 @@ CANVAS_HEIGHT = 297
 
 
 def draw(t):
-    char = G.text(text="G")
-    circle = G.polygon()
-    g = circle + char
-    e = E.partition().scale().subdivide().buffer().relax().fill()
-    return e(g)
+    circle = G(name="circle").polygon()
+    circle_e = E(name="circle_e").fill()
+    circle = circle_e(circle)
+
+    text = G.text()
+    text_e = E(name="text_e").fill()
+    text = text_e(text)
+
+    return circle, text
 
 
 if __name__ == "__main__":
