@@ -6,9 +6,10 @@ CANVAS_HEIGHT = 297
 
 
 def draw(t):
-    poly = G.line()
-    e = E.repeat().repeat().affine()
-    return e(poly)
+    poly = G.text()
+    e = E.weave()
+    e2 = E.fill()
+    return e(poly), e2(poly)
 
 
 if __name__ == "__main__":
@@ -20,6 +21,4 @@ if __name__ == "__main__":
         render_scale=3.5,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        # midi_port_name="Grid",
-        # midi_mode="14bit",
     )
