@@ -106,3 +106,49 @@ def test_collapse_zero_length_segment_is_kept() -> None:
     np.testing.assert_allclose(realized.coords, expected.coords, rtol=0.0, atol=1e-6)
     assert realized.offsets.tolist() == expected.offsets.tolist()
 
+
+def test_collapse_intensity_mask_slope_scales_each_segment() -> None:
+    g = G.collapse_test_line2_x_a()
+    divisions = 4
+    intensity = 4.0
+    collapsed = E.collapse(
+        intensity=intensity,
+        subdivisions=divisions,
+        intensity_mask_base=(0.0, 0.0, 0.0),
+        intensity_mask_slope=(1.0, 0.0, 0.0),
+        auto_center=True,
+    )(g)
+    realized = realize(collapsed)
+
+    magnitudes: list[float] = []
+    for seg in _iter_segments(realized):
+        y = float(seg[0, 1])
+        z = float(seg[0, 2])
+        magnitudes.append(float(np.hypot(y, z)))
+
+    expected = [0.0, 0.0, intensity * 0.25, intensity * 0.75]
+    np.testing.assert_allclose(magnitudes, expected, rtol=0.0, atol=1e-5)
+
+
+def test_collapse_intensity_mask_pivot_changes_gradient_origin() -> None:
+    g = G.collapse_test_line2_x_a()
+    divisions = 4
+    intensity = 4.0
+    collapsed = E.collapse(
+        intensity=intensity,
+        subdivisions=divisions,
+        intensity_mask_base=(0.0, 0.0, 0.0),
+        intensity_mask_slope=(1.0, 0.0, 0.0),
+        auto_center=False,
+        pivot=(0.0, 0.0, 0.0),
+    )(g)
+    realized = realize(collapsed)
+
+    magnitudes: list[float] = []
+    for seg in _iter_segments(realized):
+        y = float(seg[0, 1])
+        z = float(seg[0, 2])
+        magnitudes.append(float(np.hypot(y, z)))
+
+    expected = [intensity * 0.25, intensity * 0.75, intensity, intensity]
+    np.testing.assert_allclose(magnitudes, expected, rtol=0.0, atol=1e-5)
