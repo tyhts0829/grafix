@@ -7,7 +7,7 @@ CANVAS_HEIGHT = 297
 
 def draw(t):
     char = G.text(text="*")
-    e = E.fill().collapse()
+    e = E.weave().buffer()
     return e(char)
 
 
