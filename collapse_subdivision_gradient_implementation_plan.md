@@ -71,22 +71,22 @@
 
 ## 実装チェックリスト（進捗）
 
-- [ ] `src/grafix/core/effects/collapse.py` の API 拡張
-  - [ ] `collapse_meta` に `intensity_mask_*`, `auto_center`, `pivot` を追加
-  - [ ] `collapse()` の引数・docstring を更新（NumPy スタイル、日本語の事実記述）
-  - [ ] bbox/pivot/extent の計算を `collapse()` に追加し、Numba へ渡す
-  - [ ] `_collapse_njit_fill()` に midpoint→mask→`intensity_eff` の計算を追加
-  - [ ] デフォルト引数で既存挙動と一致することを確認
-- [ ] テスト追加/更新
-  - [ ] `tests/core/effects/test_collapse.py` に「x 勾配でサブセグメントごとに崩し量が変わる」テストを追加
-  - [ ] `auto_center=False` + `pivot` の影響を確認するテストを追加（必要なら）
-- [ ] 型スタブ同期
-  - [ ] `python -m tools.gen_g_stubs` で `src/grafix/api/__init__.pyi` を更新
-  - [ ] `PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py`
+- [x] `src/grafix/core/effects/collapse.py` の API 拡張
+  - [x] `collapse_meta` に `intensity_mask_*`, `auto_center`, `pivot` を追加
+  - [x] `collapse()` の引数・docstring を更新（NumPy スタイル、日本語の事実記述）
+  - [x] bbox/pivot/extent の計算を `_collapse_numba()` に追加し、Numba へ渡す
+  - [x] `_collapse_njit_fill()` に midpoint→mask→`intensity_eff` の計算を追加
+  - [x] デフォルト引数で既存挙動と一致することを確認
+- [x] テスト追加/更新
+  - [x] `tests/core/effects/test_collapse.py` に「x 勾配でサブセグメントごとに崩し量が変わる」テストを追加
+  - [x] `auto_center=False` + `pivot` の影響を確認するテストを追加（必要なら）
+- [x] 型スタブ同期
+  - [x] `python -m tools.gen_g_stubs` で `src/grafix/api/__init__.pyi` を更新
+  - [x] `PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py`
 - [ ] Lint/型/テスト（対象限定で実行）
-  - [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_collapse.py`
-  - [ ] `ruff check src/grafix/core/effects/collapse.py tests/core/effects/test_collapse.py`
-  - [ ] `mypy src/grafix`
+  - [x] `PYTHONPATH=src pytest -q tests/core/effects/test_collapse.py`
+  - [ ] `ruff check src/grafix/core/effects/collapse.py tests/core/effects/test_collapse.py`（この環境では `ruff` が未インストール）
+  - [x] `mypy src/grafix`
 
 ## 追加で気づいた点（提案）
 

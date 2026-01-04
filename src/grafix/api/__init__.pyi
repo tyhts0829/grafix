@@ -154,7 +154,7 @@ class _EffectBuilder(Protocol):
             draw_outline: True のとき、マスク輪郭を追加で出力に含める
         """
         ...
-    def collapse(self, *, bypass: bool = ..., intensity: float = ..., subdivisions: int = ...) -> _EffectBuilder:
+    def collapse(self, *, bypass: bool = ..., intensity: float = ..., subdivisions: int = ..., intensity_mask_base: Vec3 = ..., intensity_mask_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         線分を細分化してノイズで崩す（非接続）。
 
@@ -162,6 +162,10 @@ class _EffectBuilder(Protocol):
             bypass: bool
             intensity: 変位量（長さ単位は座標系に従う）
             subdivisions: 細分回数
+            intensity_mask_base: ジオメトリ bbox の中心（正規化座標 t=0）における intensity 乗算係数（軸別）
+            intensity_mask_slope: 正規化座標 t∈[-1,+1] に対する係数勾配（軸別）
+            auto_center: True のとき `pivot` を無視し、入力 bbox の中心を pivot として扱う
+            pivot: auto_center=False のときの pivot（ワールド座標）
         """
         ...
     def dash(self, *, bypass: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ...) -> _EffectBuilder:
@@ -454,7 +458,7 @@ class _E(Protocol):
             draw_outline: True のとき、マスク輪郭を追加で出力に含める
         """
         ...
-    def collapse(self, *, bypass: bool = ..., intensity: float = ..., subdivisions: int = ...) -> _EffectBuilder:
+    def collapse(self, *, bypass: bool = ..., intensity: float = ..., subdivisions: int = ..., intensity_mask_base: Vec3 = ..., intensity_mask_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         線分を細分化してノイズで崩す（非接続）。
 
@@ -462,6 +466,10 @@ class _E(Protocol):
             bypass: bool
             intensity: 変位量（長さ単位は座標系に従う）
             subdivisions: 細分回数
+            intensity_mask_base: ジオメトリ bbox の中心（正規化座標 t=0）における intensity 乗算係数（軸別）
+            intensity_mask_slope: 正規化座標 t∈[-1,+1] に対する係数勾配（軸別）
+            auto_center: True のとき `pivot` を無視し、入力 bbox の中心を pivot として扱う
+            pivot: auto_center=False のときの pivot（ワールド座標）
         """
         ...
     def dash(self, *, bypass: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ...) -> _EffectBuilder:
