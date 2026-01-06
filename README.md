@@ -1,4 +1,4 @@
-![](docs/readme/readme.png)
+![](docs/readme/readme_2.png)
 
 Grafix is a Python-based creative coding framework compatible with pen plotter.
 
