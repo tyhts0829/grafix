@@ -140,7 +140,12 @@ def draw(t):
     mt = mt1 + mt2 + mt3 + mt4
     mt_e = E.fill()
     mt = mt_e(mt)
-    return t, cross, line, v_line, mt
+
+    waku = cross + line + v_line + mt
+    e_waku = E.affine()
+    waku = e_waku(waku)
+
+    return t, waku
 
 
 if __name__ == "__main__":
