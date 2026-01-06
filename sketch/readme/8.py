@@ -117,15 +117,30 @@ def draw(t):
     t4 = e4(t4)
     t5 = e5(t5)
 
-    e = E.scale()
+    e = E.affine()
 
     t = e(t1 + t2 + t3 + t4 + t5)
 
-    l = G.line()
-    el = E.repeat().repeat()
-    l = el(l)
+    cross = G.line()
+    e_cross = E.repeat().repeat().repeat()
+    cross = e_cross(cross)
 
-    return t, l
+    line = G.line()
+    e_line = E.repeat()
+    line = e_line(line)
+
+    v_line = G.line()
+    e_v_line = E.repeat()
+    v_line = e_v_line(v_line)
+
+    mt1 = G.text()
+    mt2 = G.text()
+    mt3 = G.text()
+    mt4 = G.text()
+    mt = mt1 + mt2 + mt3 + mt4
+    mt_e = E.fill()
+    mt = mt_e(mt)
+    return t, cross, line, v_line, mt
 
 
 if __name__ == "__main__":
