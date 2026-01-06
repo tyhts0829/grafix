@@ -141,11 +141,15 @@ def draw(t):
     mt_e = E.fill()
     mt = mt_e(mt)
 
+    box = G.polygon(n_sides=4, phase=45)
+    box_e = E.scale().fill().repeat()
+    box = box_e(box)
+
     waku = cross + line + v_line + mt
     e_waku = E.affine()
     waku = e_waku(waku)
 
-    return t, waku
+    return t, waku, box
 
 
 if __name__ == "__main__":
