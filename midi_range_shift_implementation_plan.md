@@ -1,16 +1,14 @@
 # どこで: Grafix リポジトリ（Parameter GUI / MIDI / ParamMeta）。
-
-# 何を: `r` / `Shift+r` / `Ctrl+r` + MIDI CC 入力で、割当済みパラメータの min-max（ui_min/ui_max）レンジを編集する。
-
+# 何を: `r` / `e` / `t` + MIDI CC 入力で、割当済みパラメータの min-max（ui_min/ui_max）レンジを編集する。
 # なぜ: マウスで min-max セルを触らずに、演奏しながらレンジ調整を素早く行うため。
 
-# MIDI レンジ編集（R キー）: 実装計画
+# MIDI レンジ編集（r/e/t キー）: 実装計画
 
 ## ゴール
 
 - `r` 押下中に CC が変化したら、その CC が割当済みのパラメータのレンジ（ui_min/ui_max）を「回した方向」へシフトする。
-- `Shift+r` 押下中は ui_max のみを回した方向へ調整する（レンジ上端編集）。
-- `Ctrl+r` 押下中は ui_min のみを回した方向へ調整する（レンジ下端編集）。
+- `e` 押下中は ui_min のみを回した方向へ調整する（レンジ下端編集）。
+- `t` 押下中は ui_max のみを回した方向へ調整する（レンジ上端編集）。
 - 対象は min-max を持つ kind（`float` / `int` / `vec3`）に限定する（`rules.py` と一致）。
 - 1 回の CC 更新（`cc_change_seq`）につき 1 回だけ適用し、押しっぱなしで勝手に増え続けない。
 
@@ -25,7 +23,7 @@
 ### 発火条件
 
 - Parameter GUI ウィンドウがフォーカスされ、ImGui がキー状態を取得できている。
-- `imgui.KEY_R` が押下中。
+- `r/e/t` のいずれかが押下中（pyglet の `key.R/E/T` を監視）。
 - `MidiController.last_cc_change = (seq, cc)` が「前回適用した seq」より大きい。
 
 ### 対象パラメータ（「アサインされているパラメータ」）
@@ -40,15 +38,15 @@
 - CC 値は 0.0–1.0（`MidiController.cc[cc]`）。
 - `delta = current - prev` を「回した方向」とし、`delta>0` を増加、`delta<0` を減少と解釈する。
 - シフト量は「現在レンジ幅に比例」させて最小実装に寄せる:
-  - `width = (ui_max - ui_min)`（未設定なら kind ごとの既定で補完）
+  - `width = (ui_max - ui_min)`（ui_min/ui_max が未設定（None）なら何もしない）
   - `shift = delta * width * sensitivity`
   - `sensitivity` は定数（例: 1.0）として導入し、必要なら後から調整可能にする
 
 ### 更新ルール
 
 - `r`（修飾なし）: `ui_min += shift`, `ui_max += shift`
-- `Shift+r`: `ui_max += shift`
-- `Ctrl+r`: `ui_min += shift`
+- `e`: `ui_min += shift`
+- `t`: `ui_max += shift`
 - kind ごとの扱い:
   - `float` / `vec3`: float のまま更新
   - `int`: 更新後に `round()` して int 化
@@ -59,41 +57,41 @@
 - Parameter GUI の上部（monitor bar 付近）に 1 行だけ状態表示する（例: `RangeEdit: CC{cc} Δ{delta:+.3f} targets={n}`）。
   - 常時表示ではなく「発火したフレームだけ」表示する（視認性と実装の単純さ優先）。
 
-## 仕様を先に決めたい点（要確認）
+## 仕様の決定（確定）
 
 - 複数パラメータが同一 CC に割当済みの場合:
-  - 案 A: 全部に適用（単純・直感的、ただし意図せず複数動く）；これで
+  - 全部に適用（単純・直感的）
   - 案 B: 最初の 1 件のみ（安全だが “どれ？” が不透明）
   - 案 C: 「最後に操作した行」優先（快適だが状態管理が増える）
-- `Ctrl+r` の `Ctrl` 扱い:
-  - macOS では `Ctrl` のみ？ それとも `Cmd`（`io.key_super`）も同等に扱う？；macOS 前提なので Cmd で。ctrl はなしで。
+- 修飾キー（Shift/Cmd/Ctrl）:
+  - 使わない（`r/e/t` でモードを切り替える）。
 - `ui_min/ui_max` が `None` のときの既定値: ui_min, ui_max がなければ gui に表示されないので、今回規定する操作では何もしない。
   - float/vec3: (0.0, 1.0)
   - int: (0, 1)
   - ※ 現状の `resolver.py` の既定と合わせる
 - `sensitivity` の初期値（1.0 で十分か、0.25 等が良いか）；まずは 1 で。
 
-## 実装チェックリスト
+## 実装チェックリスト（進捗）
 
-- [ ] 現状調査
-  - [ ] `src/grafix/core/parameters/resolver.py` の CC→(ui_min, ui_max) 写像を確認する
-  - [ ] Parameter GUI のキー取得方法（`imgui.KEY_*` / `io.key_shift` 等）を確認する
-- [ ] 実装方針を確定（上の「要確認」を決める）
-- [ ] 純粋ロジックを追加（テスト可能にする）
-  - [ ] `src/grafix/interactive/parameter_gui/` 配下にレンジ編集の小さな pure 関数を追加する
+- [x] 現状調査
+  - [x] `src/grafix/core/parameters/resolver.py` の CC→(ui_min, ui_max) 写像を確認する
+  - [x] Parameter GUI のキー取得方法（`imgui.KEY_*` / `io.key_shift` 等）を確認する
+- [x] 実装方針を確定（上の「要確認」を決める）
+- [x] 純粋ロジックを追加（テスト可能にする）
+  - [x] `src/grafix/interactive/parameter_gui/` 配下にレンジ編集の小さな pure 関数を追加する
     - 入力: `meta(kind, ui_min, ui_max)`, `delta`, `mode(shift|min|max)`, `sensitivity`
     - 出力: 更新後の `(ui_min, ui_max)`（必要なら swap 済み）
-- [ ] GUI へ接続
-  - [ ] `src/grafix/interactive/parameter_gui/gui.py` に「前回 CC 値」と「前回適用 seq」を保持する小さな状態を追加する
-  - [ ] `draw_frame()` の中で「キー状態 + last_cc_change の更新」を検出し、対象 `ParameterKey` の `ParamMeta` を `set_meta()` で更新する
-  - [ ] learn 中は無効化する
+- [x] GUI へ接続
+  - [x] `src/grafix/interactive/parameter_gui/gui.py` に「前回 CC 値」と「前回適用 seq」を保持する小さな状態を追加する
+  - [x] `draw_frame()` の中で「キー状態 + last_cc_change の更新」を検出し、対象 `ParameterKey` の `ParamMeta` を `set_meta()` で更新する
+  - [x] learn 中は無効化する
 - [ ] 表示（最小）
   - [ ] `src/grafix/interactive/parameter_gui/monitor_bar.py` か `gui.py` 側に、発火フレームだけのテキスト表示を追加する
-- [ ] テスト追加
-  - [ ] pure 関数に対する `pytest` を追加する（float/int の基本ケース + swap ケース）
+- [x] テスト追加
+  - [x] pure 関数に対する `pytest` を追加する（float/int の基本ケース + swap ケース）
 - [ ] 最小動作確認（手動）
   - [ ] 1 つのパラメータに CC を割当 → `r` 押下しながら CC を動かし、ui_min/ui_max が動くこと
-  - [ ] `Shift+r` / `Ctrl+r` で max/min のみが動くこと
+  - [ ] `e` / `t` で min/max のみが動くこと
   - [ ] learn 中に動かしてもレンジが変わらないこと
 
 ## 追加で気づいた点（提案）

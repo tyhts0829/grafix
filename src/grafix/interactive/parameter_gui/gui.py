@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from grafix.core.font_resolver import default_font_path
+from grafix.core.parameters.layer_style import LAYER_STYLE_OP
+from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.meta_ops import set_meta
+from grafix.core.parameters.snapshot_ops import store_snapshot_for_gui
+from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.store import ParamStore
 from grafix.interactive.midi import MidiController
 
@@ -21,6 +26,7 @@ from .pyglet_backend import (
 )
 from .store_bridge import render_store_parameter_table
 from .table import COLUMN_WEIGHTS_DEFAULT
+from .range_edit import RangeEditMode, apply_range_shift
 
 
 def _default_gui_font_path() -> Path | None:
@@ -82,6 +88,14 @@ class ParameterGUI:
         self._midi_controller = midi_controller
         self._monitor = monitor
         self._midi_learn_state = MidiLearnState()
+        self._range_edit_last_seen_cc_seq = 0
+        self._range_edit_prev_value_by_cc: dict[int, float] = {}
+        self._range_edit_r_down = False
+        self._range_edit_e_down = False
+        self._range_edit_t_down = False
+        self._range_edit_key_r = 0
+        self._range_edit_key_e = 0
+        self._range_edit_key_t = 0
         self._title = str(title)
         self._column_weights = column_weights
         self._sync_window_width_for_scale()
@@ -101,6 +115,17 @@ class ParameterGUI:
         # ここで作られた renderer は内部に GL リソースを保持する。
         self._renderer = _create_imgui_pyglet_renderer(imgui_pyglet, gui_window)
 
+        from pyglet.window import key as pyglet_key
+
+        self._range_edit_key_r = int(pyglet_key.R)
+        self._range_edit_key_e = int(pyglet_key.E)
+        self._range_edit_key_t = int(pyglet_key.T)
+        self._window.push_handlers(
+            on_key_press=self._on_key_press,
+            on_key_release=self._on_key_release,
+            on_deactivate=self._on_deactivate,
+        )
+
         self._custom_font_path = _DEFAULT_GUI_FONT_PATH
         self._font_backing_scale: float | None = None
         self._sync_font_for_window()
@@ -110,6 +135,125 @@ class ParameterGUI:
         # ImGui に渡す delta_time 用の前回時刻。
         self._prev_time = time.monotonic()
         self._closed = False
+
+    def _on_key_press(self, symbol: int, _modifiers: int) -> None:
+        symbol_i = int(symbol)
+        if symbol_i == int(self._range_edit_key_r):
+            self._range_edit_r_down = True
+        if symbol_i == int(self._range_edit_key_e):
+            self._range_edit_e_down = True
+        if symbol_i == int(self._range_edit_key_t):
+            self._range_edit_t_down = True
+
+    def _on_key_release(self, symbol: int, _modifiers: int) -> None:
+        symbol_i = int(symbol)
+        if symbol_i == int(self._range_edit_key_r):
+            self._range_edit_r_down = False
+        if symbol_i == int(self._range_edit_key_e):
+            self._range_edit_e_down = False
+        if symbol_i == int(self._range_edit_key_t):
+            self._range_edit_t_down = False
+
+    def _on_deactivate(self) -> None:
+        self._range_edit_r_down = False
+        self._range_edit_e_down = False
+        self._range_edit_t_down = False
+
+    def _maybe_apply_range_edit_by_midi(self) -> bool:
+        """R キー + CC 入力で ui_min/ui_max を更新したら True を返す。"""
+
+        midi = self._midi_controller
+        if midi is None:
+            return False
+
+        last = midi.last_cc_change
+        if last is None:
+            return False
+
+        seq, cc = last
+        seq_i = int(seq)
+        cc_i = int(cc)
+        if seq_i <= int(self._range_edit_last_seen_cc_seq):
+            return False
+        self._range_edit_last_seen_cc_seq = int(seq_i)
+
+        current = midi.cc.get(int(cc_i))
+        if current is None:
+            return False
+
+        prev = float(self._range_edit_prev_value_by_cc.get(int(cc_i), float(current)))
+        current_f = float(current)
+        self._range_edit_prev_value_by_cc[int(cc_i)] = float(current_f)
+        delta = float(current_f - prev)
+        if delta == 0.0:
+            return False
+
+        if self._midi_learn_state.active_target is not None:
+            return False
+
+        mode: RangeEditMode
+        if self._range_edit_e_down:
+            mode = "min"
+        elif self._range_edit_t_down:
+            mode = "max"
+        elif self._range_edit_r_down:
+            mode = "shift"
+        else:
+            return False
+
+        updated_any = False
+
+        disable_keys = {
+            (STYLE_OP, "global_thickness"),
+            (LAYER_STYLE_OP, "line_thickness"),
+        }
+
+        snapshot = store_snapshot_for_gui(self._store)
+        for key, (meta, state, _ordinal, _label) in snapshot.items():
+            cc_key = state.cc_key
+            if cc_key is None:
+                continue
+            if isinstance(cc_key, int):
+                if int(cc_key) != int(cc_i):
+                    continue
+            else:
+                if int(cc_i) not in {int(v) for v in cc_key if v is not None}:
+                    continue
+
+            if (str(key.op), str(key.arg)) in disable_keys:
+                continue
+
+            kind = str(meta.kind)
+            if kind not in {"float", "int", "vec3"}:
+                continue
+
+            if meta.ui_min is None or meta.ui_max is None:
+                continue
+
+            ui_min_new, ui_max_new = apply_range_shift(
+                kind=kind,
+                ui_min=meta.ui_min,
+                ui_max=meta.ui_max,
+                delta=float(delta),
+                mode=mode,
+                sensitivity=1.0,
+            )
+            if ui_min_new == meta.ui_min and ui_max_new == meta.ui_max:
+                continue
+
+            set_meta(
+                self._store,
+                key,
+                ParamMeta(
+                    kind=str(meta.kind),
+                    ui_min=ui_min_new,
+                    ui_max=ui_max_new,
+                    choices=meta.choices,
+                ),
+            )
+            updated_any = True
+
+        return bool(updated_any)
 
     def _sync_window_width_for_scale(self) -> None:
         """backing scale に合わせてウィンドウ幅を同期する。"""
@@ -208,6 +352,8 @@ class ParameterGUI:
                 monitor.snapshot(),
                 midi_port_name=None if midi is None else str(midi.port_name),
             )
+
+        self._maybe_apply_range_edit_by_midi()
 
         # ParamStore の表だけをスクロール領域に閉じ込め、監視バーは常に見えるようにする。
         imgui.begin_child("##parameter_table_scroll", 0, 0, border=False)
