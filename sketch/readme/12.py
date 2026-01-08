@@ -7,9 +7,7 @@ CANVAS_HEIGHT = 297
 
 
 def draw(t):
-    l = G.line()
-    e = E.repeat().collapse().collapse().displace()
-    return e(l), axes()
+    return axes()
 
 
 if __name__ == "__main__":
