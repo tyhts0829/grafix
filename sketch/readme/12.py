@@ -8,7 +8,14 @@ CANVAS_HEIGHT = 297
 
 
 def draw(t):
-    return axes(), layout_guides(canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT))
+    ax = axes()
+    e = E.bold()
+    ax = e(ax)
+
+    t = G.text()
+    et = E.quantize().buffer().buffer().fill()
+    t = et(t)
+    return ax, layout_guides(canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT)), t
 
 
 if __name__ == "__main__":
@@ -20,6 +27,6 @@ if __name__ == "__main__":
         render_scale=3.5,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        midi_port_name="TX-6 Bluetooth",
-        midi_mode="7bit",
+        midi_port_name="Grid",
+        midi_mode="14bit",
     )
