@@ -11,6 +11,7 @@ meta = {
     "axis_length_x": {"kind": "float", "ui_min": 0.0, "ui_max": 300.0},
     "tick_count_x": {"kind": "int", "ui_min": 2, "ui_max": 301},
     "tick_length": {"kind": "float", "ui_min": 0.0, "ui_max": 20.0},
+    "tick_offset": {"kind": "float", "ui_min": -20.0, "ui_max": 20.0},
 }
 
 
@@ -20,6 +21,7 @@ def axes(
     axis_length_x=100.0,
     tick_count_x=11,
     tick_length=2.0,
+    tick_offset=0.0,
 ):
     cx, cy, cz = center
 
@@ -30,7 +32,7 @@ def axes(
     )
 
     x_tick = G.line(
-        center=(cx - 0.5 * axis_length_x, cy, cz),
+        center=(cx - 0.5 * axis_length_x, cy + tick_offset, cz),
         length=tick_length,
         angle=90.0,
     )
