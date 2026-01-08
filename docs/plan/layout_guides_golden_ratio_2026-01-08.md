@@ -1,5 +1,7 @@
 # どこで: Grafix リポジトリ（`layout_guides` の機能追加計画）。
+
 # 何を: `layout_guides` に「比率ベースのレイアウトガイド」を追加し、黄金比/銀比などの貴金属比（metallic means）を選べるようにする。
+
 # なぜ: “2 本線の φ グリッド” だけに寄せず、複数の代表的手法（分割線・矩形分割など）を同一 preset で切り替えられるようにするため。
 
 # `layout_guides` 比率ガイド（貴金属比）: 実装チェックリスト
@@ -79,13 +81,13 @@
 
 ## 要確認（あなたに確認したい点）
 
-- `pattern` の命名:
+- `pattern` の命名:すべて OK
   - `"ratio_lines"` / `"metallic_rectangles"` で OK？
   - `"square"` はそのまま残す想定で OK？
-- まず最初の実装スコープ:
+- まず最初の実装スコープ:同時に入れて
   - `ratio_lines` と `metallic_rectangles` の 2 つを同時に入れて良い？
   - それとも先に `ratio_lines`（黄金/銀…）だけ入れる？
-- `levels` の既定値（1 か 2 か）。
+- `levels` の既定値（1 か 2 か）。；2
 
 ## 実装チェックリスト
 
