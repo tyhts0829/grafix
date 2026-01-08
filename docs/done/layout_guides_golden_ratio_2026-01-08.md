@@ -32,9 +32,7 @@
   - `cell_size: float`（`square` のみ）
   - `offset: vec3`（全パターン共通）
 - 追加（比率/貴金属比）
-  - `ratio_source: choice` = `"metallic" | "custom"`
   - `metallic_n: int`（1=黄金比, 2=銀比, 3=青銅比, ...）
-  - `custom_ratio: float`（`ratio_source="custom"` のとき使用）
 - 追加（ガイド共通）
   - `axes: choice` = `"both" | "vertical" | "horizontal"`
   - `border: bool`
@@ -70,14 +68,11 @@
 
 ## 比率の選択（案）
 
-- `ratio_source="metallic"`:
-  - `ratio = δ_n`
+- `ratio = δ_n`（metallic mean）
   - 代表例:
     - n=1: 黄金比 ≒ 1.618
     - n=2: 銀比 ≒ 2.414
     - n=3: 青銅比 ≒ 3.303
-- `ratio_source="custom"`:
-  - `ratio = custom_ratio`（>1 を想定。<=1 は 1+eps へ丸める）
 
 ## 要確認（あなたに確認したい点）
 
@@ -91,10 +86,10 @@
 
 ## 実装チェックリスト
 
-- [ ] `sketch/presets/layout_guides.py` の `meta` を更新（pattern/ratio/共通オプション/levels）
-- [ ] `layout_guides()` を内部ヘルパ分割（`_ratio()`, `_border()`, `_ratio_lines()`, `_metallic_rectangles()`）
-- [ ] `pattern == "square"` を `axes` に対応させる
-- [ ] `pattern == "ratio_lines"` を実装（levels 対応）
-- [ ] `pattern == "metallic_rectangles"` を実装（metallic_n + levels + corner/clockwise）
-- [ ] 極端な `canvas_size` でも Geometry が空にならないことを軽く確認
-- [ ] `python -m compileall` と import 呼び出しで文法/実行時エラーが無いことを確認
+- [x] `sketch/presets/layout_guides.py` の `meta` を更新（pattern/ratio/共通オプション/levels）
+- [x] `layout_guides()` を内部ヘルパ分割（`_metallic_mean()`, `_ratio_lines()`, `_metallic_rectangles()` など）
+- [x] `pattern == "square"` を `axes` に対応させる
+- [x] `pattern == "ratio_lines"` を実装（levels 対応）
+- [x] `pattern == "metallic_rectangles"` を実装（metallic_n + levels + corner/clockwise）
+- [x] 極端な `canvas_size` でも例外にならないことを軽く確認
+- [x] `python -m compileall` と import 呼び出しで文法/実行時エラーが無いことを確認
