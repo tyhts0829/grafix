@@ -8,7 +8,7 @@ import inspect
 from collections.abc import ItemsView, Mapping
 from typing import Any, Callable
 
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_dict_from_user
 
@@ -134,6 +134,10 @@ def primitive(
         ...
     """
 
+    meta_norm = None if meta is None else meta_dict_from_user(meta)
+    if meta_norm is not None and "bypass" in meta_norm:
+        raise ValueError("primitive の予約引数 'bypass' は meta に含められない")
+
     def _defaults_from_signature(
         f: Callable[..., RealizedGeometry],
         param_meta: dict[str, ParamMeta],
@@ -160,7 +164,6 @@ def primitive(
     def decorator(
         f: Callable[..., RealizedGeometry],
     ) -> Callable[..., RealizedGeometry]:
-        meta_norm = None if meta is None else meta_dict_from_user(meta)
         module = str(f.__module__)
         if meta_norm is None and (
             module.startswith("grafix.core.primitives.")
@@ -172,21 +175,28 @@ def primitive(
 
         def wrapper(args: tuple[tuple[str, Any], ...]) -> RealizedGeometry:
             params: dict[str, Any] = dict(args)
+            bypass = bool(params.pop("bypass", False))
+            if bypass:
+                return concat_realized_geometries()
             return f(**params)
 
-        defaults = None if meta_norm is None else _defaults_from_signature(f, meta_norm)
+        defaults = None
         param_order = None
+        meta_with_bypass = None
         if meta_norm is not None:
+            meta_with_bypass = {"bypass": ParamMeta(kind="bool"), **meta_norm}
+            defaults = _defaults_from_signature(f, meta_norm)
+            defaults = {"bypass": False, **defaults}
             sig = inspect.signature(f)
             meta_keys = set(meta_norm.keys())
             sig_order = [name for name in sig.parameters if name in meta_keys]
-            param_order = tuple(sig_order)
+            param_order = ("bypass", *sig_order)
         primitive_registry._register(
             f.__name__,
             wrapper,
             overwrite=overwrite,
             param_order=param_order,
-            meta=meta_norm,
+            meta=meta_with_bypass,
             defaults=defaults,
         )
         return f

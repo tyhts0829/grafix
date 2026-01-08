@@ -19,53 +19,58 @@ class _G(Protocol):
     def __call__(self, name: str | None = None) -> _G:
         """ラベル付き primitive 名前空間を返す。"""
         ...
-    def grid(self, *, nx: int = ..., ny: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def grid(self, *, bypass: bool = ..., nx: int = ..., ny: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         グリッド（縦線 nx 本 + 横線 ny 本）を生成する。
 
         引数:
+            bypass: bool
             nx: 縦線の本数
             ny: 横線の本数
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率 s
         """
         ...
-    def line(self, *, center: Vec3 = ..., length: float = ..., angle: float = ...) -> Geometry:
+    def line(self, *, bypass: bool = ..., center: Vec3 = ..., length: float = ..., angle: float = ...) -> Geometry:
         """
         正規化済み引数から線分を生成する。
 
         引数:
+            bypass: bool
             center: 線分中心の座標 (cx, cy, cz)
             length: 線分の長さ
             angle: 回転角 [deg]
         """
         ...
-    def polygon(self, *, n_sides: int = ..., phase: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def polygon(self, *, bypass: bool = ..., n_sides: int = ..., phase: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         正多角形の閉ポリラインを生成する。
 
         引数:
+            bypass: bool
             n_sides: 辺の数
             phase: 頂点開始角 [deg]
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率 s
         """
         ...
-    def polyhedron(self, *, type_index: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def polyhedron(self, *, bypass: bool = ..., type_index: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         正多面体を面ポリライン列として生成する。
 
         引数:
+            bypass: bool
             type_index: 形状の選択インデックス（0..N-1）
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率 s
         """
         ...
-    def sphere(self, *, subdivisions: int = ..., type_index: int = ..., mode: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def sphere(self, *, bypass: bool = ..., subdivisions: int = ..., type_index: int = ..., mode: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         球のワイヤーフレームをポリライン列として生成する。
 
         引数:
+            bypass: bool
             subdivisions: 細分化レベル（0..5 にクランプ）
             type_index: スタイル選択（0..3 にクランプ）
             mode: latlon/rings 用の線種（0: 横/緯度のみ, 1: 縦/経度のみ, 2: 両方）
@@ -73,11 +78,12 @@ class _G(Protocol):
             scale: 等方スケール倍率 s
         """
         ...
-    def text(self, *, text: str = ..., font: str = ..., font_index: int = ..., text_align: str = ..., letter_spacing_em: float = ..., line_height: float = ..., quality: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def text(self, *, bypass: bool = ..., text: str = ..., font: str = ..., font_index: int = ..., text_align: str = ..., letter_spacing_em: float = ..., line_height: float = ..., quality: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         フォントアウトラインからテキストのポリライン列を生成する。
 
         引数:
+            bypass: bool
             text: 描画する文字列
             font: フォント指定（実在パス / ファイル名 / ステム / 部分一致）
             font_index: `.ttc` の subfont 番号（0 以上）
@@ -89,11 +95,12 @@ class _G(Protocol):
             scale: 等方スケール倍率 s
         """
         ...
-    def torus(self, *, major_radius: float = ..., minor_radius: float = ..., major_segments: int = ..., minor_segments: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def torus(self, *, bypass: bool = ..., major_radius: float = ..., minor_radius: float = ..., major_segments: int = ..., minor_segments: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         トーラスのワイヤーフレーム（子午線+緯線）を生成する。
 
         引数:
+            bypass: bool
             major_radius: 大半径
             minor_radius: 小半径
             major_segments: major 方向の分割数

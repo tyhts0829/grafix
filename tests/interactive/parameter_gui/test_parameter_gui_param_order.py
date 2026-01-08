@@ -45,6 +45,22 @@ def test_order_rows_for_display_primitive_uses_signature_arg_order():
     assert [r.arg for r in out] == ["n_sides", "phase", "center", "scale"]
 
 
+def test_order_rows_for_display_primitive_uses_bypass_then_signature_arg_order():
+    rows = [
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="scale"),
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="center"),
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="phase"),
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="n_sides"),
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="bypass"),
+    ]
+    out = _order_rows_for_display(
+        rows,
+        step_info_by_site={},
+        display_order_by_group={("polygon", "p:1"): 1},
+    )
+    assert [r.arg for r in out] == ["bypass", "n_sides", "phase", "center", "scale"]
+
+
 def test_order_rows_for_display_effect_step_uses_bypass_then_signature_arg_order():
     rows = [
         _row(op="scale", site_id="e:1", ordinal=1, arg="scale"),
