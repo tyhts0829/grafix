@@ -1,4 +1,5 @@
 from grafix import E, G, run
+from sketch.presets.axes import axes
 
 # A4
 CANVAS_WIDTH = 210
@@ -8,7 +9,7 @@ CANVAS_HEIGHT = 297
 def draw(t):
     l = G.line()
     e = E.repeat().collapse().collapse().displace()
-    return e(l)
+    return e(l), axes()
 
 
 if __name__ == "__main__":
