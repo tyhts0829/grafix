@@ -16,7 +16,7 @@ LAYER_STYLE_OP = "__layer_style__"
 LAYER_STYLE_LINE_THICKNESS = "line_thickness"
 LAYER_STYLE_LINE_COLOR = "line_color"
 
-LAYER_STYLE_THICKNESS_META = ParamMeta(kind="float", ui_min=1e-6, ui_max=1e-4)
+LAYER_STYLE_THICKNESS_META = ParamMeta(kind="float", ui_min=1e-4, ui_max=1e-2)
 LAYER_STYLE_COLOR_META = ParamMeta(kind="rgb", ui_min=0, ui_max=255)
 
 

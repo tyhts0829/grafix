@@ -1,5 +1,6 @@
 from grafix import E, G, run
 from sketch.presets.axes import axes
+from sketch.presets.grid import grid
 
 # A4
 CANVAS_WIDTH = 210
@@ -7,7 +8,7 @@ CANVAS_HEIGHT = 297
 
 
 def draw(t):
-    return axes()
+    return axes(), grid()
 
 
 if __name__ == "__main__":
