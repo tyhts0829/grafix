@@ -1,6 +1,6 @@
-# どこで: `sketch/presets/grid.py`。
-# 何を: 構図検討用の参照グリッド（まずは正方形グリッド）を描くプリセット。
-# なぜ: 下描き/構成の当たりを付ける補助線を、スケッチに簡単に重ねられるようにするため。
+# どこで: `sketch/presets/layout_guides.py`。
+# 何を: 配置/サイズ検討用の参照ガイド（まずは正方形グリッド）を描くプリセット。
+# なぜ: 構成の当たりを付ける補助線を、スケッチに簡単に重ねられるようにするため。
 
 from __future__ import annotations
 
@@ -18,14 +18,14 @@ meta = {
 
 
 @preset(meta=meta)
-def grid(
+def layout_guides(
     *,
     canvas_size: tuple[float, float] = CANVAS_SIZE,
     pattern: str = "square",
     cell_size: float = 10.0,
     offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ):
-    """構図検討用の参照グリッドを生成する。
+    """配置/サイズ検討用の参照ガイドを生成する。
 
     Parameters
     ----------
@@ -91,7 +91,7 @@ def grid(
 
 
 def draw(t: float):
-    return grid(canvas_size=CANVAS_SIZE)
+    return layout_guides(canvas_size=CANVAS_SIZE)
 
 
 if __name__ == "__main__":
@@ -102,4 +102,3 @@ if __name__ == "__main__":
         midi_port_name="Grid",
         midi_mode="14bit",
     )
-
