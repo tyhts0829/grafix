@@ -14,3 +14,5 @@ dash サイクル化
 print(G), print(E)で登録されている primitive, effect 一覧表示
 一気にすべての midi アサインを解除するボタン, ショートカット
 primitive の bypass ボタン追加
+python grafix --benchmark
+python grafix --stub
