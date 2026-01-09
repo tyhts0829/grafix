@@ -15,7 +15,6 @@ import numpy as np
 
 from grafix.core.pipeline import RealizedLayer
 
-
 _DEFAULT_PAPER_MARGIN_MM = 2.0
 
 
@@ -57,7 +56,8 @@ class GCodeParams:
     z_up: float = 3.0
     z_down: float = -2.0
     y_down: bool = False
-    origin: tuple[float, float] = (91.0, -0.75)
+    origin: tuple[float, float] = (0.0, -0.75)
+    # origin: tuple[float, float] = (91.0, -0.75)
     decimals: int = 3
     paper_margin_mm: float = _DEFAULT_PAPER_MARGIN_MM
     connect_distance: float | None = None
@@ -81,7 +81,9 @@ def _fmt_float(value: float, *, decimals: int) -> str:
     return text
 
 
-def _is_inside_rect(xy: tuple[float, float], rect: tuple[float, float, float, float]) -> bool:
+def _is_inside_rect(
+    xy: tuple[float, float], rect: tuple[float, float, float, float]
+) -> bool:
     """点が矩形（閉区間）に含まれるなら True を返す。"""
 
     x, y = xy
@@ -296,7 +298,10 @@ def _quantize_xy(xy: tuple[float, float], *, decimals: int) -> tuple[float, floa
     # G-code の範囲検証は「実際に出力する値」で行いたいので、
     # 丸めは文字列化より先に行い、以降は丸め後座標を正とする。
     x, y = xy
-    return (float(round(float(x), int(decimals))), float(round(float(y), int(decimals))))
+    return (
+        float(round(float(x), int(decimals))),
+        float(round(float(y), int(decimals))),
+    )
 
 
 def _validate_bed_xy(
@@ -431,7 +436,10 @@ def export_gcode(
         xy_machine = _canvas_to_machine_xy(xy_canvas, params=p, canvas_size=canvas)
         xy_q = _quantize_xy(xy_machine, decimals=decimals)
         _validate_bed_xy(xy_q, bed_x_range=p.bed_x_range, bed_y_range=p.bed_y_range)
-        if current_xy is not None and hypot(xy_q[0] - current_xy[0], xy_q[1] - current_xy[1]) < 1e-12:
+        if (
+            current_xy is not None
+            and hypot(xy_q[0] - current_xy[0], xy_q[1] - current_xy[1]) < 1e-12
+        ):
             return
         current_xy = xy_q
         x_txt = _fmt_float(xy_q[0], decimals=decimals)
@@ -523,7 +531,12 @@ def export_gcode(
         prev_last_in_layer = None
 
     # 最後は安全側に倒してペンアップで終わる。
-    lines.extend(["; ====== Footer ======", f"G1 Z{_fmt_float(round(float(p.z_up), decimals), decimals=decimals)}"])
+    lines.extend(
+        [
+            "; ====== Footer ======",
+            f"G1 Z{_fmt_float(round(float(p.z_up), decimals), decimals=decimals)}",
+        ]
+    )
 
     _path.parent.mkdir(parents=True, exist_ok=True)
     with _path.open("w", encoding="utf-8", newline="\n") as f:
