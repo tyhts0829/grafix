@@ -1,5 +1,7 @@
 # どこで: Grafix パッケージ（`src/grafix/`）+ 開発用機能（devtools）。
+
 # 何を: ベンチ/スタブ生成を「配布パッケージに含めた上で」 `python -m grafix benchmark` 等で実行できる導線を追加する計画。
+
 # なぜ: 開発中に「長い python -m パス」や `tools/` 直叩きを覚えずに済み、打ち間違いと手戻りを減らすため。
 
 # grafix devtools CLI 追加: 実装計画（2026-01-09）
@@ -26,13 +28,13 @@
   - `python -m grafix benchmark` を **計測（run）** として扱うで良い？
   - `report` は `python -m grafix benchmark report` で良い？（`benchmark run` を明示する形式にするか）
 - `generate_report` 側の引数:
-  - 既定出力を `data/output/benchmarks`（= CWD 基準）にして良い？
-  - `--out/--runs-dir/--output` を追加する？（最小は「引数なしで report を生成できる」）
+  - 既定出力を `data/output/benchmarks`（= CWD 基準）にして良い？；はい
+  - `--out/--runs-dir/--output` を追加する？（最小は「引数なしで report を生成できる」）；追加しない
 - `gen_g_stubs` のモード:
-  - 出力先は「インストールされた grafix のパス配下」をデフォルトにして良い？
+  - 出力先は「インストールされた grafix のパス配下」をデフォルトにして良い？；はい
     - editable install（`pip install -e .`）なら `src/grafix/api/__init__.pyi` を更新できる想定
-  - （任意）`--out <path>` で出力先を明示できるようにする？
-  - （任意）`--check` を入れて “差分があるなら exit 1” を提供する？（CI/手元確認向け）
+  - （任意）`--out <path>` で出力先を明示できるようにする？；いらない
+  - （任意）`--check` を入れて “差分があるなら exit 1” を提供する？（CI/手元確認向け）；いらない
 
 ## 実装方針（最小）
 
