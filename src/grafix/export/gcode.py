@@ -55,8 +55,8 @@ class GCodeParams:
     draw_feed: float = 1000.0
     z_up: float = 3.0
     z_down: float = -2.0
-    y_down: bool = False
-    origin: tuple[float, float] = (0.0, -0.75)
+    y_down: bool = True
+    origin: tuple[float, float] = (154.019, 14.195)
     # origin: tuple[float, float] = (91.0, -0.75)
     decimals: int = 3
     paper_margin_mm: float = _DEFAULT_PAPER_MARGIN_MM
