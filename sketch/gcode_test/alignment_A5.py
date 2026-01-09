@@ -10,6 +10,14 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
+    center_dot = G(name="center_dot").polygon(
+        bypass=False,
+        n_sides=32,
+        phase=0.0,
+        center=(74.0, 105.0, 0.0),
+        scale=2.0,
+    )
+
     circle = G(name="circle").polygon(
         bypass=False,
         n_sides=128,
@@ -144,7 +152,7 @@ def draw(t):
     edge_line = edge_line_v + edge_line_h
 
     text = G(name="alignment_A5").text(text="alignment A5")
-    return circle, cross_corner, cross_center, edge_line, text
+    return center_dot, cross_center, circle, cross_corner, edge_line, text
 
 
 if __name__ == "__main__":
