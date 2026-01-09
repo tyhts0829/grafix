@@ -5,7 +5,11 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
+import queue
 import time
+import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -15,6 +19,7 @@ from grafix.core.parameters import ParamStore
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.output_paths import output_path_for_draw
+from grafix.export.gcode import export_gcode
 from grafix.export.svg import export_svg
 from grafix.export.image import (
     default_png_output_path,
@@ -38,6 +43,25 @@ _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from grafix.interactive.runtime.monitor import RuntimeMonitor
+
+
+@dataclass(frozen=True, slots=True)
+class _GCodeExportResult:
+    path: str
+    error: str | None
+
+
+def _gcode_export_worker_main(
+    result_q: "mp.queues.Queue[_GCodeExportResult]",
+    layers: list[RealizedLayer],
+    output_path: Path,
+    canvas_size: tuple[int, int],
+) -> None:
+    try:
+        export_gcode(layers, output_path, canvas_size=canvas_size)
+        result_q.put(_GCodeExportResult(path=str(output_path), error=None))
+    except Exception:
+        result_q.put(_GCodeExportResult(path=str(output_path), error=traceback.format_exc()))
 
 
 class DrawWindowSystem:
@@ -82,11 +106,18 @@ class DrawWindowSystem:
         self._svg_output_path = output_path_for_draw(
             kind="svg", ext="svg", draw=draw, run_id=run_id
         )
+        self._gcode_output_path = output_path_for_draw(
+            kind="gcode", ext="gcode", draw=draw, run_id=run_id
+        )
         self._png_output_path = default_png_output_path(draw, run_id=run_id)
         video_output_path = default_video_output_path(draw, run_id=run_id, ext="mp4")
         self._recording = VideoRecordingSystem(output_path=video_output_path, fps=float(fps))
         self._last_realized_layers: list[RealizedLayer] = []
         self._pending_png_save = False
+        self._pending_gcode_save = False
+        self._gcode_export_ctx = mp.get_context("spawn")
+        self._gcode_export_q: mp.Queue[_GCodeExportResult] = self._gcode_export_ctx.Queue()
+        self._gcode_export_proc: mp.Process | None = None
         self.window.push_handlers(on_key_press=self._on_key_press)
 
         # draw(t) に渡す t の基準時刻。
@@ -103,6 +134,9 @@ class DrawWindowSystem:
         if symbol == key.P:
             self._pending_png_save = True
             return
+        if symbol == key.G:
+            self._pending_gcode_save = True
+            return
         if symbol == key.V:
             if not self._recording.is_recording:
                 self.start_video_recording()
@@ -116,6 +150,69 @@ class DrawWindowSystem:
             self._svg_output_path,
             canvas_size=self._settings.canvas_size,
         )
+
+    def save_gcode(self) -> Path:
+        """最後に描画したフレームを G-code として保存し、保存先パスを返す。"""
+        return export_gcode(
+            self._last_realized_layers,
+            self._gcode_output_path,
+            canvas_size=self._settings.canvas_size,
+        )
+
+    def _poll_gcode_export_results(self) -> None:
+        while True:
+            try:
+                res = self._gcode_export_q.get_nowait()
+            except queue.Empty:
+                break
+            if res.error is None:
+                print(f"Saved G-code: {res.path}")
+            else:
+                _logger.error("Failed to save G-code: %s", res.path)
+                print(f"Failed to save G-code: {res.path}\n{res.error}")
+
+        proc = self._gcode_export_proc
+        if proc is not None and not proc.is_alive():
+            try:
+                proc.join(timeout=0.0)
+            except Exception:
+                pass
+            self._gcode_export_proc = None
+
+    def _start_gcode_export(self) -> None:
+        proc = self._gcode_export_proc
+        if proc is not None and proc.is_alive():
+            print("G-code export is already running")
+            return
+        if proc is not None:
+            try:
+                proc.join(timeout=0.0)
+            except Exception:
+                pass
+            self._gcode_export_proc = None
+
+        layers = list(self._last_realized_layers)
+        output_path = self._gcode_output_path
+        canvas_size = self._settings.canvas_size
+        try:
+            export_proc = self._gcode_export_ctx.Process(
+                target=_gcode_export_worker_main,
+                args=(self._gcode_export_q, layers, output_path, canvas_size),
+                name="grafix-export-gcode",
+            )
+            export_proc.start()
+        except Exception:
+            _logger.exception("Failed to start G-code export process (fallback to sync)")
+            try:
+                path = self.save_gcode()
+                print(f"Saved G-code: {path}")
+            except Exception as inner:
+                _logger.exception("Failed to save G-code")
+                print(f"Failed to save G-code: {inner}")
+            return
+
+        self._gcode_export_proc = export_proc
+        print(f"Exporting G-code: {output_path}")
 
     def start_video_recording(self) -> None:
         """動画録画を開始する。"""
@@ -140,6 +237,11 @@ class DrawWindowSystem:
 
         perf = self._perf
         with perf.frame():
+            self._poll_gcode_export_results()
+            if self._pending_gcode_save:
+                self._pending_gcode_save = False
+                self._start_gcode_export()
+
             midi = self._midi_controller
             if midi is not None:
                 midi.poll_pending()
@@ -236,6 +338,30 @@ class DrawWindowSystem:
 
     def close(self) -> None:
         """GPU / window 資源を解放する。"""
+
+        self._poll_gcode_export_results()
+        proc = self._gcode_export_proc
+        if proc is not None and proc.is_alive():
+            print("Waiting for G-code export to finish...")
+            try:
+                proc.join(timeout=2.0)
+            except Exception:
+                pass
+
+        self._poll_gcode_export_results()
+        proc = self._gcode_export_proc
+        if proc is not None and proc.is_alive():
+            print("G-code export still running; terminating")
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                proc.join(timeout=0.5)
+            except Exception:
+                pass
+
+        self._gcode_export_proc = None
 
         if self._recording.is_recording:
             try:
