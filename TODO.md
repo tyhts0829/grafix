@@ -16,3 +16,5 @@ print(G), print(E)で登録されている primitive, effect 一覧表示
 primitive の bypass ボタン追加
 python grafix --benchmark
 python grafix --stub
+bg 更新 off 設定を run 引数に。
+メタボール的 effect
