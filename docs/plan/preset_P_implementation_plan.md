@@ -56,9 +56,9 @@ P.logo(scale=2.0)
 - `P` の名前解決は「関数名のみ」でよい？；はい
   - 例: `@preset(op="preset.my_logo") def logo(...): ...` のとき `P.logo` と `P.my_logo` のどっちを正にするか。
 - `paths.preset_module_dirs` の探索ルールは？
-  - 直下の `*.py` のみ / 再帰する？
-  - import 順（ファイル名ソートで固定する等）を決める？
-  - import エラー時に止める？（まずは止めて良い気はする）
+  - 直下の `*.py` のみ / 再帰する？；再帰する。
+  - import 順（ファイル名ソートで固定する等）を決める？；きめない
+  - import エラー時に止める？（まずは止めて良い気はする）；止める
 - Parameter GUI の snippet 出力:
   - 現状は `logo(...)` のように “素の関数呼び出し” を生成する。
   - `P.logo(...)` を生成する方針に変える？（preset autoload 前提なら整合しやすいが、既存テスト/UX に影響）
