@@ -76,7 +76,7 @@ class Export:
             )
             return
         if self.fmt in {"gcode", "g-code"}:
-            export_gcode(self.layers, self.path)
+            export_gcode(self.layers, self.path, canvas_size=canvas_size)
             return
 
         raise ValueError(f"未対応の export fmt: {fmt!r}")
