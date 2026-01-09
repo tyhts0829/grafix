@@ -11,10 +11,9 @@ def test_api_stub_sync(monkeypatch) -> None:
     monkeypatch.syspath_prepend(str(repo_root))
     monkeypatch.syspath_prepend(str(repo_root / "src"))
 
-    gen = importlib.import_module("tools.gen_g_stubs")
+    gen = importlib.import_module("grafix.devtools.generate_stub")
     expected = gen.generate_stubs_str()
 
     stub_path = repo_root / "src" / "grafix" / "api" / "__init__.pyi"
     actual = stub_path.read_text(encoding="utf-8")
     assert actual == expected
-
