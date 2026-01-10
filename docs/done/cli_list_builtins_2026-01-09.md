@@ -9,7 +9,7 @@
 ## 現状整理（前提）
 
 - CLI 入口: `src/grafix/__main__.py`（`python -m grafix`）。
-  - 既存サブコマンド: `benchmark` / `generate_stub`
+  - 既存サブコマンド: `benchmark` / `stub`
 - 組み込み登録の仕組み:
   - effect: `grafix.core.effect_registry.effect_registry`（`@effect(meta=...)` で登録）
   - primitive: `grafix.core.primitive_registry.primitive_registry`（`@primitive(meta=...)` で登録）

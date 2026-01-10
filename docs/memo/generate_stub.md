@@ -1,2 +1,2 @@
-- python -m grafix generate_stub
+- python -m grafix stub
 - PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py

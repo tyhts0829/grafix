@@ -90,7 +90,7 @@ P.logo(scale=2.0)
 For IDE completion of `P.<name>(...)`, regenerate stubs after adding/changing presets:
 
 ```bash
-python -m grafix generate_stub
+python -m grafix stub
 ```
 
 ## Configuration

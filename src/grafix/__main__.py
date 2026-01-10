@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         help="effect ベンチ計測 → レポート生成",
         add_help=False,
     )
-    sub.add_parser("generate_stub", help="grafix.api のスタブ（__init__.pyi）を再生成する")
+    sub.add_parser("stub", help="grafix.api のスタブ（__init__.pyi）を再生成する")
     sub.add_parser(
         "list",
         help="組み込み effect / primitive を一覧表示する",
@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = _extract_out_dir(bench_argv)
         return int(generate_report.main(out=out_dir))
 
-    if args.cmd == "generate_stub":
+    if args.cmd == "stub":
         from grafix.devtools import generate_stub
 
         generate_stub.main()
