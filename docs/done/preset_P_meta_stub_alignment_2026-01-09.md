@@ -28,9 +28,9 @@
   - [x] 予約引数 `name` / `key` を `_P` の明示メソッドから外す（meta と一致させる）
   - [x] 引数型: “解決可能な注釈があれば注釈、無理なら `meta.kind`/`Any`” を維持する
   - [x] docstring: 既存の “summary + Parameters（拾える範囲） + meta ヒント” を維持する
-- [x] 回帰テスト更新
+  - [x] 回帰テスト更新
   - [x] `tests/devtools/test_generate_stub_p_presets.py` の期待値を meta-only へ更新する
-  - [x] `tests/stubs/test_api_stub_sync.py` が通るように `python -m grafix generate_stub` を再実行する
+  - [x] `tests/stubs/test_api_stub_sync.py` が通るように `python -m grafix stub` を再実行する
 
 ### 2) “meta と signature のズレ” を潰す（最低限: 既存プリセット）
 
