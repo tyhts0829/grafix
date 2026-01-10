@@ -54,6 +54,63 @@ def _canvas_size_suffix(canvas_size: tuple[float | int, float | int] | None) -> 
     return f"_{_fmt_canvas_dim_for_filename(w)}x{_fmt_canvas_dim_for_filename(h)}"
 
 
+def _layer_name_suffix(layer_name: str | None, *, max_len: int) -> str:
+    """レイヤ名の接尾辞（例: `_outline`）を返す。未指定/空なら空文字を返す。"""
+
+    if layer_name is None:
+        return ""
+    s = str(layer_name).strip()
+    if not s:
+        return ""
+
+    # ファイル名として安全な範囲に正規化する。
+    # `run_id` 用のサニタイズと同じ規則で統一する。
+    sanitized = _sanitize_run_id(s).strip("_")
+    if not sanitized:
+        return ""
+
+    max_len_i = int(max_len)
+    if max_len_i > 0 and len(sanitized) > max_len_i:
+        sanitized = sanitized[:max_len_i].rstrip("_")
+    if not sanitized:
+        return ""
+
+    return f"_{sanitized}"
+
+
+def gcode_layer_output_path(
+    base_path: Path,
+    *,
+    layer_index: int,
+    n_layers: int,
+    layer_name: str | None = None,
+    max_layer_name_len: int = 32,
+) -> Path:
+    """レイヤ別 G-code の保存先パスを返す。
+
+    Notes
+    -----
+    - `base_path` と同じディレクトリへ保存する。
+    - ファイル名は `<base_stem>_layer001[_<name>].gcode` 形式。
+      `layer_name` が未指定/空、またはサニタイズ後に空になった場合は `<name>` を省略する。
+    - layer index は 1 始まりで渡す想定。
+    """
+
+    idx = int(layer_index)
+    if idx <= 0:
+        raise ValueError("layer_index は 1 以上である必要がある")
+
+    total = int(n_layers)
+    # 例: 12 レイヤなら layer001..layer012 / 1000 レイヤなら layer0001..layer1000
+    width = max(3, len(str(total))) if total > 0 else 3
+
+    idx_txt = f"{idx:0{int(width)}d}"
+    suffix = f"_layer{idx_txt}{_layer_name_suffix(layer_name, max_len=int(max_layer_name_len))}"
+
+    # suffixes は壊さず、末尾の拡張子だけを使う（通常 `.gcode`）。
+    return base_path.with_name(f"{base_path.stem}{suffix}{base_path.suffix}")
+
+
 def _is_pseudo_filename(text: str) -> bool:
     """`<stdin>` などの疑似ファイル名なら True を返す。"""
 
@@ -130,4 +187,4 @@ def output_path_for_draw(
     return base_dir / rel_parent / filename
 
 
-__all__ = ["output_path_for_draw"]
+__all__ = ["gcode_layer_output_path", "output_path_for_draw"]
