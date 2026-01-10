@@ -164,7 +164,7 @@ def snippet_for_block(
             (str(r.arg), _py_literal(_effective_or_ui_value(r, last_effective_by_key=last_effective_by_key)))
             for r in rows
         ]
-        return _indent_code(_format_kwargs_call("", op=call_name, kwargs=kwargs).rstrip() + "\n")
+        return _indent_code(_format_kwargs_call("P.", op=call_name, kwargs=kwargs).rstrip() + "\n")
 
     if group_type == "primitive":
         row0 = rows[0]

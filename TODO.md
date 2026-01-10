@@ -18,3 +18,4 @@ python grafix --benchmark
 python grafix --stub
 bg 更新 off 設定を run 引数に。
 メタボール的 effect
+gcode にサイズ書く

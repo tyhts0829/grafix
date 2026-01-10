@@ -38,6 +38,8 @@ if __name__ == "__main__":
 - `cc` lets you map MIDI CC messages to any parameter.
 - `@primitive` lets you register custom primitives (they become available under `G`).
 - `@effect` lets you register custom effects (they become available under `E`).
+- `@preset` lets you register reusable components (only selected params are exposed to the Parameter GUI).
+- `P` lets you call registered presets as `P.<name>(...)`.
 - `Export` provides a headless export entrypoint (SVG implemented; PNG/MP4/G-code are stubs).
 - `Parameter GUI` lets you tweak parameters live while the sketch is running.
 - Keyboard shortcuts let you export output quickly:
@@ -69,6 +71,28 @@ Notes:
 - Built-in primitives/effects must provide `meta=...` (enforced).
 - For user-defined ops, `meta` is optional. If omitted, parameters are not shown in the Parameter GUI.
 
+## Presets (reusable components)
+
+Use `@preset` to register a component, and call it via `P.<name>(...)`:
+
+```python
+from grafix import P, preset
+
+
+@preset(meta={"scale": {"kind": "float", "ui_min": 0.1, "ui_max": 10.0}})
+def logo(*, scale: float = 1.0, name=None, key=None):
+    ...
+
+
+P.logo(scale=2.0)
+```
+
+For IDE completion of `P.<name>(...)`, regenerate stubs after adding/changing presets:
+
+```bash
+python -m grafix generate_stub
+```
+
 ## Configuration
 
 A `config.yaml` lets you locate external fonts and choose where Grafix writes runtime outputs (`.svg`, `.png`, `.mp4`, `.gcode`).
@@ -92,6 +116,14 @@ python -c "from importlib.resources import files; print(files('grafix').joinpath
 $EDITOR .grafix/config.yaml
 ```
 
+To autoload user presets from a directory:
+
+```yaml
+paths:
+  preset_module_dirs:
+    - "sketch/presets"
+```
+
 ## Not implemented yet
 
 - LFOs to modulate any parameters with rhythm
@@ -109,6 +141,14 @@ Run a sketch:
 
 ```bash
 python sketch/readme.py
+```
+
+List built-in ops:
+
+```bash
+python -m grafix list effects
+python -m grafix list primitives
+python -m grafix list
 ```
 
 ## Dependencies

@@ -11,6 +11,8 @@ from grafix import E, G, preset, run
 CANVAS_SIZE = (100, 100)
 
 meta = {
+    "canvas_w": {"kind": "float", "ui_min": 10.0, "ui_max": 1000.0},
+    "canvas_h": {"kind": "float", "ui_min": 10.0, "ui_max": 1000.0},
     "pattern": {
         "kind": "choice",
         "choices": ["square", "ratio_lines", "metallic_rectangles"],
@@ -375,7 +377,8 @@ def _metallic_rectangles(
 @preset(meta=meta)
 def layout_guides(
     *,
-    canvas_size: tuple[float, float] = CANVAS_SIZE,
+    canvas_w: float = float(CANVAS_SIZE[0]),
+    canvas_h: float = float(CANVAS_SIZE[1]),
     pattern: str = "square",
     cell_size: float = 10.0,
     metallic_n: int = 1,
@@ -390,9 +393,10 @@ def layout_guides(
 
     Parameters
     ----------
-    canvas_size : tuple[float, float]
-        キャンバスサイズ（width, height）。
-        `run(..., canvas_size=...)` と同じ値を渡すことを想定する。
+    canvas_w : float
+        キャンバス幅（world 単位）。
+    canvas_h : float
+        キャンバス高さ（world 単位）。
     pattern : str
         ガイドの種類。
 
@@ -424,12 +428,15 @@ def layout_guides(
     Geometry
         ガイド線の Geometry。
     """
+    canvas_size = (float(canvas_w), float(canvas_h))
     ratio = _metallic_mean(int(metallic_n))
 
     out: list[object] = []
 
     if bool(border):
-        out.extend(_canvas_border(canvas_size=canvas_size, axes=str(axes), offset=offset))
+        out.extend(
+            _canvas_border(canvas_size=canvas_size, axes=str(axes), offset=offset)
+        )
 
     if pattern == "square":
         out.append(
@@ -473,7 +480,7 @@ def layout_guides(
 
 
 def draw(t: float):
-    return layout_guides(canvas_size=CANVAS_SIZE)
+    return layout_guides(canvas_w=float(CANVAS_SIZE[0]), canvas_h=float(CANVAS_SIZE[1]))
 
 
 if __name__ == "__main__":

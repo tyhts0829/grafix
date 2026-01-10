@@ -31,6 +31,11 @@ def main(argv: list[str] | None = None) -> int:
         add_help=False,
     )
     sub.add_parser("generate_stub", help="grafix.api のスタブ（__init__.pyi）を再生成する")
+    sub.add_parser(
+        "list",
+        help="組み込み effect / primitive を一覧表示する",
+        add_help=False,
+    )
 
     args, rest = p.parse_known_args(argv)
 
@@ -59,6 +64,14 @@ def main(argv: list[str] | None = None) -> int:
 
         generate_stub.main()
         return 0
+
+    if args.cmd == "list":
+        from grafix.devtools import list_builtins
+
+        list_argv = list(rest)
+        if list_argv and list_argv[0] == "--":
+            list_argv = list_argv[1:]
+        return int(list_builtins.main(list_argv))
 
     raise AssertionError(f"unknown cmd: {args.cmd!r}")
 

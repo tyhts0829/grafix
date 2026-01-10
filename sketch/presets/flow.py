@@ -13,7 +13,6 @@ meta = {
 
 @preset(meta=meta)
 def flow(
-    t,
     center=(0, 0, 0),
     scale=(1.0, 1.0, 1.0),
     fill_density_coef=0.5,
@@ -85,7 +84,7 @@ def flow(
 
 
 def draw(t):
-    return flow(t)
+    return flow()
 
 
 if __name__ == "__main__":

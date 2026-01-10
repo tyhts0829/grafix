@@ -1,8 +1,8 @@
 from grafix import E, G, run
 
-# A4
-CANVAS_WIDTH = 210
-CANVAS_HEIGHT = 297
+# A5
+CANVAS_WIDTH = 148
+CANVAS_HEIGHT = 210
 
 
 def draw(t):
@@ -327,7 +327,12 @@ def draw(t):
 
     waku = cross + line_h + line_v + mt
 
-    return t, waku, bar_code
+    aff = E.affine()
+    t = aff(t)
+    waku = aff(waku)
+    bar_code = aff(bar_code)
+
+    return t + waku + bar_code
 
 
 if __name__ == "__main__":
@@ -339,6 +344,7 @@ if __name__ == "__main__":
         render_scale=3.5,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        # midi_port_name="TX-6 Bluetooth",
-        # midi_mode="7bit",
+        run_id="A5",
+        midi_port_name="Grid",
+        midi_mode="14bit",
     )

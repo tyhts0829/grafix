@@ -59,7 +59,7 @@ P.logo(scale=2.0)
   - import 順で “どっちが勝つか” を避け、衝突は早期に検出する。
 - `paths.preset_module_dirs` の探索ルールは？
   - 直下の `*.py` のみ / 再帰する？；再帰する。
-  - import 順（ファイル名ソートで固定する等）を決める？；きめない
+  - import 順（ファイル名ソートで固定する等）を決める？；ファイルパスでソートして固定する
   - import エラー時に止める？（まずは止めて良い気はする）；止める
 - Parameter GUI の snippet 出力:
   - 現状は `logo(...)` のように “素の関数呼び出し” を生成する。
@@ -69,34 +69,35 @@ P.logo(scale=2.0)
 
 ## 実装チェックリスト
 
-- [ ] `preset_registry` と別に「呼び出し可能な preset 本体」を保持するレジストリを用意する（例: `preset_func_registry: dict[str, Callable[..., Any]]`）
-- [ ] `@preset` デコレータで、GUI 用 spec 登録（既存）に加えて callable 登録も行う
-  - [ ] `src/grafix/api/preset.py` 内の `ParamSpec("P")` が新しい公開変数 `P` と衝突するのでリネームする（例: `_PSpec`）
-  - [ ] 同名 preset の二重登録は `ValueError` で fail-fast（import 順依存を作らない）
-- [ ] `paths.preset_module_dirs`（config.yaml）を追加する
-  - [ ] `src/grafix/resource/default_config.yaml` にキーを追加（既定は空配列）
-  - [ ] `src/grafix/core/runtime_config.py` に読み取り・型を追加
-- [ ] preset autoload を追加する
-  - [ ] `paths.preset_module_dirs` の `*.py` を自動 import する（初回のみ）
-  - [ ] 呼び出し箇所を決める（候補: `P.__getattr__` の先頭）
-  - [ ] autoload 中に同名衝突が起きたら raise（上の fail-fast が効く前提）
-- [ ] `P` 名前空間（PresetNamespace）を追加する
-  - [ ] `src/grafix/api/presets.py`（新規）に `PresetNamespace` + `P = PresetNamespace()` を置く
-  - [ ] `__getattr__` で未登録なら `AttributeError`（G/E と同じ）
-  - [ ] `_` 始まりは拒否（G/E と同じ）
-- [ ] `grafix.api` / `grafix` ルートから `P` を公開する
-  - [ ] `src/grafix/api/__init__.py` の `__all__` に追加
-  - [ ] `src/grafix/__init__.py` の `__all__` に追加
-- [ ] 型スタブ同期
-  - [ ] `tools/gen_g_stubs.py` を更新して `src/grafix/api/__init__.pyi` に `P` を含める
-  - [ ] `tests/stubs/test_api_stub_sync.py` が通る状態にする
-- [ ] テスト追加/更新
-  - [ ] `tests/api/` に `P.logo(...)` で `ParamStore` 連携が動く最小テストを追加
-  - [ ] `paths.preset_module_dirs` の自動 import で `P.logo(...)` が使える最小テストを追加
-  - [ ] snippet を `P.<name>` へ変更するなら `tests/interactive/parameter_gui/test_parameter_gui_snippet.py` を更新
-  - [ ] 同名 preset の二重登録が raise される最小テストを追加
-- [ ] ドキュメント更新
-  - [ ] `README.md` の “Optional features” / “Extending” に `P` の説明と例を追加（ユーザー定義 preset は `paths.preset_module_dirs` で登録する前提も明記）
+- [x] `preset_registry` と別に「呼び出し可能な preset 本体」を保持するレジストリを用意する（例: `preset_func_registry: dict[str, Callable[..., Any]]`）
+- [x] `@preset` デコレータで、GUI 用 spec 登録（既存）に加えて callable 登録も行う
+  - [x] `src/grafix/api/preset.py` 内の `ParamSpec("P")` が新しい公開変数 `P` と衝突するのでリネームする（例: `_PSpec`）
+  - [x] 同名 preset の二重登録は `ValueError` で fail-fast（import 順依存を作らない）
+- [x] `paths.preset_module_dirs`（config.yaml）を追加する
+  - [x] `src/grafix/resource/default_config.yaml` にキーを追加（既定は空配列）
+  - [x] `src/grafix/core/runtime_config.py` に読み取り・型を追加
+- [x] preset autoload を追加する
+  - [x] `paths.preset_module_dirs` の `*.py` を自動 import する（初回のみ）
+  - [x] 呼び出し箇所を決める（候補: `P.__getattr__` の先頭）
+  - [x] Parameter GUI 有効時は `run()` 開始時に main プロセスで autoload して registry を埋める（mp-draw worker だけで登録される問題の回避）
+  - [x] autoload 中に同名衝突が起きたら raise（上の fail-fast が効く前提）
+- [x] `P` 名前空間（PresetNamespace）を追加する
+  - [x] `src/grafix/api/presets.py`（新規）に `PresetNamespace` + `P = PresetNamespace()` を置く
+  - [x] `__getattr__` で未登録なら `AttributeError`（G/E と同じ）
+  - [x] `_` 始まりは拒否（G/E と同じ）
+- [x] `grafix.api` / `grafix` ルートから `P` を公開する
+  - [x] `src/grafix/api/__init__.py` の `__all__` に追加
+  - [x] `src/grafix/__init__.py` の `__all__` に追加
+- [x] 型スタブ同期
+  - [x] `src/grafix/devtools/generate_stub.py` を更新して `src/grafix/api/__init__.pyi` に `P` を含める
+  - [x] `tests/stubs/test_api_stub_sync.py` が通る状態にする
+- [x] テスト追加/更新
+  - [x] `tests/api/` に `P.logo(...)` で `ParamStore` 連携が動く最小テストを追加
+  - [x] `paths.preset_module_dirs` の自動 import で `P.logo(...)` が使える最小テストを追加
+  - [x] snippet を `P.<name>` へ変更するなら `tests/interactive/parameter_gui/test_parameter_gui_snippet.py` を更新
+  - [x] 同名 preset の二重登録が raise される最小テストを追加
+- [x] ドキュメント更新
+  - [x] `README.md` の “Optional features” / “Extending” に `P` の説明と例を追加（ユーザー定義 preset は `paths.preset_module_dirs` で登録する前提も明記）
 
 ## 追加で気づいた点（提案）
 
