@@ -1,6 +1,3 @@
-パラメータ json 保存&復元機能
-録画、スクショ、Gcode 吐き出し機能
-旧プロジェクトからの primitive, effect の移行
 parameter_gui Style, Effect, Primitive のヘッダ色指定
 Color Palette 統合
 LFO 実装
@@ -13,9 +10,5 @@ partition z!=0 のとき外れる
 dash サイクル化
 print(G), print(E)で登録されている primitive, effect 一覧表示
 一気にすべての midi アサインを解除するボタン, ショートカット
-primitive の bypass ボタン追加
-python grafix --benchmark
-python grafix --stub
 bg 更新 off 設定を run 引数に。
 メタボール的 effect
-gcode にサイズ書く
