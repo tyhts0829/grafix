@@ -54,7 +54,10 @@ def export_image(
 
 
 def default_png_output_path(
-    draw: Callable[[float], object], *, run_id: str | None = None
+    draw: Callable[[float], object],
+    *,
+    run_id: str | None = None,
+    canvas_size: tuple[int, int] | None = None,
 ) -> Path:
     """draw の定義元に基づく PNG の既定保存パスを返す。
 
@@ -63,7 +66,19 @@ def default_png_output_path(
     パスは `output/{kind}/` 配下で sketch_dir のサブディレクトリ構造をミラーする。
     """
 
-    return output_path_for_draw(kind="png", ext="png", draw=draw, run_id=run_id)
+    base = output_path_for_draw(kind="png", ext="png", draw=draw, run_id=None)
+    run_suffix = ""
+    if run_id is not None:
+        with_run_id = output_path_for_draw(kind="png", ext="png", draw=draw, run_id=run_id)
+        if with_run_id.stem.startswith(base.stem):
+            run_suffix = with_run_id.stem[len(base.stem) :]
+
+    size_suffix = ""
+    if canvas_size is not None:
+        out_w, out_h = png_output_size(canvas_size)
+        size_suffix = f"_{int(out_w)}x{int(out_h)}"
+
+    return base.with_name(f"{base.stem}{size_suffix}{run_suffix}{base.suffix}")
 
 
 def png_output_size(canvas_size: tuple[int, int]) -> tuple[int, int]:
