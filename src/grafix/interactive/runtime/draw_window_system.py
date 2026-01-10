@@ -18,7 +18,7 @@ from pyglet.window import key
 from grafix.core.parameters import ParamStore
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.pipeline import RealizedLayer
-from grafix.core.output_paths import output_path_for_draw
+from grafix.core.output_paths import gcode_layer_output_path, output_path_for_draw
 from grafix.export.gcode import export_gcode
 from grafix.export.svg import export_svg
 from grafix.export.image import (
@@ -62,6 +62,31 @@ def _gcode_export_worker_main(
         result_q.put(_GCodeExportResult(path=str(output_path), error=None))
     except Exception:
         result_q.put(_GCodeExportResult(path=str(output_path), error=traceback.format_exc()))
+
+
+def _gcode_export_layers_worker_main(
+    result_q: "mp.queues.Queue[_GCodeExportResult]",
+    layers: list[RealizedLayer],
+    base_output_path: Path,
+    canvas_size: tuple[int, int],
+    *,
+    max_layer_name_len: int = 32,
+) -> None:
+    for i, layer in enumerate(layers, start=1):
+        output_path = gcode_layer_output_path(
+            base_output_path,
+            layer_index=int(i),
+            n_layers=int(len(layers)),
+            layer_name=layer.layer.name,
+            max_layer_name_len=int(max_layer_name_len),
+        )
+        try:
+            export_gcode([layer], output_path, canvas_size=canvas_size)
+            result_q.put(_GCodeExportResult(path=str(output_path), error=None))
+        except Exception:
+            result_q.put(
+                _GCodeExportResult(path=str(output_path), error=traceback.format_exc())
+            )
 
 
 class DrawWindowSystem:
@@ -116,10 +141,10 @@ class DrawWindowSystem:
         self._recording = VideoRecordingSystem(output_path=video_output_path, fps=float(fps))
         self._last_realized_layers: list[RealizedLayer] = []
         self._pending_png_save = False
-        self._pending_gcode_save = False
+        self._pending_gcode_save_mode: str | None = None
         self._gcode_export_ctx = mp.get_context("spawn")
         self._gcode_export_q: mp.Queue[_GCodeExportResult] = self._gcode_export_ctx.Queue()
-        self._gcode_export_proc: mp.Process | None = None
+        self._gcode_export_proc: mp.process.BaseProcess | None = None
         self.window.push_handlers(on_key_press=self._on_key_press)
 
         # draw(t) に渡す t の基準時刻。
@@ -128,7 +153,7 @@ class DrawWindowSystem:
         self._perf = PerfCollector.from_env()
         self._scene_runner = SceneRunner(draw, perf=self._perf, n_worker=int(n_worker))
 
-    def _on_key_press(self, symbol: int, _modifiers: int) -> None:
+    def _on_key_press(self, symbol: int, modifiers: int) -> None:
         if symbol == key.S:
             path = self.save_svg()
             print(f"Saved SVG: {path}")
@@ -137,7 +162,11 @@ class DrawWindowSystem:
             self._pending_png_save = True
             return
         if symbol == key.G:
-            self._pending_gcode_save = True
+            # `G`: 全レイヤ一括
+            # `Shift+G`: レイヤごとに分割して保存
+            self._pending_gcode_save_mode = (
+                "layers" if (int(modifiers) & int(key.MOD_SHIFT)) else "all"
+            )
             return
         if symbol == key.V:
             if not self._recording.is_recording:
@@ -161,6 +190,25 @@ class DrawWindowSystem:
             canvas_size=self._settings.canvas_size,
         )
 
+    def save_gcode_per_layer(self) -> list[Path]:
+        """最後に描画したフレームをレイヤ別に G-code として保存し、保存先パス列を返す。"""
+
+        layers = list(self._last_realized_layers)
+        if not layers:
+            return []
+
+        out: list[Path] = []
+        for i, layer in enumerate(layers, start=1):
+            path = gcode_layer_output_path(
+                self._gcode_output_path,
+                layer_index=int(i),
+                n_layers=int(len(layers)),
+                layer_name=layer.layer.name,
+            )
+            export_gcode([layer], path, canvas_size=self._settings.canvas_size)
+            out.append(path)
+        return out
+
     def _poll_gcode_export_results(self) -> None:
         while True:
             try:
@@ -181,7 +229,7 @@ class DrawWindowSystem:
                 pass
             self._gcode_export_proc = None
 
-    def _start_gcode_export(self) -> None:
+    def _start_gcode_export(self, *, mode: str) -> None:
         proc = self._gcode_export_proc
         if proc is not None and proc.is_alive():
             print("G-code export is already running")
@@ -196,9 +244,22 @@ class DrawWindowSystem:
         layers = list(self._last_realized_layers)
         output_path = self._gcode_output_path
         canvas_size = self._settings.canvas_size
+
+        mode_norm = str(mode).strip().lower()
+        if mode_norm == "layers":
+            if layers:
+                print(f"Exporting G-code per layer: {output_path.parent}")
+            else:
+                print("No layers to export")
+                return
+        else:
+            mode_norm = "all"
+
         try:
             export_proc = self._gcode_export_ctx.Process(
-                target=_gcode_export_worker_main,
+                target=_gcode_export_worker_main
+                if mode_norm == "all"
+                else _gcode_export_layers_worker_main,
                 args=(self._gcode_export_q, layers, output_path, canvas_size),
                 name="grafix-export-gcode",
             )
@@ -206,15 +267,20 @@ class DrawWindowSystem:
         except Exception:
             _logger.exception("Failed to start G-code export process (fallback to sync)")
             try:
-                path = self.save_gcode()
-                print(f"Saved G-code: {path}")
+                if mode_norm == "all":
+                    path = self.save_gcode()
+                    print(f"Saved G-code: {path}")
+                else:
+                    for path in self.save_gcode_per_layer():
+                        print(f"Saved G-code: {path}")
             except Exception as inner:
                 _logger.exception("Failed to save G-code")
                 print(f"Failed to save G-code: {inner}")
             return
 
         self._gcode_export_proc = export_proc
-        print(f"Exporting G-code: {output_path}")
+        if mode_norm == "all":
+            print(f"Exporting G-code: {output_path}")
 
     def start_video_recording(self) -> None:
         """動画録画を開始する。"""
@@ -240,9 +306,10 @@ class DrawWindowSystem:
         perf = self._perf
         with perf.frame():
             self._poll_gcode_export_results()
-            if self._pending_gcode_save:
-                self._pending_gcode_save = False
-                self._start_gcode_export()
+            pending_mode = self._pending_gcode_save_mode
+            if pending_mode is not None:
+                self._pending_gcode_save_mode = None
+                self._start_gcode_export(mode=str(pending_mode))
 
             midi = self._midi_controller
             if midi is not None:

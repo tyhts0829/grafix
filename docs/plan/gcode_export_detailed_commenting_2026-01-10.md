@@ -68,9 +68,9 @@
   - [x] `set_pen_down` / `set_feed` / `move_xy` の「状態保持の理由」（冗長 G-code 抑制）
   - [x] レイヤ内での stroke 収集→順序決定→出力の境界が分かるコメント
   - [x] `bridge_draw_distance` の注意（“移動距離短縮” ではなく “線を追加” のトレードオフ）
-- [ ] 6. 検証
-  - [ ] `mypy src/grafix/export/gcode.py`
-  - [ ] `PYTHONPATH=src pytest -q tests/export/test_gcode.py`
+- [x] 6. 検証
+  - [x] `mypy src/grafix/export/gcode.py`
+  - [x] `PYTHONPATH=src pytest -q tests/export/test_gcode.py`
 
 ## 4. 追加で事前確認したいこと
 
