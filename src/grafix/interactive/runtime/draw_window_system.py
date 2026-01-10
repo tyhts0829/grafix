@@ -104,12 +104,14 @@ class DrawWindowSystem:
         self._renderer = DrawRenderer(self.window, settings)
 
         self._svg_output_path = output_path_for_draw(
-            kind="svg", ext="svg", draw=draw, run_id=run_id
+            kind="svg", ext="svg", draw=draw, run_id=run_id, canvas_size=settings.canvas_size
         )
         self._gcode_output_path = output_path_for_draw(
-            kind="gcode", ext="gcode", draw=draw, run_id=run_id
+            kind="gcode", ext="gcode", draw=draw, run_id=run_id, canvas_size=settings.canvas_size
         )
-        self._png_output_path = default_png_output_path(draw, run_id=run_id)
+        self._png_output_path = default_png_output_path(
+            draw, run_id=run_id, canvas_size=settings.canvas_size
+        )
         video_output_path = default_video_output_path(draw, run_id=run_id, ext="mp4")
         self._recording = VideoRecordingSystem(output_path=video_output_path, fps=float(fps))
         self._last_realized_layers: list[RealizedLayer] = []

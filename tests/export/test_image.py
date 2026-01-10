@@ -33,6 +33,14 @@ def test_default_png_output_path_uses_data_dir_and_script_stem():
     assert path.suffix == ".png"
 
 
+def test_default_png_output_path_includes_output_size_when_given():
+    def draw(t: float) -> None:
+        return None
+
+    path = image.default_png_output_path(draw, canvas_size=(800, 600))
+    assert path.name == f"{Path(__file__).stem}_6400x4800.png"
+
+
 def test_png_output_size_scales_canvas_by_png_scale():
     scale = float(runtime_config().png_scale)
     expected = (int(300 * scale), int(300 * scale))

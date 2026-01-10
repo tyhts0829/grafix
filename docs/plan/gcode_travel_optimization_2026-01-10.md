@@ -113,34 +113,35 @@
 
 ## 8. 実装チェックリスト
 
-- [ ] 1. 公開 API / パラメータ整理
-  - [ ] `GCodeParams.connect_distance` を削除（呼び出し側/テスト/ドキュメントも追従）
-  - [ ] `GCodeParams.optimize_travel` を追加（既定 True）
-  - [ ] 反転は既定で許可（必要なら `allow_reverse` を追加して既定 True）
-  - [ ] 先頭ストロークは「入力順の先頭固定」、以降を最適化する（レイヤ内）
-- [ ] 2. ストローク収集処理を実装（紙クリップ後の seg → stroke 化）
-- [ ] 3. 最適化（貪欲法）を実装（並び + 反転）
-  - [ ] タイブレーク規則の実装
-  - [ ] 距離評価は canvas 座標系（3.4）
-- [ ] 4. G-code 出力を最適化順に変更
-  - [ ] コメント出力（`stroke layer/poly/seg ...`）の方針を決める（デバッグ用）
-- [ ] 5. 保存ファイル名に canvas_size を含める（追加要求）
-  - [ ] どこで付与するかを確定（`output_path_for_draw` / gcode 専用ヘルパ / `export_gcode` 側）
-  - [ ] 付与フォーマットを確定（例: `..._800x800.gcode`。小数が入る場合の表記ルールも）
-  - [ ] interactive の既定出力パス生成が canvas_size 付きになる（`Saved G-code: ...` の表示も一致）
-- [ ] 6. テスト追加/更新（`tests/export/test_gcode.py` / `tests/export/test_gcode_travel_opt.py` など）
-  - [ ] travel 距離が減ること
-  - [ ] 決定性
+- [x] 1. 公開 API / パラメータ整理
+  - [x] `GCodeParams.connect_distance` を削除（呼び出し側/テストは追従）
+  - [x] `GCodeParams.optimize_travel` を追加（既定 True）
+  - [x] 反転は既定で許可（`allow_reverse=True`）
+  - [x] 先頭ストロークは「入力順の先頭固定」、以降を最適化する（レイヤ内）
+- [x] 2. ストローク収集処理を実装（紙クリップ後の seg → stroke 化）
+- [x] 3. 最適化（貪欲法）を実装（並び + 反転）
+  - [x] タイブレーク規則の実装
+  - [x] 距離評価は canvas 座標系（3.4）
+- [x] 4. G-code 出力を最適化順に変更
+  - [x] コメント出力（`stroke polyline ... seg ...`）を付与
+- [x] 5. 保存ファイル名に canvas_size を含める（追加要求）
+  - [x] `output_path_for_draw(..., canvas_size=...)` で付与する
+  - [x] `{stem}_{w}x{h}{run_id_suffix}.{ext}`（小数は末尾 0 を落とす）
+  - [x] interactive の既定出力パス生成が SVG/G-code は canvas_size 付き、PNG は画像サイズ付きになる
+- [x] 6. テスト追加/更新（`tests/export/test_gcode.py` / `tests/export/test_image.py`）
+  - [x] travel 距離が減ること
+  - [x] 決定性（`optimize_travel=True` を含む）
 - [ ] 7. 静的チェック
-  - [ ] `ruff check src/grafix/export/gcode.py tests/export/...`
-  - [ ] `mypy src/grafix/export/gcode.py`
-  - [ ] `PYTHONPATH=src pytest -q tests/export/...`
+  - [ ] `ruff check ...`（ruff が環境にないため未実行）
+  - [x] `mypy src/grafix/export/gcode.py src/grafix/core/output_paths.py src/grafix/export/image.py`
+  - [x] `PYTHONPATH=src pytest -q tests/export/...`
 
 ## 9. 追加で確認したいこと（実装中に追記）
 
 - [ ] stroke 数が多いケースの実測（N が大きいと O(N^2) が重くなる）。必要なら軽いヒューリスティクスを検討する。
 - [ ] 「最適化の前後で travel 距離をコメントとして埋める」など、デバッグ容易性を上げるか。
-- [ ] 既存テスト（`tests/export/test_gcode.py`）に仕様と食い違う項目がないか（必要なら整理してから最適化テストを追加する）。
+- [x] 既存テスト（`tests/export/test_gcode.py`）に仕様と食い違う項目がないか（必要なら整理してから最適化テストを追加する）。
+- [x] ruff が環境にない場合の扱い（本変更では mypy/pytest のみ実行）。
 
 ## 10. 保存ファイル名に canvas_size を含める（追加要求）
 
@@ -162,5 +163,6 @@
 ### 10.4 影響範囲（想定）
 
 - interactive の既定出力:
-  - `SVG` / `G-code`（必要なら `PNG` も）を canvas_size 付きにする。
+  - `SVG` / `G-code` を canvas_size 付きにする。
+  - `PNG` は `png_scale` 反映後の画像サイズ（px）をファイル名へ入れる。
 - 既にユーザーが明示指定している path（例: `Export(..., path="out.gcode")`）は変更しない。
