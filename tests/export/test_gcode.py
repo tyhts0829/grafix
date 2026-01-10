@@ -145,3 +145,43 @@ def test_export_gcode_connects_nearby_polylines(tmp_path) -> None:
         not (line.startswith("G1 Z") or line == "G1 F1500")
         for line in lines[i_end_first + 1 : i_start_second]
     )
+
+
+def test_export_gcode_x_reverse_flips_by_canvas_size_width(tmp_path) -> None:
+    layers = [
+        _realized_layer(
+            coords=[[1.0, 2.0, 0.0], [3.0, 4.0, 0.0]],
+            offsets=[0, 2],
+        )
+    ]
+    params = GCodeParams(origin=(0.0, 0.0), paper_margin_mm=0.0, decimals=3, x_reverse=True)
+
+    out_path = tmp_path / "out.gcode"
+    export_gcode(layers, out_path, canvas_size=(10.0, 10.0), params=params)
+    text = out_path.read_text(encoding="utf-8")
+
+    assert "G1 X9.000 Y2.000" in text
+    assert "G1 X7.000 Y4.000" in text
+
+
+def test_export_gcode_x_reverse_uses_canvas_width_mm_if_given(tmp_path) -> None:
+    layers = [
+        _realized_layer(
+            coords=[[1.0, 2.0, 0.0], [3.0, 4.0, 0.0]],
+            offsets=[0, 2],
+        )
+    ]
+    params = GCodeParams(
+        origin=(0.0, 0.0),
+        paper_margin_mm=0.0,
+        decimals=3,
+        x_reverse=True,
+        canvas_width_mm=8.0,
+    )
+
+    out_path = tmp_path / "out.gcode"
+    export_gcode(layers, out_path, canvas_size=(10.0, 10.0), params=params)
+    text = out_path.read_text(encoding="utf-8")
+
+    assert "G1 X7.000 Y2.000" in text
+    assert "G1 X5.000 Y4.000" in text

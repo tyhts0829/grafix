@@ -730,9 +730,78 @@ class _L(Protocol):
         """単体/複数の Geometry から Layer を生成する。"""
         ...
 
+class _P(Protocol):
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        """preset を `P.<name>(...)` で呼び出す。"""
+        ...
+
+    def axes(self, *, center: Vec3 = ..., axis_length: float = ..., axis_visible_ratio: float = ..., axis_visible_anchor: str = ..., tick_count_x: int = ..., tick_length: float = ..., tick_offset: float = ..., tick_log: bool = ...) -> Any:
+        """
+        引数:
+            center: vec3, range [0.0, 300.0]
+            axis_length: float, range [0.0, 300.0]
+            axis_visible_ratio: float, range [0.0, 1.0]
+            axis_visible_anchor: choice, choices { 'left', 'center', 'right' }
+            tick_count_x: int, range [2, 301]
+            tick_length: float, range [0.0, 20.0]
+            tick_offset: float, range [-20.0, 20.0]
+            tick_log: bool
+        """
+        ...
+    def dot_matrix(self, *, center: Vec3 = ..., matrix_size: Vec3 = ..., dot_size: float = ..., fill_density_coef: float = ..., repeat_count_x: int = ..., repeat_count_y: int = ...) -> Any:
+        """
+        引数:
+            center: vec3, range [0.0, 100.0]
+            matrix_size: vec3, range [0.0, 5.0]
+            dot_size: float, range [0.1, 20.0]
+            fill_density_coef: float, range [0.0, 1.0]
+            repeat_count_x: int, range [1, 50]
+            repeat_count_y: int, range [1, 50]
+        """
+        ...
+    def flow(self, *, center: Vec3 = ..., scale: Vec3 = ..., fill_density_coef: float = ..., fill_angle: float = ..., subdivide_levels: int = ..., displace_amplitude: Vec3 = ..., displace_frequency: Vec3 = ...) -> Any:
+        """
+        引数:
+            center: vec3, range [0.0, 100.0]
+            scale: vec3, range [0.0, 5.0]
+            fill_density_coef: float, range [0.0, 1.0]
+            fill_angle: float, range [0.0, 360.0]
+            subdivide_levels: int, range [0, 10]
+            displace_amplitude: vec3, range [0.0, 5.0]
+            displace_frequency: vec3, range [0.0, 0.5]
+        """
+        ...
+    def layout_guides(self, *, canvas_w: float = ..., canvas_h: float = ..., pattern: str = ..., cell_size: float = ..., metallic_n: int = ..., levels: int = ..., axes: str = ..., border: bool = ..., corner: str = ..., clockwise: bool = ..., offset: Vec3 = ...) -> Any:
+        """
+        配置/サイズ検討用の参照ガイドを生成する。
+
+        引数:
+            canvas_w: キャンバス幅（world 単位）
+            canvas_h: キャンバス高さ（world 単位）
+            pattern: ガイドの種類
+            cell_size: 正方形グリッドのセルサイズ（ワールド単位）
+            metallic_n: 貴金属比の n
+            levels: 段数（細かさ）
+            axes: `"both" | "vertical" | "horizontal"`
+            border: True の場合、キャンバス外枠（axes に応じた辺）を描く
+            corner: `"tl" | "tr" | "br" | "bl"`
+            clockwise: `"metallic_rectangles"` の分割回り順
+            offset: 全ガイドの平行移動量（x, y, z）
+        """
+        ...
+    def logo(self, *, center: Vec3 = ..., scale: float = ..., fill_density_coef: float = ...) -> Any:
+        """
+        引数:
+            center: vec3, range [0.0, 100.0]
+            scale: float, range [0.0, 4.0]
+            fill_density_coef: float, range [0.0, 1.0]
+        """
+        ...
 G: _G
 E: _E
 L: _L
+
+P: _P
 
 from grafix.api.export import Export as Export
 from grafix.api.preset import preset as preset
@@ -759,4 +828,4 @@ def run(
     """pyglet ウィンドウを生成し `draw(t)` のシーンをリアルタイム描画する。"""
     ...
 
-__all__ = ['E', 'Export', 'G', 'L', 'effect', 'preset', 'primitive', 'run']
+__all__ = ['E', 'Export', 'G', 'L', 'P', 'effect', 'preset', 'primitive', 'run']

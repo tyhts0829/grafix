@@ -95,6 +95,15 @@ def run(
     set_config_path(config_path)
     cfg = runtime_config()
 
+    # Parameter GUI はメインプロセス上の registry（preset_registry）を参照して
+    # preset 行を分類/ヘッダ表示する。
+    # mp-draw worker 内で `P.*` が初めて使われても GUI 側では登録が見えないため、
+    # GUI 有効時はここで user preset を先に autoload しておく。
+    if parameter_gui:
+        from grafix.api import presets as _presets
+
+        _presets._autoload_preset_modules()
+
     # pyglet の Window 作成前にオプションを設定する。
     # （vsync はウィンドウ作成時に参照される想定のため、ここで固定しておく）
     # True にすると Parameter GUI のクリックやドラッグが抜ける事がある。

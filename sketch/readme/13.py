@@ -1,6 +1,4 @@
-from grafix import E, G, run
-from sketch.presets.axes import axes
-from sketch.presets.layout_guides import layout_guides
+from grafix import E, G, P, run
 
 # A4
 CANVAS_WIDTH = 210
@@ -10,7 +8,7 @@ CANVAS_HEIGHT = 297
 def draw(t):
     g = G.polyhedron()
     e = E.scale().fill().subdivide().displace().twist().displace().affine()
-    return e(g)
+    return e(g), P.layout_guides(canvas_w=CANVAS_WIDTH, canvas_h=CANVAS_HEIGHT)
 
 
 if __name__ == "__main__":

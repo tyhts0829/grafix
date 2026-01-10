@@ -64,31 +64,30 @@
 
 ## ユーザー確認が必要な決定事項
 
-- [ ] コマンド名: `list` で良い？（代案: `ops`, `builtins`）
-- [ ] 既定出力: `all` のときだけ見出しありで良い？（常に見出しなし/常に見出しあり、どちらが好み？）
-- [ ] `--json` は必要？（後からでも追加可能）
-- [ ] `--details`（meta/defaults の出力）は今回入れる？（入れるなら JSON 限定にする？）
-- [ ] 一覧対象: effect/primitive のみで良い？（将来 `preset` も並べたい？ → 今回は非ゴールのままにするか）
+- [x] コマンド名: `list` で良い？（代案: `ops`, `builtins`）；list でいい。
+- [x] 既定出力: `all` のときだけ見出しありで良い？（常に見出しなし/常に見出しあり、どちらが好み？）；はい
+- [x] `--json` は必要？（後からでも追加可能）；不要
+- [x] `--details`（meta/defaults の出力）は今回入れる？（入れるなら JSON 限定にする？）；なし
+- [x] 一覧対象: effect/primitive のみで良い？（将来 `preset` も並べたい？ → 今回は非ゴールのままにするか）；まずは effect と primitive のみ。
 
 ## 実装チェックリスト
 
-- [ ] CLI 入口を拡張
-  - [ ] `src/grafix/__main__.py` に `list` サブコマンドを追加
-  - [ ] `python -m grafix list --help` が期待どおり表示される
-- [ ] 列挙処理を実装
-  - [ ] `src/grafix/devtools/list_builtins.py`（新規）を追加
-  - [ ] `grafix.api.primitives` / `grafix.api.effects` を import して registry を初期化する
-  - [ ] effect / primitive 名を安定ソートして出力する
-  - [ ] （入れる場合）`--json` / `--details` を実装する
-- [ ] ドキュメント（最小）
-  - [ ] `README.md` か `docs/memo/` に 2〜3 行の実行例を追記
-- [ ] 検証（手元コマンド）
-  - [ ] `python -m grafix list effects`
-  - [ ] `python -m grafix list primitives`
-  - [ ] `python -m grafix list`（両方）
-  - [ ] （入れる場合）`python -m grafix list all --json`
+- [x] CLI 入口を拡張
+  - [x] `src/grafix/__main__.py` に `list` サブコマンドを追加
+  - [x] `python -m grafix list --help` が期待どおり表示される
+- [x] 列挙処理を実装
+  - [x] `src/grafix/devtools/list_builtins.py`（新規）を追加
+  - [x] `grafix.api.primitives` / `grafix.api.effects` を import して registry を初期化する
+  - [x] effect / primitive 名を安定ソートして出力する
+- [x] ドキュメント（最小）
+  - [x] `README.md` に実行例を追記
+- [x] 検証（手元コマンド）
+  - [x] `python -m grafix list --help`
+  - [x] `python -m grafix list effects`
+  - [x] `python -m grafix list primitives`
+  - [x] `python -m grafix list`（両方）
 
 ## Done（受け入れ条件）
 
-- [ ] 組み込み effect / primitive を CLI で迷わず列挙できる
-- [ ] 出力が安定し、コピペ/パイプで扱える
+- [x] 組み込み effect / primitive を CLI で迷わず列挙できる
+- [x] 出力が安定し、コピペ/パイプで扱える

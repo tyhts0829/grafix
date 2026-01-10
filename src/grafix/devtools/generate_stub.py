@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,31 @@ _VALID_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _VEC3_TUPLE_RE = re.compile(
     r"(?:tuple|Tuple)\[\s*float\s*,\s*float\s*,\s*float\s*\]"
 )
+_TYPE_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+_RESOLVABLE_TYPE_IDENTS = {
+    # builtins
+    "bool",
+    "dict",
+    "float",
+    "frozenset",
+    "int",
+    "list",
+    "object",
+    "set",
+    "str",
+    "tuple",
+    "None",
+    # stub imports / aliases
+    "Any",
+    "Callable",
+    "Geometry",
+    "Layer",
+    "Path",
+    "SceneItem",
+    "Sequence",
+    "Vec3",
+}
 
 
 def _is_valid_identifier(name: str) -> bool:
@@ -158,6 +184,23 @@ def _type_str_from_annotation(annotation: Any) -> str | None:
         return s or None
 
 
+def _normalize_type_str(type_str: str) -> str:
+    s = str(type_str).strip()
+    s = s.replace("typing.", "")
+    s = s.replace("pathlib.Path", "Path")
+    s = s.replace("collections.abc.Sequence", "Sequence")
+    s = s.replace("collections.abc.Callable", "Callable")
+    s = _VEC3_TUPLE_RE.sub("Vec3", s)
+    return s
+
+
+def _is_resolvable_type_str(type_str: str) -> bool:
+    for ident in _TYPE_IDENT_RE.findall(type_str):
+        if ident not in _RESOLVABLE_TYPE_IDENTS:
+            return False
+    return True
+
+
 def _type_str_from_impl_param(impl: Any, param_name: str) -> str | None:
     try:
         sig = inspect.signature(impl)
@@ -185,6 +228,36 @@ def _type_str_for_effect_param(
     if kind == "vec3":
         type_str = _VEC3_TUPLE_RE.sub("Vec3", type_str)
     return type_str
+
+
+def _type_str_for_preset_param(*, impl: Any, param_name: str, meta: Any) -> str:
+    kind = str(getattr(meta, "kind", ""))
+    fallback = _type_for_kind(kind)
+
+    type_str = _type_str_from_impl_param(impl, param_name)
+    if type_str is None:
+        return fallback
+
+    type_str_norm = _normalize_type_str(type_str)
+    if not _is_resolvable_type_str(type_str_norm):
+        return fallback
+    return type_str_norm
+
+
+def _type_str_for_preset_return(*, impl: Any) -> str:
+    try:
+        sig = inspect.signature(impl)
+    except Exception:
+        return "Any"
+
+    type_str = _type_str_from_annotation(sig.return_annotation)
+    if type_str is None:
+        return "Any"
+
+    type_str_norm = _normalize_type_str(type_str)
+    if not _is_resolvable_type_str(type_str_norm):
+        return "Any"
+    return type_str_norm
 
 
 def _resolve_impl_callable(kind: str, name: str) -> Any | None:
@@ -435,6 +508,56 @@ def _render_l_protocol() -> str:
     return "".join(lines)
 
 
+def _render_p_protocol(preset_names: list[str]) -> str:
+    lines: list[str] = []
+    lines.append("class _P(Protocol):\n")
+    lines.append("    def __getattr__(self, name: str) -> Callable[..., Any]:\n")
+    lines.append('        """preset を `P.<name>(...)` で呼び出す。"""\n')
+    lines.append("        ...\n\n")
+
+    from grafix.core.preset_registry import preset_func_registry, preset_registry  # type: ignore[import]
+
+    for preset_name in preset_names:
+        impl = preset_func_registry.get(preset_name)
+        if impl is None:
+            continue
+
+        op = f"preset.{preset_name}"
+        if op not in preset_registry:
+            continue
+
+        meta_by_name: dict[str, Any] = dict(preset_registry.get_meta(op))
+        param_order = [p for p in preset_registry.get_param_order(op) if _is_valid_identifier(p)]
+
+        params: list[str] = []
+        if meta_by_name:
+            for p in param_order:
+                pm = meta_by_name[p]
+                type_str = _type_str_for_preset_param(impl=impl, param_name=p, meta=pm)
+                params.append(f"{p}: {type_str} = ...")
+
+        parsed_summary, parsed_docs = _parse_numpy_doc(inspect.getdoc(impl) or "")
+        doc_lines = _render_docstring(
+            summary=parsed_summary,
+            param_order=param_order,
+            parsed_param_docs=parsed_docs,
+            meta_by_name=meta_by_name,
+        )
+
+        return_type = _type_str_for_preset_return(impl=impl)
+        lines.append(
+            _render_method(
+                indent="    ",
+                name=preset_name,
+                return_type=return_type,
+                params=params,
+                doc_lines=doc_lines,
+            )
+        )
+
+    return "".join(lines)
+
+
 def generate_stubs_str() -> str:
     """`grafix/api/__init__.pyi` の生成結果を文字列として返す。"""
 
@@ -442,9 +565,13 @@ def generate_stubs_str() -> str:
     importlib.import_module("grafix.api.primitives")
     importlib.import_module("grafix.api.effects")
     importlib.import_module("grafix.api.layers")
+    presets = importlib.import_module("grafix.api.presets")
+    presets._autoload_preset_modules()  # type: ignore[attr-defined]
 
     from grafix.core.primitive_registry import primitive_registry  # type: ignore[import]
     from grafix.core.effect_registry import effect_registry  # type: ignore[import]
+    from grafix.core.preset_registry import preset_func_registry, preset_registry  # type: ignore[import]
+    from grafix.core.runtime_config import runtime_config  # type: ignore[import]
 
     primitive_names = sorted(
         name
@@ -459,6 +586,23 @@ def generate_stubs_str() -> str:
         if _is_valid_identifier(name)
         and not name.startswith("_")
         and _resolve_impl_callable("effect", name) is not None
+    )
+    cfg = runtime_config()
+    preset_pkg_prefixes: tuple[str, ...] = tuple(
+        f"grafix_user_presets_{hashlib.sha256(str(Path(d).resolve(strict=False)).encode('utf-8')).hexdigest()[:10]}."
+        for d in cfg.preset_module_dirs
+        if Path(d).resolve(strict=False).is_dir()
+    )
+    preset_names = sorted(
+        name
+        for name, fn in preset_func_registry.items()
+        if _is_valid_identifier(name)
+        and not name.startswith("_")
+        and f"preset.{name}" in preset_registry
+        and any(
+            str(getattr(fn, "__module__", "")).startswith(pref)
+            for pref in preset_pkg_prefixes
+        )
     )
 
     header = (
@@ -483,10 +627,12 @@ def generate_stubs_str() -> str:
     lines.append(_render_effect_builder_protocol(effect_names))
     lines.append(_render_e_protocol(effect_names))
     lines.append(_render_l_protocol())
+    lines.append(_render_p_protocol(preset_names))
 
     lines.append("G: _G\n")
     lines.append("E: _E\n")
     lines.append("L: _L\n\n")
+    lines.append("P: _P\n\n")
 
     # 実行時 API と整合する再エクスポート
     lines.append("from grafix.api.export import Export as Export\n")
@@ -518,7 +664,7 @@ def generate_stubs_str() -> str:
     )
 
     lines.append(
-        "__all__ = ['E', 'Export', 'G', 'L', 'effect', 'preset', 'primitive', 'run']\n"
+        "__all__ = ['E', 'Export', 'G', 'L', 'P', 'effect', 'preset', 'primitive', 'run']\n"
     )
     return "".join(lines)
 

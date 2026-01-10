@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, ItemsView
 from dataclasses import dataclass
+from typing import Any
 
 from grafix.core.parameters.meta import ParamMeta
 
@@ -69,8 +71,50 @@ class PresetRegistry:
         return str(self._items[str(op)].display_op)
 
 
+class PresetFuncRegistry:
+    """preset（@preset）の name -> callable を保持するレジストリ。"""
+
+    def __init__(self) -> None:
+        self._items: dict[str, Callable[..., Any]] = {}
+
+    def _register(
+        self,
+        name: str,
+        func: Callable[..., Any],
+        *,
+        overwrite: bool = False,
+    ) -> None:
+        """callable preset を登録する（内部用）。"""
+
+        name_s = str(name)
+        if not overwrite and name_s in self._items:
+            raise ValueError(f"preset '{name_s}' は既に登録されている")
+        self._items[name_s] = func
+
+    def __contains__(self, name: object) -> bool:
+        return str(name) in self._items
+
+    def items(self) -> ItemsView[str, Callable[..., Any]]:
+        """登録済みエントリの (name, func) ビューを返す。"""
+
+        return self._items.items()
+
+    def get(self, name: str) -> Callable[..., Any] | None:
+        """name に対応する callable preset を返す。未登録なら None を返す。"""
+
+        return self._items.get(str(name))
+
+
 preset_registry = PresetRegistry()
 """グローバルな preset レジストリインスタンス。"""
 
+preset_func_registry = PresetFuncRegistry()
+"""グローバルな preset callable レジストリインスタンス。"""
 
-__all__ = ["PresetRegistry", "preset_registry"]
+
+__all__ = [
+    "PresetFuncRegistry",
+    "PresetRegistry",
+    "preset_func_registry",
+    "preset_registry",
+]

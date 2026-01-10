@@ -18,9 +18,9 @@ from grafix.core.parameters.labels_ops import set_label
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_dict_from_user
 from grafix.core.parameters.resolver import resolve_params
-from grafix.core.preset_registry import preset_registry
+from grafix.core.preset_registry import preset_func_registry, preset_registry
 
-P = ParamSpec("P")
+_PSpec = ParamSpec("_PSpec")
 R = TypeVar("R")
 
 
@@ -69,8 +69,7 @@ def _maybe_set_label(*, op: str, site_id: str, label: str) -> None:
 def preset(
     *,
     meta: Mapping[str, ParamMeta | Mapping[str, object]],
-    op: str | None = None,
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
+) -> Callable[[Callable[_PSpec, R]], Callable[_PSpec, R]]:
     """プリセット関数を Parameter GUI 向けにラップするデコレータ。
 
     Parameters
@@ -82,8 +81,6 @@ def preset(
         - kind: str（必須）
         - ui_min/ui_max: object（任意）
         - choices: Sequence[str] | None（任意）
-    op : str | None
-        ParamStore 上の op 名。省略時は `preset.<func_name>` を使用する。
 
     Notes
     -----
@@ -99,28 +96,32 @@ def preset(
         bad = ", ".join(sorted(reserved & set(meta_norm.keys())))
         raise ValueError(f"@preset meta に予約引数は含められません: {bad}")
 
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        preset_op = f"preset.{func.__name__}" if op is None else str(op)
+    def decorator(func: Callable[_PSpec, R]) -> Callable[_PSpec, R]:
+        preset_name = str(func.__name__)
+        if preset_name in preset_func_registry:
+            raise ValueError(f"preset '{preset_name}' は既に登録されている")
+
+        preset_op = f"preset.{preset_name}"
         sig = inspect.signature(func)
         _defaults_from_signature(func, meta_norm)
         meta_keys = set(meta_norm.keys())
-        sig_order = [name for name in sig.parameters if name in meta_keys]
+        sig_order = [arg_name for arg_name in sig.parameters if arg_name in meta_keys]
         preset_registry._register(
             preset_op,
-            display_op=str(func.__name__),
+            display_op=preset_name,
             meta=meta_norm,
             param_order=tuple(sig_order),
-            overwrite=True,
+            overwrite=False,
         )
 
         @wraps(func)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        def wrapper(*args: _PSpec.args, **kwargs: _PSpec.kwargs) -> R:
             bound = sig.bind(*args, **kwargs)
             explicit_keys = set(bound.arguments.keys())
             bound.apply_defaults()
 
             # GUI 非公開の予約引数
-            name = bound.arguments.get("name", None)
+            display_name = bound.arguments.get("name", None)
             key = bound.arguments.get("key", None)
 
             base_site_id = caller_site_id(skip=1)
@@ -128,7 +129,7 @@ def preset(
 
             # group header 名は、指定が無ければ関数名を使う（GUI 未使用時は何もしない）。
             if current_param_recording_enabled():
-                label = str(func.__name__) if name is None else str(name)
+                label = str(func.__name__) if display_name is None else str(display_name)
                 _maybe_set_label(op=preset_op, site_id=site_id, label=label)
 
             # 公開引数だけ解決する（recording が無効なら素の値で通す）。
@@ -155,6 +156,7 @@ def preset(
             with parameter_recording_muted():
                 return func(*bound.args, **bound.kwargs)
 
+        preset_func_registry._register(preset_name, wrapper, overwrite=False)
         return wrapper
 
     return decorator

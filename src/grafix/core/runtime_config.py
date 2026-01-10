@@ -18,6 +18,7 @@ class RuntimeConfig:
     config_path: Path | None
     output_dir: Path
     sketch_dir: Path | None
+    preset_module_dirs: tuple[Path, ...]
     font_dirs: tuple[Path, ...]
     window_pos_draw: tuple[int, int]
     window_pos_parameter_gui: tuple[int, int]
@@ -210,6 +211,7 @@ def runtime_config() -> RuntimeConfig:
             "paths.output_dir が未設定です（同梱 default_config.yaml を確認してください）"
         )
     sketch_dir = _as_optional_path(paths.get("sketch_dir"))
+    preset_module_dirs = _as_path_list(paths.get("preset_module_dirs"))
     font_dirs = _as_path_list(paths.get("font_dirs"))
 
     ui = _as_mapping(payload.get("ui"), key="ui")
@@ -257,6 +259,7 @@ def runtime_config() -> RuntimeConfig:
         config_path=explicit_path or discovered_path,
         output_dir=output_dir,
         sketch_dir=sketch_dir,
+        preset_module_dirs=tuple(preset_module_dirs),
         font_dirs=tuple(font_dirs),
         window_pos_draw=window_pos_draw,
         window_pos_parameter_gui=window_pos_parameter_gui,

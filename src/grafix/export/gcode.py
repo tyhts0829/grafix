@@ -60,7 +60,7 @@ class GCodeParams:
     # origin: tuple[float, float] = (91.0, -0.75)
     decimals: int = 3
     paper_margin_mm: float = _DEFAULT_PAPER_MARGIN_MM
-    connect_distance: float | None = None
+    connect_distance: float | None = 0.5
     bed_x_range: tuple[float, float] | None = None
     bed_y_range: tuple[float, float] | None = None
     canvas_height_mm: float | None = None

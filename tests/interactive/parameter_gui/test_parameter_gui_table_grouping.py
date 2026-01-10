@@ -7,7 +7,7 @@ from grafix.core.parameters.view import ParameterRow
 
 
 @preset(meta={"center": ParamMeta(kind="vec3")})
-def logo(*, center=(0.0, 0.0, 0.0), name=None, key=None):
+def grouping_logo(*, center=(0.0, 0.0, 0.0), name=None, key=None):
     return None
 
 
@@ -75,12 +75,12 @@ def test_group_info_for_row_effect_chain_uses_step_ordinal():
 
 
 def test_group_info_for_row_preset_shows_header_and_uses_display_op():
-    row = _row(op="preset.logo", site_id="comp:1", ordinal=1, arg="center")
+    row = _row(op="preset.grouping_logo", site_id="comp:1", ordinal=1, arg="center")
     info = group_info_for_row(
         row,
-        primitive_header_by_group={("preset.logo", 1): "Logo"},
+        primitive_header_by_group={("preset.grouping_logo", 1): "Logo"},
     )
-    assert info.group_id == ("preset", ("preset.logo", 1))
-    assert info.header_id == "preset:preset.logo#1"
+    assert info.group_id == ("preset", ("preset.grouping_logo", 1))
+    assert info.header_id == "preset:preset.grouping_logo#1"
     assert info.header == "Logo"
-    assert info.visible_label == "logo#1 center"
+    assert info.visible_label == "grouping_logo#1 center"
