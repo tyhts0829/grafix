@@ -98,6 +98,20 @@ def decode_param_store(obj: object) -> ParamStore:
 
     store = ParamStore()
 
+    def _to_int_or_none(v: Any) -> int | None:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            try:
+                return int(v)
+            except ValueError:
+                return None
+        return None
+
     for item in obj.get("states", []):
         if not isinstance(item, dict):
             continue
@@ -108,18 +122,17 @@ def decode_param_store(obj: object) -> ParamStore:
 
         cc_key: int | tuple[int | None, int | None, int | None] | None
         raw_cc = item.get("cc_key")
-        if isinstance(raw_cc, list) and len(raw_cc) == 3:
-            a, b, c = raw_cc
-            cc_tuple = (
-                None if a is None else int(a),
-                None if b is None else int(b),
-                None if c is None else int(c),
-            )
-            cc_key = None if cc_tuple == (None, None, None) else cc_tuple
-        elif raw_cc is None:
+        if raw_cc is None:
             cc_key = None
+        elif isinstance(raw_cc, list):
+            if len(raw_cc) == 3:
+                a, b, c = raw_cc
+                cc_tuple = (_to_int_or_none(a), _to_int_or_none(b), _to_int_or_none(c))
+                cc_key = None if cc_tuple == (None, None, None) else cc_tuple
+            else:
+                cc_key = None
         else:
-            cc_key = int(raw_cc)
+            cc_key = _to_int_or_none(raw_cc)
 
         state = ParamState(ui_value=item.get("ui_value"), cc_key=cc_key)
         if "override" in item:

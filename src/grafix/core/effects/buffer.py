@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Literal, Sequence, cast
 
 import numpy as np
 
@@ -275,9 +275,10 @@ def buffer(
         return base
     abs_d = abs(d)
 
-    join_style = str(join)
-    if join_style not in _JOIN_STYLE_SET:
+    join_style_raw = str(join)
+    if join_style_raw not in _JOIN_STYLE_SET:
         return base
+    join_style = cast(Literal["mitre", "round", "bevel"], join_style_raw)
 
     quad_segs_i = int(quad_segs)
     if quad_segs_i < 1:

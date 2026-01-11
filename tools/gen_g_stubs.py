@@ -89,8 +89,9 @@ def _parse_numpy_doc(doc: str) -> tuple[str | None, dict[str, str]]:
         if stripped and not line.startswith((" ", "\t")):
             m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$", stripped)
             if m:
-                current = m.group(1)
-                param_docs[current] = ""
+                name = m.group(1)
+                current = name
+                param_docs[name] = ""
                 i += 1
                 continue
 
