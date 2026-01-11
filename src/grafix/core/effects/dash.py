@@ -178,12 +178,14 @@ def _build_arc_length(v: np.ndarray) -> tuple[np.ndarray, float]:
     n = v.shape[0]
     s = np.empty(n, dtype=np.float64)
     s[0] = 0.0
+    total = 0.0
     for j in range(n - 1):
         dx = v[j + 1, 0] - v[j, 0]
         dy = v[j + 1, 1] - v[j, 1]
         dz = v[j + 1, 2] - v[j, 2]
-        s[j + 1] = s[j] + np.sqrt(dx * dx + dy * dy + dz * dz)
-    return s, s[n - 1]
+        total += float(np.sqrt(dx * dx + dy * dy + dz * dz))
+        s[j + 1] = total
+    return s, total
 
 
 @njit(cache=True, fastmath=True)  # type: ignore[misc]

@@ -11,7 +11,7 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, cast
 
 from pyglet.window import key
 
@@ -42,6 +42,8 @@ from grafix.interactive.runtime.video_recorder import default_video_output_path
 _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from multiprocessing.process import BaseProcess
+
     from grafix.interactive.runtime.monitor import RuntimeMonitor
 
 
@@ -52,7 +54,7 @@ class _GCodeExportResult:
 
 
 def _gcode_export_worker_main(
-    result_q: "mp.queues.Queue[_GCodeExportResult]",
+    result_q: "mp.Queue[_GCodeExportResult]",
     layers: list[RealizedLayer],
     output_path: Path,
     canvas_size: tuple[int, int],
@@ -65,7 +67,7 @@ def _gcode_export_worker_main(
 
 
 def _gcode_export_layers_worker_main(
-    result_q: "mp.queues.Queue[_GCodeExportResult]",
+    result_q: "mp.Queue[_GCodeExportResult]",
     layers: list[RealizedLayer],
     base_output_path: Path,
     canvas_size: tuple[int, int],
@@ -144,7 +146,7 @@ class DrawWindowSystem:
         self._pending_gcode_save_mode: str | None = None
         self._gcode_export_ctx = mp.get_context("spawn")
         self._gcode_export_q: mp.Queue[_GCodeExportResult] = self._gcode_export_ctx.Queue()
-        self._gcode_export_proc: mp.process.BaseProcess | None = None
+        self._gcode_export_proc: BaseProcess | None = None
         self.window.push_handlers(on_key_press=self._on_key_press)
 
         # draw(t) に渡す t の基準時刻。
@@ -296,7 +298,8 @@ class DrawWindowSystem:
     def _framebuffer_size(self) -> tuple[int, int]:
         getter = getattr(self.window, "get_framebuffer_size", None)
         if callable(getter):
-            w, h = getter()
+            get_framebuffer_size = cast(Callable[[], tuple[int, int]], getter)
+            w, h = get_framebuffer_size()
             return int(w), int(h)
         return int(self.window.width), int(self.window.height)
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import multiprocessing.process as mp_process
+import multiprocessing.queues as mp_queues
 import queue
 import traceback
 from dataclasses import dataclass
@@ -37,8 +38,8 @@ class DrawResult:
 
 
 def _draw_worker_main(
-    task_q: "mp.queues.Queue[_DrawTask | None]",
-    result_q: "mp.queues.Queue[DrawResult]",
+    task_q: mp_queues.Queue[_DrawTask | None],
+    result_q: mp_queues.Queue[DrawResult],
     draw: Callable[[float], SceneItem],
 ) -> None:
     # built-in op の登録（registry）を確実に行う。

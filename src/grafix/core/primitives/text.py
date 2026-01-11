@@ -207,7 +207,7 @@ class TextRenderer:
         flat = RecordingPen()
         flatten_pen = FlattenPen(
             flat,
-            approximateSegmentLength=float(flat_seg_len_units),
+            approximateSegmentLength=int(round(float(flat_seg_len_units))),
             segmentLines=True,
         )
         rec.replay(flatten_pen)
