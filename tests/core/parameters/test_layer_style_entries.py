@@ -32,7 +32,7 @@ def test_layer_style_records_can_be_merged_by_param_store():
     assert state_th is not None
     assert meta_th is not None
     assert meta_th.kind == "float"
-    assert meta_th.ui_min == 1e-6
+    assert meta_th.ui_min == 1e-4
     assert meta_th.ui_max == 0.01
     assert state_th.ui_value == 0.01
     assert state_th.override is True

@@ -55,14 +55,14 @@
 
 テスト追従（最小）:
 
-- [ ] `tests/core/parameters/test_default_override_policy.py` の期待に `bypass` を追加する
+- [x] `tests/core/parameters/test_default_override_policy.py` の期待に `bypass` を追加する
   - `G.polygon()` では `bypass: True` を追加（implicit → override=True のため）
   - `G.polygon(phase=45.0)` でも `bypass: True` を追加（`phase` 以外は implicit）
-- [ ] `tests/core/parameters/test_defaults_autopopulate.py`
+- [x] `tests/core/parameters/test_defaults_autopopulate.py`
   - `test_polygon_defaults_recorded_when_no_kwargs` の期待集合に `bypass` を追加
   - `test_meta_dict_spec_is_accepted_for_user_defined_primitive_and_effect` の `primitive_args` 期待に `bypass` を追加
-- [ ] `tests/core/parameters/test_label_namespace.py::test_primitive_name_sets_label` の期待集合に `bypass` を追加（ラベル仕様自体は不変）
-- [ ] `tests/core/parameters/test_layer_style_entries.py` の `ui_min` 期待を `1e-4` に更新（または `LAYER_STYLE_THICKNESS_META.ui_min` を参照する方針に切替）
+- [x] `tests/core/parameters/test_label_namespace.py::test_primitive_name_sets_label` の期待集合に `bypass` を追加（ラベル仕様自体は不変）
+- [x] `tests/core/parameters/test_layer_style_entries.py` の `ui_min` 期待を `1e-4` に更新（または `LAYER_STYLE_THICKNESS_META.ui_min` を参照する方針に切替）
 
 将来の追従漏れを減らす案（任意）:
 
@@ -72,5 +72,5 @@
 
 動作確認（テスト更新後）:
 
-- [ ] `pytest -q tests/core/parameters/test_default_override_policy.py tests/core/parameters/test_defaults_autopopulate.py tests/core/parameters/test_label_namespace.py tests/core/parameters/test_layer_style_entries.py`
-
+- [x] `pytest -q tests/core/parameters/test_default_override_policy.py tests/core/parameters/test_defaults_autopopulate.py tests/core/parameters/test_label_namespace.py tests/core/parameters/test_layer_style_entries.py`
+- [x] `pytest -q`（`411 passed`）
