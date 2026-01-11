@@ -24,7 +24,7 @@ from .pyglet_backend import (
     _install_imgui_clipboard_callbacks,
     _sync_imgui_io_for_window,
 )
-from .store_bridge import render_store_parameter_table
+from .store_bridge import clear_all_midi_assignments, render_store_parameter_table
 from .table import COLUMN_WEIGHTS_DEFAULT
 from .range_edit import RangeEditMode, apply_range_shift
 
@@ -355,20 +355,28 @@ class ParameterGUI:
 
         self._maybe_apply_range_edit_by_midi()
 
+        changed_any = False
+        if imgui.button("Clear MIDI Assigns"):
+            self._midi_learn_state.active_target = None
+            self._midi_learn_state.active_component = None
+            changed_any = bool(clear_all_midi_assignments(self._store)) or changed_any
+
         # ParamStore の表だけをスクロール領域に閉じ込め、監視バーは常に見えるようにする。
         imgui.begin_child("##parameter_table_scroll", 0, 0, border=False)
         try:
             # ParamStore をテーブルとして描画し、編集結果を store に反映する。
-            changed = render_store_parameter_table(
-                self._store,
-                column_weights=self._column_weights,
-                midi_learn_state=self._midi_learn_state,
-                midi_last_cc_change=(
-                    None
-                    if self._midi_controller is None
-                    else self._midi_controller.last_cc_change
-                ),
-            )
+            changed_any = bool(
+                render_store_parameter_table(
+                    self._store,
+                    column_weights=self._column_weights,
+                    midi_learn_state=self._midi_learn_state,
+                    midi_last_cc_change=(
+                        None
+                        if self._midi_controller is None
+                        else self._midi_controller.last_cc_change
+                    ),
+                )
+            ) or changed_any
         finally:
             imgui.end_child()
         imgui.end()
@@ -383,7 +391,7 @@ class ParameterGUI:
         self._window.clear()
         self._renderer.render(imgui.get_draw_data())
         # `flip()` は MultiWindowLoop が担当する（ここでは呼ばない）。
-        return changed
+        return bool(changed_any)
 
     def close(self) -> None:
         """GUI を終了し、コンテキストとウィンドウを破棄する。"""

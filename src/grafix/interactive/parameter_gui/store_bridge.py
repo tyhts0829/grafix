@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
 
 from grafix.core.effect_registry import effect_registry
 from grafix.core.primitive_registry import primitive_registry
@@ -15,7 +16,7 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_ops import set_meta
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.style import STYLE_OP
-from grafix.core.parameters.snapshot_ops import store_snapshot_for_gui
+from grafix.core.parameters.snapshot_ops import store_snapshot, store_snapshot_for_gui
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.parameters.view import ParameterRow, rows_from_snapshot
 from grafix.core.preset_registry import preset_registry
@@ -353,6 +354,21 @@ def _apply_updated_rows_to_store(
             meta=font_index_meta,
             override=True,
         )
+
+
+def clear_all_midi_assignments(store: ParamStore) -> bool:
+    """すべてのパラメータの MIDI CC 割当（cc_key）を解除する。"""
+
+    snapshot = store_snapshot(store)
+    rows_before = rows_from_snapshot(snapshot)
+    if not any(row.cc_key is not None for row in rows_before):
+        return False
+
+    rows_after = [
+        row if row.cc_key is None else replace(row, cc_key=None) for row in rows_before
+    ]
+    _apply_updated_rows_to_store(store, snapshot, rows_before, rows_after)
+    return True
 
 
 def render_store_parameter_table(
