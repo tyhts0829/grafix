@@ -8,6 +8,7 @@ CANVAS_HEIGHT = 210
 def draw(t):
     DENSITY_RATIO = 0.9
     t1 = G.text(
+        bypass=False,
         text="g",
         font="GoogleSans-Regular.ttf",
         font_index=0,
@@ -15,35 +16,38 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=1.0,
-        center=(89.764, 155.906, 0.0),
+        center=(95.514, 155.906, 0.0),
         scale=35.039,
     )
 
     t2 = G.text(
+        bypass=False,
         text="g",
-        font="Helvetica.ttc",
+        font="Geist-Medium.ttf",
         font_index=0,
         text_align="left",
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=1.0,
-        center=(89.764, 155.906, 0.0),
+        center=(100.20100000000001, 155.906, 0.0),
         scale=35.039,
     )
 
     t3 = G.text(
+        bypass=False,
         text="g",
-        font="Break Light.ttf",
+        font="Carlo.otf",
         font_index=0,
         text_align="left",
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=1.0,
-        center=(89.764, 155.906, 0.0),
+        center=(97.858, 155.906, 0.0),
         scale=35.039,
     )
 
     t4 = G.text(
+        bypass=False,
         text="g",
         font="HannariMincho-Regular.otf",
         font_index=0,
@@ -51,11 +55,12 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=1.0,
-        center=(89.764, 155.906, 0.0),
+        center=(103.131, 155.906, 0.0),
         scale=35.039,
     )
 
     t5 = G.text(
+        bypass=False,
         text="g",
         font="Bodoni 72.ttc",
         font_index=0,
@@ -63,7 +68,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=1.0,
-        center=(89.764, 155.906, 0.0),
+        center=(91.412, 155.906, 0.0),
         scale=35.039,
     )
 
@@ -127,7 +132,13 @@ def draw(t):
         delta=(0.0, 0.0, 0.0),
     )
 
-    t = e(t1 + t2 + t3 + t4 + t5)
+    t1 = e(t1)
+    t2 = e(t2)
+    t3 = e(t3)
+    t4 = e(t4)
+    t5 = e(t5)
+
+    # t = e(t1 + t2 + t3 + t4 + t5)
 
     cross = G(name="cross").line(
         center=(20.0, 20.0, 0.0),
@@ -327,12 +338,24 @@ def draw(t):
 
     waku = cross + line_h + line_v + mt
 
-    aff = E.affine()
-    t = aff(t)
+    aff = E.affine(
+        bypass=False,
+        auto_center=False,
+        pivot=(0.0, 0.0, 0.0),
+        rotation=(0.0, 0.0, 0.0),
+        scale=(0.704, 0.704, 1.0),
+        delta=(0.0, 0.0, 0.0),
+    )
+
+    t1 = aff(t1)
+    t2 = aff(t2)
+    t3 = aff(t3)
+    t4 = aff(t4)
+    t5 = aff(t5)
     waku = aff(waku)
     bar_code = aff(bar_code)
 
-    return t + waku + bar_code
+    return t1, t2, t3, t4, t5, waku + bar_code
 
 
 if __name__ == "__main__":
