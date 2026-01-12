@@ -187,7 +187,7 @@ class _EffectBuilder(Protocol):
             offset_jitter: ポリラインごとに offset に加えるジッター量 [mm]
         """
         ...
-    def displace(self, *, bypass: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
+    def displace(self, *, bypass: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
         """
         3D Perlin ノイズで頂点を変位する。
 
@@ -197,6 +197,7 @@ class _EffectBuilder(Protocol):
             spatial_freq: 空間周波数（各軸別）
             amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
             frequency_gradient: 周波数の軸方向グラデーション係数（各軸別）
+            gradient_center_offset: 勾配計算の中心オフセット（bbox 正規化座標、各軸別）
             min_gradient_factor: 勾配適用時の最小係数（0.0–1.0）
             max_gradient_factor: 勾配適用時の最大係数（1.0–4.0）
             t: 時間オフセット（位相）
@@ -491,7 +492,7 @@ class _E(Protocol):
             offset_jitter: ポリラインごとに offset に加えるジッター量 [mm]
         """
         ...
-    def displace(self, *, bypass: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
+    def displace(self, *, bypass: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
         """
         3D Perlin ノイズで頂点を変位する。
 
@@ -501,6 +502,7 @@ class _E(Protocol):
             spatial_freq: 空間周波数（各軸別）
             amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
             frequency_gradient: 周波数の軸方向グラデーション係数（各軸別）
+            gradient_center_offset: 勾配計算の中心オフセット（bbox 正規化座標、各軸別）
             min_gradient_factor: 勾配適用時の最小係数（0.0–1.0）
             max_gradient_factor: 勾配適用時の最大係数（1.0–4.0）
             t: 時間オフセット（位相）
