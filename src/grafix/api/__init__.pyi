@@ -737,9 +737,10 @@ class _P(Protocol):
         """preset を `P.<name>(...)` で呼び出す。"""
         ...
 
-    def axes(self, *, center: Vec3 = ..., axis_length: float = ..., axis_visible_ratio: float = ..., axis_visible_anchor: str = ..., tick_count_x: int = ..., tick_length: float = ..., tick_offset: float = ..., tick_log: bool = ...) -> Any:
+    def axes(self, *, bypass: bool = ..., center: Vec3 = ..., axis_length: float = ..., axis_visible_ratio: float = ..., axis_visible_anchor: str = ..., tick_count_x: int = ..., tick_length: float = ..., tick_offset: float = ..., tick_log: bool = ...) -> Any:
         """
         引数:
+            bypass: bool
             center: vec3, range [0.0, 300.0]
             axis_length: float, range [0.0, 300.0]
             axis_visible_ratio: float, range [0.0, 1.0]
@@ -750,9 +751,10 @@ class _P(Protocol):
             tick_log: bool
         """
         ...
-    def dot_matrix(self, *, center: Vec3 = ..., matrix_size: Vec3 = ..., dot_size: float = ..., fill_density_coef: float = ..., repeat_count_x: int = ..., repeat_count_y: int = ...) -> Any:
+    def dot_matrix(self, *, bypass: bool = ..., center: Vec3 = ..., matrix_size: Vec3 = ..., dot_size: float = ..., fill_density_coef: float = ..., repeat_count_x: int = ..., repeat_count_y: int = ...) -> Any:
         """
         引数:
+            bypass: bool
             center: vec3, range [0.0, 100.0]
             matrix_size: vec3, range [0.0, 5.0]
             dot_size: float, range [0.1, 20.0]
@@ -761,9 +763,10 @@ class _P(Protocol):
             repeat_count_y: int, range [1, 50]
         """
         ...
-    def flow(self, *, center: Vec3 = ..., scale: Vec3 = ..., fill_density_coef: float = ..., fill_angle: float = ..., subdivide_levels: int = ..., displace_amplitude: Vec3 = ..., displace_frequency: Vec3 = ...) -> Any:
+    def flow(self, *, bypass: bool = ..., center: Vec3 = ..., scale: Vec3 = ..., fill_density_coef: float = ..., fill_angle: float = ..., subdivide_levels: int = ..., displace_amplitude: Vec3 = ..., displace_frequency: Vec3 = ...) -> Any:
         """
         引数:
+            bypass: bool
             center: vec3, range [0.0, 100.0]
             scale: vec3, range [0.0, 5.0]
             fill_density_coef: float, range [0.0, 1.0]
@@ -773,11 +776,12 @@ class _P(Protocol):
             displace_frequency: vec3, range [0.0, 0.5]
         """
         ...
-    def layout_guides(self, *, canvas_w: float = ..., canvas_h: float = ..., pattern: str = ..., cell_size: float = ..., metallic_n: int = ..., levels: int = ..., axes: str = ..., border: bool = ..., corner: str = ..., clockwise: bool = ..., offset: Vec3 = ...) -> Any:
+    def layout_guides(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., pattern: str = ..., cell_size: float = ..., metallic_n: int = ..., levels: int = ..., axes: str = ..., border: bool = ..., corner: str = ..., clockwise: bool = ..., offset: Vec3 = ...) -> Any:
         """
         配置/サイズ検討用の参照ガイドを生成する。
 
         引数:
+            bypass: bool
             canvas_w: キャンバス幅（world 単位）
             canvas_h: キャンバス高さ（world 単位）
             pattern: ガイドの種類
@@ -791,9 +795,10 @@ class _P(Protocol):
             offset: 全ガイドの平行移動量（x, y, z）
         """
         ...
-    def logo(self, *, center: Vec3 = ..., scale: float = ..., fill_density_coef: float = ...) -> Any:
+    def logo(self, *, bypass: bool = ..., center: Vec3 = ..., scale: float = ..., fill_density_coef: float = ...) -> Any:
         """
         引数:
+            bypass: bool
             center: vec3, range [0.0, 100.0]
             scale: float, range [0.0, 4.0]
             fill_density_coef: float, range [0.0, 1.0]

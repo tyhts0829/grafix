@@ -101,6 +101,6 @@ def test_preset_namespace_autoload_makes_preset_available(tmp_path: Path) -> Non
 
         snap = store_snapshot(store)
         ok_args = {k.arg for k in snap.keys() if k.op == "preset.ok_logo"}
-        assert ok_args == {"x"}
+        assert ok_args == {"bypass", "x"}
     finally:
         set_config_path(None)

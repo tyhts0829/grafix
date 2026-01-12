@@ -116,6 +116,20 @@ def test_order_rows_for_display_preset_uses_signature_arg_order():
     assert [r.arg for r in out] == ["center", "scale"]
 
 
+def test_order_rows_for_display_preset_uses_bypass_then_signature_arg_order():
+    rows = [
+        _row(op="preset._logo_component_param_order", site_id="c:1", ordinal=1, arg="scale"),
+        _row(op="preset._logo_component_param_order", site_id="c:1", ordinal=1, arg="center"),
+        _row(op="preset._logo_component_param_order", site_id="c:1", ordinal=1, arg="bypass"),
+    ]
+    out = _order_rows_for_display(
+        rows,
+        step_info_by_site={},
+        display_order_by_group={("preset._logo_component_param_order", "c:1"): 1},
+    )
+    assert [r.arg for r in out] == ["bypass", "center", "scale"]
+
+
 def test_order_rows_for_display_places_unknown_arg_last_for_preset():
     rows = [
         _row(op="preset._logo_component_param_order", site_id="c:1", ordinal=1, arg="center"),
