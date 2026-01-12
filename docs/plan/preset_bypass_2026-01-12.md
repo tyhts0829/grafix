@@ -18,17 +18,17 @@
 
 ## 0) 事前に決める（あなたの確認が必要）
 
-- [ ] `bypass=True` の preset は何を返すべきか（実行時の意味）を確定する。
-  - 候補A（提案）: **空 Geometry** を返す（`Geometry.create(op="concat")` 相当）
+- [ ] `bypass=True` の preset は何を返すべきか（実行時の意味）を確定する。；A で
+  - 候補 A（提案）: **空 Geometry** を返す（`Geometry.create(op="concat")` 相当）
     - 理由: preset は GUI 側でも primitive 扱いされており、「そのブロックを無効化」の意味が最も単純。
     - 影響: geometry 以外を返す preset を bypass すると型が変わる（ただし通常は GUI 操作でのみ発火）。
-  - 候補B: `bypass=True` のときは例外（`TypeError` 等）にする（安全だが操作性が悪い）。
-  - 候補C: `@preset(..., bypass_return=...)` のように戻り値を指定させる（柔軟だが設計が増える）。
-- [ ] `meta={}` の preset でも bypass を自動追加して GUI に出すか。
-  - 方針案1（提案）: **出す**（公開引数がゼロでも bypass だけで “一時無効化” ができる）
-  - 方針案2: 出さない（meta=公開契約を厳密にする）
+  - 候補 B: `bypass=True` のときは例外（`TypeError` 等）にする（安全だが操作性が悪い）。
+  - 候補 C: `@preset(..., bypass_return=...)` のように戻り値を指定させる（柔軟だが設計が増える）。
+- [ ] `meta={}` の preset でも bypass を自動追加して GUI に出すか。；はい
+  - 方針案 1（提案）: **出す**（公開引数がゼロでも bypass だけで “一時無効化” ができる）
+  - 方針案 2: 出さない（meta=公開契約を厳密にする）
 - [ ] `bypass` の扱いを “予約引数” として確定する。
-  - [ ] `@preset(meta=...)` に `bypass` を含めるのは禁止（`ValueError`）でよいか
+  - [ ] `@preset(meta=...)` に `bypass` を含めるのは禁止（`ValueError`）でよいか；はい
   - [ ] 関数シグネチャ側に `bypass` を書くのも禁止（`ValueError`）にするか（禁止しない場合は「書いても無視される」ため紛らわしい）
 
 ---
@@ -98,7 +98,7 @@
 ## 5) 実装手順（順序）
 
 - [ ] 事前確認: `git status --porcelain` で依頼範囲外の差分/未追跡を把握（触らない）
-- [ ] 0) の決定を確定
+- [ ] 0. の決定を確定
 - [ ] `src/grafix/api/preset.py` を実装（bypass 注入 + 早期 return）
 - [ ] テストを必要最小限で更新（param order / preset namespace / stub gen）
 - [ ] `python -m grafix stub`（または `python -m tools.gen_g_stubs`）でスタブを再生成
