@@ -121,3 +121,88 @@ def test_displace_empty_geometry_is_noop() -> None:
     )
     assert out.coords.shape == (0, 3)
     assert out.offsets.tolist() == [0]
+
+
+def test_displace_gradient_center_offset_noop_without_gradient() -> None:
+    g = G.displace_test_polyline()
+    base = realize(g)
+
+    out0 = displace_impl(
+        [base],
+        amplitude=(8.0, 8.0, 8.0),
+        spatial_freq=(0.04, 0.04, 0.04),
+        amplitude_gradient=(0.0, 0.0, 0.0),
+        frequency_gradient=(0.0, 0.0, 0.0),
+        gradient_center_offset=(0.0, 0.0, 0.0),
+        min_gradient_factor=0.1,
+        max_gradient_factor=2.0,
+        t=0.0,
+    )
+    out1 = displace_impl(
+        [base],
+        amplitude=(8.0, 8.0, 8.0),
+        spatial_freq=(0.04, 0.04, 0.04),
+        amplitude_gradient=(0.0, 0.0, 0.0),
+        frequency_gradient=(0.0, 0.0, 0.0),
+        gradient_center_offset=(0.25, -0.25, 0.0),
+        min_gradient_factor=0.1,
+        max_gradient_factor=2.0,
+        t=0.0,
+    )
+
+    np.testing.assert_allclose(out1.coords, out0.coords, rtol=0.0, atol=0.0)
+
+
+def test_displace_gradient_center_offset_changes_output_with_gradient() -> None:
+    g = G.displace_test_polyline()
+    base = realize(g)
+
+    out0 = displace_impl(
+        [base],
+        amplitude=(8.0, 8.0, 8.0),
+        spatial_freq=(0.04, 0.04, 0.04),
+        amplitude_gradient=(2.0, 0.0, 0.0),
+        frequency_gradient=(0.0, 0.0, 0.0),
+        gradient_center_offset=(0.0, 0.0, 0.0),
+        min_gradient_factor=0.1,
+        max_gradient_factor=2.0,
+        t=0.0,
+    )
+    out1 = displace_impl(
+        [base],
+        amplitude=(8.0, 8.0, 8.0),
+        spatial_freq=(0.04, 0.04, 0.04),
+        amplitude_gradient=(2.0, 0.0, 0.0),
+        frequency_gradient=(0.0, 0.0, 0.0),
+        gradient_center_offset=(0.25, 0.0, 0.0),
+        min_gradient_factor=0.1,
+        max_gradient_factor=2.0,
+        t=0.0,
+    )
+
+    assert float(np.max(np.abs(out1.coords - out0.coords))) > 1e-4
+
+
+def test_E_displace_gradient_center_offset_zero_equals_omitted() -> None:
+    g = G.displace_test_polyline()
+
+    out0 = realize(
+        E.displace(
+            amplitude=(8.0, 8.0, 8.0),
+            spatial_freq=(0.04, 0.04, 0.04),
+            amplitude_gradient=(2.0, 0.0, 0.0),
+            t=0.0,
+        )(g)
+    )
+    out1 = realize(
+        E.displace(
+            amplitude=(8.0, 8.0, 8.0),
+            spatial_freq=(0.04, 0.04, 0.04),
+            amplitude_gradient=(2.0, 0.0, 0.0),
+            gradient_center_offset=(0.0, 0.0, 0.0),
+            t=0.0,
+        )(g)
+    )
+
+    np.testing.assert_allclose(out1.coords, out0.coords, rtol=0.0, atol=0.0)
+    assert out1.offsets.tolist() == out0.offsets.tolist()

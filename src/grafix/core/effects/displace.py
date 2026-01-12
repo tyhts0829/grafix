@@ -16,6 +16,7 @@ displace_meta = {
     "spatial_freq": ParamMeta(kind="vec3", ui_min=0.0, ui_max=0.1),
     "amplitude_gradient": ParamMeta(kind="vec3", ui_min=-4.0, ui_max=4.0),
     "frequency_gradient": ParamMeta(kind="vec3", ui_min=-4.0, ui_max=4.0),
+    "gradient_center_offset": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0),
     "min_gradient_factor": ParamMeta(kind="float", ui_min=0.0, ui_max=0.5),
     "max_gradient_factor": ParamMeta(kind="float", ui_min=1.0, ui_max=4.0),
     "t": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
@@ -419,6 +420,7 @@ def _apply_noise_to_coords(
     amplitude_grad: tuple,
     frequency: tuple,
     frequency_grad: tuple,
+    gradient_center_offset: tuple,
     time: float,
     min_factor: float,
     max_factor: float,
@@ -446,6 +448,11 @@ def _apply_noise_to_coords(
 
     has_amp_grad = not (abs(gx) < 1e-6 and abs(gy) < 1e-6 and abs(gz) < 1e-6)
     has_freq_grad = not (abs(fgx) < 1e-6 and abs(fgy) < 1e-6 and abs(fgz) < 1e-6)
+
+    half = np.float32(0.5)
+    cx = half + np.float32(gradient_center_offset[0])
+    cy = half + np.float32(gradient_center_offset[1])
+    cz = half + np.float32(gradient_center_offset[2])
 
     fx_base = np.float32(frequency[0])
     fy_base = np.float32(frequency[1])
@@ -520,9 +527,9 @@ def _apply_noise_to_coords(
             else:
                 tz = 0.5
 
-            fx_raw = 1.0 + gx * (tx - 0.5)
-            fy_raw = 1.0 + gy * (ty - 0.5)
-            fz_raw = 1.0 + gz * (tz - 0.5)
+            fx_raw = 1.0 + gx * (tx - cx)
+            fy_raw = 1.0 + gy * (ty - cy)
+            fz_raw = 1.0 + gz * (tz - cz)
 
             if fx_raw < 0.0:
                 fx_raw = 0.0
@@ -620,9 +627,9 @@ def _apply_noise_to_coords(
         amp_fy = np.float32(1.0)
         amp_fz = np.float32(1.0)
         if has_amp_grad:
-            fx_raw = 1.0 + gx * (tx - 0.5)
-            fy_raw = 1.0 + gy * (ty - 0.5)
-            fz_raw = 1.0 + gz * (tz - 0.5)
+            fx_raw = 1.0 + gx * (tx - cx)
+            fy_raw = 1.0 + gy * (ty - cy)
+            fz_raw = 1.0 + gz * (tz - cz)
 
             if fx_raw < 0.0:
                 fx_raw = 0.0
@@ -642,9 +649,9 @@ def _apply_noise_to_coords(
             if amp_fz > maxf:
                 amp_fz = maxf
 
-        freq_fx_raw = 1.0 + fgx * (tx - 0.5)
-        freq_fy_raw = 1.0 + fgy * (ty - 0.5)
-        freq_fz_raw = 1.0 + fgz * (tz - 0.5)
+        freq_fx_raw = 1.0 + fgx * (tx - cx)
+        freq_fy_raw = 1.0 + fgy * (ty - cy)
+        freq_fz_raw = 1.0 + fgz * (tz - cz)
 
         if freq_fx_raw < 0.0:
             freq_fx_raw = 0.0
@@ -691,6 +698,7 @@ def displace(
     spatial_freq: tuple[float, float, float] = (0.04, 0.04, 0.04),
     amplitude_gradient: tuple[float, float, float] = (0.0, 0.0, 0.0),
     frequency_gradient: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    gradient_center_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
     min_gradient_factor: float = MIN_GRADIENT_FACTOR_DEFAULT,
     max_gradient_factor: float = 2.0,
     t: float = 0.0,
@@ -709,6 +717,8 @@ def displace(
         振幅の軸方向グラデーション係数（各軸別）。
     frequency_gradient : tuple[float, float, float], default (0.0, 0.0, 0.0)
         周波数の軸方向グラデーション係数（各軸別）。
+    gradient_center_offset : tuple[float, float, float], default (0.0, 0.0, 0.0)
+        勾配計算の中心オフセット（bbox 正規化座標、各軸別）。
     min_gradient_factor : float, default 0.1
         勾配適用時の最小係数（0.0–1.0）。
     max_gradient_factor : float, default 2.0
@@ -765,6 +775,11 @@ def displace(
             float(frequency_gradient[0]),
             float(frequency_gradient[1]),
             float(frequency_gradient[2]),
+        ),
+        (
+            float(gradient_center_offset[0]),
+            float(gradient_center_offset[1]),
+            float(gradient_center_offset[2]),
         ),
         float(t),
         np.float32(min_factor_val),  # type: ignore[arg-type]
