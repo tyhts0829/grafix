@@ -33,13 +33,17 @@
 - `levels`: int（`ratio_lines` / `metallic_rectangles`）
 - `border`: bool（canvas 外枠）
 
-### safe area / margin / trim / bleed
+### safe area / margin / trim
 
 - `margin_l`, `margin_r`, `margin_t`, `margin_b`（float, inset）
 - `trim`（float, inset）
-- `bleed`（float, outset）
 - `use_safe_area`: bool（True なら後続のガイド生成の対象 rect を margin 内へ切り替える）
-- `show_margin`, `show_trim`, `show_bleed`: bool（線として表示）
+- `show_margin`, `show_trim`: bool（線として表示）
+
+Notes
+-----
+- bleed は値としては持たず、必要なら `canvas_w/canvas_h` を増やして表現する。
+  - 仕上がり（trim）線を見せたい場合は `trim` を使う。
 
 ### columns / modular
 
@@ -72,7 +76,6 @@
   - canvas rect = rect_from_canvas + offset
   - safe rect = inset(margins)
   - trim rect = inset(trim)
-  - bleed rect = outset(bleed)
 - `base` で “主ガイド” を 1 つ生成し、overlay bool で必要な線を追加する。
 
 ## 実装チェックリスト
@@ -88,14 +91,14 @@
 ### 2) パラメータ/メタの再設計
 
 - [ ] `pattern` を `base` に変更（or 維持。後述の要確認）
-- [ ] margin/trim/bleed/safe_area/overlay の meta を追加
+- [ ] margin/trim/safe_area/overlay の meta を追加
 - [ ] columns/modular/baseline の meta を追加
-- [ ] 既定値の決定（A4 を想定した “それっぽい” 初期表示）
+- [ ] 既定値の決定（A5 を想定した “それっぽい” 初期表示）
 
 ### 3) safe area と矩形ユーティリティ
 
 - [ ] `_rect_from_canvas(canvas_w, canvas_h, offset)` を追加
-- [ ] `_inset_rect(rect, l, r, t, b)` / `_outset_rect(rect, d)` を追加
+- [ ] `_inset_rect(rect, l, r, t, b)` を追加
 - [ ] `use_safe_area` のとき、主ガイド/オーバーレイの対象 rect を safe rect に切り替える
 
 ### 4) 定番ガイド（オーバーレイ）
@@ -106,11 +109,10 @@
 - [ ] diagonals（四隅を結ぶ 2 本）
 - [ ] intersections マーカー（`show_intersections` + `mark_size`）
 
-### 5) margin / trim / bleed 表示
+### 5) margin / trim 表示
 
 - [ ] margin rect を線で描ける
 - [ ] trim rect を線で描ける
-- [ ] bleed rect を線で描ける（canvas 外へ出る点に注意）
 
 ### 6) columns / modular / baseline
 
@@ -133,8 +135,8 @@
 
 ## 要確認（あなたに確認したい点）
 
-- canvas は「トリム面」扱いで良い？（その場合 border は trim と同義になり、trim ガイドは不要かも）
+- canvas は「外枠（表示/書き出しの最大領域）」扱いで良い？（必要なら canvas を増やして trim=仕上がり線にする）；外枠扱い
 - `pattern` → `base` rename は OK？（既存 UI が `pattern` 前提なら同時に更新する）；base へリネームして
 - golden overlay の比率指定: 固定(0.382/0.618) vs `ratio` から派生（例: ratio=1.618 → 0.382/0.618）；固定
 - columns の表示: 列境界のみ / ガター境界も描く / 中心線も描く；列境界のみ
-- デフォルトの `min_spacing` / `max_lines` の値（A4 想定での “気持ち良い” 密度）；A5 想定で気持ちいい密度で。
+- デフォルトの `min_spacing` / `max_lines` の値（A5 想定での “気持ち良い” 密度）；A5 想定で気持ちいい密度で。
