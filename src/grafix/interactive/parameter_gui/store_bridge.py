@@ -28,6 +28,7 @@ from .labeling import (
 )
 from .midi_learn import MidiLearnState
 from .table import COLUMN_WEIGHTS_DEFAULT, render_parameter_table
+from .visibility import active_mask_for_rows
 
 _logger = logging.getLogger(__name__)
 
@@ -375,6 +376,7 @@ def render_store_parameter_table(
     store: ParamStore,
     *,
     column_weights: tuple[float, float, float, float] = COLUMN_WEIGHTS_DEFAULT,
+    show_inactive_params: bool = True,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
 ) -> bool:
@@ -499,8 +501,17 @@ def render_store_parameter_table(
     # - (グループ境界でヘッダ行を描画)
     # - 各行の UI を描画し、更新後の ParameterRow を返す
     # という純粋 “ビュー” 相当の関数。
-    changed, rows_after = render_parameter_table(
+    visible_mask = active_mask_for_rows(
         rows_before,
+        show_inactive=bool(show_inactive_params),
+        last_effective_by_key=store._runtime_ref().last_effective_by_key,
+    )
+    view_rows: list[ParameterRow] = [
+        row for row, visible in zip(rows_before, visible_mask, strict=True) if visible
+    ]
+
+    changed, view_rows_after = render_parameter_table(
+        view_rows,
         column_weights=column_weights,
         primitive_header_by_group=primitive_header_by_group,
         layer_style_name_by_site_id=layer_style_name_by_site_id,
@@ -512,6 +523,11 @@ def render_store_parameter_table(
         midi_last_cc_change=midi_last_cc_change,
         collapsed_headers=store._collapsed_headers_ref(),
     )
+    view_iter = iter(view_rows_after)
+    rows_after: list[ParameterRow] = [
+        (next(view_iter) if visible else row)
+        for row, visible in zip(rows_before, visible_mask, strict=True)
+    ]
 
     # --- 7) 変更があった場合だけ store へ反映 ---
     # rows_before/rows_after は 1:1 対応している前提（render_parameter_table が維持する）。

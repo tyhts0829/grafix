@@ -13,7 +13,7 @@ def draw(t):
     t = G.text()
     et = E.quantize().buffer().buffer().fill()
     t = et(t)
-    return ax, P.layout_guides(canvas_w=CANVAS_WIDTH, canvas_h=CANVAS_HEIGHT), t
+    return ax, P.layout(canvas_w=CANVAS_WIDTH, canvas_h=CANVAS_HEIGHT), t
 
 
 if __name__ == "__main__":

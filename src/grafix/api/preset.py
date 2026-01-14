@@ -89,6 +89,7 @@ def _maybe_set_label(*, op: str, site_id: str, label: str) -> None:
 def preset(
     *,
     meta: Mapping[str, ParamMeta | Mapping[str, object]],
+    ui_visible: Mapping[str, Callable[[Mapping[str, Any]], bool]] | None = None,
 ) -> Callable[[Callable[_PSpec, R]], Callable[_PSpec, R]]:
     """プリセット関数を Parameter GUI 向けにラップするデコレータ。
 
@@ -101,6 +102,10 @@ def preset(
         - kind: str（必須）
         - ui_min/ui_max: object（任意）
         - choices: Sequence[str] | None（任意）
+    ui_visible : Mapping[str, Callable[[Mapping[str, Any]], bool]] or None
+        GUI 表示向けの “行の可視性” ルール。
+        key は引数名（arg）、value は “その preset 呼び出し 1 回” の現在値辞書を受け取り、
+        その引数行を表示するかどうかを返す predicate。
 
     Notes
     -----
@@ -148,6 +153,7 @@ def preset(
             display_op=preset_name,
             meta=meta_with_bypass,
             param_order=("bypass", *sig_order),
+            ui_visible=ui_visible,
             overwrite=False,
         )
 
