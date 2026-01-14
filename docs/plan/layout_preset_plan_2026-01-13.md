@@ -82,55 +82,55 @@ Notes
 
 ### 1) リネームと参照更新
 
-- [ ] `sketch/presets/layout_guides.py` を `sketch/presets/layout.py` に rename
-- [ ] preset 関数名を `layout` に変更（`@preset(meta=...)`）
-- [ ] `sketch/readme/12.py` と `sketch/readme/14.py` を `P.layout(...)` へ更新
-- [ ] stub を再生成して `src/grafix/api/__init__.pyi` の `layout_guides` → `layout` を反映（`python -m grafix stub`）
-- [ ] `rg -n "\\blayout_guides\\b"` で残存参照がないことを確認
+- [x] `sketch/presets/layout_guides.py` を `sketch/presets/layout.py` に rename
+- [x] preset 関数名を `layout` に変更（`@preset(meta=...)`）
+- [x] `sketch/readme/12.py` と `sketch/readme/14.py` を `P.layout(...)` へ更新
+- [x] stub を再生成して `src/grafix/api/__init__.pyi` の `layout_guides` → `layout` を反映（`python -m grafix stub`）
+- [x] `rg -n "\\blayout_guides\\b"` でコード側の残存参照がないことを確認（docs は除外）
 
 ### 2) パラメータ/メタの再設計
 
-- [ ] `pattern` を `base` に変更（or 維持。後述の要確認）
-- [ ] margin/trim/safe_area/overlay の meta を追加
-- [ ] columns/modular/baseline の meta を追加
-- [ ] 既定値の決定（A5 を想定した “それっぽい” 初期表示）
+- [x] `pattern` を `base` に変更（or 維持。後述の要確認）
+- [x] margin/trim/safe_area/overlay の meta を追加
+- [x] columns/modular/baseline の meta を追加
+- [x] 既定値の決定（A5 を想定した “それっぽい” 初期表示）
 
 ### 3) safe area と矩形ユーティリティ
 
-- [ ] `_rect_from_canvas(canvas_w, canvas_h, offset)` を追加
-- [ ] `_inset_rect(rect, l, r, t, b)` を追加
-- [ ] `use_safe_area` のとき、主ガイド/オーバーレイの対象 rect を safe rect に切り替える
+- [x] `_rect_from_canvas(canvas_w, canvas_h, offset)` を追加
+- [x] `_inset_rect(rect, l, r, t, b)` を追加
+- [x] `use_safe_area` のとき、主ガイド/オーバーレイの対象 rect を safe rect に切り替える
 
 ### 4) 定番ガイド（オーバーレイ）
 
-- [ ] center（縦/横の中心線）
-- [ ] thirds（1/3, 2/3）
-- [ ] golden（0.382, 0.618：固定 vs `ratio` 派生は要確認）
-- [ ] diagonals（四隅を結ぶ 2 本）
-- [ ] intersections マーカー（`show_intersections` + `mark_size`）
+- [x] center（縦/横の中心線）
+- [x] thirds（1/3, 2/3）
+- [x] golden（0.382, 0.618：固定 vs `ratio` 派生は要確認）
+- [x] diagonals（四隅を結ぶ 2 本）
+- [x] intersections マーカー（`show_intersections` + `mark_size`）
 
 ### 5) margin / trim 表示
 
-- [ ] margin rect を線で描ける
-- [ ] trim rect を線で描ける
+- [x] margin rect を線で描ける
+- [x] trim rect を線で描ける
 
 ### 6) columns / modular / baseline
 
-- [ ] columns（`cols + gutter_x`）を rect 内へ計算して境界線を描く
-- [ ] modular（`cols x rows + gutter_x/y`）を rect 内へ描く
-- [ ] baseline（`baseline_step + baseline_offset`）を rect 内の水平線として描く
-- [ ] `axes` と組み合わせて必要な軸だけ描ける
+- [x] columns（`cols + gutter_x`）を rect 内へ計算して境界線を描く
+- [x] modular（`cols x rows + gutter_x/y`）を rect 内へ描く
+- [x] baseline（`baseline_step + baseline_offset`）を rect 内の水平線として描く
+- [x] `axes` と組み合わせて必要な軸だけ描ける
 
 ### 7) ratio_lines の任意 ratio 化 + 密度制御
 
-- [ ] `ratio_lines` は `ratio` を使う（metallic_n 依存を外す）
-- [ ] `_ratio_positions` に `min_spacing` と `max_lines` を追加し、levels を上げても暴発しにくくする
+- [x] `ratio_lines` は `ratio` を使う（metallic_n 依存を外す）
+- [x] `_ratio_positions` に `min_spacing` と `max_lines` を追加し、levels を上げても暴発しにくくする
 - [ ] （必要なら）早期終了条件を追加（segment 長が閾値未満なら分割しない）
 
 ### 8) 仕上げ（最小の検証）
 
-- [ ] `python -m compileall sketch/presets/layout.py`
-- [ ] `PYTHONPATH=src pytest -q tests/stubs/test_g_stub_sync.py`（スタブ同期）
+- [x] `python -m compileall sketch/presets/layout.py`
+- [x] `PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py`（スタブ同期）
 - [ ] 目視: `sketch/readme/12.py` で margins + columns + baseline を重ねて破綻しない
 
 ## 要確認（あなたに確認したい点）

@@ -16,7 +16,7 @@ def draw(t):
     g = g_e(g)
     b_e = E.fill()
     b = b_e(b)
-    return r, g, b, P.layout_guides(canvas_w=CANVAS_WIDTH, canvas_h=CANVAS_HEIGHT)
+    return r, g, b, P.layout(canvas_w=CANVAS_WIDTH, canvas_h=CANVAS_HEIGHT)
 
 
 if __name__ == "__main__":
@@ -28,6 +28,6 @@ if __name__ == "__main__":
         render_scale=5,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        midi_port_name="TX-6 Bluetooth",
-        midi_mode="7bit",
+        # midi_port_name="TX-6 Bluetooth",
+        # midi_mode="7bit",
     )

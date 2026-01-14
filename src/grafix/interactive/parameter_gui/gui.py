@@ -96,6 +96,7 @@ class ParameterGUI:
         self._range_edit_key_r = 0
         self._range_edit_key_e = 0
         self._range_edit_key_t = 0
+        self._show_inactive_params = False
         self._title = str(title)
         self._column_weights = column_weights
         self._sync_window_width_for_scale()
@@ -360,6 +361,11 @@ class ParameterGUI:
             self._midi_learn_state.active_target = None
             self._midi_learn_state.active_component = None
             changed_any = bool(clear_all_midi_assignments(self._store)) or changed_any
+        imgui.same_line()
+        _clicked, self._show_inactive_params = imgui.checkbox(
+            "Show inactive params",
+            bool(self._show_inactive_params),
+        )
 
         # ParamStore の表だけをスクロール領域に閉じ込め、監視バーは常に見えるようにする。
         imgui.begin_child("##parameter_table_scroll", 0, 0, border=False)
@@ -369,6 +375,7 @@ class ParameterGUI:
                 render_store_parameter_table(
                     self._store,
                     column_weights=self._column_weights,
+                    show_inactive_params=bool(self._show_inactive_params),
                     midi_learn_state=self._midi_learn_state,
                     midi_last_cc_change=(
                         None

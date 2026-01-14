@@ -16,6 +16,7 @@ EffectFunc = Callable[
     [Sequence[RealizedGeometry], tuple[tuple[str, Any], ...]],
     RealizedGeometry,
 ]
+UiVisiblePred = Callable[[Mapping[str, Any]], bool]
 
 
 class EffectRegistry:
@@ -35,6 +36,7 @@ class EffectRegistry:
         self._defaults: dict[str, dict[str, Any]] = {}
         self._n_inputs: dict[str, int] = {}
         self._param_order: dict[str, tuple[str, ...]] = {}
+        self._ui_visible: dict[str, dict[str, UiVisiblePred]] = {}
 
     def _register(
         self,
@@ -46,6 +48,7 @@ class EffectRegistry:
         param_order: Sequence[str] | None = None,
         meta: dict[str, ParamMeta] | None = None,
         defaults: dict[str, Any] | None = None,
+        ui_visible: Mapping[str, UiVisiblePred] | None = None,
     ) -> None:
         """effect を登録する（内部用）。
 
@@ -65,6 +68,8 @@ class EffectRegistry:
             self._meta[name] = meta
         if defaults is not None:
             self._defaults[name] = defaults
+        if ui_visible is not None:
+            self._ui_visible[name] = dict(ui_visible)
 
     def get(self, name: str) -> EffectFunc:
         """op 名に対応する effect を取得する。
@@ -111,6 +116,11 @@ class EffectRegistry:
 
         return tuple(self._param_order.get(name, ()))
 
+    def get_ui_visible(self, name: str) -> dict[str, UiVisiblePred]:
+        """op 名に対応する可視性ルール辞書（arg -> predicate）を返す。"""
+
+        return dict(self._ui_visible.get(name, {}))
+
     def get_n_inputs(self, name: str) -> int:
         """op 名に対応する入力 Geometry 数（arity）を返す。"""
         return int(self._n_inputs.get(name, 1))
@@ -126,6 +136,7 @@ def effect(
     overwrite: bool = True,
     n_inputs: int = 1,
     meta: Mapping[str, ParamMeta | Mapping[str, object]] | None = None,
+    ui_visible: Mapping[str, UiVisiblePred] | None = None,
 ):
     """グローバル effect レジストリ用デコレータ。
 
@@ -223,6 +234,7 @@ def effect(
             param_order=param_order,
             meta=meta_with_bypass,
             defaults=defaults,
+            ui_visible=ui_visible,
         )
         return f
 

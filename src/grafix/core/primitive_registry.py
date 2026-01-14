@@ -13,6 +13,7 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_dict_from_user
 
 PrimitiveFunc = Callable[[tuple[tuple[str, Any], ...]], RealizedGeometry]
+UiVisiblePred = Callable[[Mapping[str, Any]], bool]
 
 
 class PrimitiveRegistry:
@@ -31,6 +32,7 @@ class PrimitiveRegistry:
         self._meta: dict[str, dict[str, ParamMeta]] = {}
         self._defaults: dict[str, dict[str, Any]] = {}
         self._param_order: dict[str, tuple[str, ...]] = {}
+        self._ui_visible: dict[str, dict[str, UiVisiblePred]] = {}
 
     def _register(
         self,
@@ -41,6 +43,7 @@ class PrimitiveRegistry:
         param_order: tuple[str, ...] | None = None,
         meta: dict[str, ParamMeta] | None = None,
         defaults: dict[str, Any] | None = None,
+        ui_visible: Mapping[str, UiVisiblePred] | None = None,
     ) -> None:
         """primitive を登録する（内部用）。
 
@@ -59,6 +62,8 @@ class PrimitiveRegistry:
             self._meta[name] = meta
         if defaults is not None:
             self._defaults[name] = defaults
+        if ui_visible is not None:
+            self._ui_visible[name] = dict(ui_visible)
 
     def get(self, name: str) -> PrimitiveFunc:
         """op 名に対応する primitive を取得する。
@@ -105,6 +110,11 @@ class PrimitiveRegistry:
 
         return tuple(self._param_order.get(name, ()))
 
+    def get_ui_visible(self, name: str) -> dict[str, UiVisiblePred]:
+        """op 名に対応する可視性ルール辞書（arg -> predicate）を返す。"""
+
+        return dict(self._ui_visible.get(name, {}))
+
 
 primitive_registry = PrimitiveRegistry()
 """グローバルな primitive レジストリインスタンス。"""
@@ -115,6 +125,7 @@ def primitive(
     *,
     overwrite: bool = True,
     meta: Mapping[str, ParamMeta | Mapping[str, object]] | None = None,
+    ui_visible: Mapping[str, UiVisiblePred] | None = None,
 ):
     """グローバル primitive レジストリ用デコレータ。
 
@@ -198,6 +209,7 @@ def primitive(
             param_order=param_order,
             meta=meta_with_bypass,
             defaults=defaults,
+            ui_visible=ui_visible,
         )
         return f
 

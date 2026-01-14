@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, ItemsView
+from collections.abc import Callable, ItemsView, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from grafix.core.parameters.meta import ParamMeta
+
+UiVisiblePred = Callable[[Mapping[str, Any]], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +20,7 @@ class PresetSpec:
     display_op: str
     meta: dict[str, ParamMeta]
     param_order: tuple[str, ...]
+    ui_visible: dict[str, UiVisiblePred]
 
 
 class PresetRegistry:
@@ -33,6 +36,7 @@ class PresetRegistry:
         display_op: str,
         meta: dict[str, ParamMeta],
         param_order: tuple[str, ...],
+        ui_visible: Mapping[str, UiVisiblePred] | None = None,
         overwrite: bool = True,
     ) -> None:
         """preset を登録する（内部用）。
@@ -50,6 +54,7 @@ class PresetRegistry:
             display_op=str(display_op),
             meta=dict(meta),
             param_order=tuple(str(a) for a in param_order),
+            ui_visible={} if ui_visible is None else dict(ui_visible),
         )
 
     def __contains__(self, op: object) -> bool:
@@ -69,6 +74,11 @@ class PresetRegistry:
         """GUI 表示用の op 名（行ラベル用）を返す。"""
 
         return str(self._items[str(op)].display_op)
+
+    def get_ui_visible(self, op: str) -> dict[str, UiVisiblePred]:
+        """op 名に対応する可視性ルール辞書（arg -> predicate）を返す。"""
+
+        return dict(self._items[str(op)].ui_visible)
 
 
 class PresetFuncRegistry:
@@ -115,6 +125,7 @@ preset_func_registry = PresetFuncRegistry()
 __all__ = [
     "PresetFuncRegistry",
     "PresetRegistry",
+    "UiVisiblePred",
     "preset_func_registry",
     "preset_registry",
 ]
