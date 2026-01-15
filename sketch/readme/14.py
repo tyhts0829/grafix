@@ -6,17 +6,7 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-    r = G.text()
-    g = G.text()
-    b = G.text()
-
-    r_e = E.fill()
-    r = r_e(r)
-    g_e = E.fill()
-    g = g_e(g)
-    b_e = E.fill()
-    b = b_e(b)
-    return r, g, b, P.layout(canvas_w=CANVAS_WIDTH, canvas_h=CANVAS_HEIGHT)
+    return P.layout_metallic_rectangles(canvas_h=CANVAS_HEIGHT, canvas_w=CANVAS_WIDTH)
 
 
 if __name__ == "__main__":

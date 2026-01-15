@@ -1,118 +1,29 @@
-"""
-どこで: `sketch/presets/layout.py`。
-何を: レイアウト検討用のガイド（余白/グリッド/比率/カラム/ベースライン等）を生成する preset。
-なぜ: 構図の当たり付けとタイポグリッドの初期検討を、同一呼び出しで重ねられるようにするため。
-"""
+# どこで: `sketch/presets/layout/common.py`。
+# 何を: layout 系 preset の共通ユーティリティ（rect 計算 / 線生成 / 分割アルゴリズム）。
+# なぜ: composable なガイド preset 群で重複を避けるため。
 
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Mapping
 import math
-from typing import Any
 
-from grafix import G, preset, run
+from grafix import G
 
 CANVAS_SIZE = (148, 210)  # A5 (mm)
 
 _GOLDEN_F = (math.sqrt(5.0) - 1.0) / 2.0  # 0.618...
 _GOLDEN_T = 1.0 - _GOLDEN_F  # 0.382...
 
-meta = {
+META_COMMON = {
     "canvas_w": {"kind": "float", "ui_min": 10.0, "ui_max": 1000.0},
     "canvas_h": {"kind": "float", "ui_min": 10.0, "ui_max": 1000.0},
-    "base": {
-        "kind": "choice",
-        "choices": [
-            "none",
-            "square",
-            "ratio_lines",
-            "metallic_rectangles",
-            "columns",
-            "modular",
-        ],
-    },
-    "cell_size": {"kind": "float", "ui_min": 1.0, "ui_max": 50.0},
-    "ratio": {"kind": "float", "ui_min": 1.01, "ui_max": 10.0},
-    "metallic_n": {"kind": "int", "ui_min": 1, "ui_max": 12},
-    "levels": {"kind": "int", "ui_min": 1, "ui_max": 8},
     "axes": {"kind": "choice", "choices": ["both", "vertical", "horizontal"]},
-    "border": {"kind": "bool"},
     "margin_l": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
     "margin_r": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
     "margin_t": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
     "margin_b": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
-    "use_safe_area": {"kind": "bool"},
-    "show_margin": {"kind": "bool"},
-    "trim": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
-    "show_trim": {"kind": "bool"},
-    "cols": {"kind": "int", "ui_min": 1, "ui_max": 24},
-    "rows": {"kind": "int", "ui_min": 1, "ui_max": 24},
-    "gutter_x": {"kind": "float", "ui_min": 0.0, "ui_max": 50.0},
-    "gutter_y": {"kind": "float", "ui_min": 0.0, "ui_max": 50.0},
-    "show_column_centers": {"kind": "bool"},
-    "show_baseline": {"kind": "bool"},
-    "baseline_step": {"kind": "float", "ui_min": 0.1, "ui_max": 50.0},
-    "baseline_offset": {"kind": "float", "ui_min": -50.0, "ui_max": 50.0},
     "show_center": {"kind": "bool"},
-    "show_thirds": {"kind": "bool"},
-    "show_golden": {"kind": "bool"},
-    "show_diagonals": {"kind": "bool"},
-    "show_intersections": {"kind": "bool"},
-    "mark_size": {"kind": "float", "ui_min": 0.1, "ui_max": 20.0},
-    "min_spacing": {"kind": "float", "ui_min": 0.0, "ui_max": 20.0},
-    "max_lines": {"kind": "int", "ui_min": 0, "ui_max": 20000},
-    "corner": {"kind": "choice", "choices": ["tl", "tr", "br", "bl"]},
-    "clockwise": {"kind": "bool"},
     "offset": {"kind": "vec3", "ui_min": -50.0, "ui_max": 50.0},
-}
-
-
-def _base_is(name: str):
-    def _pred(v: Mapping[str, Any]) -> bool:
-        return str(v.get("base", "")) == str(name)
-
-    return _pred
-
-
-def _base_in(*names: str):
-    allowed = {str(n) for n in names}
-
-    def _pred(v: Mapping[str, Any]) -> bool:
-        return str(v.get("base", "")) in allowed
-
-    return _pred
-
-
-def _any_true(*keys: str):
-    def _pred(v: Mapping[str, Any]) -> bool:
-        return any(bool(v.get(k)) for k in keys)
-
-    return _pred
-
-
-UI_VISIBLE = {
-    "cell_size": _base_is("square"),
-    "ratio": _base_is("ratio_lines"),
-    "levels": _base_in("ratio_lines", "metallic_rectangles"),
-    "min_spacing": _base_is("ratio_lines"),
-    "max_lines": _base_is("ratio_lines"),
-    "metallic_n": _base_is("metallic_rectangles"),
-    "corner": _base_is("metallic_rectangles"),
-    "clockwise": _base_is("metallic_rectangles"),
-    "cols": _base_in("columns", "modular"),
-    "gutter_x": _base_in("columns", "modular"),
-    "show_column_centers": _base_in("columns", "modular"),
-    "rows": _base_is("modular"),
-    "gutter_y": _base_is("modular"),
-    "baseline_step": _any_true("show_baseline"),
-    "baseline_offset": _any_true("show_baseline"),
-    "trim": _any_true("show_trim"),
-    "mark_size": _any_true("show_intersections"),
-    "margin_l": _any_true("use_safe_area", "show_margin"),
-    "margin_r": _any_true("use_safe_area", "show_margin"),
-    "margin_t": _any_true("use_safe_area", "show_margin"),
-    "margin_b": _any_true("use_safe_area", "show_margin"),
 }
 
 
@@ -152,14 +63,6 @@ def _line_between(*, x0: float, y0: float, x1: float, y1: float, z: float) -> ob
     )
 
 
-def _metallic_mean(n: int) -> float:
-    """貴金属比（metallic mean）を返す。"""
-    n = int(n)
-    if n < 1:
-        n = 1
-    return 0.5 * (float(n) + math.sqrt(float(n) * float(n) + 4.0))
-
-
 def _concat(geoms: list[object]) -> object:
     if not geoms:
         raise ValueError("空の Geometry 連結はできません")
@@ -167,6 +70,35 @@ def _concat(geoms: list[object]) -> object:
     for g in geoms[1:]:
         out = out + g
     return out
+
+
+def _empty_geometry(*, offset: tuple[float, float, float]) -> object:
+    ox, oy, oz = offset
+    return G.line(center=(float(ox), float(oy), float(oz)), length=0.0, angle=0.0)
+
+
+def _finish(*, geoms: list[object], offset: tuple[float, float, float]) -> object:
+    if not geoms:
+        return _empty_geometry(offset=offset)
+    return _concat(geoms)
+
+
+def _has_margin(
+    *,
+    margin_l: float,
+    margin_r: float,
+    margin_t: float,
+    margin_b: float,
+) -> bool:
+    return any(
+        float(v) != 0.0
+        for v in (
+            margin_l,
+            margin_r,
+            margin_t,
+            margin_b,
+        )
+    )
 
 
 def _rect_from_canvas(
@@ -186,16 +118,16 @@ def _rect_from_canvas(
 def _inset_rect(
     rect: tuple[float, float, float, float],
     *,
-    l: float,
-    r: float,
-    t: float,
-    b: float,
+    left: float,
+    right: float,
+    top: float,
+    bottom: float,
 ) -> tuple[float, float, float, float]:
     x0, y0, x1, y1 = rect
-    x0 = float(x0) + float(l)
-    x1 = float(x1) - float(r)
-    y0 = float(y0) + float(t)
-    y1 = float(y1) - float(b)
+    x0 = float(x0) + float(left)
+    x1 = float(x1) - float(right)
+    y0 = float(y0) + float(top)
+    y1 = float(y1) - float(bottom)
     if x1 < x0:
         mid = 0.5 * (x0 + x1)
         x0 = mid
@@ -222,6 +154,24 @@ def _rect_outline(
     if show_v:
         out.append(_v_line(x=x0, y0=y0, y1=y1, z=z))
         out.append(_v_line(x=x1, y0=y0, y1=y1, z=z))
+    return out
+
+
+def _center_lines(
+    rect: tuple[float, float, float, float],
+    *,
+    axes: str,
+    z: float,
+) -> list[object]:
+    x0, y0, x1, y1 = rect
+    show_v, show_h = _axes_flags(axes)
+    w = float(x1 - x0)
+    h = float(y1 - y0)
+    out: list[object] = []
+    if show_v:
+        out.append(_v_line(x=float(x0) + 0.5 * w, y0=y0, y1=y1, z=z))
+    if show_h:
+        out.append(_h_line(y=float(y0) + 0.5 * h, x0=x0, x1=x1, z=z))
     return out
 
 
@@ -361,6 +311,14 @@ def _ratio_lines(
     return out
 
 
+def _metallic_mean(n: int) -> float:
+    """貴金属比（metallic mean）を返す。"""
+    n = int(n)
+    if n < 1:
+        n = 1
+    return 0.5 * (float(n) + math.sqrt(float(n) * float(n) + 4.0))
+
+
 def _fit_rect(*, w: float, h: float, ratio: float) -> tuple[float, float]:
     w = float(w)
     h = float(h)
@@ -384,7 +342,6 @@ def _fit_rect(*, w: float, h: float, ratio: float) -> tuple[float, float]:
         return cand1
     if ok2:
         return cand2
-    # ここには来ない想定だが、念のため。
     return (min(w, cand2[0]), min(h, cand1[1]))
 
 
@@ -416,8 +373,6 @@ def _metallic_rectangles(
         return []
 
     # 内接する比率矩形を corner にアンカーする（余白は corner と反対側へ出る）。
-    cw = float(canvas_w)
-    ch = float(canvas_h)
     rw = float(rect_w)
     rh = float(rect_h)
     if corner == "tl":
@@ -649,270 +604,53 @@ def _cross_mark(*, x: float, y: float, size: float, z: float) -> list[object]:
     ]
 
 
-@preset(meta=meta, ui_visible=UI_VISIBLE)
-def layout(
+def _golden_lines(
+    rect: tuple[float, float, float, float],
     *,
-    canvas_w: float = float(CANVAS_SIZE[0]),
-    canvas_h: float = float(CANVAS_SIZE[1]),
-    base: str = "square",
-    cell_size: float = 10.0,
-    ratio: float = 1.61803398875,
-    metallic_n: int = 1,
-    levels: int = 2,
-    axes: str = "both",
-    border: bool = False,
-    margin_l: float = 0.0,
-    margin_r: float = 0.0,
-    margin_t: float = 0.0,
-    margin_b: float = 0.0,
-    use_safe_area: bool = False,
-    show_margin: bool = False,
-    trim: float = 0.0,
-    show_trim: bool = False,
-    cols: int = 12,
-    rows: int = 12,
-    gutter_x: float = 4.0,
-    gutter_y: float = 4.0,
-    show_column_centers: bool = False,
-    show_baseline: bool = False,
-    baseline_step: float = 6.0,
-    baseline_offset: float = 0.0,
-    show_center: bool = False,
-    show_thirds: bool = False,
-    show_golden: bool = False,
-    show_diagonals: bool = False,
-    show_intersections: bool = False,
-    mark_size: float = 2.0,
-    min_spacing: float = 2.0,
-    max_lines: int = 3000,
-    corner: str = "tl",
-    clockwise: bool = True,
-    offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
-):
-    """レイアウト検討用のガイドを生成する。
-
-    Parameters
-    ----------
-    canvas_w : float
-        キャンバス幅（world 単位）。
-    canvas_h : float
-        キャンバス高さ（world 単位）。
-    base : str
-        主ガイドの種類。
-
-        - `"none"`: 主ガイドなし（overlay のみ）
-        - `"square"`: 正方形グリッド
-        - `"ratio_lines"`: 比率分割線（levels 段）
-        - `"metallic_rectangles"`: 貴金属比の矩形分割（正方形タイル境界）
-        - `"columns"`: カラム + ガター
-        - `"modular"`: モジュラーグリッド（行×列 + ガター）
-    cell_size : float
-        正方形グリッドのセルサイズ（ワールド単位）。
-    ratio : float
-        `"ratio_lines"` の分割比率（1 より大きい値）。
-    metallic_n : int
-        貴金属比の n。
-        `n=1` で黄金比、`n=2` で銀比、`n=3` で青銅比。
-    levels : int
-        段数（細かさ）。大きいほど線が増える。
-    axes : str
-        `"both" | "vertical" | "horizontal"`。
-    border : bool
-        True の場合、キャンバス外枠（axes に応じた辺）を描く。
-    margin_l, margin_r, margin_t, margin_b : float
-        余白（safe area）の内側オフセット。
-    use_safe_area : bool
-        True の場合、主ガイドと overlay を safe area 内へ制限する。
-    show_margin : bool
-        True の場合、safe area の外周を描く。
-    trim : float
-        仕上がり（trim）線の内側オフセット（均等）。
-    show_trim : bool
-        True の場合、trim の外周を描く。
-    cols, rows : int
-        `"columns"` / `"modular"` の分割数。
-    gutter_x, gutter_y : float
-        `"columns"` / `"modular"` のガター幅。
-    show_column_centers : bool
-        True の場合、各カラム中心線を追加で描く。
-    show_baseline : bool
-        True の場合、ベースライングリッドを追加で描く。
-    baseline_step : float
-        ベースラインの間隔。
-    baseline_offset : float
-        safe area（または canvas）の上端からのオフセット。
-    show_center, show_thirds, show_golden, show_diagonals : bool
-        定番 overlay の表示切り替え。
-    show_intersections : bool
-        True の場合、overlay の交点へマーカーを描く。
-    mark_size : float
-        交点マーカーのサイズ。
-    min_spacing : float
-        `"ratio_lines"` の最小線間隔（これ未満は間引く）。
-    max_lines : int
-        `"ratio_lines"` の線数上限（片軸あたり）。
-    corner : str
-        `"tl" | "tr" | "br" | "bl"`。
-        `"metallic_rectangles"` の開始角に影響する。
-    clockwise : bool
-        `"metallic_rectangles"` の分割回り順。
-    offset : tuple[float, float, float]
-        全ガイドの平行移動量（x, y, z）。
-
-    Returns
-    -------
-    Geometry
-        ガイド線の Geometry。
-    """
-    axes = str(axes)
-    base = str(base)
-    ox, oy, oz = offset
-    z = float(oz)
-
-    out: list[object] = []
-
-    if bool(border):
-        canvas_rect = _rect_from_canvas(canvas_w=canvas_w, canvas_h=canvas_h, offset=offset)
-        out.extend(_rect_outline(canvas_rect, axes=axes, z=z))
-    else:
-        canvas_rect = _rect_from_canvas(canvas_w=canvas_w, canvas_h=canvas_h, offset=offset)
-
-    safe_rect = _inset_rect(
-        canvas_rect,
-        l=margin_l,
-        r=margin_r,
-        t=margin_t,
-        b=margin_b,
-    )
-    if bool(show_margin):
-        out.extend(_rect_outline(safe_rect, axes=axes, z=z))
-
-    trim_rect = _inset_rect(canvas_rect, l=trim, r=trim, t=trim, b=trim)
-    if bool(show_trim):
-        out.extend(_rect_outline(trim_rect, axes=axes, z=z))
-
-    target_rect = safe_rect if bool(use_safe_area) else canvas_rect
-
-    if base == "none":
-        pass
-    elif base == "square":
-        out.extend(_square_grid(target_rect, cell_size=cell_size, axes=axes, z=z))
-    elif base == "ratio_lines":
-        out.extend(
-            _ratio_lines(
-                rect=target_rect,
-                ratio=ratio,
-                levels=int(levels),
-                axes=axes,
-                z=z,
-                min_spacing=min_spacing,
-                max_lines=int(max_lines),
-            )
-        )
-    elif base == "metallic_rectangles":
-        out.extend(
-            _metallic_rectangles(
-                rect=target_rect,
-                metallic_n=int(metallic_n),
-                levels=int(levels),
-                axes=axes,
-                corner=str(corner),
-                clockwise=bool(clockwise),
-                z=z,
-            )
-        )
-    elif base == "columns":
-        out.extend(
-            _columns(
-                target_rect,
-                cols=int(cols),
-                gutter_x=gutter_x,
-                axes=axes,
-                show_centers=bool(show_column_centers),
-                z=z,
-            )
-        )
-    elif base == "modular":
-        out.extend(
-            _modular(
-                target_rect,
-                cols=int(cols),
-                rows=int(rows),
-                gutter_x=gutter_x,
-                gutter_y=gutter_y,
-                axes=axes,
-                show_column_centers=bool(show_column_centers),
-                z=z,
-            )
-        )
-    else:
-        raise ValueError(f"未対応の base です: {base!r}")
-
-    if bool(show_baseline):
-        out.extend(
-            _baseline(
-                target_rect,
-                baseline_step=baseline_step,
-                baseline_offset=baseline_offset,
-                axes=axes,
-                z=z,
-            )
-        )
-
+    axes: str,
+    z: float,
+) -> list[object]:
+    x0, y0, x1, y1 = rect
     show_v, show_h = _axes_flags(axes)
-    x0, y0, x1, y1 = target_rect
     w = float(x1 - x0)
     h = float(y1 - y0)
-
-    overlay_xs: list[float] = []
-    overlay_ys: list[float] = []
-
-    if bool(show_center):
-        if show_v:
-            overlay_xs.append(float(x0) + 0.5 * w)
-        if show_h:
-            overlay_ys.append(float(y0) + 0.5 * h)
-    if bool(show_thirds):
-        if show_v:
-            overlay_xs.extend([float(x0) + w / 3.0, float(x0) + 2.0 * w / 3.0])
-        if show_h:
-            overlay_ys.extend([float(y0) + h / 3.0, float(y0) + 2.0 * h / 3.0])
-    if bool(show_golden):
-        if show_v:
-            overlay_xs.extend([float(x0) + _GOLDEN_T * w, float(x0) + _GOLDEN_F * w])
-        if show_h:
-            overlay_ys.extend([float(y0) + _GOLDEN_T * h, float(y0) + _GOLDEN_F * h])
-
-    for xv in overlay_xs:
-        out.append(_v_line(x=xv, y0=y0, y1=y1, z=z))
-    for yv in overlay_ys:
-        out.append(_h_line(y=yv, x0=x0, x1=x1, z=z))
-
-    if bool(show_diagonals):
-        out.append(_line_between(x0=x0, y0=y0, x1=x1, y1=y1, z=z))
-        out.append(_line_between(x0=x0, y0=y1, x1=x1, y1=y0, z=z))
-
-    if bool(show_intersections) and overlay_xs and overlay_ys:
-        xs = sorted(set(float(x) for x in overlay_xs))
-        ys = sorted(set(float(y) for y in overlay_ys))
-        for xv in xs:
-            for yv in ys:
-                out.extend(_cross_mark(x=xv, y=yv, size=mark_size, z=z))
-
-    if not out:
-        return G.line(center=(float(ox), float(oy), float(z)), length=0.0, angle=0.0)
-    return _concat(out)
+    out: list[object] = []
+    if show_v:
+        out.append(_v_line(x=float(x0) + _GOLDEN_T * w, y0=y0, y1=y1, z=z))
+        out.append(_v_line(x=float(x0) + _GOLDEN_F * w, y0=y0, y1=y1, z=z))
+    if show_h:
+        out.append(_h_line(y=float(y0) + _GOLDEN_T * h, x0=x0, x1=x1, z=z))
+        out.append(_h_line(y=float(y0) + _GOLDEN_F * h, x0=x0, x1=x1, z=z))
+    return out
 
 
-def draw(t: float):
-    return layout(canvas_w=float(CANVAS_SIZE[0]), canvas_h=float(CANVAS_SIZE[1]))
+def _thirds_lines(
+    rect: tuple[float, float, float, float],
+    *,
+    axes: str,
+    z: float,
+) -> list[object]:
+    x0, y0, x1, y1 = rect
+    show_v, show_h = _axes_flags(axes)
+    w = float(x1 - x0)
+    h = float(y1 - y0)
+    out: list[object] = []
+    if show_v:
+        out.append(_v_line(x=float(x0) + w / 3.0, y0=y0, y1=y1, z=z))
+        out.append(_v_line(x=float(x0) + 2.0 * w / 3.0, y0=y0, y1=y1, z=z))
+    if show_h:
+        out.append(_h_line(y=float(y0) + h / 3.0, x0=x0, x1=x1, z=z))
+        out.append(_h_line(y=float(y0) + 2.0 * h / 3.0, x0=x0, x1=x1, z=z))
+    return out
 
 
-if __name__ == "__main__":
-    run(
-        draw,
-        canvas_size=CANVAS_SIZE,
-        render_scale=8,
-        midi_port_name="Grid",
-        midi_mode="14bit",
-    )
+def _diagonals(
+    rect: tuple[float, float, float, float],
+    *,
+    z: float,
+) -> list[object]:
+    x0, y0, x1, y1 = rect
+    return [
+        _line_between(x0=x0, y0=y0, x1=x1, y1=y1, z=z),
+        _line_between(x0=x0, y0=y1, x1=x1, y1=y0, z=z),
+    ]
