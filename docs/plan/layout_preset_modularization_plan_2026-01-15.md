@@ -13,6 +13,7 @@
 
 ## 0) 事前に決める（あなたの確認が必要）
 
+- 決定: `use_safe_area` は **削除**する（`margin_* = 0` で「safe area を使わない」のと同義になるため）
 - [ ] `P.layout(...)`（現行）を **削除**して置き換える（破壊的変更）でよい？；OK
   - [ ] それとも `layout.py` は残して「最小の束ね役」にする？（ただし “互換シム” にはしない）
 - [ ] 分解単位（preset 群）は以下でよい？;OK
@@ -24,7 +25,6 @@
   - [ ] `canvas_w`, `canvas_h`
   - [ ] `axes`（`"both" | "vertical" | "horizontal"`）
   - [ ] `margin_l`, `margin_r`, `margin_t`, `margin_b`
-  - [ ] `use_safe_area`（True なら safe rect を target にする）
   - [ ] `offset`（vec3）
   - [ ] `show_center`（True なら target rect の中心線を足す）
 - [ ] `margin_*` は現状どおり **4 辺別**で維持でよい？（単一 `margin` に簡略化しない）；はい
@@ -67,7 +67,7 @@ g = (
 
 - `canvas_rect = rect_from_canvas(canvas_w, canvas_h, offset)`
 - `safe_rect = inset_rect(canvas_rect, margin_l, margin_r, margin_t, margin_b)`
-- `target_rect = safe_rect if use_safe_area else canvas_rect`
+- `target_rect = safe_rect`（`margin_* = 0` なら `safe_rect == canvas_rect`）
 - `show_center=True` の場合、`target_rect` の中心線を（`axes` に応じて）追加する
 
 ### モジュール案（最低 3 つ）
