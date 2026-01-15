@@ -2,6 +2,28 @@
 # 何を: `draw(t)` が返すシーンを描画ウィンドウへ描画するサブシステムを提供する。
 # なぜ: `src/grafix/api/runner.py` の `run()` を「配線」に寄せ、描画責務を独立させるため。
 
+"""
+描画ウィンドウ（pyglet + ModernGL）に対して、1 フレームの「入力 → scene 実行 → GL 描画 →
+書き出し/録画」を束ねるサブシステム。
+
+このモジュールは interactive ランタイムの中でも副作用が多い（window / GL / ファイル I/O /
+別プロセス）ため、責務を `DrawWindowSystem` に寄せ、`runner.run()` は配線だけにする。
+
+読む順番（主要な入口）
+----------------------
+1. `DrawWindowSystem.__init__()` : window/renderer と各種サブシステムの組み立て
+2. `DrawWindowSystem.draw_frame()` : 1 フレーム分の処理（※ flip は呼ばない）
+3. `DrawWindowSystem.close()` : teardown（GL コンテキストが生きているうちに release する）
+
+副作用の一覧（把握しておくと読みやすい）
+--------------------------------------
+- ウィンドウ生成: `create_draw_window()`（pyglet）
+- GPU 描画: `DrawRenderer`（ModernGL）
+- ファイル書き出し: SVG / PNG / G-code / 動画
+- 別プロセス: G-code export を mp.Process + mp.Queue で非同期化
+- 標準出力: 保存完了などの通知を `print()` で出す（ログではなく軽い UI フィードバック）
+"""
+
 from __future__ import annotations
 
 import logging
@@ -49,6 +71,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class _GCodeExportResult:
+    """G-code export の結果（子プロセス → 親プロセス）を表すメッセージ。"""
+
     path: str
     error: str | None
 
@@ -59,6 +83,14 @@ def _gcode_export_worker_main(
     output_path: Path,
     canvas_size: tuple[int, int],
 ) -> None:
+    """子プロセス側: 全レイヤを 1 つの G-code として書き出す。
+
+    Notes
+    -----
+    - 子プロセス内での例外は親へそのまま伝搬できないため、traceback を文字列化して Queue に返す。
+    - 親側は `_poll_gcode_export_results()` で結果を回収し、print/log で通知する。
+    """
+
     try:
         export_gcode(layers, output_path, canvas_size=canvas_size)
         result_q.put(_GCodeExportResult(path=str(output_path), error=None))
@@ -74,6 +106,8 @@ def _gcode_export_layers_worker_main(
     *,
     max_layer_name_len: int = 32,
 ) -> None:
+    """子プロセス側: レイヤごとに分割して G-code を書き出す。"""
+
     for i, layer in enumerate(layers, start=1):
         output_path = gcode_layer_output_path(
             base_output_path,
@@ -92,7 +126,22 @@ def _gcode_export_layers_worker_main(
 
 
 class DrawWindowSystem:
-    """描画（メインウィンドウ）のサブシステム。"""
+    """描画（メインウィンドウ）のサブシステム。
+
+    `draw(t)`（ユーザーのコールバック）を `SceneRunner` 経由で評価し、
+    得られた `RealizedLayer` 群を `DrawRenderer` で描画する。
+
+    追加で面倒を見るもの（フレームループの横にぶら下がる副作用）
+    --------------------------------------------------------
+    - キー入力による書き出し:
+      - `S`: SVG 保存（同期）
+      - `P`: PNG 保存（フレーム末尾で SVG→PNG の順に実行）
+      - `G`: G-code 保存（非同期: 別プロセス）
+      - `Shift+G`: G-code をレイヤ別に保存（非同期: 別プロセス）
+      - `V`: 動画録画の開始/停止
+    - MIDI: 毎フレーム CC を取り込み（未接続時は frozen snapshot を使う）
+    - style: ParamStore から背景色/線幅/線色を解決して反映する
+    """
 
     def __init__(
         self,
@@ -108,7 +157,15 @@ class DrawWindowSystem:
         n_worker: int = 0,
         run_id: str | None = None,
     ) -> None:
-        """描画用の window/renderer を初期化する。"""
+        """描画用の window/renderer と各種状態を初期化する。
+
+        初期化で行うこと
+        --------------
+        - pyglet window 作成 + `DrawRenderer` の初期化（GL コンテキストに紐づく）
+        - export 先パスの決定（SVG/G-code/PNG/動画）
+        - 録画・G-code export 用の状態変数/Queue/Process 管理の用意
+        - `draw(t)` に渡す `t` の基準となる clock の開始
+        """
 
         # 設定/既定スタイル/draw 関数/ParamStore は 1 フレームごとに参照するため保持しておく。
         self._settings = settings
@@ -156,6 +213,12 @@ class DrawWindowSystem:
         self._scene_runner = SceneRunner(draw, perf=self._perf, n_worker=int(n_worker))
 
     def _on_key_press(self, symbol: int, modifiers: int) -> None:
+        """キーボードショートカットのハンドラ。
+
+        重い処理（PNG/G-code の書き出し）は、イベントコールバック内で実行せず
+        フラグを立てて `draw_frame()` 側で処理する（イベント処理を詰まらせないため）。
+        """
+
         if symbol == key.S:
             path = self.save_svg()
             print(f"Saved SVG: {path}")
@@ -212,6 +275,11 @@ class DrawWindowSystem:
         return out
 
     def _poll_gcode_export_results(self) -> None:
+        """G-code export 子プロセスの結果を回収し、プロセスを reap する。"""
+
+        # Queue を空になるまで drain する。
+        # ここで詰まると「保存は終わっているが通知されない」状態が続くため、
+        # 毎フレーム冒頭で軽く回しておく。
         while True:
             try:
                 res = self._gcode_export_q.get_nowait()
@@ -225,6 +293,8 @@ class DrawWindowSystem:
 
         proc = self._gcode_export_proc
         if proc is not None and not proc.is_alive():
+            # 既に終了している場合は join しておき、参照を外す。
+            # join で例外が出ても（終了済み/終了途中など）描画ループは継続する。
             try:
                 proc.join(timeout=0.0)
             except Exception:
@@ -232,6 +302,9 @@ class DrawWindowSystem:
             self._gcode_export_proc = None
 
     def _start_gcode_export(self, *, mode: str) -> None:
+        """最後に描画したフレームを G-code として非同期保存する。"""
+
+        # 同時に複数の export を走らせない（出力先の衝突と、プロセス増殖の回避）。
         proc = self._gcode_export_proc
         if proc is not None and proc.is_alive():
             print("G-code export is already running")
@@ -247,6 +320,7 @@ class DrawWindowSystem:
         output_path = self._gcode_output_path
         canvas_size = self._settings.canvas_size
 
+        # mode はキー入力から来るため、念のため正規化して扱う。
         mode_norm = str(mode).strip().lower()
         if mode_norm == "layers":
             if layers:
@@ -267,6 +341,8 @@ class DrawWindowSystem:
             )
             export_proc.start()
         except Exception:
+            # mp.Process の生成/起動は OS 状態や Python の事情（終了処理中など）で失敗し得る。
+            # ここで落ちると「描画が止まる」ほうが痛いので、同期保存へフォールバックする。
             _logger.exception("Failed to start G-code export process (fallback to sync)")
             try:
                 if mode_norm == "all":
@@ -296,6 +372,12 @@ class DrawWindowSystem:
         self._recording.stop()
 
     def _framebuffer_size(self) -> tuple[int, int]:
+        """現在の framebuffer の実ピクセル寸法を返す。
+
+        環境によっては（HiDPI など）`window.width/height` と framebuffer 実寸が一致しないため、
+        可能なら pyglet の `get_framebuffer_size()` を使う。
+        """
+
         getter = getattr(self.window, "get_framebuffer_size", None)
         if callable(getter):
             get_framebuffer_size = cast(Callable[[], tuple[int, int]], getter)
@@ -308,6 +390,9 @@ class DrawWindowSystem:
 
         perf = self._perf
         with perf.frame():
+            # --- 0) フレーム冒頭での軽い housekeeping ---
+            # - 非同期 G-code export の通知回収
+            # - 「次のフレームで保存する」系フラグの処理（キー入力 → draw_frame へ委譲）
             self._poll_gcode_export_results()
             pending_mode = self._pending_gcode_save_mode
             if pending_mode is not None:
@@ -387,11 +472,14 @@ class DrawWindowSystem:
 
             if recording:
                 with perf.section("video"):
+                    # GPU からの readback が入るため、perf では明示セクションに分ける。
                     self._recording.write_frame(self._renderer.ctx.screen)
 
             if self._pending_png_save:
                 self._pending_png_save = False
                 try:
+                    # PNG は「現在のフレーム」を保存したいので、
+                    # 描画後（realized_layers/style が揃った後）に保存を実行する。
                     svg_path = self.save_svg()
                     png_path = rasterize_svg_to_png(
                         svg_path,
@@ -411,6 +499,8 @@ class DrawWindowSystem:
     def close(self) -> None:
         """GPU / window 資源を解放する。"""
 
+        # --- G-code export ---
+        # export は別プロセスなので、close では「短時間待つ → だめなら terminate」を選ぶ。
         self._poll_gcode_export_results()
         proc = self._gcode_export_proc
         if proc is not None and proc.is_alive():
@@ -435,12 +525,15 @@ class DrawWindowSystem:
 
         self._gcode_export_proc = None
 
+        # --- 録画 ---
         if self._recording.is_recording:
             try:
                 self.stop_video_recording()
             except Exception:
                 _logger.exception("Failed to stop video recording")
 
+        # --- MIDI ---
+        # MIDI controller はこのサブシステムが所有しているので、保存と close まで面倒を見る。
         midi = self._midi_controller
         self._midi_controller = None
         if midi is not None:
@@ -451,6 +544,7 @@ class DrawWindowSystem:
             finally:
                 midi.close()
 
+        # --- mp-draw worker / scene 実行器 ---
         self._scene_runner.close()
 
         # renderer が保持している GPU リソースを破棄してから window を閉じる。
