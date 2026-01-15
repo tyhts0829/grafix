@@ -1,9 +1,9 @@
 ---
-name: python-detailed-commenting
+name: comment-detailed
 description: Pythonファイルの挙動を理解するために、挙動を変えずに解説コメントとdocstringを追加する。ユーザーが「XXX.pyについて、動作を理解したいから細かくコメント入れて」「挙動は変えずにコメントを足して」「このPythonファイルに解説を入れて」などと言ったときに使う。
 ---
 
-# Python Detailed Commenting
+# Comment detailed
 
 ## 目的
 
