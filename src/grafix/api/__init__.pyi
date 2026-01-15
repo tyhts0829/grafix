@@ -776,48 +776,181 @@ class _P(Protocol):
             displace_frequency: vec3, range [0.0, 0.5]
         """
         ...
-    def layout(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., base: str = ..., cell_size: float = ..., ratio: float = ..., metallic_n: int = ..., levels: int = ..., axes: str = ..., border: bool = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., use_safe_area: bool = ..., show_margin: bool = ..., trim: float = ..., show_trim: bool = ..., cols: int = ..., rows: int = ..., gutter_x: float = ..., gutter_y: float = ..., show_column_centers: bool = ..., show_baseline: bool = ..., baseline_step: float = ..., baseline_offset: float = ..., show_center: bool = ..., show_thirds: bool = ..., show_golden: bool = ..., show_diagonals: bool = ..., show_intersections: bool = ..., mark_size: float = ..., min_spacing: float = ..., max_lines: int = ..., corner: str = ..., clockwise: bool = ..., offset: Vec3 = ...) -> Any:
+    def layout_bounds(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., border: bool = ..., show_margin: bool = ..., trim: float = ..., show_trim: bool = ..., offset: Vec3 = ...) -> Any:
         """
-        レイアウト検討用のガイドを生成する。
+        外枠（canvas / safe / trim）を描く。
 
         引数:
             bypass: bool
-            canvas_w: キャンバス幅（world 単位）
-            canvas_h: キャンバス高さ（world 単位）
-            base: 主ガイドの種類
-            cell_size: 正方形グリッドのセルサイズ（ワールド単位）
-            ratio: `"ratio_lines"` の分割比率（1 より大きい値）
-            metallic_n: 貴金属比の n
-            levels: 段数（細かさ）
-            axes: `"both" | "vertical" | "horizontal"`
-            border: True の場合、キャンバス外枠（axes に応じた辺）を描く
+            canvas_w: float, range [10.0, 1000.0]
+            canvas_h: float, range [10.0, 1000.0]
+            axes: choice, choices { 'both', 'vertical', 'horizontal' }
             margin_l: float, range [0.0, 100.0]
             margin_r: float, range [0.0, 100.0]
             margin_t: float, range [0.0, 100.0]
             margin_b: float, range [0.0, 100.0]
-            use_safe_area: True の場合、主ガイドと overlay を safe area 内へ制限する
-            show_margin: True の場合、safe area の外周を描く
-            trim: 仕上がり（trim）線の内側オフセット（均等）
-            show_trim: True の場合、trim の外周を描く
+            show_center: bool
+            border: bool
+            show_margin: bool
+            trim: float, range [0.0, 100.0]
+            show_trim: bool
+            offset: vec3, range [-50.0, 50.0]
+        """
+        ...
+    def layout_diagonals(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., offset: Vec3 = ...) -> Any:
+        """
+        対角線ガイドを描く。
+
+        引数:
+            bypass: bool
+            canvas_w: float, range [10.0, 1000.0]
+            canvas_h: float, range [10.0, 1000.0]
+            axes: choice, choices { 'both', 'vertical', 'horizontal' }
+            margin_l: float, range [0.0, 100.0]
+            margin_r: float, range [0.0, 100.0]
+            margin_t: float, range [0.0, 100.0]
+            margin_b: float, range [0.0, 100.0]
+            show_center: bool
+            offset: vec3, range [-50.0, 50.0]
+        """
+        ...
+    def layout_golden_ratio(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., offset: Vec3 = ...) -> Any:
+        """
+        黄金比ガイド線を描く。
+
+        引数:
+            bypass: bool
+            canvas_w: float, range [10.0, 1000.0]
+            canvas_h: float, range [10.0, 1000.0]
+            axes: choice, choices { 'both', 'vertical', 'horizontal' }
+            margin_l: float, range [0.0, 100.0]
+            margin_r: float, range [0.0, 100.0]
+            margin_t: float, range [0.0, 100.0]
+            margin_b: float, range [0.0, 100.0]
+            show_center: bool
+            offset: vec3, range [-50.0, 50.0]
+        """
+        ...
+    def layout_grid_system(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., cols: int = ..., rows: int = ..., gutter_x: float = ..., gutter_y: float = ..., show_column_centers: bool = ..., show_baseline: bool = ..., baseline_step: float = ..., baseline_offset: float = ..., offset: Vec3 = ...) -> Any:
+        """
+        grid system（columns / modular / baseline）を描く。
+
+        引数:
+            bypass: bool
+            canvas_w: float, range [10.0, 1000.0]
+            canvas_h: float, range [10.0, 1000.0]
+            axes: choice, choices { 'both', 'vertical', 'horizontal' }
+            margin_l: float, range [0.0, 100.0]
+            margin_r: float, range [0.0, 100.0]
+            margin_t: float, range [0.0, 100.0]
+            margin_b: float, range [0.0, 100.0]
+            show_center: bool
             cols: int, range [1, 24]
             rows: int, range [1, 24]
             gutter_x: float, range [0.0, 50.0]
             gutter_y: float, range [0.0, 50.0]
-            show_column_centers: True の場合、各カラム中心線を追加で描く
-            show_baseline: True の場合、ベースライングリッドを追加で描く
-            baseline_step: ベースラインの間隔
-            baseline_offset: safe area（または canvas）の上端からのオフセット
+            show_column_centers: bool
+            show_baseline: bool
+            baseline_step: float, range [0.1, 50.0]
+            baseline_offset: float, range [-50.0, 50.0]
+            offset: vec3, range [-50.0, 50.0]
+        """
+        ...
+    def layout_intersections(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., show_thirds: bool = ..., show_golden: bool = ..., mark_size: float = ..., offset: Vec3 = ...) -> Any:
+        """
+        定番 overlay の交点へマーカーを描く。
+
+        引数:
+            bypass: bool
+            canvas_w: float, range [10.0, 1000.0]
+            canvas_h: float, range [10.0, 1000.0]
+            axes: choice, choices { 'both', 'vertical', 'horizontal' }
+            margin_l: float, range [0.0, 100.0]
+            margin_r: float, range [0.0, 100.0]
+            margin_t: float, range [0.0, 100.0]
+            margin_b: float, range [0.0, 100.0]
             show_center: bool
             show_thirds: bool
             show_golden: bool
-            show_diagonals: bool
-            show_intersections: True の場合、overlay の交点へマーカーを描く
-            mark_size: 交点マーカーのサイズ
-            min_spacing: `"ratio_lines"` の最小線間隔（これ未満は間引く）
-            max_lines: `"ratio_lines"` の線数上限（片軸あたり）
-            corner: `"tl" | "tr" | "br" | "bl"`
-            clockwise: `"metallic_rectangles"` の分割回り順
-            offset: 全ガイドの平行移動量（x, y, z）
+            mark_size: float, range [0.1, 20.0]
+            offset: vec3, range [-50.0, 50.0]
+        """
+        ...
+    def layout_metallic_rectangles(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., metallic_n: int = ..., levels: int = ..., corner: str = ..., clockwise: bool = ..., offset: Vec3 = ...) -> Any:
+        """
+        貴金属比の矩形分割を描く。
+
+        引数:
+            bypass: bool
+            canvas_w: float, range [10.0, 1000.0]
+            canvas_h: float, range [10.0, 1000.0]
+            axes: choice, choices { 'both', 'vertical', 'horizontal' }
+            margin_l: float, range [0.0, 100.0]
+            margin_r: float, range [0.0, 100.0]
+            margin_t: float, range [0.0, 100.0]
+            margin_b: float, range [0.0, 100.0]
+            show_center: bool
+            metallic_n: int, range [1, 12]
+            levels: int, range [1, 8]
+            corner: choice, choices { 'tl', 'tr', 'br', 'bl' }
+            clockwise: bool
+            offset: vec3, range [-50.0, 50.0]
+        """
+        ...
+    def layout_ratio_lines(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., ratio: float = ..., levels: int = ..., min_spacing: float = ..., max_lines: int = ..., offset: Vec3 = ...) -> Any:
+        """
+        比率分割線を描く。
+
+        引数:
+            bypass: bool
+            canvas_w: float, range [10.0, 1000.0]
+            canvas_h: float, range [10.0, 1000.0]
+            axes: choice, choices { 'both', 'vertical', 'horizontal' }
+            margin_l: float, range [0.0, 100.0]
+            margin_r: float, range [0.0, 100.0]
+            margin_t: float, range [0.0, 100.0]
+            margin_b: float, range [0.0, 100.0]
+            show_center: bool
+            ratio: float, range [1.01, 10.0]
+            levels: int, range [1, 8]
+            min_spacing: float, range [0.0, 20.0]
+            max_lines: int, range [0, 20000]
+            offset: vec3, range [-50.0, 50.0]
+        """
+        ...
+    def layout_square_grid(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., cell_size: float = ..., offset: Vec3 = ...) -> Any:
+        """
+        正方形グリッドを描く。
+
+        引数:
+            bypass: bool
+            canvas_w: float, range [10.0, 1000.0]
+            canvas_h: float, range [10.0, 1000.0]
+            axes: choice, choices { 'both', 'vertical', 'horizontal' }
+            margin_l: float, range [0.0, 100.0]
+            margin_r: float, range [0.0, 100.0]
+            margin_t: float, range [0.0, 100.0]
+            margin_b: float, range [0.0, 100.0]
+            show_center: bool
+            cell_size: float, range [1.0, 50.0]
+            offset: vec3, range [-50.0, 50.0]
+        """
+        ...
+    def layout_thirds(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., offset: Vec3 = ...) -> Any:
+        """
+        三分割ガイド線を描く。
+
+        引数:
+            bypass: bool
+            canvas_w: float, range [10.0, 1000.0]
+            canvas_h: float, range [10.0, 1000.0]
+            axes: choice, choices { 'both', 'vertical', 'horizontal' }
+            margin_l: float, range [0.0, 100.0]
+            margin_r: float, range [0.0, 100.0]
+            margin_t: float, range [0.0, 100.0]
+            margin_b: float, range [0.0, 100.0]
+            show_center: bool
+            offset: vec3, range [-50.0, 50.0]
         """
         ...
     def logo(self, *, bypass: bool = ..., center: Vec3 = ..., scale: float = ..., fill_density_coef: float = ...) -> Any:
