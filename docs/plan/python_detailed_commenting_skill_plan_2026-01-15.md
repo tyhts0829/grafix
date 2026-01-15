@@ -4,7 +4,7 @@
 
 - 任意の `*.py` を指定すると、**挙動を変えずに**理解用のコメント（モジュール/関数/クラス/重要ブロック）を追加できる。
 - コメントの粒度・書き方が一貫し、読む順番で理解が進む（上 → 下で OK）。
-- Skill が `$CODEX_HOME/skills`（通常 `~/.codex/skills`）に置かれ、再起動後に自動で使える。
+- Skill が `./.codex/skills`（リポジトリ配下）または `$CODEX_HOME/skills` に置かれ、再起動後に使える。
 
 ## 非ゴール（今回やらない）
 
@@ -60,8 +60,9 @@
 
 ### 3) Skill テンプレ生成
 
-- [ ] `init_skill.py` で雛形作成（出力先は `$CODEX_HOME/skills`）
-  - 例: `python ~/.codex/skills/.system/skill-creator/scripts/init_skill.py python-detailed-commenting --path ~/.codex/skills`
+- [ ] `init_skill.py` で雛形作成（出力先は `./.codex/skills` か `$CODEX_HOME/skills`）
+  - 例（リポ配下）: `python ~/.codex/skills/.system/skill-creator/scripts/init_skill.py python-detailed-commenting --path ./.codex/skills`
+  - 例（ホーム配下）: `python ~/.codex/skills/.system/skill-creator/scripts/init_skill.py python-detailed-commenting --path ~/.codex/skills`
   - メモ: `~/.codex/skills` はこのリポ外なので、エージェントに作業させる場合は書き込み許可が必要
   - 原則: `SKILL.md` 以外は必要になった時だけ増やす（過剰にディレクトリを作らない）
 
