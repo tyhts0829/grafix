@@ -3,6 +3,15 @@
 何を: `grafix.api` の IDE 補完用スタブ `grafix/api/__init__.pyi` を自動生成する。
 なぜ: `G`/`E` が動的名前空間のため、静的解析が公開 API を把握できる形を用意するため。
 
+主な流れ（読む順）:
+- `generate_stubs_str()` が各 registry を初期化し、primitive/effect/preset の一覧を集計する。
+- 集計した名前から `_render_*_protocol()` で `Protocol` ベースの API（`G/E/L/P`）を文字列として生成する。
+- `main()` が `grafix.api` の隣に `__init__.pyi` を書き出す（既存ファイルは上書き）。
+
+副作用:
+- `generate_stubs_str()` は registry 初期化と preset 自動ロードのために import を行う。
+- `main()` は `__init__.pyi` をファイル出力する。
+
 補足:
 - effect の public param の型アノテーションは「stub 側で解決可能な名前」だけを書く（自動 import 収集はしない）。
 - `ParamMeta.kind == "vec3"` の場合、`tuple[float, float, float]` アノテーションでも stub は `Vec3` 表現を優先する。
@@ -17,12 +26,22 @@ import re
 from pathlib import Path
 from typing import Any
 
+# `G.<prim>(...)` / `E.<eff>(...)` / `P.<preset>(...)` といった
+# スタブ側メソッド名に使える識別子をフィルタするための正規表現。
 _VALID_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# 実装側の型注釈が `tuple[float, float, float]`（or `Tuple[...]`）でも、
+# スタブでは統一して `Vec3` として表現したいので置換する。
 _VEC3_TUPLE_RE = re.compile(
     r"(?:tuple|Tuple)\[\s*float\s*,\s*float\s*,\s*float\s*\]"
 )
+
+# 型文字列を厳密にパースせず、「識別子っぽいトークン」だけ拾うための正規表現。
+# `list[Path]` なら `list` と `Path` が取れる想定。
 _TYPE_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+# スタブ（`__init__.pyi`）の import / alias だけで解決できる識別子集合。
+# ここに無い名前が型注釈に含まれる場合は、保守的に `Any` へフォールバックする。
 _RESOLVABLE_TYPE_IDENTS = {
     # builtins
     "bool",
@@ -49,10 +68,17 @@ _RESOLVABLE_TYPE_IDENTS = {
 
 
 def _is_valid_identifier(name: str) -> bool:
+    """`name` が Python の識別子として安全（attribute/method 名に使える）かを返す。"""
     return _VALID_IDENT_RE.match(name) is not None
 
 
 def _shorten(text: str, *, limit: int = 120) -> str:
+    """1 行 summary 用にテキストを短縮する。
+
+    - 連続空白を 1 つに畳む
+    - 句点 `。` があれば先頭文だけにする
+    - `limit` を超える場合は末尾を `…` で切る
+    """
     t = " ".join(text.split())
     if "。" in t:
         t = t.split("。", 1)[0]
@@ -62,7 +88,22 @@ def _shorten(text: str, *, limit: int = 120) -> str:
 
 
 def _parse_numpy_doc(doc: str) -> tuple[str | None, dict[str, str]]:
-    """NumPy スタイル docstring から summary と引数説明を抽出する。"""
+    """NumPy スタイル docstring から summary と引数説明を抽出する。
+
+    ここでの「NumPy スタイル」は、最低限以下を想定したかなり軽量なパーサ。
+
+    - 先頭の非空行を summary として採用
+    - `Parameters` セクション（見出し + 罫線）を探す
+    - `name : type` 形式の行をパラメータ開始として扱い、後続のインデント行を説明として連結
+    - 次のセクション見出しに到達したら打ち切る
+
+    Returns
+    -------
+    summary:
+        先頭行（見つからない場合は `None`）。
+    param_docs:
+        `{"param_name": "説明"}` の辞書。説明は `_shorten()` で短縮される。
+    """
     if not doc:
         return None, {}
 
@@ -126,6 +167,11 @@ def _parse_numpy_doc(doc: str) -> tuple[str | None, dict[str, str]]:
 
 
 def _meta_hint(meta: Any) -> str | None:
+    """`ParamMeta` 風オブジェクトから、docstring 用の短いヒント文字列を作る。
+
+    stub 側の docstring は「型」よりも「UI/値の制約」が助けになることが多いので、
+    `kind` / `ui_min` / `ui_max` / `choices` を寄せ集めて 1 行にする。
+    """
     kind = getattr(meta, "kind", None)
     ui_min = getattr(meta, "ui_min", None)
     ui_max = getattr(meta, "ui_max", None)
@@ -155,6 +201,7 @@ def _meta_hint(meta: Any) -> str | None:
 
 
 def _type_for_kind(kind: str) -> str:
+    """`ParamMeta.kind` から、スタブに書く型名（文字列）を決める。"""
     if kind == "float":
         return "float"
     if kind == "int":
@@ -173,6 +220,7 @@ def _type_for_kind(kind: str) -> str:
 
 
 def _type_str_from_annotation(annotation: Any) -> str | None:
+    """アノテーション（型オブジェクト/文字列）を `inspect` 経由で文字列化する。"""
     if annotation is inspect._empty:
         return None
     if isinstance(annotation, str):
@@ -186,6 +234,10 @@ def _type_str_from_annotation(annotation: Any) -> str | None:
 
 
 def _normalize_type_str(type_str: str) -> str:
+    """型文字列をスタブ側の import に寄せて正規化する。
+
+    例: `typing.Callable` -> `Callable` / `pathlib.Path` -> `Path`。
+    """
     s = str(type_str).strip()
     s = s.replace("typing.", "")
     s = s.replace("pathlib.Path", "Path")
@@ -196,6 +248,11 @@ def _normalize_type_str(type_str: str) -> str:
 
 
 def _is_resolvable_type_str(type_str: str) -> bool:
+    """`type_str` がスタブ内の import/alias だけで解決できそうかを判定する。
+
+    厳密な型パーサではなく、識別子っぽいトークンを拾って集合 membership で判定する。
+    したがって保守的（false negative はあり得る）だが、unknown name を出力しないために使う。
+    """
     for ident in _TYPE_IDENT_RE.findall(type_str):
         if ident not in _RESOLVABLE_TYPE_IDENTS:
             return False
@@ -203,6 +260,7 @@ def _is_resolvable_type_str(type_str: str) -> bool:
 
 
 def _type_str_from_impl_param(impl: Any, param_name: str) -> str | None:
+    """実装関数 `impl` のシグネチャから `param_name` の型注釈を取り出す。"""
     try:
         sig = inspect.signature(impl)
     except Exception:
@@ -217,6 +275,12 @@ def _type_str_from_impl_param(impl: Any, param_name: str) -> str | None:
 def _type_str_for_effect_param(
     *, impl: Any | None, param_name: str, meta: Any
 ) -> str:
+    """effect の param に対する型文字列を決める。
+
+    - 実装関数が見つかれば、その型注釈（文字列化）を優先
+    - 取れなければ `ParamMeta.kind` からのフォールバック型
+    - `vec3` は `tuple[float, float, float]` でも `Vec3` に寄せる
+    """
     kind = str(getattr(meta, "kind", ""))
     fallback = _type_for_kind(kind)
     if impl is None:
@@ -232,6 +296,11 @@ def _type_str_for_effect_param(
 
 
 def _type_str_for_preset_param(*, impl: Any, param_name: str, meta: Any) -> str:
+    """preset 関数の param に対する型文字列を決める。
+
+    preset は user code 由来のため、スタブ側で解決不能な型名を出力しないように
+    `_normalize_type_str()` + `_is_resolvable_type_str()` でフィルタし、ダメなら `Any` に倒す。
+    """
     kind = str(getattr(meta, "kind", ""))
     fallback = _type_for_kind(kind)
 
@@ -246,6 +315,7 @@ def _type_str_for_preset_param(*, impl: Any, param_name: str, meta: Any) -> str:
 
 
 def _type_str_for_preset_return(*, impl: Any) -> str:
+    """preset 関数の戻り値型を（解決可能性を見ながら）文字列として返す。"""
     try:
         sig = inspect.signature(impl)
     except Exception:
@@ -262,7 +332,11 @@ def _type_str_for_preset_return(*, impl: Any) -> str:
 
 
 def _resolve_impl_callable(kind: str, name: str) -> Any | None:
-    """built-in 実装関数（docstring ソース）を最善で見つける。"""
+    """built-in 実装関数（docstring ソース）を最善で見つける。
+
+    registry から取れるのは「名前とメタ情報」なので、docstring や型注釈を拾うために
+    `grafix.core.primitives.<name>` / `grafix.core.effects.<name>` を import して関数を探す。
+    """
     if kind == "primitive":
         module_name = f"grafix.core.primitives.{name}"
     elif kind == "effect":
@@ -286,6 +360,11 @@ def _render_docstring(
     parsed_param_docs: dict[str, str],
     meta_by_name: dict[str, Any],
 ) -> list[str]:
+    """stub のメソッド docstring（複数行）を組み立てる。
+
+    `inspect.getdoc()` からの抽出結果を優先し、無ければ registry meta からのヒントを補う。
+    返す行は「インデント無し」。`_render_method()` 側でインデントを付ける。
+    """
     lines: list[str] = []
     if summary:
         lines.append(summary)
@@ -316,9 +395,11 @@ def _render_method(
     params: list[str],
     doc_lines: list[str],
 ) -> str:
+    """`Protocol` の 1 メソッド分のスタブ文字列を生成する。"""
     lines: list[str] = []
 
     if params:
+        # このスタブ API は基本的に keyword-only パラメータ設計（`*, a=..., b=...`）。
         sig_params = "*, " + ", ".join(params)
     else:
         sig_params = ""
@@ -341,6 +422,7 @@ def _render_method(
 
 
 def _render_g_protocol(primitive_names: list[str]) -> str:
+    """`G`（primitive 名前空間）の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _G(Protocol):\n")
 
@@ -391,6 +473,7 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
 
 
 def _render_effect_builder_protocol(effect_names: list[str]) -> str:
+    """`E.xxx(...)` の戻り値である builder の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _EffectBuilder(Protocol):\n")
     lines.append("    def __call__(self, geometry: Geometry, *more_geometries: Geometry) -> Geometry:\n")
@@ -441,6 +524,7 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
 
 
 def _render_e_protocol(effect_names: list[str]) -> str:
+    """`E`（effect 名前空間）の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _E(Protocol):\n")
 
@@ -492,6 +576,7 @@ def _render_e_protocol(effect_names: list[str]) -> str:
 
 
 def _render_l_protocol() -> str:
+    """`L`（Layer 生成）の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _L(Protocol):\n")
     lines.append(
@@ -510,6 +595,7 @@ def _render_l_protocol() -> str:
 
 
 def _render_p_protocol(preset_names: list[str]) -> str:
+    """`P`（preset 名前空間）の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _P(Protocol):\n")
     lines.append("    def __getattr__(self, name: str) -> Callable[..., Any]:\n")
@@ -560,7 +646,14 @@ def _render_p_protocol(preset_names: list[str]) -> str:
 
 
 def generate_stubs_str() -> str:
-    """`grafix/api/__init__.pyi` の生成結果を文字列として返す。"""
+    """`grafix/api/__init__.pyi` の生成結果を文字列として返す。
+
+    Notes
+    -----
+    - registry を初期化するために `grafix.api.*` を import する（副作用あり）。
+    - primitives/effects は「実装関数が import できるもの」だけを採用する。
+    - presets は `runtime_config().preset_module_dirs` 配下からロードされたものだけを採用する。
+    """
 
     # public API 起点で import し、registry を初期化する。
     importlib.import_module("grafix.api.primitives")
@@ -574,6 +667,10 @@ def generate_stubs_str() -> str:
     from grafix.core.preset_registry import preset_func_registry, preset_registry  # type: ignore[import]
     from grafix.core.runtime_config import runtime_config  # type: ignore[import]
 
+    # IDE 補完に載せたい public 名だけ抽出する。
+    # - 先頭が `_` の名前は除外
+    # - method 名に使えない識別子は除外
+    # - 実装関数が見つからないものは除外（docstring/型注釈を拾えないため）
     primitive_names = sorted(
         name
         for name, _ in primitive_registry.items()
@@ -588,6 +685,10 @@ def generate_stubs_str() -> str:
         and not name.startswith("_")
         and _resolve_impl_callable("effect", name) is not None
     )
+
+    # user presets は、preset dir ごとに「パス由来のハッシュで作った擬似パッケージ名」
+    # (`grafix_user_presets_<hash>`) 以下に import される設計。
+    # ここではその prefix と一致する関数だけをスタブ対象にする。
     cfg = runtime_config()
     preset_pkg_prefixes: tuple[str, ...] = tuple(
         f"grafix_user_presets_{hashlib.sha256(str(Path(d).resolve(strict=False)).encode('utf-8')).hexdigest()[:10]}."
@@ -606,6 +707,8 @@ def generate_stubs_str() -> str:
         )
     )
 
+    # 生成物の先頭には「自動生成」ヘッダと lint 抑制を入れる。
+    # `from __future__ import annotations` 以降は、型文字列化を簡単にするため固定の import を並べる。
     header = (
         "# This file is auto-generated by grafix.devtools.generate_stub. DO NOT EDIT.\n"
         "# Regenerate with: python -m grafix stub\n\n"
@@ -671,6 +774,7 @@ def generate_stubs_str() -> str:
 
 
 def main() -> None:
+    """`grafix/api/__init__.pyi` を生成してファイルに書き出す。"""
     content = generate_stubs_str()
     import grafix.api
 
