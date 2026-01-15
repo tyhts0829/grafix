@@ -2,6 +2,24 @@
 どこで: `generate_report.py`。
 何を: `data/output/benchmarks/runs/*.json` を集約し、`data/output/benchmarks/report.html` を生成する。
 なぜ: 最適化前後の改善度合いを、ケース別×effect 別の時系列グラフで把握するため。
+
+入力（想定）
+------------
+- `runs_dir` 配下の `*.json`（ファイル名 stem が run_id）。
+- run_id は `%Y%m%d_%H%M%S` 形式の日時として解釈し、これを時系列の基準にする。
+- JSON は概ね `{meta, cases, effects}` を想定する（壊れたファイルや想定外の形式は静かに無視する）。
+
+出力
+----
+- `data/output/benchmarks/report.html`（上書き）。
+- HTML 内にベンチ結果の JSON を埋め込み、Chart.js（CDN）で折れ線グラフを描画する。
+  そのためネット接続が無い環境ではグラフを描けず、表だけが残る。
+
+読む順番（主要フロー）
+----------------------
+1. `_load_runs()` で runs_dir から JSON を読み、実行（run）単位に正規化する
+2. `build_timeseries_report()` で「ケース × effect の時系列」データ構造に変換する
+3. `render_report_html()` で HTML をレンダリングし、`report.html` に書き出す
 """
 
 from __future__ import annotations
@@ -19,6 +37,27 @@ _CANVAS_HEIGHT = 600
 
 @dataclass(frozen=True, slots=True)
 class _Run:
+    """1 回分のベンチマーク実行（run）を表す内部データ。
+
+    JSON の生データをそのまま持ち回すのではなく、レポート生成に必要な情報だけを
+    取り出して正規化した形。
+
+    Attributes
+    ----------
+    run_id
+        `runs/*.json` のファイル名 stem。`YYYYmmdd_HHMMSS` を想定する。
+    dt
+        run_id を `_RUN_ID_FORMAT` でパースした datetime（時系列ソート用）。
+    meta
+        JSON の `meta` を dict にしたもの（`created_at` / `git_sha` など）。
+    cases
+        case_id -> case dict。`cases[]` を `id` で引ける形にしたもの。
+    effect_names
+        JSON の `effects[].name` を「初出順」で並べたリスト（重複は除去）。
+    means_ms
+        case_id -> effect_name -> mean_ms。`status == "ok"` のものだけを拾う。
+    """
+
     run_id: str
     dt: datetime
     meta: dict[str, Any]
@@ -28,6 +67,15 @@ class _Run:
 
 
 def main() -> int:
+    """ベンチマーク run JSON を集約して HTML レポートを書き出す。
+
+    Side Effects
+    ------------
+    - `data/output/benchmarks/runs/*.json` を読む。
+    - `data/output/benchmarks/report.html` を生成して上書きする。
+    - 標準出力に生成先パスを表示する。
+    """
+
     project_root = Path(__file__).resolve().parents[2]
     out_root = project_root / "data" / "output" / "benchmarks"
     runs_dir = out_root / "runs"
@@ -43,11 +91,30 @@ def main() -> int:
 
 
 def build_timeseries_report(*, runs_dir: Path) -> dict[str, Any]:
+    """runs_dir 配下のベンチ run JSON を集約し、HTML 描画向けの辞書に変換する。
+
+    この関数は「レポートの中身（データ構造）」を作るところまでを担当し、
+    HTML テンプレートの組み立ては `render_report_html()` に委譲する。
+
+    Notes
+    -----
+    - 表示する case 一覧・effect 一覧は「最新 run」の内容を基準にする。
+      （過去に存在しても最新 run に無いケース/エフェクトはレポート対象外になる）
+    - 時系列の欠損（特定 run に結果が無い等）は `None` を入れてギャップとして扱う。
+
+    Raises
+    ------
+    SystemExit
+        runs_dir から有効な run が 1 つも読めない場合。
+    """
+
     runs = _load_runs(runs_dir=runs_dir)
     if not runs:
         raise SystemExit(f"no runs found: {runs_dir}")
 
     latest = runs[-1]
+    # レポートの「ケース×エフェクト」の軸は最新 run を基準に固定する。
+    # （ベンチスイートが変化したときに、過去データに引きずられないようにする）
     case_list = list(latest.cases.values())
     effect_names = list(latest.effect_names)
 
@@ -66,6 +133,8 @@ def build_timeseries_report(*, runs_dir: Path) -> dict[str, Any]:
         if not case_id:
             continue
 
+        # effect ごとに、run の並び順（時系列）に対応する点列を作る。
+        # 欠損は None にし、Chart.js 側で線のギャップとして扱う。
         series: dict[str, list[float | None]] = {}
         for eff in effect_names:
             pts: list[float | None] = []
@@ -75,6 +144,8 @@ def build_timeseries_report(*, runs_dir: Path) -> dict[str, Any]:
             series[eff] = pts
 
         latest_means = latest.means_ms.get(case_id, {})
+        # 最新 run の mean_ms を基準に「重い順」に並べる。
+        # 目的: 表（Improvement）と凡例の先頭に、支配的なコストを持つ effect を出したい。
         ordered_effects = sorted(
             effect_names,
             key=lambda e: float(latest_means.get(e, -1.0)),
@@ -97,6 +168,7 @@ def build_timeseries_report(*, runs_dir: Path) -> dict[str, Any]:
         table_rows = []
         for eff in ordered_effects:
             pts = series.get(eff, [])
+            # first/last は「欠損を除いた最初/最後」。未計測の run が混ざっても比率が出る。
             first = next((v for v in pts if v is not None), None)
             last = next((v for v in reversed(pts) if v is not None), None)
             ratio = ""
@@ -125,6 +197,7 @@ def build_timeseries_report(*, runs_dir: Path) -> dict[str, Any]:
         )
 
     meta = {
+        # `generated_at` はレポート生成時刻（データの run 時刻とは別）。
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "runs": len(runs),
         "first_run": runs[0].run_id,
@@ -141,11 +214,20 @@ def build_timeseries_report(*, runs_dir: Path) -> dict[str, Any]:
 
 
 def render_report_html(report: dict[str, Any]) -> str:
+    """`build_timeseries_report()` が返す辞書を HTML にレンダリングする。
+
+    Notes
+    -----
+    - ベンチ結果のペイロード（runs/charts）は HTML に埋め込み、Chart.js で描画する。
+    - Chart.js は CDN から読み込むため、ネット接続が無いとグラフは描けない。
+    """
+
     meta: dict[str, Any] = dict(report.get("meta", {}))
     runs: list[dict[str, Any]] = list(report.get("runs", []))
     cases: list[dict[str, Any]] = list(report.get("cases", []))
     charts: list[dict[str, Any]] = list(report.get("charts", []))
 
+    # JS 側で参照する分（runs/charts）のみを埋め込む。HTML には meta/cases を別途描画する。
     payload_json = json.dumps(
         {
             "runs": runs,
@@ -204,6 +286,7 @@ def render_report_html(report: dict[str, Any]) -> str:
 
 
 def _render_head(*, title: str) -> str:
+    """HTML の `<head>`（CSS を含む）を返す。"""
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -265,6 +348,7 @@ def _render_head(*, title: str) -> str:
 
 
 def _render_meta(meta: dict[str, Any]) -> str:
+    """メタ情報パネル（generated_at など）を HTML としてレンダリングする。"""
     items: list[str] = []
     for key in (
         "generated_at",
@@ -282,6 +366,7 @@ def _render_meta(meta: dict[str, Any]) -> str:
 
 
 def _render_case_index(cases: list[dict[str, Any]]) -> str:
+    """ページ内ジャンプ用のケース一覧（リンク）をレンダリングする。"""
     links: list[str] = []
     for case in cases:
         cid = str(case.get("id", ""))
@@ -299,6 +384,7 @@ def _render_case_index(cases: list[dict[str, Any]]) -> str:
 
 
 def _render_improvement_table(*, rows: list[dict[str, Any]]) -> str:
+    """1 ケース分の Improvement 表（first → last）をレンダリングする。"""
     out = []
     out.append('<div class="panel">')
     out.append('<div class="muted">Improvement (first → last)</div>')
@@ -331,6 +417,7 @@ def _render_improvement_table(*, rows: list[dict[str, Any]]) -> str:
 
 
 def _fmt_num(value: Any) -> str:
+    """数値を表のセル向けに整形する（不正な場合は文字列化してエスケープ）。"""
     if value is None:
         return ""
     try:
@@ -340,6 +427,7 @@ def _fmt_num(value: Any) -> str:
 
 
 def _render_scripts(*, payload_json: str) -> str:
+    """Chart.js を読み込み、埋め込んだ payload からグラフを描画する `<script>` を返す。"""
     template = """
 <script>
   const REPORT = __GRAFIX_BENCH_PAYLOAD__;
@@ -458,10 +546,13 @@ def _render_scripts(*, payload_json: str) -> str:
   main();
 </script>
 """
+    # payload_json は `json.dumps()` が返す「JSON 文字列」そのもの。
+    # 文字列リテラルではなく JS のオブジェクトとして埋め込むため、単純置換で差し込む。
     return template.replace("__GRAFIX_BENCH_PAYLOAD__", payload_json)
 
 
 def _parse_run_id(run_id: str) -> datetime | None:
+    """run_id（ファイル名 stem）を日時として解釈する。失敗したら None。"""
     try:
         return datetime.strptime(run_id, _RUN_ID_FORMAT)
     except ValueError:
@@ -469,6 +560,13 @@ def _parse_run_id(run_id: str) -> datetime | None:
 
 
 def _load_runs(*, runs_dir: Path) -> list[_Run]:
+    """runs_dir 配下の `*.json` を読み、時系列に並べた `_Run` の配列を返す。
+
+    - ファイル名が `_RUN_ID_FORMAT` でパースできないものは対象外。
+    - JSON のパースに失敗したもの、想定外の構造のものも静かにスキップする。
+      （レポート生成は「できる範囲で出す」ことを優先し、1 ファイルの不良で落とさない）
+    """
+
     runs: list[_Run] = []
     for fp in sorted(runs_dir.glob("*.json")):
         dt = _parse_run_id(fp.stem)
@@ -521,6 +619,7 @@ def _load_runs(*, runs_dir: Path) -> list[_Run]:
 
 
 def _color_for_label(label: str) -> str:
+    """label から安定した HSL 色を作る（レポート間で色が変わりにくいようにする）。"""
     h = 0
     for ch in label:
         h = (h * 131 + ord(ch)) % 360
