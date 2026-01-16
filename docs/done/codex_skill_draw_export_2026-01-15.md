@@ -1,4 +1,4 @@
-# どこで: Codex Skills（`~/.codex/skills`） + Grafix（`src/grafix/`）。
+# どこで: Codex Skills（`skills/` で管理し `.skill` を生成） + Grafix（`src/grafix/`）。
 #
 # 何を: 「エージェントが `draw(t)` を生成し、CLI 経由で画像（主に PNG）を export する」Skill を実装可能か、現状の機能で確認する。
 #
@@ -18,10 +18,12 @@
 - `canvas_size=None` は現状未対応（SVG/PNG の両方で必須）。
 - ルートの `grafix` パッケージは `Export` を再公開していない（`from grafix import Export` は失敗する）。Skill 側は `from grafix.api import Export` を使う必要がある。
 
-### Grafix: CLI はあるが export はまだ無い
+### Grafix: CLI はあり、export も追加済み（2026-01-15）
 
 - `src/grafix/__main__.py` が `python -m grafix ...` のエントリポイント。
-- 現状サブコマンドは `benchmark/stub/list` のみ（export は未実装）。
+- サブコマンド `export` を追加し、`draw(t)` を headless で PNG に書き出せるようにした。
+  - 例: `PYTHONPATH=src python -m grafix export --callable sketch.main:draw --t 0 0.5 1.0 --canvas 800 800`
+  - 注: PNG 出力時も同名の `.svg` が生成される（PNG は SVG を `resvg` でラスタライズして作る）。
 
 ### 動作確認（2026-01-15）
 
@@ -58,14 +60,14 @@ Skill 側に `scripts/export_frame.py` のような最小 CLI を持たせる。
 デメリット:
 - 「Grafix の標準 CLI」としては残らない（Skill 依存のコマンドになる）。
 
-### 方針 B: `python -m grafix export ...` を追加（Grafix CLI を拡張）
+### 方針 B: `python -m grafix export ...` を追加（Grafix CLI を拡張）※採用
 
 Grafix 本体に export サブコマンドを追加し、Skill はそれを叩くだけにする。
 
 例（案）:
 
 ```bash
-PYTHONPATH=src python -m grafix export --module sketch.foo --fn draw --t 0 --fmt png --out /tmp/out.png --canvas 800 800
+PYTHONPATH=src python -m grafix export --callable sketch.foo:draw --t 0 --canvas 800 800
 ```
 
 メリット:
@@ -81,20 +83,18 @@ PYTHONPATH=src python -m grafix export --module sketch.foo --fn draw --t 0 --fmt
 - Python 依存（`numpy` 等）が import できる環境が必要（`PYTHONPATH=src` は Grafix 本体の import を助けるだけ）。
 - 現状、SVG/PNG の headless export は `canvas_size` 必須（bbox 自動推定は未実装）。
 
-## 実装チェックリスト（あなたの OK 後に着手）
+## 実装チェックリスト
 
-- [ ] Skill のトリガ文言と名前（例: `grafix-draw-export`）を確定
-- [ ] 方針 A/B の決定
-- [ ] Skill のテンプレ生成（`init_skill.py`）と `SKILL.md` の設計
-- [ ] （A の場合）`scripts/export_frame.py` を実装して `/tmp` と `data/output` で動作確認
-- [ ] （B の場合）`src/grafix/__main__.py` に `export` サブコマンド追加（最小実装）+ 動作確認
-- [ ] `package_skill.py` で `.skill` を生成
-- [ ] インストール導線の確定（`~/.codex/skills` への配置。必要なら承認が要る）
+- [x] Skill のトリガ文言と名前を確定（`grafix-draw-export`）
+- [x] 方針 A/B の決定（方針 B）
+- [x] Skill のテンプレ生成と `SKILL.md` 作成（`skills/grafix-draw-export/SKILL.md`）
+- [x] `python -m grafix export` を実装（PNG 限定、`--t` 複数指定で連番保存）
+- [x] `package_skill.py` で `.skill` を生成（`dist/grafix-draw-export.skill`）
+- [ ] インストール導線の確定（例: `~/.codex/skills` へ配置。ここは手動で実施）
 
-## 要確認（あなたに質問）
+## 決定事項
 
-- 出力対象は PNG のみで良い？（SVG も常に一緒に残す？）
-- Skill が生成する `draw` の保存先は `sketch/` 配下で良い？（例: `sketch/generated/<name>.py`）
-- CLI は方針 A（Skill 同梱スクリプト）と方針 B（Grafix の `python -m grafix export`）どちらを優先する？
-- デフォルトの `canvas_size` / `png scale` は固定にする？それとも引数で可変にする？
-
+- 出力対象: PNG（ただし PNG 生成の都合で `.svg` も同名で生成される）
+- draw の保存先（Skill 推奨）: `sketch/generated/<slug>.py`
+- CLI: 方針 B（Grafix の `python -m grafix export`）
+- `canvas_size`: CLI 既定は `(800, 800)`（Skill 側は明示指定推奨）

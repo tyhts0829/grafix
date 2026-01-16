@@ -48,6 +48,7 @@ PYTHONPATH=src python -m grafix export --callable sketch.foo:draw --t 0 0.5 1.0 
 
 - 成功時: 保存したパスを stdout に出す（複数枚なら 1 行/枚で列挙）。
 - 失敗時: 例外内容を stderr に出し、終了コード `!=0`。
+- 注: PNG 出力時も同名の `.svg` が生成される（PNG は SVG を `resvg` でラスタライズして作る）。
 
 ## 想定ワークフロー（「複数出して選ぶ」→「改良」ループ）
 
@@ -77,27 +78,27 @@ PYTHONPATH=src python -m grafix export --callable sketch.generated:draw --t 0.5 
 
 ### 1) CLI の配線
 
-- [ ] `src/grafix/__main__.py` に `export` サブコマンドを追加
-- [ ] `python -m grafix export --help` のヘルプ文言を整える
+- [x] `src/grafix/__main__.py` に `export` サブコマンドを追加
+- [x] `python -m grafix export --help` のヘルプ文言を整える
 
 ### 2) export コマンド本体（新規ファイル）
 
-- [ ] `src/grafix/devtools/export_frame.py` を追加
-  - [ ] `--callable/--t/--canvas/--out/--out-dir/--run-id/--config` を argparse で受ける
-  - [ ] `set_config_path(--config)` を適用
-  - [ ] draw を import して `grafix.api.Export(..., fmt="png", ...)` を実行
-  - [ ] `--out` 省略時の既定パス生成（`default_png_output_path` を使用）
-  - [ ] `--t` 複数指定時のファイル名ポリシーを決める（例: `_001.png` 連番）
-  - [ ] 成功/失敗時の exit code と表示を確定
+- [x] `src/grafix/devtools/export_frame.py` を追加
+  - [x] `--callable/--t/--canvas/--out/--out-dir/--run-id/--config` を argparse で受ける
+  - [x] `set_config_path(--config)` を適用
+  - [x] draw を import して `grafix.api.Export(..., fmt="png", ...)` を実行
+  - [x] `--out` 省略時の既定パス生成（`default_png_output_path` を使用）
+  - [x] `--t` 複数指定時のファイル名ポリシー: `_f001.png` 連番
+  - [x] 成功/失敗時の exit code と表示を確定
 
 ### 3) 最小動作確認（手元）
 
-- [ ] `PYTHONPATH=src python -m grafix export --callable sketch.main:draw --t 0 --canvas 800 800`
-- [ ] `PYTHONPATH=src python -m grafix export --callable sketch.main:draw --t 0 0.5 1.0 --canvas 800 800`
+- [x] `PYTHONPATH=src python -m grafix export --callable sketch.main:draw --t 0 --canvas 300 300 --out /tmp/grafix_export_test.png`
+- [x] `PYTHONPATH=src python -m grafix export --callable sketch.main:draw --t 0 0.5 1.0 --canvas 300 300 --out-dir /tmp/grafix_export_batch`
 
 ### 4) テスト（入れるなら最小）
 
-- [ ] `tests/` は **今回は無し**（PNG 出力は `resvg` 依存のため、環境差が出やすい）
+- [x] `tests/` は **今回は無し**（PNG 出力は `resvg` 依存のため、環境差が出やすい）
 
 ### 5) ドキュメント（最小）
 
@@ -105,6 +106,6 @@ PYTHONPATH=src python -m grafix export --callable sketch.generated:draw --t 0.5 
 
 ## 決めたい点（実装前にあなたの確認が欲しい）
 
-1. `--callable` の形式は `module:attr` だけで開始して良い？（`--file` 対応は後回しで良い？）；OK
-2. `--canvas` の既定は `(800, 800)` で良い？（Skill 側で明示指定する運用でも OK）；OK
-3. `--t` を複数指定したとき、保存先は「既定ディレクトリ + 連番」で良い？（`--out-dir` 必須にした方が良い？）；OK
+1. 決定: `--callable` は `module:attr` のみ（`--file` は後回し）
+2. 決定: `--canvas` の既定は `(800, 800)`（Skill 側は明示指定推奨）
+3. 決定: `--t` 複数時は「既定ディレクトリ + 連番」保存（`--out-dir` は任意）

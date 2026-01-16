@@ -814,7 +814,7 @@ class _P(Protocol):
             offset: vec3, range [-50.0, 50.0]
         """
         ...
-    def layout_golden_ratio(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., offset: Vec3 = ...) -> Any:
+    def layout_golden_ratio(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., levels: int = ..., offset: Vec3 = ...) -> Any:
         """
         黄金比ガイド線を描く。
 
@@ -828,6 +828,7 @@ class _P(Protocol):
             margin_t: float, range [0.0, 100.0]
             margin_b: float, range [0.0, 100.0]
             show_center: bool
+            levels: int, range [1, 8]
             offset: vec3, range [-50.0, 50.0]
         """
         ...
@@ -853,26 +854,6 @@ class _P(Protocol):
             show_baseline: bool
             baseline_step: float, range [0.1, 50.0]
             baseline_offset: float, range [-50.0, 50.0]
-            offset: vec3, range [-50.0, 50.0]
-        """
-        ...
-    def layout_intersections(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., show_thirds: bool = ..., show_golden: bool = ..., mark_size: float = ..., offset: Vec3 = ...) -> Any:
-        """
-        定番 overlay の交点へマーカーを描く。
-
-        引数:
-            bypass: bool
-            canvas_w: float, range [10.0, 1000.0]
-            canvas_h: float, range [10.0, 1000.0]
-            axes: choice, choices { 'both', 'vertical', 'horizontal' }
-            margin_l: float, range [0.0, 100.0]
-            margin_r: float, range [0.0, 100.0]
-            margin_t: float, range [0.0, 100.0]
-            margin_b: float, range [0.0, 100.0]
-            show_center: bool
-            show_thirds: bool
-            show_golden: bool
-            mark_size: float, range [0.1, 20.0]
             offset: vec3, range [-50.0, 50.0]
         """
         ...

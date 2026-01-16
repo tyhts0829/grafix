@@ -30,6 +30,11 @@ def main(argv: list[str] | None = None) -> int:
         help="effect ベンチ計測 → レポート生成",
         add_help=False,
     )
+    sub.add_parser(
+        "export",
+        help="draw(t) を headless で PNG に書き出す",
+        add_help=False,
+    )
     sub.add_parser("stub", help="grafix.api のスタブ（__init__.pyi）を再生成する")
     sub.add_parser(
         "list",
@@ -64,6 +69,14 @@ def main(argv: list[str] | None = None) -> int:
 
         generate_stub.main()
         return 0
+
+    if args.cmd == "export":
+        from grafix.devtools import export_frame
+
+        export_argv = list(rest)
+        if export_argv and export_argv[0] == "--":
+            export_argv = export_argv[1:]
+        return int(export_frame.main(export_argv))
 
     if args.cmd == "list":
         from grafix.devtools import list_builtins
