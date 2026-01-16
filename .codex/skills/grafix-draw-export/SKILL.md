@@ -49,8 +49,6 @@ def draw(t: float):
     ...
 ```
 
-プレビューが必要なら `if __name__ == "__main__":` で `run(draw, ...)` を追加してもよい（export 目的なら必須ではない）。
-
 ### 2.1) G（primitives）と E（effects）の使い方（組み込み）
 
 - `G.<name>(...)` は **プリミティブの Geometry ノード**を作る（線/多角形/テキスト等）。
