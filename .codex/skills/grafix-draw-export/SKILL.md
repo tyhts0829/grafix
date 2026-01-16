@@ -1,6 +1,6 @@
 ---
 name: grafix-draw-export
-description: Grafix の draw(t) スケッチを生成・改良し、python -m grafix export で PNG を複数枚 headless 出力して比較するための手順。ユーザーが「Grafix の draw を作って」「PNG を書き出して」「候補を複数出して比較したい」「headless で export したい」などと言ったときに使う。
+description: Grafix の `draw(t)` スケッチを生成・改良し、`python -m grafix export` で PNG を複数枚 headless 出力して比較するための手順。ユーザーが「Grafix の draw を作って」「PNG を書き出して」「候補を複数出して比較したい」「headless で export したい」などと言ったときに使う。
 ---
 
 # Grafix Draw Export
@@ -15,7 +15,7 @@ description: Grafix の draw(t) スケッチを生成・改良し、python -m gr
 
 - PNG は内部的に SVG を生成して `resvg` でラスタライズする（`resvg` が必要）。
 - このリポジトリから実行する場合は `PYTHONPATH=src` を付ける（pip インストール済みなら不要）。
-- 作品制作にあたり、md ファイルでユーザーへの事前確認は不要
+- 作品制作にあたり、md ファイルでユーザーへの事前確認は不要。
 
 ## 最短の進め方（デフォルト運用）
 
@@ -165,6 +165,10 @@ PYTHONPATH=src python -m grafix export \
 
 ## 組み込み（G/E）の一覧を調べる
 
+最短:
+
+- `$grafix-api-catalog` を併用し、`skills/grafix-api-catalog/references/api.md` を検索する。
+
 CLI（一覧表示）:
 
 ```bash
@@ -180,9 +184,6 @@ PYTHONPATH=src python -m grafix list effects
 - 公開ファサード（登録 import をしている）:
   - `src/grafix/api/primitives.py`
   - `src/grafix/api/effects.py`
-- 各 primitive/effect の引数や意味:
-  - まず該当ファイルの docstring を読む
-  - `*_meta = {... ParamMeta(...) ...}` を見る（GUI 表示用の型/レンジも載る）
 
 ## トラブルシュート
 
@@ -191,3 +192,4 @@ PYTHONPATH=src python -m grafix list effects
   - repo ルートで実行しているか確認する
   - `PYTHONPATH=src` が付いているか確認する
   - `module:attr` が正しいか確認する
+
