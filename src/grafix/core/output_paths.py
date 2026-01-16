@@ -137,6 +137,64 @@ def _draw_source_path(draw: Callable[[float], object]) -> Path | None:
     return None
 
 
+def _find_ancestor_dir_ending_with(start_dir: Path, suffix: Path) -> Path | None:
+    """start_dir の祖先から、suffix（相対パス）の末尾一致でディレクトリを探す。"""
+
+    suffix_norm = Path(*[p for p in Path(suffix).parts if p not in {"", "."}])
+    suffix_parts = suffix_norm.parts
+    if not suffix_parts:
+        return None
+
+    for candidate in (start_dir, *start_dir.parents):
+        parts = candidate.parts
+        if len(parts) >= len(suffix_parts) and parts[-len(suffix_parts) :] == suffix_parts:
+            return candidate
+    return None
+
+
+def _resolve_sketch_root_dir(sketch_dir: Path, *, source_path: Path) -> Path | None:
+    """sketch_dir の絶対ルートを推定して返す。推定できなければ None。"""
+
+    sketch_dir_p = Path(sketch_dir)
+    source_resolved = source_path.resolve(strict=False)
+
+    if sketch_dir_p.is_absolute():
+        root = sketch_dir_p.resolve(strict=False)
+        try:
+            _ = source_resolved.relative_to(root)
+        except Exception:
+            return None
+        return root
+
+    # まずは cwd 基準で従来通り試す。
+    root = sketch_dir_p.resolve(strict=False)
+    try:
+        _ = source_resolved.relative_to(root)
+        return root
+    except Exception:
+        pass
+
+    # cwd がプロジェクトルートでないケース向けのフォールバック。
+    # 例: sketch_dir="sketch" で、source が ".../sketch/generated/foo.py" にある場合など。
+    return _find_ancestor_dir_ending_with(source_resolved.parent, sketch_dir_p)
+
+
+def _project_root_dir_from_sketch_root(sketch_root: Path, sketch_dir: Path) -> Path | None:
+    """sketch_root からプロジェクトルート（sketch_dir の親）を推定して返す。"""
+
+    sketch_dir_p = Path(sketch_dir)
+    if sketch_dir_p.is_absolute():
+        return sketch_root.parent
+
+    n_parts = len([p for p in sketch_dir_p.parts if p not in {"", "."}])
+    if n_parts <= 0:
+        return None
+    try:
+        return sketch_root.parents[n_parts - 1]
+    except Exception:
+        return None
+
+
 def output_path_for_draw(
     *,
     kind: str,
@@ -161,23 +219,30 @@ def output_path_for_draw(
         raise ValueError("ext は空でない必要がある")
 
     cfg = runtime_config()
-    base_dir = output_root_dir() / str(kind)
     suffix = _run_id_suffix(run_id)
 
     source_path = _draw_source_path(draw)
     stem = source_path.stem if source_path is not None else "unknown"
 
+    sketch_root: Path | None = None
+    project_root: Path | None = None
     rel_parent: Path | None = None
     sketch_dir = cfg.sketch_dir
     if sketch_dir is not None and source_path is not None:
-        try:
-            rel = source_path.resolve(strict=False).relative_to(
-                Path(sketch_dir).resolve(strict=False)
-            )
+        sketch_root = _resolve_sketch_root_dir(sketch_dir, source_path=source_path)
+        if sketch_root is not None:
+            rel = source_path.resolve(strict=False).relative_to(sketch_root)
             rel_parent = rel.parent
             stem = rel.stem or stem
-        except Exception:
-            rel_parent = None
+            project_root = _project_root_dir_from_sketch_root(sketch_root, sketch_dir)
+
+    # output_dir / sketch_dir が相対パスの場合、cwd に依存してズレることがある。
+    # cwd がプロジェクトルートでない場合だけ、project_root を推定して補正する。
+    out_root = output_root_dir()
+    if not out_root.is_absolute() and project_root is not None:
+        if Path.cwd().resolve(strict=False) != project_root.resolve(strict=False):
+            out_root = project_root / out_root
+    base_dir = out_root / str(kind)
 
     filename = f"{stem}{_canvas_size_suffix(canvas_size)}{suffix}.{ext_norm}"
     if rel_parent is None:

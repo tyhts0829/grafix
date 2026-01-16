@@ -13,7 +13,55 @@ def draw(t):
     t = G.text()
     et = E.quantize().buffer().buffer().fill()
     t = et(t)
-    return ax, P.layout(canvas_w=CANVAS_WIDTH, canvas_h=CANVAS_HEIGHT), t
+
+    m = 12.0
+    guides = (
+        P.layout_bounds(
+            canvas_w=CANVAS_WIDTH,
+            canvas_h=CANVAS_HEIGHT,
+            border=True,
+            show_margin=True,
+            margin_l=m,
+            margin_r=m,
+            margin_t=m,
+            margin_b=m,
+        )
+        + P.layout_grid_system(
+            canvas_w=CANVAS_WIDTH,
+            canvas_h=CANVAS_HEIGHT,
+            cols=12,
+            rows=12,
+            gutter_x=4.0,
+            gutter_y=4.0,
+            show_baseline=True,
+            baseline_step=6.0,
+            baseline_offset=0.0,
+            margin_l=m,
+            margin_r=m,
+            margin_t=m,
+            margin_b=m,
+        )
+        + P.layout_golden_ratio(
+            canvas_w=CANVAS_WIDTH,
+            canvas_h=CANVAS_HEIGHT,
+            margin_l=m,
+            margin_r=m,
+            margin_t=m,
+            margin_b=m,
+        )
+        + P.layout_intersections(
+            canvas_w=CANVAS_WIDTH,
+            canvas_h=CANVAS_HEIGHT,
+            show_golden=True,
+            mark_size=2.0,
+            margin_l=m,
+            margin_r=m,
+            margin_t=m,
+            margin_b=m,
+        )
+    )
+
+    return ax, guides, t
 
 
 if __name__ == "__main__":
