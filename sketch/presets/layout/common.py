@@ -6,8 +6,10 @@ from __future__ import annotations
 
 from bisect import bisect_left
 import math
+from typing import cast
 
 from grafix import G
+from grafix.core.geometry import Geometry
 
 CANVAS_SIZE = (148, 210)  # A5 (mm)
 
@@ -68,7 +70,7 @@ def _concat(geoms: list[object]) -> object:
         raise ValueError("空の Geometry 連結はできません")
     out = geoms[0]
     for g in geoms[1:]:
-        out = out + g
+        out = cast(Geometry, out) + cast(Geometry, g)
     return out
 
 
