@@ -121,3 +121,25 @@ def test_metaball_outputs_holes_for_donut() -> None:
     assert widths
     assert max(widths) > 1.5 * min(widths)
 
+
+def test_metaball_output_exterior_filters_holes() -> None:
+    g = G.metaball_test_donut_xy()
+    both = realize(E.metaball(radius=1.0, threshold=1.0, grid_pitch=0.5, output="both")(g))
+    ext = realize(E.metaball(radius=1.0, threshold=1.0, grid_pitch=0.5, output="exterior")(g))
+
+    assert int(ext.offsets.size) >= 2
+    assert int(ext.offsets.size) < int(both.offsets.size)
+
+    widths: list[float] = []
+    for i in range(int(ext.offsets.size) - 1):
+        s = int(ext.offsets[i])
+        e = int(ext.offsets[i + 1])
+        line = ext.coords[s:e, :2].astype(np.float64, copy=False)
+        if line.shape[0] < 4:
+            continue
+        mins = np.min(line, axis=0)
+        maxs = np.max(line, axis=0)
+        widths.append(float(np.max(maxs - mins)))
+
+    assert widths
+    assert min(widths) > 10.0
