@@ -19,58 +19,58 @@ class _G(Protocol):
     def __call__(self, name: str | None = None) -> _G:
         """ラベル付き primitive 名前空間を返す。"""
         ...
-    def grid(self, *, bypass: bool = ..., nx: int = ..., ny: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def grid(self, *, activate: bool = ..., nx: int = ..., ny: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         グリッド（縦線 nx 本 + 横線 ny 本）を生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             nx: 縦線の本数
             ny: 横線の本数
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率 s
         """
         ...
-    def line(self, *, bypass: bool = ..., center: Vec3 = ..., length: float = ..., angle: float = ...) -> Geometry:
+    def line(self, *, activate: bool = ..., center: Vec3 = ..., length: float = ..., angle: float = ...) -> Geometry:
         """
         正規化済み引数から線分を生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             center: 線分中心の座標 (cx, cy, cz)
             length: 線分の長さ
             angle: 回転角 [deg]
         """
         ...
-    def polygon(self, *, bypass: bool = ..., n_sides: int = ..., phase: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def polygon(self, *, activate: bool = ..., n_sides: int = ..., phase: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         正多角形の閉ポリラインを生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             n_sides: 辺の数
             phase: 頂点開始角 [deg]
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率 s
         """
         ...
-    def polyhedron(self, *, bypass: bool = ..., type_index: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def polyhedron(self, *, activate: bool = ..., type_index: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         正多面体を面ポリライン列として生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             type_index: 形状の選択インデックス（0..N-1）
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率 s
         """
         ...
-    def sphere(self, *, bypass: bool = ..., subdivisions: int = ..., type_index: int = ..., mode: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def sphere(self, *, activate: bool = ..., subdivisions: int = ..., type_index: int = ..., mode: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         球のワイヤーフレームをポリライン列として生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             subdivisions: 細分化レベル（0..5 にクランプ）
             type_index: スタイル選択（0..3 にクランプ）
             mode: latlon/rings 用の線種（0: 横/緯度のみ, 1: 縦/経度のみ, 2: 両方）
@@ -78,12 +78,12 @@ class _G(Protocol):
             scale: 等方スケール倍率 s
         """
         ...
-    def text(self, *, bypass: bool = ..., text: str = ..., font: str = ..., font_index: int = ..., text_align: str = ..., letter_spacing_em: float = ..., line_height: float = ..., quality: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def text(self, *, activate: bool = ..., text: str = ..., font: str = ..., font_index: int = ..., text_align: str = ..., letter_spacing_em: float = ..., line_height: float = ..., quality: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         フォントアウトラインからテキストのポリライン列を生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             text: 描画する文字列
             font: フォント指定（実在パス / ファイル名 / ステム / 部分一致）
             font_index: `.ttc` の subfont 番号（0 以上）
@@ -95,12 +95,12 @@ class _G(Protocol):
             scale: 等方スケール倍率 s
         """
         ...
-    def torus(self, *, bypass: bool = ..., major_radius: float = ..., minor_radius: float = ..., major_segments: int = ..., minor_segments: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def torus(self, *, activate: bool = ..., major_radius: float = ..., minor_radius: float = ..., major_segments: int = ..., minor_segments: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         トーラスのワイヤーフレーム（子午線+緯線）を生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             major_radius: 大半径
             minor_radius: 小半径
             major_segments: major 方向の分割数
@@ -114,12 +114,12 @@ class _EffectBuilder(Protocol):
     def __call__(self, geometry: Geometry, *more_geometries: Geometry) -> Geometry:
         """保持している effect 列を Geometry に適用する。"""
         ...
-    def affine(self, *, bypass: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., scale: Vec3 = ..., delta: Vec3 = ...) -> _EffectBuilder:
+    def affine(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., scale: Vec3 = ..., delta: Vec3 = ...) -> _EffectBuilder:
         """
         スケール→回転→平行移動を適用する（合成アフィン変換）。
 
         引数:
-            bypass: bool
+            activate: bool
             auto_center: True なら頂点の平均座標を中心に使用する
             pivot: `auto_center=False` のときの変換中心
             rotation: 各軸の回転角 [deg]（rx, ry, rz）
@@ -127,23 +127,23 @@ class _EffectBuilder(Protocol):
             delta: 最後に適用する平行移動量 [mm]（dx, dy, dz）
         """
         ...
-    def bold(self, *, bypass: bool = ..., count: int = ..., radius: float = ..., seed: int = ...) -> _EffectBuilder:
+    def bold(self, *, activate: bool = ..., count: int = ..., radius: float = ..., seed: int = ...) -> _EffectBuilder:
         """
         入力を複製して太線風にする。
 
         引数:
-            bypass: bool
+            activate: bool
             count: 出力ストローク数（元の線を 1 本含む）
             radius: ずらし量の最大半径 [mm] 相当（XY のみ）
             seed: ずらし量生成の乱数シード（決定性のため）
         """
         ...
-    def buffer(self, *, bypass: bool = ..., join: str = ..., distance: float = ..., quad_segs: int = ..., union: bool = ..., keep_original: bool = ...) -> _EffectBuilder:
+    def buffer(self, *, activate: bool = ..., join: str = ..., distance: float = ..., quad_segs: int = ..., union: bool = ..., keep_original: bool = ...) -> _EffectBuilder:
         """
         Shapely の buffer を用いて輪郭を生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             join: 角の処理
             distance: buffer 距離 [mm]
             quad_segs: 円弧近似分割数（Shapely の `quad_segs` 相当）
@@ -151,22 +151,22 @@ class _EffectBuilder(Protocol):
             keep_original: True のとき buffer 結果に加えて元のポリラインも出力に含める
         """
         ...
-    def clip(self, *, bypass: bool = ..., mode: str = ..., draw_outline: bool = ...) -> _EffectBuilder:
+    def clip(self, *, activate: bool = ..., mode: str = ..., draw_outline: bool = ...) -> _EffectBuilder:
         """
         XY 平面へ整列した上で、閉曲線マスクで線分列をクリップする。
 
         引数:
-            bypass: bool
+            activate: bool
             mode: `"inside"` はマスク内側だけ残す
             draw_outline: True のとき、マスク輪郭を追加で出力に含める
         """
         ...
-    def collapse(self, *, bypass: bool = ..., intensity: float = ..., subdivisions: int = ..., intensity_mask_base: Vec3 = ..., intensity_mask_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
+    def collapse(self, *, activate: bool = ..., intensity: float = ..., subdivisions: int = ..., intensity_mask_base: Vec3 = ..., intensity_mask_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         線分を細分化してノイズで崩す（非接続）。
 
         引数:
-            bypass: bool
+            activate: bool
             intensity: 変位量（長さ単位は座標系に従う）
             subdivisions: 細分回数
             intensity_mask_base: ジオメトリ bbox の中心（正規化座標 t=0）における intensity 乗算係数（軸別）
@@ -175,24 +175,24 @@ class _EffectBuilder(Protocol):
             pivot: auto_center=False のときの pivot（ワールド座標）
         """
         ...
-    def dash(self, *, bypass: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ...) -> _EffectBuilder:
+    def dash(self, *, activate: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ...) -> _EffectBuilder:
         """
         連続線を破線に変換する。
 
         引数:
-            bypass: bool
+            activate: bool
             dash_length: ダッシュ（描画区間）の長さ [mm]
             gap_length: ギャップ（非描画区間）の長さ [mm]
             offset: パターン位相オフセット [mm]
             offset_jitter: ポリラインごとに offset に加えるジッター量 [mm]
         """
         ...
-    def displace(self, *, bypass: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
+    def displace(self, *, activate: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
         """
         3D Perlin ノイズで頂点を変位する。
 
         引数:
-            bypass: bool
+            activate: bool
             amplitude: 変位量 [mm]（各軸別）
             spatial_freq: 空間周波数（各軸別）
             amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
@@ -203,12 +203,12 @@ class _EffectBuilder(Protocol):
             t: 時間オフセット（位相）
         """
         ...
-    def drop(self, *, bypass: bool = ..., interval: int = ..., index_offset: int = ..., min_length: float = ..., max_length: float = ..., probability_base: Vec3 = ..., probability_slope: Vec3 = ..., by: str = ..., keep_mode: str = ..., seed: int = ...) -> _EffectBuilder:
+    def drop(self, *, activate: bool = ..., interval: int = ..., index_offset: int = ..., min_length: float = ..., max_length: float = ..., probability_base: Vec3 = ..., probability_slope: Vec3 = ..., by: str = ..., keep_mode: str = ..., seed: int = ...) -> _EffectBuilder:
         """
         線や面を条件で間引く。
 
         引数:
-            bypass: bool
+            activate: bool
             interval: 線インデックスに対する間引きステップ
             index_offset: interval 判定の開始オフセット
             min_length: この長さ以下の線を対象とする
@@ -220,24 +220,24 @@ class _EffectBuilder(Protocol):
             seed: probability_* 使用時の乱数シード
         """
         ...
-    def extrude(self, *, bypass: bool = ..., delta: Vec3 = ..., scale: float = ..., subdivisions: int = ..., center_mode: str = ...) -> _EffectBuilder:
+    def extrude(self, *, activate: bool = ..., delta: Vec3 = ..., scale: float = ..., subdivisions: int = ..., center_mode: str = ...) -> _EffectBuilder:
         """
         指定方向に押し出し、複製線と側面エッジを生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             delta: 押し出し量（dx, dy, dz）[mm]（長さは 0–200 にクランプ）
             scale: 複製線に適用するスケール係数（0–3 にクランプ）
             subdivisions: 中点挿入の細分回数（0–8 にクランプ）
             center_mode: "auto" のとき複製線の重心中心でスケールし、それ以外は原点中心でスケールする
         """
         ...
-    def fill(self, *, bypass: bool = ..., angle_sets: int | Sequence[int] = ..., angle: float | Sequence[float] = ..., density: float | Sequence[float] = ..., spacing_gradient: float | Sequence[float] = ..., remove_boundary: bool | Sequence[bool] = ...) -> _EffectBuilder:
+    def fill(self, *, activate: bool = ..., angle_sets: int | Sequence[int] = ..., angle: float | Sequence[float] = ..., density: float | Sequence[float] = ..., spacing_gradient: float | Sequence[float] = ..., remove_boundary: bool | Sequence[bool] = ...) -> _EffectBuilder:
         """
         閉領域をハッチングで塗りつぶす。
 
         引数:
-            bypass: bool
+            activate: bool
             angle_sets: 方向本数（シーケンス指定時はグループごとにサイクル適用）
             angle: 基準角 [deg]（シーケンス指定時はグループごとにサイクル適用）
             density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
@@ -245,12 +245,12 @@ class _EffectBuilder(Protocol):
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
         """
         ...
-    def mirror(self, *, bypass: bool = ..., n_mirror: int = ..., cx: float = ..., cy: float = ..., source_positive_x: bool = ..., source_positive_y: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
+    def mirror(self, *, activate: bool = ..., n_mirror: int = ..., cx: float = ..., cy: float = ..., source_positive_x: bool = ..., source_positive_y: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
         """
         XY 平面でのミラー複製を行う。
 
         引数:
-            bypass: bool
+            activate: bool
             n_mirror: 1: x=cx による半空間ミラー
             cx: float, range [-100.0, 100.0]
             cy: float, range [-100.0, 100.0]
@@ -259,12 +259,12 @@ class _EffectBuilder(Protocol):
             show_planes: 対称面（または放射状境界）を可視化用ラインとして出力へ追加する
         """
         ...
-    def mirror3d(self, *, bypass: bool = ..., mode: str = ..., n_azimuth: int = ..., center: Vec3 = ..., axis: Vec3 = ..., phi0: float = ..., mirror_equator: bool = ..., source_side: bool = ..., group: str = ..., use_reflection: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
+    def mirror3d(self, *, activate: bool = ..., mode: str = ..., n_azimuth: int = ..., center: Vec3 = ..., axis: Vec3 = ..., phi0: float = ..., mirror_equator: bool = ..., source_side: bool = ..., group: str = ..., use_reflection: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
         """
         3D 放射状ミラー（azimuth / polyhedral）。
 
         引数:
-            bypass: bool
+            activate: bool
             mode: "azimuth" は回転軸を含む 2 平面でくさびを作り、回転と反射で複製する
             n_azimuth: "azimuth" の等分数
             center: 回転/反射の中心
@@ -277,12 +277,12 @@ class _EffectBuilder(Protocol):
             show_planes: 対称面を可視化用の十字線として出力に追加する
         """
         ...
-    def partition(self, *, bypass: bool = ..., mode: str = ..., site_count: int = ..., seed: int = ..., site_density_base: Vec3 = ..., site_density_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
+    def partition(self, *, activate: bool = ..., mode: str = ..., site_count: int = ..., seed: int = ..., site_density_base: Vec3 = ..., site_density_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         偶奇規則の平面領域を Voronoi 分割し、閉ループ群を返す。
 
         引数:
-            bypass: bool
+            activate: bool
             mode: 入力リングの扱い
             site_count: Voronoi のサイト数
             seed: 乱数シード（再現性）
@@ -292,31 +292,31 @@ class _EffectBuilder(Protocol):
             pivot: auto_center=False のときの pivot（ワールド座標）
         """
         ...
-    def quantize(self, *, bypass: bool = ..., step: Vec3 = ...) -> _EffectBuilder:
+    def quantize(self, *, activate: bool = ..., step: Vec3 = ...) -> _EffectBuilder:
         """
         頂点座標を各軸のステップ幅で量子化する（XYZ）。
 
         引数:
-            bypass: bool
+            activate: bool
             step: 各軸の格子間隔 (sx, sy, sz)
         """
         ...
-    def relax(self, *, bypass: bool = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
+    def relax(self, *, activate: bool = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
         """
         線分ネットワークをグラフとして弾性緩和する。
 
         引数:
-            bypass: bool
+            activate: bool
             relaxation_iterations: 反復回数（0–50 にクランプ）
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
         """
         ...
-    def repeat(self, *, bypass: bool = ..., count: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
+    def repeat(self, *, activate: bool = ..., count: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         入力ジオメトリを複製して、規則的な配列を作る。
 
         引数:
-            bypass: bool
+            activate: bool
             count: 複製回数
             cumulative_scale: True のときスケール補間にカーブ（t' = t**curve）を用いる
             cumulative_offset: True のときオフセット補間にカーブ（t' = t**curve）を用いる
@@ -329,86 +329,86 @@ class _EffectBuilder(Protocol):
             pivot: `auto_center=False` のときの変換中心 [mm]
         """
         ...
-    def rotate(self, *, bypass: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ...) -> _EffectBuilder:
+    def rotate(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ...) -> _EffectBuilder:
         """
         回転（auto_center / pivot 対応、degree 入力）。
 
         引数:
-            bypass: bool
+            activate: bool
             auto_center: True なら頂点の平均座標を中心に使用
             pivot: 回転の中心（`auto_center=False` のとき有効）
             rotation: 各軸の回転角 [deg]（rx, ry, rz）
         """
         ...
-    def scale(self, *, bypass: bool = ..., mode: str = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: Vec3 = ...) -> _EffectBuilder:
+    def scale(self, *, activate: bool = ..., mode: str = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: Vec3 = ...) -> _EffectBuilder:
         """
         スケール変換を適用（auto_center 対応）。
 
         引数:
-            bypass: bool
+            activate: bool
             mode: `"all"` は入力全体を 1 つの中心でスケールする
             auto_center: True なら平均座標を中心に使用
             pivot: 変換の中心（`mode="all"` かつ `auto_center=False` のとき有効）
             scale: 各軸の倍率
         """
         ...
-    def subdivide(self, *, bypass: bool = ..., subdivisions: int = ...) -> _EffectBuilder:
+    def subdivide(self, *, activate: bool = ..., subdivisions: int = ...) -> _EffectBuilder:
         """
         中点挿入で線を細分化する。
 
         引数:
-            bypass: bool
+            activate: bool
             subdivisions: 細分回数
         """
         ...
-    def translate(self, *, bypass: bool = ..., delta: Vec3 = ...) -> _EffectBuilder:
+    def translate(self, *, activate: bool = ..., delta: Vec3 = ...) -> _EffectBuilder:
         """
         平行移動（XYZ のオフセット加算）。
 
         引数:
-            bypass: bool
+            activate: bool
             delta: 平行移動量（dx, dy, dz）
         """
         ...
-    def trim(self, *, bypass: bool = ..., start_param: float = ..., end_param: float = ...) -> _EffectBuilder:
+    def trim(self, *, activate: bool = ..., start_param: float = ..., end_param: float = ...) -> _EffectBuilder:
         """
         ポリライン列を正規化弧長の区間でトリムする。
 
         引数:
-            bypass: bool
+            activate: bool
             start_param: 開始位置（0.0–1.0）
             end_param: 終了位置（0.0–1.0）
         """
         ...
-    def twist(self, *, bypass: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., angle: float = ..., axis_dir: Vec3 = ...) -> _EffectBuilder:
+    def twist(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., angle: float = ..., axis_dir: Vec3 = ...) -> _EffectBuilder:
         """
         位置に応じて軸回りにねじる（中心付近は 0）。
 
         引数:
-            bypass: bool
+            activate: bool
             auto_center: True なら平均座標を回転中心に使用
             pivot: ねじり軸（`axis_dir` に平行な直線）の通過点（`auto_center=False` のとき有効）
             angle: 最大ねじれ角 [deg]
             axis_dir: ねじり軸方向（ベクトル）
         """
         ...
-    def weave(self, *, bypass: bool = ..., num_candidate_lines: int = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
+    def weave(self, *, activate: bool = ..., num_candidate_lines: int = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
         """
         入力閉曲線からウェブ状の線分ネットワークを生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             num_candidate_lines: 候補線本数（0–500 にクランプ）
             relaxation_iterations: 弾性緩和の反復回数（0–50 にクランプ）
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
         """
         ...
-    def wobble(self, *, bypass: bool = ..., amplitude: Vec3 = ..., frequency: Vec3 = ..., phase: float = ...) -> _EffectBuilder:
+    def wobble(self, *, activate: bool = ..., amplitude: Vec3 = ..., frequency: Vec3 = ..., phase: float = ...) -> _EffectBuilder:
         """
         各頂点へサイン波由来の変位を加える。
 
         引数:
-            bypass: bool
+            activate: bool
             amplitude: 変位量 [mm] 相当（各軸別）
             frequency: 空間周波数（各軸別）
             phase: 位相 [deg]
@@ -419,12 +419,12 @@ class _E(Protocol):
     def __call__(self, name: str | None = None) -> _E:
         """ラベル付き effect 名前空間を返す。"""
         ...
-    def affine(self, *, bypass: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., scale: Vec3 = ..., delta: Vec3 = ...) -> _EffectBuilder:
+    def affine(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., scale: Vec3 = ..., delta: Vec3 = ...) -> _EffectBuilder:
         """
         スケール→回転→平行移動を適用する（合成アフィン変換）。
 
         引数:
-            bypass: bool
+            activate: bool
             auto_center: True なら頂点の平均座標を中心に使用する
             pivot: `auto_center=False` のときの変換中心
             rotation: 各軸の回転角 [deg]（rx, ry, rz）
@@ -432,23 +432,23 @@ class _E(Protocol):
             delta: 最後に適用する平行移動量 [mm]（dx, dy, dz）
         """
         ...
-    def bold(self, *, bypass: bool = ..., count: int = ..., radius: float = ..., seed: int = ...) -> _EffectBuilder:
+    def bold(self, *, activate: bool = ..., count: int = ..., radius: float = ..., seed: int = ...) -> _EffectBuilder:
         """
         入力を複製して太線風にする。
 
         引数:
-            bypass: bool
+            activate: bool
             count: 出力ストローク数（元の線を 1 本含む）
             radius: ずらし量の最大半径 [mm] 相当（XY のみ）
             seed: ずらし量生成の乱数シード（決定性のため）
         """
         ...
-    def buffer(self, *, bypass: bool = ..., join: str = ..., distance: float = ..., quad_segs: int = ..., union: bool = ..., keep_original: bool = ...) -> _EffectBuilder:
+    def buffer(self, *, activate: bool = ..., join: str = ..., distance: float = ..., quad_segs: int = ..., union: bool = ..., keep_original: bool = ...) -> _EffectBuilder:
         """
         Shapely の buffer を用いて輪郭を生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             join: 角の処理
             distance: buffer 距離 [mm]
             quad_segs: 円弧近似分割数（Shapely の `quad_segs` 相当）
@@ -456,22 +456,22 @@ class _E(Protocol):
             keep_original: True のとき buffer 結果に加えて元のポリラインも出力に含める
         """
         ...
-    def clip(self, *, bypass: bool = ..., mode: str = ..., draw_outline: bool = ...) -> _EffectBuilder:
+    def clip(self, *, activate: bool = ..., mode: str = ..., draw_outline: bool = ...) -> _EffectBuilder:
         """
         XY 平面へ整列した上で、閉曲線マスクで線分列をクリップする。
 
         引数:
-            bypass: bool
+            activate: bool
             mode: `"inside"` はマスク内側だけ残す
             draw_outline: True のとき、マスク輪郭を追加で出力に含める
         """
         ...
-    def collapse(self, *, bypass: bool = ..., intensity: float = ..., subdivisions: int = ..., intensity_mask_base: Vec3 = ..., intensity_mask_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
+    def collapse(self, *, activate: bool = ..., intensity: float = ..., subdivisions: int = ..., intensity_mask_base: Vec3 = ..., intensity_mask_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         線分を細分化してノイズで崩す（非接続）。
 
         引数:
-            bypass: bool
+            activate: bool
             intensity: 変位量（長さ単位は座標系に従う）
             subdivisions: 細分回数
             intensity_mask_base: ジオメトリ bbox の中心（正規化座標 t=0）における intensity 乗算係数（軸別）
@@ -480,24 +480,24 @@ class _E(Protocol):
             pivot: auto_center=False のときの pivot（ワールド座標）
         """
         ...
-    def dash(self, *, bypass: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ...) -> _EffectBuilder:
+    def dash(self, *, activate: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ...) -> _EffectBuilder:
         """
         連続線を破線に変換する。
 
         引数:
-            bypass: bool
+            activate: bool
             dash_length: ダッシュ（描画区間）の長さ [mm]
             gap_length: ギャップ（非描画区間）の長さ [mm]
             offset: パターン位相オフセット [mm]
             offset_jitter: ポリラインごとに offset に加えるジッター量 [mm]
         """
         ...
-    def displace(self, *, bypass: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
+    def displace(self, *, activate: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
         """
         3D Perlin ノイズで頂点を変位する。
 
         引数:
-            bypass: bool
+            activate: bool
             amplitude: 変位量 [mm]（各軸別）
             spatial_freq: 空間周波数（各軸別）
             amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
@@ -508,12 +508,12 @@ class _E(Protocol):
             t: 時間オフセット（位相）
         """
         ...
-    def drop(self, *, bypass: bool = ..., interval: int = ..., index_offset: int = ..., min_length: float = ..., max_length: float = ..., probability_base: Vec3 = ..., probability_slope: Vec3 = ..., by: str = ..., keep_mode: str = ..., seed: int = ...) -> _EffectBuilder:
+    def drop(self, *, activate: bool = ..., interval: int = ..., index_offset: int = ..., min_length: float = ..., max_length: float = ..., probability_base: Vec3 = ..., probability_slope: Vec3 = ..., by: str = ..., keep_mode: str = ..., seed: int = ...) -> _EffectBuilder:
         """
         線や面を条件で間引く。
 
         引数:
-            bypass: bool
+            activate: bool
             interval: 線インデックスに対する間引きステップ
             index_offset: interval 判定の開始オフセット
             min_length: この長さ以下の線を対象とする
@@ -525,24 +525,24 @@ class _E(Protocol):
             seed: probability_* 使用時の乱数シード
         """
         ...
-    def extrude(self, *, bypass: bool = ..., delta: Vec3 = ..., scale: float = ..., subdivisions: int = ..., center_mode: str = ...) -> _EffectBuilder:
+    def extrude(self, *, activate: bool = ..., delta: Vec3 = ..., scale: float = ..., subdivisions: int = ..., center_mode: str = ...) -> _EffectBuilder:
         """
         指定方向に押し出し、複製線と側面エッジを生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             delta: 押し出し量（dx, dy, dz）[mm]（長さは 0–200 にクランプ）
             scale: 複製線に適用するスケール係数（0–3 にクランプ）
             subdivisions: 中点挿入の細分回数（0–8 にクランプ）
             center_mode: "auto" のとき複製線の重心中心でスケールし、それ以外は原点中心でスケールする
         """
         ...
-    def fill(self, *, bypass: bool = ..., angle_sets: int | Sequence[int] = ..., angle: float | Sequence[float] = ..., density: float | Sequence[float] = ..., spacing_gradient: float | Sequence[float] = ..., remove_boundary: bool | Sequence[bool] = ...) -> _EffectBuilder:
+    def fill(self, *, activate: bool = ..., angle_sets: int | Sequence[int] = ..., angle: float | Sequence[float] = ..., density: float | Sequence[float] = ..., spacing_gradient: float | Sequence[float] = ..., remove_boundary: bool | Sequence[bool] = ...) -> _EffectBuilder:
         """
         閉領域をハッチングで塗りつぶす。
 
         引数:
-            bypass: bool
+            activate: bool
             angle_sets: 方向本数（シーケンス指定時はグループごとにサイクル適用）
             angle: 基準角 [deg]（シーケンス指定時はグループごとにサイクル適用）
             density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
@@ -550,12 +550,12 @@ class _E(Protocol):
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
         """
         ...
-    def mirror(self, *, bypass: bool = ..., n_mirror: int = ..., cx: float = ..., cy: float = ..., source_positive_x: bool = ..., source_positive_y: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
+    def mirror(self, *, activate: bool = ..., n_mirror: int = ..., cx: float = ..., cy: float = ..., source_positive_x: bool = ..., source_positive_y: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
         """
         XY 平面でのミラー複製を行う。
 
         引数:
-            bypass: bool
+            activate: bool
             n_mirror: 1: x=cx による半空間ミラー
             cx: float, range [-100.0, 100.0]
             cy: float, range [-100.0, 100.0]
@@ -564,12 +564,12 @@ class _E(Protocol):
             show_planes: 対称面（または放射状境界）を可視化用ラインとして出力へ追加する
         """
         ...
-    def mirror3d(self, *, bypass: bool = ..., mode: str = ..., n_azimuth: int = ..., center: Vec3 = ..., axis: Vec3 = ..., phi0: float = ..., mirror_equator: bool = ..., source_side: bool = ..., group: str = ..., use_reflection: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
+    def mirror3d(self, *, activate: bool = ..., mode: str = ..., n_azimuth: int = ..., center: Vec3 = ..., axis: Vec3 = ..., phi0: float = ..., mirror_equator: bool = ..., source_side: bool = ..., group: str = ..., use_reflection: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
         """
         3D 放射状ミラー（azimuth / polyhedral）。
 
         引数:
-            bypass: bool
+            activate: bool
             mode: "azimuth" は回転軸を含む 2 平面でくさびを作り、回転と反射で複製する
             n_azimuth: "azimuth" の等分数
             center: 回転/反射の中心
@@ -582,12 +582,12 @@ class _E(Protocol):
             show_planes: 対称面を可視化用の十字線として出力に追加する
         """
         ...
-    def partition(self, *, bypass: bool = ..., mode: str = ..., site_count: int = ..., seed: int = ..., site_density_base: Vec3 = ..., site_density_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
+    def partition(self, *, activate: bool = ..., mode: str = ..., site_count: int = ..., seed: int = ..., site_density_base: Vec3 = ..., site_density_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         偶奇規則の平面領域を Voronoi 分割し、閉ループ群を返す。
 
         引数:
-            bypass: bool
+            activate: bool
             mode: 入力リングの扱い
             site_count: Voronoi のサイト数
             seed: 乱数シード（再現性）
@@ -597,31 +597,31 @@ class _E(Protocol):
             pivot: auto_center=False のときの pivot（ワールド座標）
         """
         ...
-    def quantize(self, *, bypass: bool = ..., step: Vec3 = ...) -> _EffectBuilder:
+    def quantize(self, *, activate: bool = ..., step: Vec3 = ...) -> _EffectBuilder:
         """
         頂点座標を各軸のステップ幅で量子化する（XYZ）。
 
         引数:
-            bypass: bool
+            activate: bool
             step: 各軸の格子間隔 (sx, sy, sz)
         """
         ...
-    def relax(self, *, bypass: bool = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
+    def relax(self, *, activate: bool = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
         """
         線分ネットワークをグラフとして弾性緩和する。
 
         引数:
-            bypass: bool
+            activate: bool
             relaxation_iterations: 反復回数（0–50 にクランプ）
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
         """
         ...
-    def repeat(self, *, bypass: bool = ..., count: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
+    def repeat(self, *, activate: bool = ..., count: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         入力ジオメトリを複製して、規則的な配列を作る。
 
         引数:
-            bypass: bool
+            activate: bool
             count: 複製回数
             cumulative_scale: True のときスケール補間にカーブ（t' = t**curve）を用いる
             cumulative_offset: True のときオフセット補間にカーブ（t' = t**curve）を用いる
@@ -634,86 +634,86 @@ class _E(Protocol):
             pivot: `auto_center=False` のときの変換中心 [mm]
         """
         ...
-    def rotate(self, *, bypass: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ...) -> _EffectBuilder:
+    def rotate(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ...) -> _EffectBuilder:
         """
         回転（auto_center / pivot 対応、degree 入力）。
 
         引数:
-            bypass: bool
+            activate: bool
             auto_center: True なら頂点の平均座標を中心に使用
             pivot: 回転の中心（`auto_center=False` のとき有効）
             rotation: 各軸の回転角 [deg]（rx, ry, rz）
         """
         ...
-    def scale(self, *, bypass: bool = ..., mode: str = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: Vec3 = ...) -> _EffectBuilder:
+    def scale(self, *, activate: bool = ..., mode: str = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: Vec3 = ...) -> _EffectBuilder:
         """
         スケール変換を適用（auto_center 対応）。
 
         引数:
-            bypass: bool
+            activate: bool
             mode: `"all"` は入力全体を 1 つの中心でスケールする
             auto_center: True なら平均座標を中心に使用
             pivot: 変換の中心（`mode="all"` かつ `auto_center=False` のとき有効）
             scale: 各軸の倍率
         """
         ...
-    def subdivide(self, *, bypass: bool = ..., subdivisions: int = ...) -> _EffectBuilder:
+    def subdivide(self, *, activate: bool = ..., subdivisions: int = ...) -> _EffectBuilder:
         """
         中点挿入で線を細分化する。
 
         引数:
-            bypass: bool
+            activate: bool
             subdivisions: 細分回数
         """
         ...
-    def translate(self, *, bypass: bool = ..., delta: Vec3 = ...) -> _EffectBuilder:
+    def translate(self, *, activate: bool = ..., delta: Vec3 = ...) -> _EffectBuilder:
         """
         平行移動（XYZ のオフセット加算）。
 
         引数:
-            bypass: bool
+            activate: bool
             delta: 平行移動量（dx, dy, dz）
         """
         ...
-    def trim(self, *, bypass: bool = ..., start_param: float = ..., end_param: float = ...) -> _EffectBuilder:
+    def trim(self, *, activate: bool = ..., start_param: float = ..., end_param: float = ...) -> _EffectBuilder:
         """
         ポリライン列を正規化弧長の区間でトリムする。
 
         引数:
-            bypass: bool
+            activate: bool
             start_param: 開始位置（0.0–1.0）
             end_param: 終了位置（0.0–1.0）
         """
         ...
-    def twist(self, *, bypass: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., angle: float = ..., axis_dir: Vec3 = ...) -> _EffectBuilder:
+    def twist(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., angle: float = ..., axis_dir: Vec3 = ...) -> _EffectBuilder:
         """
         位置に応じて軸回りにねじる（中心付近は 0）。
 
         引数:
-            bypass: bool
+            activate: bool
             auto_center: True なら平均座標を回転中心に使用
             pivot: ねじり軸（`axis_dir` に平行な直線）の通過点（`auto_center=False` のとき有効）
             angle: 最大ねじれ角 [deg]
             axis_dir: ねじり軸方向（ベクトル）
         """
         ...
-    def weave(self, *, bypass: bool = ..., num_candidate_lines: int = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
+    def weave(self, *, activate: bool = ..., num_candidate_lines: int = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
         """
         入力閉曲線からウェブ状の線分ネットワークを生成する。
 
         引数:
-            bypass: bool
+            activate: bool
             num_candidate_lines: 候補線本数（0–500 にクランプ）
             relaxation_iterations: 弾性緩和の反復回数（0–50 にクランプ）
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
         """
         ...
-    def wobble(self, *, bypass: bool = ..., amplitude: Vec3 = ..., frequency: Vec3 = ..., phase: float = ...) -> _EffectBuilder:
+    def wobble(self, *, activate: bool = ..., amplitude: Vec3 = ..., frequency: Vec3 = ..., phase: float = ...) -> _EffectBuilder:
         """
         各頂点へサイン波由来の変位を加える。
 
         引数:
-            bypass: bool
+            activate: bool
             amplitude: 変位量 [mm] 相当（各軸別）
             frequency: 空間周波数（各軸別）
             phase: 位相 [deg]
@@ -737,10 +737,10 @@ class _P(Protocol):
         """preset を `P.<name>(...)` で呼び出す。"""
         ...
 
-    def axes(self, *, bypass: bool = ..., center: Vec3 = ..., axis_length: float = ..., axis_visible_ratio: float = ..., axis_visible_anchor: str = ..., tick_count_x: int = ..., tick_length: float = ..., tick_offset: float = ..., tick_log: bool = ...) -> Any:
+    def axes(self, *, activate: bool = ..., center: Vec3 = ..., axis_length: float = ..., axis_visible_ratio: float = ..., axis_visible_anchor: str = ..., tick_count_x: int = ..., tick_length: float = ..., tick_offset: float = ..., tick_log: bool = ...) -> Any:
         """
         引数:
-            bypass: bool
+            activate: bool
             center: vec3, range [0.0, 300.0]
             axis_length: float, range [0.0, 300.0]
             axis_visible_ratio: float, range [0.0, 1.0]
@@ -751,10 +751,10 @@ class _P(Protocol):
             tick_log: bool
         """
         ...
-    def dot_matrix(self, *, bypass: bool = ..., center: Vec3 = ..., matrix_size: Vec3 = ..., dot_size: float = ..., fill_density_coef: float = ..., repeat_count_x: int = ..., repeat_count_y: int = ...) -> Any:
+    def dot_matrix(self, *, activate: bool = ..., center: Vec3 = ..., matrix_size: Vec3 = ..., dot_size: float = ..., fill_density_coef: float = ..., repeat_count_x: int = ..., repeat_count_y: int = ...) -> Any:
         """
         引数:
-            bypass: bool
+            activate: bool
             center: vec3, range [0.0, 100.0]
             matrix_size: vec3, range [0.0, 5.0]
             dot_size: float, range [0.1, 20.0]
@@ -763,10 +763,10 @@ class _P(Protocol):
             repeat_count_y: int, range [1, 50]
         """
         ...
-    def flow(self, *, bypass: bool = ..., center: Vec3 = ..., scale: Vec3 = ..., fill_density_coef: float = ..., fill_angle: float = ..., subdivide_levels: int = ..., displace_amplitude: Vec3 = ..., displace_frequency: Vec3 = ...) -> Any:
+    def flow(self, *, activate: bool = ..., center: Vec3 = ..., scale: Vec3 = ..., fill_density_coef: float = ..., fill_angle: float = ..., subdivide_levels: int = ..., displace_amplitude: Vec3 = ..., displace_frequency: Vec3 = ...) -> Any:
         """
         引数:
-            bypass: bool
+            activate: bool
             center: vec3, range [0.0, 100.0]
             scale: vec3, range [0.0, 5.0]
             fill_density_coef: float, range [0.0, 1.0]
@@ -776,12 +776,12 @@ class _P(Protocol):
             displace_frequency: vec3, range [0.0, 0.5]
         """
         ...
-    def layout_bounds(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., border: bool = ..., show_margin: bool = ..., trim: float = ..., show_trim: bool = ..., offset: Vec3 = ...) -> Any:
+    def layout_bounds(self, *, activate: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., border: bool = ..., show_margin: bool = ..., trim: float = ..., show_trim: bool = ..., offset: Vec3 = ...) -> Any:
         """
         外枠（canvas / safe / trim）を描く。
 
         引数:
-            bypass: bool
+            activate: bool
             canvas_w: float, range [10.0, 1000.0]
             canvas_h: float, range [10.0, 1000.0]
             axes: choice, choices { 'both', 'vertical', 'horizontal' }
@@ -797,12 +797,12 @@ class _P(Protocol):
             offset: vec3, range [-50.0, 50.0]
         """
         ...
-    def layout_diagonals(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., offset: Vec3 = ...) -> Any:
+    def layout_diagonals(self, *, activate: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., offset: Vec3 = ...) -> Any:
         """
         対角線ガイドを描く。
 
         引数:
-            bypass: bool
+            activate: bool
             canvas_w: float, range [10.0, 1000.0]
             canvas_h: float, range [10.0, 1000.0]
             axes: choice, choices { 'both', 'vertical', 'horizontal' }
@@ -814,12 +814,12 @@ class _P(Protocol):
             offset: vec3, range [-50.0, 50.0]
         """
         ...
-    def layout_golden_ratio(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., levels: int = ..., offset: Vec3 = ...) -> Any:
+    def layout_golden_ratio(self, *, activate: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., levels: int = ..., offset: Vec3 = ...) -> Any:
         """
         黄金比ガイド線を描く。
 
         引数:
-            bypass: bool
+            activate: bool
             canvas_w: float, range [10.0, 1000.0]
             canvas_h: float, range [10.0, 1000.0]
             axes: choice, choices { 'both', 'vertical', 'horizontal' }
@@ -832,12 +832,12 @@ class _P(Protocol):
             offset: vec3, range [-50.0, 50.0]
         """
         ...
-    def layout_grid_system(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., cols: int = ..., rows: int = ..., gutter_x: float = ..., gutter_y: float = ..., show_column_centers: bool = ..., show_baseline: bool = ..., baseline_step: float = ..., baseline_offset: float = ..., offset: Vec3 = ...) -> Any:
+    def layout_grid_system(self, *, activate: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., cols: int = ..., rows: int = ..., gutter_x: float = ..., gutter_y: float = ..., show_column_centers: bool = ..., show_baseline: bool = ..., baseline_step: float = ..., baseline_offset: float = ..., offset: Vec3 = ...) -> Any:
         """
         grid system（columns / modular / baseline）を描く。
 
         引数:
-            bypass: bool
+            activate: bool
             canvas_w: float, range [10.0, 1000.0]
             canvas_h: float, range [10.0, 1000.0]
             axes: choice, choices { 'both', 'vertical', 'horizontal' }
@@ -857,12 +857,12 @@ class _P(Protocol):
             offset: vec3, range [-50.0, 50.0]
         """
         ...
-    def layout_metallic_rectangles(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., metallic_n: int = ..., levels: int = ..., corner: str = ..., clockwise: bool = ..., offset: Vec3 = ...) -> Any:
+    def layout_metallic_rectangles(self, *, activate: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., metallic_n: int = ..., levels: int = ..., corner: str = ..., clockwise: bool = ..., offset: Vec3 = ...) -> Any:
         """
         貴金属比の矩形分割を描く。
 
         引数:
-            bypass: bool
+            activate: bool
             canvas_w: float, range [10.0, 1000.0]
             canvas_h: float, range [10.0, 1000.0]
             axes: choice, choices { 'both', 'vertical', 'horizontal' }
@@ -878,12 +878,12 @@ class _P(Protocol):
             offset: vec3, range [-50.0, 50.0]
         """
         ...
-    def layout_ratio_lines(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., ratio: float = ..., levels: int = ..., min_spacing: float = ..., max_lines: int = ..., offset: Vec3 = ...) -> Any:
+    def layout_ratio_lines(self, *, activate: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., ratio: float = ..., levels: int = ..., min_spacing: float = ..., max_lines: int = ..., offset: Vec3 = ...) -> Any:
         """
         比率分割線を描く。
 
         引数:
-            bypass: bool
+            activate: bool
             canvas_w: float, range [10.0, 1000.0]
             canvas_h: float, range [10.0, 1000.0]
             axes: choice, choices { 'both', 'vertical', 'horizontal' }
@@ -899,12 +899,12 @@ class _P(Protocol):
             offset: vec3, range [-50.0, 50.0]
         """
         ...
-    def layout_square_grid(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., cell_size: float = ..., offset: Vec3 = ...) -> Any:
+    def layout_square_grid(self, *, activate: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., cell_size: float = ..., offset: Vec3 = ...) -> Any:
         """
         正方形グリッドを描く。
 
         引数:
-            bypass: bool
+            activate: bool
             canvas_w: float, range [10.0, 1000.0]
             canvas_h: float, range [10.0, 1000.0]
             axes: choice, choices { 'both', 'vertical', 'horizontal' }
@@ -917,12 +917,12 @@ class _P(Protocol):
             offset: vec3, range [-50.0, 50.0]
         """
         ...
-    def layout_thirds(self, *, bypass: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., offset: Vec3 = ...) -> Any:
+    def layout_thirds(self, *, activate: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., offset: Vec3 = ...) -> Any:
         """
         三分割ガイド線を描く。
 
         引数:
-            bypass: bool
+            activate: bool
             canvas_w: float, range [10.0, 1000.0]
             canvas_h: float, range [10.0, 1000.0]
             axes: choice, choices { 'both', 'vertical', 'horizontal' }
@@ -934,10 +934,10 @@ class _P(Protocol):
             offset: vec3, range [-50.0, 50.0]
         """
         ...
-    def logo(self, *, bypass: bool = ..., center: Vec3 = ..., scale: float = ..., fill_density_coef: float = ...) -> Any:
+    def logo(self, *, activate: bool = ..., center: Vec3 = ..., scale: float = ..., fill_density_coef: float = ...) -> Any:
         """
         引数:
-            bypass: bool
+            activate: bool
             center: vec3, range [0.0, 100.0]
             scale: float, range [0.0, 4.0]
             fill_density_coef: float, range [0.0, 1.0]

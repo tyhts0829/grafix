@@ -45,36 +45,36 @@ def test_order_rows_for_display_primitive_uses_signature_arg_order():
     assert [r.arg for r in out] == ["n_sides", "phase", "center", "scale"]
 
 
-def test_order_rows_for_display_primitive_uses_bypass_then_signature_arg_order():
+def test_order_rows_for_display_primitive_uses_activate_then_signature_arg_order():
     rows = [
         _row(op="polygon", site_id="p:1", ordinal=1, arg="scale"),
         _row(op="polygon", site_id="p:1", ordinal=1, arg="center"),
         _row(op="polygon", site_id="p:1", ordinal=1, arg="phase"),
         _row(op="polygon", site_id="p:1", ordinal=1, arg="n_sides"),
-        _row(op="polygon", site_id="p:1", ordinal=1, arg="bypass"),
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="activate"),
     ]
     out = _order_rows_for_display(
         rows,
         step_info_by_site={},
         display_order_by_group={("polygon", "p:1"): 1},
     )
-    assert [r.arg for r in out] == ["bypass", "n_sides", "phase", "center", "scale"]
+    assert [r.arg for r in out] == ["activate", "n_sides", "phase", "center", "scale"]
 
 
-def test_order_rows_for_display_effect_step_uses_bypass_then_signature_arg_order():
+def test_order_rows_for_display_effect_step_uses_activate_then_signature_arg_order():
     rows = [
         _row(op="scale", site_id="e:1", ordinal=1, arg="scale"),
         _row(op="scale", site_id="e:1", ordinal=1, arg="pivot"),
         _row(op="scale", site_id="e:1", ordinal=1, arg="auto_center"),
         _row(op="scale", site_id="e:1", ordinal=1, arg="mode"),
-        _row(op="scale", site_id="e:1", ordinal=1, arg="bypass"),
+        _row(op="scale", site_id="e:1", ordinal=1, arg="activate"),
     ]
     out = _order_rows_for_display(
         rows,
         step_info_by_site={("scale", "e:1"): ("chain:1", 0)},
         display_order_by_group={("scale", "e:1"): 1},
     )
-    assert [r.arg for r in out] == ["bypass", "mode", "auto_center", "pivot", "scale"]
+    assert [r.arg for r in out] == ["activate", "mode", "auto_center", "pivot", "scale"]
 
 
 def test_order_rows_for_display_places_unknown_arg_last_for_primitive():
@@ -92,7 +92,7 @@ def test_order_rows_for_display_places_unknown_arg_last_for_primitive():
 
 def test_order_rows_for_display_places_unknown_arg_last_for_effect():
     rows = [
-        _row(op="scale", site_id="e:1", ordinal=1, arg="bypass"),
+        _row(op="scale", site_id="e:1", ordinal=1, arg="activate"),
         _row(op="scale", site_id="e:1", ordinal=1, arg="__unknown__"),
     ]
     out = _order_rows_for_display(
@@ -100,7 +100,7 @@ def test_order_rows_for_display_places_unknown_arg_last_for_effect():
         step_info_by_site={("scale", "e:1"): ("chain:1", 0)},
         display_order_by_group={("scale", "e:1"): 1},
     )
-    assert [r.arg for r in out] == ["bypass", "__unknown__"]
+    assert [r.arg for r in out] == ["activate", "__unknown__"]
 
 
 def test_order_rows_for_display_preset_uses_signature_arg_order():
@@ -116,18 +116,18 @@ def test_order_rows_for_display_preset_uses_signature_arg_order():
     assert [r.arg for r in out] == ["center", "scale"]
 
 
-def test_order_rows_for_display_preset_uses_bypass_then_signature_arg_order():
+def test_order_rows_for_display_preset_uses_activate_then_signature_arg_order():
     rows = [
         _row(op="preset._logo_component_param_order", site_id="c:1", ordinal=1, arg="scale"),
         _row(op="preset._logo_component_param_order", site_id="c:1", ordinal=1, arg="center"),
-        _row(op="preset._logo_component_param_order", site_id="c:1", ordinal=1, arg="bypass"),
+        _row(op="preset._logo_component_param_order", site_id="c:1", ordinal=1, arg="activate"),
     ]
     out = _order_rows_for_display(
         rows,
         step_info_by_site={},
         display_order_by_group={("preset._logo_component_param_order", "c:1"): 1},
     )
-    assert [r.arg for r in out] == ["bypass", "center", "scale"]
+    assert [r.arg for r in out] == ["activate", "center", "scale"]
 
 
 def test_order_rows_for_display_places_unknown_arg_last_for_preset():

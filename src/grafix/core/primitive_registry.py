@@ -146,8 +146,8 @@ def primitive(
     """
 
     meta_norm = None if meta is None else meta_dict_from_user(meta)
-    if meta_norm is not None and "bypass" in meta_norm:
-        raise ValueError("primitive の予約引数 'bypass' は meta に含められない")
+    if meta_norm is not None and "activate" in meta_norm:
+        raise ValueError("primitive の予約引数 'activate' は meta に含められない")
 
     def _defaults_from_signature(
         f: Callable[..., RealizedGeometry],
@@ -186,28 +186,28 @@ def primitive(
 
         def wrapper(args: tuple[tuple[str, Any], ...]) -> RealizedGeometry:
             params: dict[str, Any] = dict(args)
-            bypass = bool(params.pop("bypass", False))
-            if bypass:
+            activate = bool(params.pop("activate", True))
+            if not activate:
                 return concat_realized_geometries()
             return f(**params)
 
         defaults = None
         param_order = None
-        meta_with_bypass = None
+        meta_with_activate = None
         if meta_norm is not None:
-            meta_with_bypass = {"bypass": ParamMeta(kind="bool"), **meta_norm}
+            meta_with_activate = {"activate": ParamMeta(kind="bool"), **meta_norm}
             defaults = _defaults_from_signature(f, meta_norm)
-            defaults = {"bypass": False, **defaults}
+            defaults = {"activate": True, **defaults}
             sig = inspect.signature(f)
             meta_keys = set(meta_norm.keys())
             sig_order = [name for name in sig.parameters if name in meta_keys]
-            param_order = ("bypass", *sig_order)
+            param_order = ("activate", *sig_order)
         primitive_registry._register(
             f.__name__,
             wrapper,
             overwrite=overwrite,
             param_order=param_order,
-            meta=meta_with_bypass,
+            meta=meta_with_activate,
             defaults=defaults,
             ui_visible=ui_visible,
         )

@@ -23,7 +23,7 @@ def test_component_records_only_public_params_and_mutes_internal() -> None:
 
     snap = store_snapshot(store)
     preset_entries = [(k, v) for k, v in snap.items() if k.op == "preset.component_records"]
-    assert {k.arg for k, _v in preset_entries} == {"bypass", "x"}
+    assert {k.arg for k, _v in preset_entries} == {"activate", "x"}
 
     # 関数本体内の G/E は mute されるので、内部 primitive/effect は ParamStore に出ない。
     assert all(k.op != "polygon" for k in snap.keys())

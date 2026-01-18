@@ -31,7 +31,7 @@ def flow(
     flow_e = (
         E(name="flow_eff")
         .fill(
-            bypass=False,
+            activate=True,
             angle_sets=1,
             angle=fill_angle,
             density=300 * fill_density_coef,
@@ -39,11 +39,11 @@ def flow(
             remove_boundary=False,
         )
         .subdivide(
-            bypass=False,
+            activate=True,
             subdivisions=subdivide_levels,
         )
         .displace(
-            bypass=False,
+            activate=True,
             amplitude=displace_amplitude,
             spatial_freq=displace_frequency,
             amplitude_gradient=(0.0, 0.0, 0.0),
@@ -64,7 +64,7 @@ def flow(
     )
 
     clip = E(name="clip").clip(
-        bypass=False,
+        activate=True,
         mode="inside",
         draw_outline=True,
     )
@@ -72,7 +72,7 @@ def flow(
     ret = clip(flow, square)
 
     total_e = E(name="affine").affine(
-        bypass=False,
+        activate=True,
         auto_center=True,
         pivot=(0.0, 0.0, 0.0),
         rotation=(0.0, 0.0, 0.0),

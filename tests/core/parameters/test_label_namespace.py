@@ -16,7 +16,7 @@ def test_primitive_name_sets_label():
     polygon_site_ids = {k.site_id for k, _v in polygon_entries}
     polygon_labels = {lbl for _k, (_m, _s, _o, lbl) in polygon_entries}
 
-    assert polygon_args == {"bypass", "n_sides", "phase", "center", "scale"}
+    assert polygon_args == {"activate", "n_sides", "phase", "center", "scale"}
     assert polygon_site_ids and len(polygon_site_ids) == 1
     assert polygon_labels == {"p1"}
 

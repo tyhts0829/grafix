@@ -18,14 +18,14 @@ def logo(center=(0, 0, 0), scale=1.0, fill_density_coef=1.0):
     square_eff = (
         E(name="square_eff")
         .buffer(
-            bypass=False,
+            activate=True,
             join="mitre",
             quad_segs=1,
             distance=-3.0,
             keep_original=True,
         )
         .fill(
-            bypass=False,
+            activate=True,
             angle_sets=1,
             angle=45.0,
             density=300.0 * fill_density_coef,
@@ -59,7 +59,7 @@ def logo(center=(0, 0, 0), scale=1.0, fill_density_coef=1.0):
     )
 
     text_fill = E(name="text_fill").fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=45.0,
         density=135.0 * fill_density_coef,
@@ -77,7 +77,7 @@ def logo(center=(0, 0, 0), scale=1.0, fill_density_coef=1.0):
     line_eff = (
         E(name="line_eff")
         .affine(
-            bypass=False,
+            activate=True,
             auto_center=True,
             pivot=(0.0, 0.0, 0.0),
             rotation=(0.0, 0.0, 0.0),
@@ -85,21 +85,21 @@ def logo(center=(0, 0, 0), scale=1.0, fill_density_coef=1.0):
             delta=(0.0, 0.0, 0.0),
         )
         .dash(
-            bypass=False,
+            activate=True,
             dash_length=(20, 4),
             gap_length=9.322000000000001,
             offset=36.271,
             offset_jitter=0.0,
         )
         .buffer(
-            bypass=False,
+            activate=True,
             join="round",
             quad_segs=12,
             distance=3.136,
             keep_original=False,
         )
         .fill(
-            bypass=False,
+            activate=True,
             angle_sets=1,
             angle=45.0,
             density=35.0 * fill_density_coef,

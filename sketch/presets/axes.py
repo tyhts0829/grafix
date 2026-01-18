@@ -94,7 +94,7 @@ def axes(
         )
 
         x_ticks = E.repeat(
-            bypass=False,
+            activate=True,
             count=tick_count_x - 1,
             cumulative_scale=False,
             cumulative_offset=False,

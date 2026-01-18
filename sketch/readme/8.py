@@ -8,7 +8,7 @@ CANVAS_HEIGHT = 210
 def draw(t):
     DENSITY_RATIO = 0.9
     t1 = G.text(
-        bypass=False,
+        activate=True,
         text="g",
         font="GoogleSans-Regular.ttf",
         font_index=0,
@@ -21,7 +21,7 @@ def draw(t):
     )
 
     t2 = G.text(
-        bypass=False,
+        activate=True,
         text="g",
         font="Geist-Medium.ttf",
         font_index=0,
@@ -34,7 +34,7 @@ def draw(t):
     )
 
     t3 = G.text(
-        bypass=False,
+        activate=True,
         text="g",
         font="Carlo.otf",
         font_index=0,
@@ -47,7 +47,7 @@ def draw(t):
     )
 
     t4 = G.text(
-        bypass=False,
+        activate=True,
         text="g",
         font="HannariMincho-Regular.otf",
         font_index=0,
@@ -60,7 +60,7 @@ def draw(t):
     )
 
     t5 = G.text(
-        bypass=False,
+        activate=True,
         text="g",
         font="Bodoni 72.ttc",
         font_index=0,
@@ -73,7 +73,7 @@ def draw(t):
     )
 
     e1 = E.fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=124.78,
         density=522.034 * DENSITY_RATIO,
@@ -82,7 +82,7 @@ def draw(t):
     )
 
     e2 = E.fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=32.949,
         density=447.458 * DENSITY_RATIO,
@@ -91,7 +91,7 @@ def draw(t):
     )
 
     e3 = E.fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=154.068,
         density=532.203 * DENSITY_RATIO,
@@ -100,7 +100,7 @@ def draw(t):
     )
 
     e4 = E.fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=29.898,
         density=716.9490000000001 * DENSITY_RATIO,
@@ -109,7 +109,7 @@ def draw(t):
     )
 
     e5 = E.fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=162.915,
         density=669.492 * DENSITY_RATIO,
@@ -124,7 +124,7 @@ def draw(t):
     t5 = e5(t5)
 
     e = E(name="g_affine").affine(
-        bypass=False,
+        activate=True,
         auto_center=True,
         pivot=(0.0, 0.0, 0.0),
         rotation=(0.0, 0.0, 0.0),
@@ -149,7 +149,7 @@ def draw(t):
     e_cross = (
         E(name="cross_repeats")
         .repeat(
-            bypass=False,
+            activate=True,
             count=1,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -162,7 +162,7 @@ def draw(t):
             pivot=(0.0, 0.0, 0.0),
         )
         .repeat(
-            bypass=False,
+            activate=True,
             count=1,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -175,7 +175,7 @@ def draw(t):
             pivot=(0.0, 0.0, 0.0),
         )
         .repeat(
-            bypass=False,
+            activate=True,
             count=1,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -198,7 +198,7 @@ def draw(t):
     )
 
     line_h_repeat = E(name="line_h_repeat").repeat(
-        bypass=False,
+        activate=True,
         count=1,
         cumulative_scale=False,
         cumulative_offset=False,
@@ -220,7 +220,7 @@ def draw(t):
     )
 
     line_v_repeat = E(name="line_v_repeat").repeat(
-        bypass=False,
+        activate=True,
         count=1,
         cumulative_scale=False,
         cumulative_offset=False,
@@ -285,7 +285,7 @@ def draw(t):
 
     mt = mt1 + mt2 + mt3 + mt4
     mt_e = E(name="mt_e").fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=45.0,
         density=1000.0,
@@ -305,14 +305,14 @@ def draw(t):
     bar_code_e = (
         E(name="bar_code_e")
         .scale(
-            bypass=False,
+            activate=True,
             mode="all",
             auto_center=True,
             pivot=(0.0, 0.0, 0.0),
             scale=(20.0, 6.0, 1.0),
         )
         .fill(
-            bypass=False,
+            activate=True,
             angle_sets=1,
             angle=45.0,
             density=25.0,
@@ -320,7 +320,7 @@ def draw(t):
             remove_boundary=False,
         )
         .repeat(
-            bypass=False,
+            activate=True,
             count=4,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -339,7 +339,7 @@ def draw(t):
     waku = cross + line_h + line_v + mt
 
     aff = E.affine(
-        bypass=False,
+        activate=True,
         auto_center=False,
         pivot=(0.0, 0.0, 0.0),
         rotation=(0.0, 0.0, 0.0),

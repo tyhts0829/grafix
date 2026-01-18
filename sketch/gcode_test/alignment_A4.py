@@ -7,7 +7,7 @@ CANVAS_HEIGHT = 297
 
 def draw(t):
     circle = G(name="circle").polygon(
-        bypass=False,
+        activate=True,
         n_sides=128,
         phase=0.0,
         center=(105.0, 148.0, 0.0),
@@ -15,14 +15,14 @@ def draw(t):
     )
 
     l1 = G(name="line1").line(
-        bypass=False,
+        activate=True,
         center=(10.0, 10.0, 0.0),
         length=10.0,
         angle=0.0,
     )
 
     l1_eff = E(name="line1_eff").repeat(
-        bypass=False,
+        activate=True,
         count=1,
         cumulative_scale=False,
         cumulative_offset=False,
@@ -39,7 +39,7 @@ def draw(t):
     cross_corner_eff = (
         E(name="cross_corner_eff")
         .repeat(
-            bypass=False,
+            activate=True,
             count=1,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -52,7 +52,7 @@ def draw(t):
             pivot=(0.0, 0.0, 0.0),
         )
         .repeat(
-            bypass=False,
+            activate=True,
             count=1,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -68,7 +68,7 @@ def draw(t):
 
     cross_corner = cross_corner_eff(cross)
     cross_center_eff = E(name="cross_center_eff").affine(
-        bypass=False,
+        activate=True,
         auto_center=True,
         pivot=(0.0, 0.0, 0.0),
         rotation=(0.0, 0.0, 0.0),
@@ -79,7 +79,7 @@ def draw(t):
     cross_center = cross_center_eff(cross)
 
     edge_line = G(name="edge_line").line(
-        bypass=False,
+        activate=True,
         center=(10.0, 147.0, 0.0),
         length=82.818,
         angle=0.0,
@@ -88,7 +88,7 @@ def draw(t):
     edge_line_v_eff = (
         E(name="edge_line_v_eff")
         .affine(
-            bypass=False,
+            activate=True,
             auto_center=True,
             pivot=(0.0, 0.0, 0.0),
             rotation=(0.0, 0.0, 90.0),
@@ -96,7 +96,7 @@ def draw(t):
             delta=(0.0, 0.0, 0.0),
         )
         .repeat(
-            bypass=False,
+            activate=True,
             count=1,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -114,7 +114,7 @@ def draw(t):
     edge_line_h_eff = (
         E(name="edge_line_h_eff")
         .affine(
-            bypass=False,
+            activate=True,
             auto_center=True,
             pivot=(0.0, 0.0, 0.0),
             rotation=(0.0, 0.0, 0.0),
@@ -122,7 +122,7 @@ def draw(t):
             delta=(94.0, -136.0, 0.0),
         )
         .repeat(
-            bypass=False,
+            activate=True,
             count=1,
             cumulative_scale=False,
             cumulative_offset=False,
