@@ -246,7 +246,7 @@ class _EffectBuilder(Protocol):
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
         """
         ...
-    def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., keep_original: bool = ...) -> _EffectBuilder:
+    def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., output: str = ..., keep_original: bool = ...) -> _EffectBuilder:
         """
         閉曲線群をメタボール的に接続し、輪郭（外周＋穴）を生成する。
 
@@ -256,6 +256,7 @@ class _EffectBuilder(Protocol):
             threshold: 等値線レベル
             grid_pitch: 距離場を評価する 2D グリッドのピッチ [mm]
             auto_close_threshold: 端点距離がこの値以下なら閉曲線扱いとして自動で閉じる [mm]
+            output: 出力輪郭の選択
             keep_original: True のとき、生成結果に加えて元のポリラインも出力に含める
         """
         ...
@@ -564,7 +565,7 @@ class _E(Protocol):
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
         """
         ...
-    def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., keep_original: bool = ...) -> _EffectBuilder:
+    def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., output: str = ..., keep_original: bool = ...) -> _EffectBuilder:
         """
         閉曲線群をメタボール的に接続し、輪郭（外周＋穴）を生成する。
 
@@ -574,6 +575,7 @@ class _E(Protocol):
             threshold: 等値線レベル
             grid_pitch: 距離場を評価する 2D グリッドのピッチ [mm]
             auto_close_threshold: 端点距離がこの値以下なら閉曲線扱いとして自動で閉じる [mm]
+            output: 出力輪郭の選択
             keep_original: True のとき、生成結果に加えて元のポリラインも出力に含める
         """
         ...

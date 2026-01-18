@@ -23,6 +23,7 @@ metaball_meta = {
     "threshold": ParamMeta(kind="float", ui_min=0.0, ui_max=5.0),
     "grid_pitch": ParamMeta(kind="float", ui_min=0.1, ui_max=10.0),
     "auto_close_threshold": ParamMeta(kind="float", ui_min=0.0, ui_max=5.0),
+    "output": ParamMeta(kind="choice", choices=("exterior", "both")),
     "keep_original": ParamMeta(kind="bool"),
 }
 
@@ -388,6 +389,88 @@ def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
+def _filter_exterior_loops(
+    loops_xy: list[np.ndarray],
+    *,
+    field: np.ndarray,
+    x0: float,
+    y0: float,
+    pitch: float,
+    level: float,
+) -> list[np.ndarray]:
+    """等値線ループ列から外周（exterior）のみ抽出する。"""
+    if not loops_xy:
+        return []
+
+    ny = int(field.shape[0])
+    nx = int(field.shape[1])
+    if ny <= 0 or nx <= 0:
+        return []
+
+    def _signed_area(pts: np.ndarray) -> float:
+        x = pts[:, 0].astype(np.float64, copy=False)
+        y = pts[:, 1].astype(np.float64, copy=False)
+        return float(0.5 * (np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+    def _sample_nn(x: float, y: float) -> float:
+        ii = int(np.rint((x - float(x0)) / float(pitch)))
+        jj = int(np.rint((y - float(y0)) / float(pitch)))
+        if ii < 0:
+            ii = 0
+        elif ii >= nx:
+            ii = nx - 1
+        if jj < 0:
+            jj = 0
+        elif jj >= ny:
+            jj = ny - 1
+        return float(field[jj, ii])
+
+    eps = 0.5 * float(pitch)
+
+    out: list[np.ndarray] = []
+    for pts_xy in loops_xy:
+        if pts_xy.shape[0] < 4:
+            continue
+
+        area = _signed_area(pts_xy)
+        if area == 0.0 or not np.isfinite(area):
+            continue
+        ccw = area > 0.0
+
+        # 非退化なエッジを 1 本選び、エッジ内側側の点を 1 つ評価して外周/穴を判定する。
+        k0 = -1
+        for k in range(int(pts_xy.shape[0]) - 1):
+            dx = float(pts_xy[k + 1, 0] - pts_xy[k, 0])
+            dy = float(pts_xy[k + 1, 1] - pts_xy[k, 1])
+            if dx * dx + dy * dy > 1e-12:
+                k0 = k
+                break
+        if k0 < 0:
+            continue
+
+        dx = float(pts_xy[k0 + 1, 0] - pts_xy[k0, 0])
+        dy = float(pts_xy[k0 + 1, 1] - pts_xy[k0, 1])
+        if ccw:
+            nx_in, ny_in = -dy, dx  # left normal
+        else:
+            nx_in, ny_in = dy, -dx  # right normal
+        n_norm = math.sqrt(nx_in * nx_in + ny_in * ny_in)
+        if n_norm <= 0.0 or not math.isfinite(n_norm):
+            continue
+        nx_in /= n_norm
+        ny_in /= n_norm
+
+        xin = float(pts_xy[k0, 0]) + float(nx_in) * eps
+        yin = float(pts_xy[k0, 1]) + float(ny_in) * eps
+        v_in = _sample_nn(xin, yin)
+
+        # 外周なら「内側」が level 以上、穴なら「内側」が level 未満。
+        if v_in >= float(level):
+            out.append(pts_xy)
+
+    return out
+
+
 @effect(meta=metaball_meta)
 def metaball(
     inputs: Sequence[RealizedGeometry],
@@ -396,6 +479,7 @@ def metaball(
     threshold: float = 1.0,
     grid_pitch: float = 0.5,
     auto_close_threshold: float = _AUTO_CLOSE_THRESHOLD_DEFAULT,
+    output: str = "both",  # "exterior" | "both"
     keep_original: bool = False,
 ) -> RealizedGeometry:
     """閉曲線群をメタボール的に接続し、輪郭（外周＋穴）を生成する。
@@ -415,6 +499,11 @@ def metaball(
         距離場を評価する 2D グリッドのピッチ [mm]。
     auto_close_threshold : float, default 1e-3
         端点距離がこの値以下なら閉曲線扱いとして自動で閉じる [mm]。
+    output : str, default "both"
+        出力輪郭の選択。
+
+        - `"both"`: 外周＋穴（holes）を出力
+        - `"exterior"`: 外周のみ出力
     keep_original : bool, default False
         True のとき、生成結果に加えて元のポリラインも出力に含める。
 
@@ -440,6 +529,10 @@ def metaball(
 
     pitch = float(grid_pitch)
     if not np.isfinite(pitch) or pitch <= 0.0:
+        return base
+
+    output_s = str(output)
+    if output_s not in {"exterior", "both"}:
         return base
 
     auto_close = float(auto_close_threshold)
@@ -502,11 +595,24 @@ def metaball(
     )
     loops = _stitch_segments_to_loops(segments)
 
-    out_lines: list[np.ndarray] = []
+    loops_xy: list[np.ndarray] = []
     for loop in loops:
         pts_xy = np.asarray([key_to_xy[k] for k in loop], dtype=np.float64)
-        if pts_xy.shape[0] < 4:
-            continue
+        if pts_xy.shape[0] >= 4:
+            loops_xy.append(pts_xy)
+
+    if output_s == "exterior":
+        loops_xy = _filter_exterior_loops(
+            loops_xy,
+            field=field2,
+            x0=float(xs[0]),
+            y0=float(ys[0]),
+            pitch=float(pitch),
+            level=float(level),
+        )
+
+    out_lines: list[np.ndarray] = []
+    for pts_xy in loops_xy:
         v3 = np.zeros((pts_xy.shape[0], 3), dtype=np.float64)
         v3[:, 0:2] = pts_xy
         out = transform_back(v3, rot, float(z_off)).astype(np.float32, copy=False)
