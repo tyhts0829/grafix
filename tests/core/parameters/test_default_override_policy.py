@@ -24,7 +24,7 @@ def test_implicit_defaults_start_with_override_on():
         callsite()
 
     assert _override_by_arg(store, op="polygon") == {
-        "bypass": True,
+        "activate": True,
         "n_sides": True,
         "phase": True,
         "center": True,
@@ -43,7 +43,7 @@ def test_explicit_kwargs_start_with_override_off_for_those_args():
         callsite()
 
     assert _override_by_arg(store, op="polygon") == {
-        "bypass": True,
+        "activate": True,
         "n_sides": True,
         "phase": False,
         "center": True,

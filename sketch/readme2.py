@@ -43,14 +43,14 @@ def draw(t):
 
     text = text1 + text2 + text3
     text_eff = E.affine(
-        bypass=False,
+        activate=True,
         auto_center=True,
         pivot=(0.0, 0.0, 0.0),
         rotation=(0.0, 0.0, 0.0),
         scale=(1.0, 1.074, 1.0),
         delta=(0.0, 0.0, 0.0),
     ).fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=55.67,
         density=487.973,

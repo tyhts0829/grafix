@@ -157,8 +157,8 @@ def effect(
     """
 
     meta_norm = None if meta is None else meta_dict_from_user(meta)
-    if meta_norm is not None and "bypass" in meta_norm:
-        raise ValueError("effect の予約引数 'bypass' は meta に含められない")
+    if meta_norm is not None and "activate" in meta_norm:
+        raise ValueError("effect の予約引数 'activate' は meta に含められない")
 
     n_inputs_i = int(n_inputs)
     if n_inputs_i < 1:
@@ -196,8 +196,8 @@ def effect(
         ):
             raise ValueError(f"組み込み effect は meta 必須: {f.__module__}.{f.__name__}")
 
-        meta_with_bypass = (
-            {"bypass": ParamMeta(kind="bool"), **meta_norm}
+        meta_with_activate = (
+            {"activate": ParamMeta(kind="bool"), **meta_norm}
             if meta_norm is not None
             else None
         )
@@ -207,8 +207,8 @@ def effect(
             args: tuple[tuple[str, Any], ...],
         ) -> RealizedGeometry:
             params: dict[str, Any] = dict(args)
-            bypass = bool(params.pop("bypass", False))
-            if bypass:
+            activate = bool(params.pop("activate", True))
+            if not activate:
                 if not inputs:
                     return concat_realized_geometries()
                 if len(inputs) == 1:
@@ -219,11 +219,11 @@ def effect(
         defaults = None
         if meta_norm is not None:
             defaults = _defaults_from_signature(f, meta_norm)
-            defaults = {"bypass": False, **defaults}
+            defaults = {"activate": True, **defaults}
             sig = inspect.signature(f)
             meta_keys = set(meta_norm.keys())
             sig_order = [name for name in sig.parameters if name in meta_keys]
-            param_order = ("bypass", *sig_order)
+            param_order = ("activate", *sig_order)
         else:
             param_order = None
         effect_registry._register(
@@ -232,7 +232,7 @@ def effect(
             overwrite=overwrite,
             n_inputs=n_inputs_i,
             param_order=param_order,
-            meta=meta_with_bypass,
+            meta=meta_with_activate,
             defaults=defaults,
             ui_visible=ui_visible,
         )

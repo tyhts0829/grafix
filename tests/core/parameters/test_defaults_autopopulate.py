@@ -23,7 +23,7 @@ def test_polygon_defaults_recorded_when_no_kwargs():
 
     snapshot = store_snapshot(store)
     polygon_args = {key.arg for key in snapshot.keys() if key.op == "polygon"}
-    assert polygon_args == {"bypass", "n_sides", "phase", "center", "scale"}
+    assert polygon_args == {"activate", "n_sides", "phase", "center", "scale"}
 
 
 def test_effect_defaults_recorded_when_no_kwargs():
@@ -35,7 +35,7 @@ def test_effect_defaults_recorded_when_no_kwargs():
 
     snapshot = store_snapshot(store)
     scale_args = {key.arg for key in snapshot.keys() if key.op == "scale"}
-    assert scale_args == {"bypass", "mode", "auto_center", "pivot", "scale"}
+    assert scale_args == {"activate", "mode", "auto_center", "pivot", "scale"}
 
 
 def test_meta_default_none_is_rejected():
@@ -76,5 +76,5 @@ def test_meta_dict_spec_is_accepted_for_user_defined_primitive_and_effect() -> N
     snapshot = store_snapshot(store)
     primitive_args = {k.arg for k in snapshot.keys() if k.op == "user_defined_meta_dict_primitive"}
     effect_args = {k.arg for k in snapshot.keys() if k.op == "user_defined_meta_dict_effect"}
-    assert primitive_args == {"bypass", "x"}
-    assert effect_args == {"bypass", "x"}
+    assert primitive_args == {"activate", "x"}
+    assert effect_args == {"activate", "x"}

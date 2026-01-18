@@ -56,6 +56,6 @@ def test_generate_stub_lists_user_presets_on_p(tmp_path: Path) -> None:
         set_config_path(None)
 
     assert (
-        "def stubgen_path(self, *, bypass: bool = ..., out: Path = ...) -> Path:"
+        "def stubgen_path(self, *, activate: bool = ..., out: Path = ...) -> Path:"
         in stub
     )

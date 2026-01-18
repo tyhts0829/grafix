@@ -33,7 +33,7 @@ def draw(t):
 
     # ====================================================================
     title = G(name="title").text(
-        bypass=False,
+        activate=True,
         text="Grafix",
         font="HannariMincho-Regular.otf",
         font_index=0,
@@ -49,14 +49,14 @@ def draw(t):
 
     # ====================================================================
     primitive = G(name="primitive").polyhedron(
-        bypass=False,
+        activate=True,
         type_index=3,
         center=(31.319, 65.385, 0.0),
         scale=34.768,
     )
 
     e_primitive = E(name="e_primitive").rotate(
-        bypass=False,
+        activate=True,
         auto_center=True,
         pivot=(0.0, 0.0, 0.0),
         rotation=(-61.868, -149.061, 136.42600000000002),
@@ -64,7 +64,7 @@ def draw(t):
 
     primitive = e_primitive(primitive)
     filled_primitive = G(name="filled_primitive").polyhedron(
-        bypass=False,
+        activate=True,
         type_index=3,
         center=(74.176, 66.484, 0.0),
         scale=34.768,
@@ -73,7 +73,7 @@ def draw(t):
     e_filled_primitive = (
         E(name="e_filled_primitive")
         .fill(
-            bypass=False,
+            activate=True,
             angle_sets=1,
             angle=45.0,
             density=35.0,
@@ -81,7 +81,7 @@ def draw(t):
             remove_boundary=False,
         )
         .rotate(
-            bypass=False,
+            activate=True,
             auto_center=True,
             pivot=(0.0, 0.0, 0.0),
             rotation=(-61.868, -149.061, 136.42600000000002),
@@ -90,7 +90,7 @@ def draw(t):
 
     filled_primitive = e_filled_primitive(filled_primitive)
     displaced_primitive = G(name="displaced_primitive").polyhedron(
-        bypass=False,
+        activate=True,
         type_index=3,
         center=(117.033, 65.934, 0.0),
         scale=33.677,
@@ -99,7 +99,7 @@ def draw(t):
     e_displaced_primitive = (
         E(name="e_displaced_primitive")
         .fill(
-            bypass=False,
+            activate=True,
             angle_sets=1,
             angle=45.0,
             density=35.0,
@@ -107,11 +107,11 @@ def draw(t):
             remove_boundary=False,
         )
         .subdivide(
-            bypass=False,
+            activate=True,
             subdivisions=4,
         )
         .displace(
-            bypass=False,
+            activate=True,
             amplitude=(4.0, 4.0, 4.0),
             spatial_freq=(0.06, 0.06, 0.06),
             amplitude_gradient=(0.0, 0.0, 0.0),
@@ -122,7 +122,7 @@ def draw(t):
             t=0.266,
         )
         .rotate(
-            bypass=False,
+            activate=True,
             auto_center=True,
             pivot=(0.0, 0.0, 0.0),
             rotation=(-61.868, -149.061, 136.42600000000002),
@@ -131,7 +131,7 @@ def draw(t):
     displaced_primitive = e_displaced_primitive(displaced_primitive)
 
     polyhedron = G(name="polyhedron").text(
-        bypass=False,
+        activate=True,
         text="polyhedron()",
         font="HackGen35-Regular.ttf",
         font_index=0,
@@ -144,7 +144,7 @@ def draw(t):
     )
 
     e_polyhedron = E(name="e_polyhedron").fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=45.0,
         density=35.0,
@@ -154,7 +154,7 @@ def draw(t):
 
     polyhedron = e_polyhedron(polyhedron)
     fill = G(name="fill").text(
-        bypass=False,
+        activate=True,
         text="fill()",
         font="HackGen35-Regular.ttf",
         font_index=0,
@@ -167,7 +167,7 @@ def draw(t):
     )
 
     e_fill = E(name="e_fill").fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=45.0,
         density=35.0,
@@ -177,7 +177,7 @@ def draw(t):
 
     fill = e_fill(fill)
     displace = G(name="displace").text(
-        bypass=False,
+        activate=True,
         text="displace()",
         font="HackGen35-Regular.ttf",
         font_index=0,
@@ -190,7 +190,7 @@ def draw(t):
     )
 
     e_displace = E(name="e_displace").fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=45.0,
         density=35.0,
@@ -203,7 +203,7 @@ def draw(t):
     # ====================================================================
 
     discription = G(name="description").text(
-        bypass=False,
+        activate=True,
         text="\nGrafix is a line-based creative coding framework for Python\nthat approaches visual design with an audio mindset, treating\nconstraints as a source of creativity rather than a limitation.\n\nYou build sketches from primitives (G), shape them through\nmethod-chained processors to form synth-like effect (E), and\norganize the result into layers (L) that carry their own color\nand line width, like pen changes on a plotter.\n\nParameters can be mapped to MIDI CC (cc) and driven\nover time, so geometry becomes something you can play.\n\nA real-time OpenGL preview (run(draw(t))) keeps iteration,\nwhile the same patch can be exported to PNG, SVG, G-code,\nand MP4, providing a continuous path from experimentation\nto both on-screen playback and physical output.\n\nNew primitives and effects are defined as Python decorators,\nkeeping the system extensible without collapsing into\na monolithic graphics API.\n",
         font="HannariMincho-Regular.otf",
         font_index=0,
@@ -216,7 +216,7 @@ def draw(t):
     )
 
     e_discription = E(name="e_description").fill(
-        bypass=False,
+        activate=True,
         angle_sets=1,
         angle=45.0,
         density=1000.0,

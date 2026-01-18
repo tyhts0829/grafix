@@ -30,7 +30,7 @@ def dot_matrix(
 
     matrix = (
         E.fill(
-            bypass=False,
+            activate=True,
             angle_sets=1,
             angle=45.0,
             density=20 * fill_density_coef,
@@ -38,7 +38,7 @@ def dot_matrix(
             remove_boundary=False,
         )
         .repeat(
-            bypass=False,
+            activate=True,
             count=repeat_count_x,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -51,7 +51,7 @@ def dot_matrix(
             pivot=(0.0, 0.0, 0.0),
         )
         .repeat(
-            bypass=False,
+            activate=True,
             count=repeat_count_y,
             cumulative_scale=False,
             cumulative_offset=False,

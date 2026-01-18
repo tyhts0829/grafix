@@ -111,17 +111,17 @@ def preset(
     -----
     - 公開対象は `meta` に含まれる引数のみ。
     - 関数本体は自動で mute され、内部の `G.*` / `E.*` の観測（GUI/永続化）を行わない。
-    - `bypass` は予約引数として自動追加され、GUI/永続化の対象になる（meta に含めない）。
+    - `activate` は予約引数として自動追加され、GUI/永続化の対象になる（meta に含めない）。
     - `name=` と `key=` を予約引数として使える（GUI には出さない）。
       `key` は同一呼び出し箇所から複数回生成する場合の衝突回避に使う。
     """
 
     meta_norm = meta_dict_from_user(meta)
-    reserved = {"name", "key", "bypass"}
-    # `name`/`key`/`bypass` は予約引数:
+    reserved = {"name", "key", "activate"}
+    # `name`/`key`/`activate` は予約引数:
     # - name: GUI 上のグループ見出し名（label）を差し替える（GUI には出さない）
     # - key: 同一呼び出し箇所で複数回呼ぶときの衝突回避（GUI には出さない）
-    # - bypass: preset を “無効化” するための公開 bool（GUI/永続化の対象）
+    # - activate: preset を “有効化” するための公開 bool（GUI/永続化の対象）
     if reserved & set(meta_norm.keys()):
         bad = ", ".join(sorted(reserved & set(meta_norm.keys())))
         raise ValueError(f"@preset meta に予約引数は含められません: {bad}")
@@ -136,33 +136,33 @@ def preset(
         # 目的: preset を「1 種類の op」として分類/表示し、ParameterKey の op にも使う。
         preset_op = f"preset.{preset_name}"
         sig = inspect.signature(func)
-        if "bypass" in sig.parameters:
+        if "activate" in sig.parameters:
             raise ValueError(
-                f"@preset の予約引数 'bypass' はシグネチャに含められません: {func.__name__}.bypass"
+                f"@preset の予約引数 'activate' はシグネチャに含められません: {func.__name__}.activate"
             )
         # 公開パラメータは default 必須として、呼び出しごとの base 値が必ず決まるようにする。
         _defaults_from_signature(func, meta_norm)
         meta_keys = set(meta_norm.keys())
-        # bypass はデコレータ側で自動的に公開する（meta には書かせない）。
-        meta_with_bypass = {"bypass": ParamMeta(kind="bool"), **meta_norm}
+        # activate はデコレータ側で自動的に公開する（meta には書かせない）。
+        meta_with_activate = {"activate": ParamMeta(kind="bool"), **meta_norm}
         # GUI の行順は「定義したシグネチャ順」を優先する（dict の順序に依存しない）。
         sig_order = [arg_name for arg_name in sig.parameters if arg_name in meta_keys]
         # preset_registry には「GUI 用の静的仕様」を登録する（実関数は preset_func_registry）。
         preset_registry._register(
             preset_op,
             display_op=preset_name,
-            meta=meta_with_bypass,
-            param_order=("bypass", *sig_order),
+            meta=meta_with_activate,
+            param_order=("activate", *sig_order),
             ui_visible=ui_visible,
             overwrite=False,
         )
 
         @wraps(func)
         def wrapper(*args: _PSpec.args, **kwargs: _PSpec.kwargs) -> R:
-            # bypass を kwargs から取り出す。
+            # activate を kwargs から取り出す。
             # `explicit` 判定が必要なので、pop 前に「明示指定されていたか」を保持する。
-            bypass_explicit = "bypass" in kwargs
-            bypass_base = bool(kwargs.pop("bypass", False))
+            activate_explicit = "activate" in kwargs
+            activate_base = bool(kwargs.pop("activate", True))
 
             # - bind: 呼び出しをシグネチャに当てはめ、引数名で扱えるようにする
             # - explicit_keys: 「ユーザーが明示的に渡した引数名」を記録する（apply_defaults 前）
@@ -188,17 +188,17 @@ def preset(
             # 公開引数だけ解決する:
             # - preset の “公開 UI” を meta に絞り、本体内部の G/E パラメータは GUI/永続化対象外にする。
             # - recording 無効時は resolve をスキップし、コードが渡した base 値をそのまま使う。
-            public_params = {"bypass": bypass_base}
+            public_params = {"activate": activate_base}
             public_params.update({k: bound.arguments[k] for k in meta_keys})
             resolved_params = public_params
             explicit_public = meta_keys & explicit_keys
-            explicit_public_with_bypass = set(explicit_public)
-            if bypass_explicit:
-                explicit_public_with_bypass.add("bypass")
+            explicit_public_with_activate = set(explicit_public)
+            if activate_explicit:
+                explicit_public_with_activate.add("activate")
             if (
                 current_param_recording_enabled()
                 and current_frame_params() is not None
-                and meta_with_bypass
+                and meta_with_activate
             ):
                 # resolve_params は:
                 # - base 値（スケッチ側）/ GUI 値 / CC 値 を統合して effective 値を返す
@@ -206,18 +206,18 @@ def preset(
                 resolved_params = resolve_params(
                     op=preset_op,
                     params=public_params,
-                    meta=meta_with_bypass,
+                    meta=meta_with_activate,
                     site_id=site_id,
-                    explicit_args=explicit_public_with_bypass,
+                    explicit_args=explicit_public_with_activate,
                 )
 
             for k, v in resolved_params.items():
-                if k == "bypass":
+                if k == "activate":
                     continue
                 bound.arguments[k] = v
 
-            if bool(resolved_params.get("bypass", False)):
-                # bypass=True なら「何も描かない Geometry」を返して終了する。
+            if not bool(resolved_params.get("activate", True)):
+                # activate=False なら「何も描かない Geometry」を返して終了する。
                 # （GUI 行としての preset 自体は記録/表示される）
                 return cast(R, Geometry.create(op="concat"))
 
