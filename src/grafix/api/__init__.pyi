@@ -42,7 +42,7 @@ class _G(Protocol):
             angle: 回転角 [deg]
         """
         ...
-    def polygon(self, *, activate: bool = ..., n_sides: int = ..., phase: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def polygon(self, *, activate: bool = ..., n_sides: int = ..., phase: float = ..., sweep: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         正多角形の閉ポリラインを生成する。
 
@@ -50,6 +50,7 @@ class _G(Protocol):
             activate: bool
             n_sides: 辺の数
             phase: 頂点開始角 [deg]
+            sweep: 描画する周回角 [deg]
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率 s
         """

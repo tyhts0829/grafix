@@ -32,17 +32,16 @@
 
 ## 作業手順（チェックリスト）
 
-- [ ] 追加パラメータ名を確定（`sweep` で良いか、`arc`/`theta`/`portion` 等にするか）
-- [ ] `src/grafix/core/primitives/polygon.py` に `sweep` を追加し、メタ情報（UI slider）も追加
-- [ ] `sweep` 実装（整数ステップ + 端点補間 + 弦でクローズ）を入れる
-- [ ] テスト追加（例: `tests/core/test_pipeline.py` or 新規テスト）  
+- [x] 追加パラメータ名を確定（`sweep` で良いか、`arc`/`theta`/`portion` 等にするか）
+- [x] `src/grafix/core/primitives/polygon.py` に `sweep` を追加し、メタ情報（UI slider）も追加
+- [x] `sweep` 実装（整数ステップ + 端点補間 + 弦でクローズ）を入れる
+- [x] テスト追加（例: `tests/core/test_pipeline.py` or 新規テスト）  
       - `sweep=360` の点数が `n_sides + 1` であること  
       - `sweep<360` のとき `coords[0] == coords[-1]` で閉じること  
       - `sweep` が `step` 非整数倍でも終点が `sweep` 角になっていること
-- [ ] 型/スタブ生成が前提なら追従（該当があれば）し、必要なテストを通す
+- [x] 型/スタブ生成が前提なら追従（該当があれば）し、必要なテストを通す
 
 ## 実行コマンド案
 
 - `PYTHONPATH=src pytest -q tests/core/test_pipeline.py`
 - （必要なら）`PYTHONPATH=src pytest -q`
-
