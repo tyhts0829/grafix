@@ -389,6 +389,122 @@ def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
+def _pack_loops_xy(loops_xy: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """可変長ループ列を Numba 入力用の連結バッファへパックする。"""
+    n = len(loops_xy)
+    total = 0
+    for pts in loops_xy:
+        total += int(pts.shape[0])
+
+    vertices = np.empty((total, 2), dtype=np.float64)
+    offsets = np.empty((n + 1,), dtype=np.int32)
+    offsets[0] = 0
+    cursor = 0
+    for i, pts in enumerate(loops_xy):
+        v = pts.astype(np.float64, copy=False)
+        m = int(v.shape[0])
+        vertices[cursor : cursor + m] = v
+        cursor += m
+        offsets[i + 1] = np.int32(cursor)
+    return vertices, offsets
+
+
+@njit(cache=True)
+def _round_ties_to_even(x: float) -> int:
+    # `np.rint`（banker's rounding: ties to even）相当。
+    f = math.floor(x)
+    frac = x - f
+    if frac < 0.5:
+        return int(f)
+    if frac > 0.5:
+        return int(f + 1.0)
+    # frac == 0.5
+    if int(f) % 2 == 0:
+        return int(f)
+    return int(f + 1.0)
+
+
+@njit(cache=True)
+def _exterior_loop_mask_numba(
+    field: np.ndarray,
+    x0: float,
+    y0: float,
+    pitch: float,
+    level: float,
+    loop_vertices: np.ndarray,
+    loop_offsets: np.ndarray,
+) -> np.ndarray:
+    ny = int(field.shape[0])
+    nx = int(field.shape[1])
+    n_loops = int(loop_offsets.shape[0]) - 1
+    out = np.zeros((n_loops,), dtype=np.uint8)
+
+    if ny <= 0 or nx <= 0:
+        return out
+    if pitch <= 0.0 or not math.isfinite(pitch):
+        return out
+
+    eps = 0.5 * float(pitch)
+    for li in range(n_loops):
+        s = int(loop_offsets[li])
+        e = int(loop_offsets[li + 1])
+        if e - s < 4:
+            continue
+
+        area2 = 0.0
+        for k in range(s, e - 1):
+            x1 = float(loop_vertices[k, 0])
+            y1 = float(loop_vertices[k, 1])
+            x2 = float(loop_vertices[k + 1, 0])
+            y2 = float(loop_vertices[k + 1, 1])
+            area2 += x1 * y2 - y1 * x2
+
+        if area2 == 0.0 or not math.isfinite(area2):
+            continue
+        ccw = area2 > 0.0
+
+        k0 = -1
+        for k in range(s, e - 1):
+            dx = float(loop_vertices[k + 1, 0] - loop_vertices[k, 0])
+            dy = float(loop_vertices[k + 1, 1] - loop_vertices[k, 1])
+            if dx * dx + dy * dy > 1e-12:
+                k0 = k
+                break
+        if k0 < 0:
+            continue
+
+        dx = float(loop_vertices[k0 + 1, 0] - loop_vertices[k0, 0])
+        dy = float(loop_vertices[k0 + 1, 1] - loop_vertices[k0, 1])
+        if ccw:
+            nx_in, ny_in = -dy, dx
+        else:
+            nx_in, ny_in = dy, -dx
+        n_norm = math.sqrt(nx_in * nx_in + ny_in * ny_in)
+        if n_norm <= 0.0 or not math.isfinite(n_norm):
+            continue
+        nx_in /= n_norm
+        ny_in /= n_norm
+
+        xin = float(loop_vertices[k0, 0]) + float(nx_in) * eps
+        yin = float(loop_vertices[k0, 1]) + float(ny_in) * eps
+        ii = _round_ties_to_even((xin - float(x0)) / float(pitch))
+        jj = _round_ties_to_even((yin - float(y0)) / float(pitch))
+
+        if ii < 0:
+            ii = 0
+        elif ii >= nx:
+            ii = nx - 1
+        if jj < 0:
+            jj = 0
+        elif jj >= ny:
+            jj = ny - 1
+
+        if float(field[jj, ii]) >= float(level):
+            out[li] = 1
+
+    return out
+
+
 def _filter_exterior_loops(
     loops_xy: list[np.ndarray],
     *,
@@ -402,73 +518,17 @@ def _filter_exterior_loops(
     if not loops_xy:
         return []
 
-    ny = int(field.shape[0])
-    nx = int(field.shape[1])
-    if ny <= 0 or nx <= 0:
-        return []
-
-    def _signed_area(pts: np.ndarray) -> float:
-        x = pts[:, 0].astype(np.float64, copy=False)
-        y = pts[:, 1].astype(np.float64, copy=False)
-        return float(0.5 * (np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
-
-    def _sample_nn(x: float, y: float) -> float:
-        ii = int(np.rint((x - float(x0)) / float(pitch)))
-        jj = int(np.rint((y - float(y0)) / float(pitch)))
-        if ii < 0:
-            ii = 0
-        elif ii >= nx:
-            ii = nx - 1
-        if jj < 0:
-            jj = 0
-        elif jj >= ny:
-            jj = ny - 1
-        return float(field[jj, ii])
-
-    eps = 0.5 * float(pitch)
-
-    out: list[np.ndarray] = []
-    for pts_xy in loops_xy:
-        if pts_xy.shape[0] < 4:
-            continue
-
-        area = _signed_area(pts_xy)
-        if area == 0.0 or not np.isfinite(area):
-            continue
-        ccw = area > 0.0
-
-        # 非退化なエッジを 1 本選び、エッジ内側側の点を 1 つ評価して外周/穴を判定する。
-        k0 = -1
-        for k in range(int(pts_xy.shape[0]) - 1):
-            dx = float(pts_xy[k + 1, 0] - pts_xy[k, 0])
-            dy = float(pts_xy[k + 1, 1] - pts_xy[k, 1])
-            if dx * dx + dy * dy > 1e-12:
-                k0 = k
-                break
-        if k0 < 0:
-            continue
-
-        dx = float(pts_xy[k0 + 1, 0] - pts_xy[k0, 0])
-        dy = float(pts_xy[k0 + 1, 1] - pts_xy[k0, 1])
-        if ccw:
-            nx_in, ny_in = -dy, dx  # left normal
-        else:
-            nx_in, ny_in = dy, -dx  # right normal
-        n_norm = math.sqrt(nx_in * nx_in + ny_in * ny_in)
-        if n_norm <= 0.0 or not math.isfinite(n_norm):
-            continue
-        nx_in /= n_norm
-        ny_in /= n_norm
-
-        xin = float(pts_xy[k0, 0]) + float(nx_in) * eps
-        yin = float(pts_xy[k0, 1]) + float(ny_in) * eps
-        v_in = _sample_nn(xin, yin)
-
-        # 外周なら「内側」が level 以上、穴なら「内側」が level 未満。
-        if v_in >= float(level):
-            out.append(pts_xy)
-
-    return out
+    loop_vertices, loop_offsets = _pack_loops_xy(loops_xy)
+    mask_u8 = _exterior_loop_mask_numba(
+        field.astype(np.float64, copy=False),
+        float(x0),
+        float(y0),
+        float(pitch),
+        float(level),
+        loop_vertices,
+        loop_offsets,
+    )
+    return [pts for i, pts in enumerate(loops_xy) if bool(mask_u8[int(i)])]
 
 
 @effect(meta=metaball_meta)
