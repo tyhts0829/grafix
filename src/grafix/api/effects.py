@@ -25,6 +25,7 @@ from grafix.core.effects import quantize as _effect_quantize  # noqa: F401
 from grafix.core.effects import partition as _effect_partition  # noqa: F401
 from grafix.core.effects import mirror as _effect_mirror  # noqa: F401
 from grafix.core.effects import mirror3d as _effect_mirror3d  # noqa: F401
+from grafix.core.effects import metaball as _effect_metaball  # noqa: F401
 from grafix.core.effects import translate as _effect_translate  # noqa: F401
 from grafix.core.effects import extrude as _effect_extrude  # noqa: F401
 from grafix.core.effects import repeat as _effect_repeat  # noqa: F401

@@ -246,6 +246,19 @@ class _EffectBuilder(Protocol):
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
         """
         ...
+    def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., keep_original: bool = ...) -> _EffectBuilder:
+        """
+        閉曲線群をメタボール的に接続し、輪郭（外周＋穴）を生成する。
+
+        引数:
+            activate: bool
+            radius: 接続の届く距離（falloff 半径）[mm]
+            threshold: 等値線レベル
+            grid_pitch: 距離場を評価する 2D グリッドのピッチ [mm]
+            auto_close_threshold: 端点距離がこの値以下なら閉曲線扱いとして自動で閉じる [mm]
+            keep_original: True のとき、生成結果に加えて元のポリラインも出力に含める
+        """
+        ...
     def mirror(self, *, activate: bool = ..., n_mirror: int = ..., cx: float = ..., cy: float = ..., source_positive_x: bool = ..., source_positive_y: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
         """
         XY 平面でのミラー複製を行う。
@@ -549,6 +562,19 @@ class _E(Protocol):
             density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
             spacing_gradient: スキャン方向に沿った線間隔勾配（シーケンス指定時はグループごとにサイクル適用）
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
+        """
+        ...
+    def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., keep_original: bool = ...) -> _EffectBuilder:
+        """
+        閉曲線群をメタボール的に接続し、輪郭（外周＋穴）を生成する。
+
+        引数:
+            activate: bool
+            radius: 接続の届く距離（falloff 半径）[mm]
+            threshold: 等値線レベル
+            grid_pitch: 距離場を評価する 2D グリッドのピッチ [mm]
+            auto_close_threshold: 端点距離がこの値以下なら閉曲線扱いとして自動で閉じる [mm]
+            keep_original: True のとき、生成結果に加えて元のポリラインも出力に含める
         """
         ...
     def mirror(self, *, activate: bool = ..., n_mirror: int = ..., cx: float = ..., cy: float = ..., source_positive_x: bool = ..., source_positive_y: bool = ..., show_planes: bool = ...) -> _EffectBuilder:
