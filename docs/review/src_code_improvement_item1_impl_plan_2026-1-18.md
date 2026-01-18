@@ -50,18 +50,18 @@
 
 ## テスト方針（最小）
 
-- [ ] `tests/core/test_pipeline.py` に追加
-  - [ ] `parameter_context(store)` 下で 2 フレーム実行し、2 フレーム目で override が反映されること
+- [x] `tests/core/test_pipeline.py` に追加
+  - [x] `parameter_context(store)` 下で 2 フレーム実行し、2 フレーム目で override が反映されること
     - 1 フレーム目: 観測で state を作る
     - `update_state_from_ui(...)` で `line_thickness/line_color` を変更
     - 2 フレーム目: `RealizedLayer.thickness/color` が UI 値になっている
-  - [ ] `layer.name` が `ParamStore.get_label(LAYER_STYLE_OP, site_id)` に反映されること
-- [ ] （任意）`parameter_context_from_snapshot` 下で `frame_params` に label/records が積まれること
+  - [x] `layer.name` が `ParamStore.get_label(LAYER_STYLE_OP, site_id)` に反映されること
+- [x] （任意）`parameter_context_from_snapshot` 下で `frame_params` に label/records が積まれること
   - ※ mp-draw の将来変更（worker 側で realize する等）に備えた、純粋な回帰として扱う。
 
 ## 仕様確認（あなたに確認したい）
 
-- [ ] `parameter_recording_muted()`（=`current_param_recording_enabled()==False`）の扱い；案 A で
+- [x] `parameter_recording_muted()`（=`current_param_recording_enabled()==False`）の扱い；案 A で
   - 案 A: **現状維持**（mute 中でも Layer style の観測/label/override 適用は行う）
   - 案 B: **API と揃える**（mute 中は Layer style の観測/label/override を行わない）
-  - どちらで進めるのが良いですか？
+  - 決定: 案 A
