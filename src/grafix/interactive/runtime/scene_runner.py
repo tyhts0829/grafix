@@ -39,47 +39,60 @@ class SceneRunner:
     ) -> list[RealizedLayer]:
         """シーンを実行して realized_layers を返す。"""
 
-        perf = self._perf
         with parameter_context(store, cc_snapshot=cc_snapshot):
-            mp_draw = None if recording else self._mp_draw
-            if mp_draw is None:
-                draw_fn = self._draw
-                if perf.enabled:
+            if recording or self._mp_draw is None:
+                return self._run_sync(t, defaults=defaults)
+            return self._run_mp(t, cc_snapshot=cc_snapshot, defaults=defaults)
 
-                    def draw_fn_timed(t_arg: float) -> SceneItem:
-                        with perf.section("draw"):
-                            return self._draw(t_arg)
+    def _run_sync(self, t: float, *, defaults: LayerStyleDefaults) -> list[RealizedLayer]:
+        perf = self._perf
 
-                    draw_fn = draw_fn_timed
-                with perf.section("scene"):
-                    return realize_scene(draw_fn, t, defaults)
+        draw_fn = self._draw
+        if perf.enabled:
 
-            mp_draw.submit(
-                t=t,
-                snapshot=current_param_snapshot(),
-                cc_snapshot=cc_snapshot,
-            )
+            def draw_fn_timed(t_arg: float) -> SceneItem:
+                with perf.section("draw"):
+                    return self._draw(t_arg)
 
-            new_result = mp_draw.poll_latest()
-            if new_result is not None:
-                if new_result.error is not None:
-                    raise RuntimeError(
-                        "mp-draw worker で例外が発生しました:\n" f"{new_result.error}"
-                    )
-                frame_params = current_frame_params()
-                if frame_params is not None:
-                    frame_params.records.extend(new_result.records)
-                    frame_params.labels.extend(new_result.labels)
+            draw_fn = draw_fn_timed
 
-            layers = mp_draw.latest_layers()
-            if layers is None:
-                return []
+        with perf.section("scene"):
+            return realize_scene(draw_fn, t, defaults)
 
-            def draw_from_mp(_t_arg: float) -> SceneItem:
-                return layers
+    def _run_mp(
+        self,
+        t: float,
+        *,
+        cc_snapshot: dict[int, float] | None,
+        defaults: LayerStyleDefaults,
+    ) -> list[RealizedLayer]:
+        perf = self._perf
+        mp_draw = self._mp_draw
+        assert mp_draw is not None
 
-            with perf.section("scene"):
-                return realize_scene(draw_from_mp, t, defaults)
+        # 1) draw（worker 側）: 入力を投げて、届いた観測結果だけ main のバッファへマージする。
+        mp_draw.submit(t=t, snapshot=current_param_snapshot(), cc_snapshot=cc_snapshot)
+
+        new_result = mp_draw.poll_latest()
+        if new_result is not None:
+            if new_result.error is not None:
+                raise RuntimeError("mp-draw worker で例外が発生しました:\n" f"{new_result.error}")
+            # worker は ParamStore を触れないので、観測（records/labels）の反映は main 側で行う。
+            frame_params = current_frame_params()
+            if frame_params is not None:
+                frame_params.records.extend(new_result.records)
+                frame_params.labels.extend(new_result.labels)
+
+        layers = mp_draw.latest_layers()
+        if layers is None:
+            return []
+
+        # 2) realize（main 側）: 最新の layers を通常パイプラインへ流して表示/出力する。
+        def draw_from_mp(_t_arg: float) -> SceneItem:
+            return layers
+
+        with perf.section("scene"):
+            return realize_scene(draw_from_mp, t, defaults)
 
     def close(self) -> None:
         """mp-draw worker を終了する。"""
@@ -87,4 +100,3 @@ class SceneRunner:
         if self._mp_draw is not None:
             self._mp_draw.close()
             self._mp_draw = None
-
