@@ -127,9 +127,24 @@ paths:
 ## Not implemented yet
 
 - LFOs to modulate any parameters with rhythm
-- G-code file generation
 
 ## Development
+
+### Geometry (the core data model)
+
+Grafix is built around an immutable `Geometry` node, which represents a *recipe* (not yet realized polylines).
+Nodes form a DAG (directed acyclic graph):
+
+- `op`: the operator name (primitive/effect/concat are stored uniformly)
+- `inputs`: child `Geometry` nodes (empty for primitives)
+- `args`: normalized `(name, value)` pairs
+- `id`: a content-based signature derived from `(op, inputs, args)`
+
+Primitives (`G.*`) create leaf `Geometry` nodes. Effects (`E.*`) take one or more input `Geometry`s and return a new `Geometry`
+that references them. Chaining operations in `draw(t)` builds the DAG.
+
+When `parameter_gui` is enabled, the GUI edits the parameters (`args`) of ops. Updating a parameter creates new `Geometry` nodes
+with new `id`s, while unchanged subgraphs keep their `id`s — which makes caching/reuse straightforward during interactive previews.
 
 Dev tools (optional):
 
