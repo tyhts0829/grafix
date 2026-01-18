@@ -146,6 +146,17 @@ that references them. Chaining operations in `draw(t)` builds the DAG.
 When `parameter_gui` is enabled, the GUI edits the parameters (`args`) of ops. Updating a parameter creates new `Geometry` nodes
 with new `id`s, while unchanged subgraphs keep their `id`s — which makes caching/reuse straightforward during interactive previews.
 
+### RealizedGeometry (what primitives/effects compute)
+
+Evaluating the `Geometry` DAG produces `RealizedGeometry`, a compact polyline representation:
+
+- `coords`: `np.ndarray` of `float32`, shape `(N, 3)` (x, y, z). A 2D `(N, 2)` array is also accepted (z=0 is implied).
+- `offsets`: `np.ndarray` of `int32`, shape `(M+1,)`, where polyline `i` is `coords[offsets[i]:offsets[i+1]]`.
+  `offsets[0]` is `0` and `offsets[-1]` equals `N`.
+
+Custom primitives return a `RealizedGeometry`. Custom effects take `Sequence[RealizedGeometry]` (usually 1 input) and return a new
+`RealizedGeometry`. Treat input arrays as immutable (`writeable=False`) and avoid in-place mutation.
+
 Dev tools (optional):
 
 ```bash
