@@ -176,6 +176,7 @@ def run(
     # `tasks` はループ駆動用（イベント処理→描画→flip の対象）。
     tasks = [WindowTask(window=draw_window.window, draw_frame=draw_window.draw_frame)]
 
+    gui_window = None
     if parameter_gui:
         # Parameter GUI は依存が重い（pyimgui）ので、使うときだけ遅延 import する。
         from grafix.interactive.runtime.parameter_gui_system import (
@@ -188,8 +189,24 @@ def run(
             monitor=monitor,
         )
         gui.window.set_location(*cfg.window_pos_parameter_gui)
+        gui_window = gui.window
         closers.append(gui.close)
         tasks.append(WindowTask(window=gui.window, draw_frame=gui.draw_frame))
+
+    # macOS + unbundled CLI 起動では、起動直後にウィンドウが他アプリの背面に残る事がある。
+    # event loop 開始直後に 1 回だけ明示 activate して前面化する。
+    def _activate_windows(_dt: float) -> None:
+        try:
+            if gui_window is not None:
+                gui_window.activate()
+        except Exception:
+            pass
+        try:
+            draw_window.window.activate()
+        except Exception:
+            pass
+
+    pyglet.clock.schedule_once(_activate_windows, 0.0)
 
     # --- ループの実行 ---
     # ここで複数ウィンドウを 1 つの pyglet.app.run() で回す。
