@@ -55,7 +55,7 @@ def layout(...):
 
 ポイント:
 - predicate の引数 `v` は **その preset 呼び出し 1 回（= op+site_id の 1 group）** の現在値辞書
-- `@preset` は `bypass` を自動で公開する（必要なら `v.get("bypass")` も参照できる）
+- `@preset` は `activate` を自動で公開する（必要なら `v.get("activate")` も参照できる）
 - ルール未指定の引数は常に表示される（後方互換）
 
 ### primitive / effect の場合
