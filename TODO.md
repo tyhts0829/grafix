@@ -13,6 +13,7 @@ print(G), print(E)で登録されている primitive, effect 一覧表示
 bg 更新 off 設定を run 引数に。
 メタボール的 effect
 Signed Distance Field を用いたなにか
+保存系は shift+key にする。
 skills:
 
 - コードレビュー
