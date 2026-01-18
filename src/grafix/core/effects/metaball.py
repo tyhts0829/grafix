@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
+from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
@@ -104,60 +106,106 @@ def _extract_rings_xy(
     return rings
 
 
-def _min_dist_sq_to_ring(px: np.ndarray, py: np.ndarray, ring: np.ndarray) -> np.ndarray:
-    """点群 (px,py) から閉曲線 ring への最短距離^2 を返す。"""
-    dist_sq = np.full(px.shape, np.inf, dtype=np.float64)
+def _pack_rings(
+    rings: list[_Ring2D],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """リング列を Numba 入力用の連結バッファへパックする。"""
+    n = len(rings)
+    total = 0
+    for ring in rings:
+        total += int(ring.vertices.shape[0])
 
-    a = ring[:-1]
-    b = ring[1:]
-    for i in range(int(a.shape[0])):
-        ax = float(a[i, 0])
-        ay = float(a[i, 1])
-        bx = float(b[i, 0])
-        by = float(b[i, 1])
+    ring_vertices = np.empty((total, 2), dtype=np.float64)
+    ring_offsets = np.empty((n + 1,), dtype=np.int32)
+    ring_mins = np.empty((n, 2), dtype=np.float64)
+    ring_maxs = np.empty((n, 2), dtype=np.float64)
 
-        dx = bx - ax
-        dy = by - ay
-        denom = dx * dx + dy * dy
-        if denom == 0.0:
-            ds = (px - ax) * (px - ax) + (py - ay) * (py - ay)
-            dist_sq = np.minimum(dist_sq, ds)
-            continue
+    ring_offsets[0] = 0
+    cursor = 0
+    for i, ring in enumerate(rings):
+        v = ring.vertices.astype(np.float64, copy=False)
+        m = int(v.shape[0])
+        ring_vertices[cursor : cursor + m] = v
+        cursor += m
+        ring_offsets[i + 1] = np.int32(cursor)
+        ring_mins[i] = ring.mins
+        ring_maxs[i] = ring.maxs
 
-        t = ((px - ax) * dx + (py - ay) * dy) / denom
-        t = np.clip(t, 0.0, 1.0)
-        cx = ax + t * dx
-        cy = ay + t * dy
-        ds = (px - cx) * (px - cx) + (py - cy) * (py - cy)
-        dist_sq = np.minimum(dist_sq, ds)
-    return dist_sq
+    return ring_vertices, ring_offsets, ring_mins, ring_maxs
 
 
-def _point_in_polygon_evenodd(px: np.ndarray, py: np.ndarray, ring: np.ndarray) -> np.ndarray:
-    """偶奇規則による inside 判定（境界は False 扱い）。"""
-    inside = np.zeros(px.shape, dtype=np.bool_)
-    x = px
-    y = py
+@njit(cache=True)
+def _evaluate_field_grid_numba(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    ring_vertices: np.ndarray,
+    ring_offsets: np.ndarray,
+    ring_mins: np.ndarray,
+    ring_maxs: np.ndarray,
+    inv_r2: float,
+) -> np.ndarray:
+    ny = int(ys.shape[0])
+    nx = int(xs.shape[0])
+    n_rings = int(ring_offsets.shape[0]) - 1
 
-    a = ring[:-1]
-    b = ring[1:]
-    for i in range(int(a.shape[0])):
-        xi = float(a[i, 0])
-        yi = float(a[i, 1])
-        xj = float(b[i, 0])
-        yj = float(b[i, 1])
+    out = np.zeros((ny, nx), dtype=np.float64)
+    for j in range(ny):
+        y = float(ys[j])
+        for i in range(nx):
+            x = float(xs[i])
+            val = 0.0
+            inside_parity = 0
 
-        # `yi > y` と `yj > y` が異なるときだけ交差判定をする（水平エッジはここで落ちる）。
-        y_between = np.logical_xor(yi > y, yj > y)
-        denom = yj - yi
+            for ri in range(n_rings):
+                s = int(ring_offsets[ri])
+                e = int(ring_offsets[ri + 1])
 
-        # y_between 以外は参照されないので 0 埋めでよい。
-        t = np.divide(y - yi, denom, out=np.zeros_like(y, dtype=np.float64), where=denom != 0.0)
-        x_int = xi + t * (xj - xi)
-        cross = np.logical_and(y_between, x < x_int)
-        inside = np.logical_xor(inside, cross)
+                inside_possible = (
+                    x >= float(ring_mins[ri, 0])
+                    and x <= float(ring_maxs[ri, 0])
+                    and y >= float(ring_mins[ri, 1])
+                    and y <= float(ring_maxs[ri, 1])
+                )
 
-    return inside
+                min_ds = 1e300
+                inside = 0
+                for k in range(s, e - 1):
+                    ax = float(ring_vertices[k, 0])
+                    ay = float(ring_vertices[k, 1])
+                    bx = float(ring_vertices[k + 1, 0])
+                    by = float(ring_vertices[k + 1, 1])
+
+                    # distance^2 to segment
+                    dx = bx - ax
+                    dy = by - ay
+                    denom = dx * dx + dy * dy
+                    if denom <= 0.0:
+                        ds = (x - ax) * (x - ax) + (y - ay) * (y - ay)
+                    else:
+                        t = ((x - ax) * dx + (y - ay) * dy) / denom
+                        if t < 0.0:
+                            t = 0.0
+                        elif t > 1.0:
+                            t = 1.0
+                        cx = ax + t * dx
+                        cy = ay + t * dy
+                        ds = (x - cx) * (x - cx) + (y - cy) * (y - cy)
+                    if ds < min_ds:
+                        min_ds = ds
+
+                    # even-odd (boundary is treated as outside)
+                    if inside_possible and ((ay > y) != (by > y)):
+                        x_int = ax + (y - ay) * (bx - ax) / (by - ay)
+                        if x < x_int:
+                            inside ^= 1
+
+                val += math.exp(-min_ds * inv_r2)
+                inside_parity ^= inside
+
+            val += float(inside_parity)
+            out[j, i] = val
+
+    return out
 
 
 def _quant_key(x: float, y: float, snap: float) -> tuple[int, int]:
@@ -429,22 +477,18 @@ def metaball(
 
     xs = x0 + pitch * np.arange(nx, dtype=np.float64)
     ys = y0 + pitch * np.arange(ny, dtype=np.float64)
-    X, Y = np.meshgrid(xs, ys, indexing="xy")
-    px = X.ravel()
-    py = Y.ravel()
 
+    ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
     inv_r2 = 1.0 / (r * r)
-    field = np.zeros(px.shape, dtype=np.float64)
-    inside_parity = np.zeros(px.shape, dtype=np.bool_)
-
-    for ring in rings:
-        dist_sq = _min_dist_sq_to_ring(px, py, ring.vertices)
-        field += np.exp(-dist_sq * inv_r2)
-        inside_parity = np.logical_xor(inside_parity, _point_in_polygon_evenodd(px, py, ring.vertices))
-
-    # inside 項（偶奇規則）で「面（外周＋穴）」の基準を与える。
-    field += inside_parity.astype(np.float64)
-    field2 = field.reshape((ny, nx))
+    field2 = _evaluate_field_grid_numba(
+        xs.astype(np.float64, copy=False),
+        ys.astype(np.float64, copy=False),
+        ring_vertices,
+        ring_offsets,
+        ring_mins,
+        ring_maxs,
+        float(inv_r2),
+    )
 
     snap = max(1e-9, pitch * 1e-6)
     key_to_xy: dict[tuple[int, int], tuple[float, float]] = {}
@@ -477,4 +521,3 @@ def metaball(
                 out_lines.append(original.astype(np.float32, copy=False))
 
     return _lines_to_realized(out_lines)
-
