@@ -9,6 +9,8 @@
    - task queue は有限なので、詰まったら古いタスクを捨てて「最新優先」にする。
 2. worker プロセスが task を取り出し、snapshot を固定して `draw(t)` を実行する。
 3. worker が `DrawResult` を返し、メインは `poll_latest()` で最も新しい結果だけを採用する。
+4. メインは受け取った `layers` を描画パイプライン（例: `realize_scene()`）へ渡して表示/出力する。
+   - worker は draw/normalize までで、realize は行わない（mp-draw は realize の並列化ではない）。
 
 設計上のポイント
 ----------------

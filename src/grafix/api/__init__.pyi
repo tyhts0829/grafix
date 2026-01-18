@@ -828,7 +828,7 @@ class _P(Protocol):
             margin_t: float, range [0.0, 100.0]
             margin_b: float, range [0.0, 100.0]
             show_center: bool
-            levels: int, range [1, 8]
+            levels: int, range [1, 3]
             offset: vec3, range [-50.0, 50.0]
         """
         ...

@@ -79,8 +79,8 @@
 
 ### D. mp-draw の理解しやすさ（複雑さの管理）
 
-- [ ] `mp_draw` のドキュメントを追記（「worker は draw/normalize まで。realize は main」）。
-- [ ] `SceneRunner.run()` の mp 経路にコメント or 小さなヘルパ関数を導入し、処理の 2 段（draw と realize）を分けて読めるようにする。
+- [x] `mp_draw` のドキュメントを追記（「worker は draw/normalize まで。realize は main」）。
+- [x] `SceneRunner.run()` の mp 経路にコメント or 小さなヘルパ関数を導入し、処理の 2 段（draw と realize）を分けて読めるようにする。
 - [ ] （任意）デバッグ用の最小ログ/フックを追加（ワーカー例外、キュー詰まり等）。
 
 ### E. API（短名と EffectBuilder 最適化）
@@ -95,4 +95,3 @@
 - [ ] 上限値（件数）のデフォルト: 例 `0（無制限）` / `1000` / `10000`
 - [ ] `runtime_config` の上書き方法: `contextvars` ベース（既存 API は維持）で良いか
 - [ ] `G/E/L` を破壊的に変えるか（変えるなら新しい名前/導線）
-
