@@ -54,3 +54,49 @@ def test_polygon_clamps_n_sides_lt_3() -> None:
     realized = realize(g)
     assert realized.coords.shape == (4, 3)
     assert realized.offsets.tolist() == [0, 4]
+
+
+def test_polygon_sweep_partial_is_closed_by_chord() -> None:
+    """sweep<360 のとき、外周の途中で止めて弦で閉じる。"""
+    sides = 36  # 10° 刻み
+    sweep = 300.0
+    g = Geometry.create("polygon", params={"n_sides": sides, "sweep": sweep})
+    realized = realize(g)
+
+    assert realized.coords.shape == (32, 3)  # 0..300° の 31 点 + 閉じる 1 点
+    np.testing.assert_array_equal(realized.coords[0], realized.coords[-1])
+
+    expected_end = np.array(
+        [
+            0.5 * np.cos(np.deg2rad(sweep)),
+            0.5 * np.sin(np.deg2rad(sweep)),
+            0.0,
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(
+        realized.coords[-2], expected_end, rtol=0.0, atol=1e-6
+    )
+
+
+def test_polygon_sweep_non_multiple_includes_endpoint() -> None:
+    """sweep が 1 ステップ角の整数倍でない場合、端点（途中の点）を含める。"""
+    sides = 36  # 10° 刻み
+    sweep = 305.0
+    g = Geometry.create("polygon", params={"n_sides": sides, "sweep": sweep})
+    realized = realize(g)
+
+    assert realized.coords.shape == (33, 3)  # 0..300° の 31 点 + 305° + 閉じる 1 点
+    np.testing.assert_array_equal(realized.coords[0], realized.coords[-1])
+
+    expected_end = np.array(
+        [
+            0.5 * np.cos(np.deg2rad(sweep)),
+            0.5 * np.sin(np.deg2rad(sweep)),
+            0.0,
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(
+        realized.coords[-2], expected_end, rtol=0.0, atol=1e-6
+    )

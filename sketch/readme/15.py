@@ -6,8 +6,8 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-    g = G.text()
-    e = E.quantize().buffer().buffer().fill()
+    g = G.polygon()
+    e = E.repeat().rotate().buffer().buffer().fill()
     return e(g)
 
 
