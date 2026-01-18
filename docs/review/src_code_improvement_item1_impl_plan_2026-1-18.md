@@ -1,7 +1,7 @@
 # src_code_improvement_plan_2026-1-14: 1) パラメータ処理の分散 / 関心事混在（実装計画）
 
 対象: `docs/review/src_code_improvement_plan_2026-1-14.md` の「### 1) パラメータ処理の分散 / 関心事混在」  
-作成日: 2026-01-18  
+作成日: 2026-01-18
 
 ## ゴール
 
@@ -46,7 +46,7 @@
   - `resolve_layer_style(...)` で base を確定
   - `observe_and_apply_layer_style(...)` に委譲して thickness/color を得る
   - `realize(...)` して `RealizedLayer` を積む
-  だけに寄せる（records/labels/state 参照の直書きを消す）。
+    だけに寄せる（records/labels/state 参照の直書きを消す）。
 
 ## テスト方針（最小）
 
@@ -61,8 +61,7 @@
 
 ## 仕様確認（あなたに確認したい）
 
-- [ ] `parameter_recording_muted()`（=`current_param_recording_enabled()==False`）の扱い
-  - 案A: **現状維持**（mute 中でも Layer style の観測/label/override 適用は行う）
-  - 案B: **API と揃える**（mute 中は Layer style の観測/label/override を行わない）
+- [ ] `parameter_recording_muted()`（=`current_param_recording_enabled()==False`）の扱い；案 A で
+  - 案 A: **現状維持**（mute 中でも Layer style の観測/label/override 適用は行う）
+  - 案 B: **API と揃える**（mute 中は Layer style の観測/label/override を行わない）
   - どちらで進めるのが良いですか？
-
