@@ -5,13 +5,13 @@ CANVAS_WIDTH = 297
 CANVAS_HEIGHT = 210
 
 EXPLANATION = """
-Grafix is a line-based creative coding framework for Python that approaches visual design with
-an audio mindset, treating constraints as a source of creativity rather than a limitation.
+Grafix is a line-based creative coding framework for Python that approaches visual design
+with an audio mindset, treating constraints as a source of creativity rather than a limitation.
 You build sketches from primitives (G), shape them through method-chained processors to
 form pedal-like effect (E), and organize the result into layers (L) that carry their own color and
 line width, like pen changes on a plotter. A real-time OpenGL preview keeps iteration, while
-the same patch can be exported to PNG, SVG, G-code, and MP4, providing a continuous path
-from experimentation to both on-screen playback and physical output. 
+the same patch can be exported to PNG, SVG, G-code, and MP4, providing a continuous
+path from experimentation to both on-screen playback and physical output. 
 """
 
 
@@ -125,7 +125,7 @@ def draw(t):
         activate=True,
         auto_center=True,
         pivot=(0.0, 0.0, 0.0),
-        rotation=(53.407000000000004, 67.253, 0.0),
+        rotation=(53.407000000000004, 67.253, 30.0),
     )
 
     e2 = E.translate(
@@ -431,6 +431,6 @@ if __name__ == "__main__":
         render_scale=4,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        midi_port_name="TX-6 Bluetooth",
-        midi_mode="7bit",
+        midi_port_name="Grid",
+        midi_mode="14bit",
     )
