@@ -1,6 +1,6 @@
 """
-どこで: `src/grafix/primitives/line.py`。線分プリミティブの実体生成。
-何を: center/length/angle から XY 平面上の線分を構築する。
+どこで: `src/grafix/core/primitives/line.py`。線分プリミティブの実体生成。
+何を: center/anchor/length/angle から XY 平面上の線分を構築する。
 なぜ: 最小の一次元形状として、他の effect/合成の基礎にするため。
 """
 
@@ -16,6 +16,7 @@ from grafix.core.realized_geometry import RealizedGeometry
 
 line_meta = {
     "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
+    "anchor": ParamMeta(kind="choice", choices=("center", "left", "right")),
     "length": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
     "angle": ParamMeta(kind="float", ui_min=0.0, ui_max=360.0),
 }
@@ -25,6 +26,7 @@ line_meta = {
 def line(
     *,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    anchor: str = "center",
     length: float = 1.0,
     angle: float = 0.0,
 ) -> RealizedGeometry:
@@ -33,7 +35,10 @@ def line(
     Parameters
     ----------
     center : tuple[float, float, float], optional
-        線分中心の座標 (cx, cy, cz)。
+        `anchor` で指定した基準点の座標 (cx, cy, cz)。
+    anchor : {"center","left","right"}, default "center"
+        `center` の基準点。
+        `"center"` は中心、`"left"` は左端（angle 方向の逆側）、`"right"` は右端（angle 方向）。
     length : float, optional
         線分の長さ。
     angle : float, optional
@@ -55,15 +60,28 @@ def line(
     angle_deg = float(angle)
     cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
 
-    half = 0.5 * length_f
+    anchor_s = str(anchor)
+    if anchor_s not in {"center", "left", "right"}:
+        anchor_s = "center"
+
     theta = math.radians(angle_deg)
-    dx = half * math.cos(theta)
-    dy = half * math.sin(theta)
+    dx = length_f * math.cos(theta)
+    dy = length_f * math.sin(theta)
+
+    if anchor_s == "center":
+        x0, y0 = cx_f - 0.5 * dx, cy_f - 0.5 * dy
+        x1, y1 = cx_f + 0.5 * dx, cy_f + 0.5 * dy
+    elif anchor_s == "left":
+        x0, y0 = cx_f, cy_f
+        x1, y1 = cx_f + dx, cy_f + dy
+    else:  # anchor_s == "right"
+        x0, y0 = cx_f - dx, cy_f - dy
+        x1, y1 = cx_f, cy_f
 
     coords = np.array(
         [
-            [cx_f - dx, cy_f - dy, cz_f],
-            [cx_f + dx, cy_f + dy, cz_f],
+            [x0, y0, cz_f],
+            [x1, y1, cz_f],
         ],
         dtype=np.float32,
     )
