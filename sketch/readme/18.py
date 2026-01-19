@@ -4,27 +4,14 @@ from grafix import E, G, L, P, run
 CANVAS_WIDTH = 297
 CANVAS_HEIGHT = 210
 
-DESCRIPTION = """
-Grafix is a line-based creative coding framework for Python
-that approaches visual design with an audio mindset, treating
-constraints as a source of creativity rather than a limitation.
-
-You build sketches from primitives (G), shape them through
-method-chained processors to form synth-like effect (E), and
-organize the result into layers (L) that carry their own color
-and line width, like pen changes on a plotter.
-
-Parameters can be mapped to MIDI CC (cc) and driven
-over time, so geometry becomes something you can play.
-
-A real-time OpenGL preview (run(draw(t))) keeps iteration,
-while the same patch can be exported to PNG, SVG, G-code,
-and MP4, providing a continuous path from experimentation
-to both on-screen playback and physical output.
-
-New primitives and effects are defined as Python decorators,
-keeping the system extensible without collapsing into
-a monolithic graphics API.
+EXPLANATION = """
+Grafix is a line-based creative coding framework for Python that approaches visual design with
+an audio mindset, treating constraints as a source of creativity rather than a limitation.
+You build sketches from primitives (G), shape them through method-chained processors to
+form pedal-like effect (E), and organize the result into layers (L) that carry their own color and
+line width, like pen changes on a plotter. A real-time OpenGL preview keeps iteration, while
+the same patch can be exported to PNG, SVG, G-code, and MP4, providing a continuous path
+from experimentation to both on-screen playback and physical output. 
 """
 
 
@@ -180,7 +167,7 @@ def draw(t):
             activate=True,
             auto_center=True,
             pivot=(0.0, 0.0, 0.0),
-            rotation=(0.0, 0.0, 0.0),
+            rotation=(t * 10, t * 20, t * 30),
             scale=(1.0, 1.0, 1.0),
             delta=(142.308, 0.0, 0.0),
         )
@@ -190,14 +177,14 @@ def draw(t):
         )
         .displace(
             activate=True,
-            amplitude=(8.0, 8.0, 8.0),
-            spatial_freq=(0.04, 0.04, 0.04),
+            amplitude=(4.0, 4.0, 4.0),
+            spatial_freq=(0.08, 0.08, 0.08),
             amplitude_gradient=(0.0, 0.0, 0.0),
             frequency_gradient=(0.0, 0.0, 0.0),
             gradient_center_offset=(0.0, 0.0, 0.0),
             min_gradient_factor=0.1,
             max_gradient_factor=2.0,
-            t=0.031,
+            t=t * 0.025,
         )
     )
 
@@ -372,7 +359,32 @@ def draw(t):
         geometry_or_list=[discription1, discription2, discription3, discription4],
     )
 
-    return (l1, title_black, title_gray, g, text, discription)
+    # ====================================================================
+    explanation = G.text(
+        text=EXPLANATION,
+        activate=True,
+        font="Helvetica.ttc",
+        font_index=0,
+        text_align="left",
+        letter_spacing_em=0.0,
+        line_height=1.2,
+        quality=0.5,
+        center=(117.0, 11.0, 0.0),
+        scale=4.0,
+    )
+
+    e_explanation = E.fill(
+        activate=True,
+        angle_sets=1,
+        angle=45.0,
+        density=1000.0,
+        spacing_gradient=0.0,
+        remove_boundary=False,
+    )
+    explanation = e_explanation(explanation)
+    explanation = L(name="explanation", geometry_or_list=[explanation])
+
+    return (l1, title_black, title_gray, g, text, discription, explanation)
 
 
 if __name__ == "__main__":
