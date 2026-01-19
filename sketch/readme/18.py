@@ -5,13 +5,13 @@ CANVAS_WIDTH = 297
 CANVAS_HEIGHT = 210
 
 EXPLANATION = """
-Grafix is a line-based creative coding framework for Python that approaches visual design
+Grafix is a line-based creative coding framework for Python. It approaches visual design
 with an audio mindset, treating constraints as a source of creativity rather than a limitation.
-You build sketches from primitives (G), shape them through method-chained processors to
-form pedal-like effect (E), and organize the result into layers (L) that carry their own color and
-line width, like pen changes on a plotter. A real-time OpenGL preview keeps iteration, while
-the same patch can be exported to PNG, SVG, G-code, and MP4, providing a continuous
-path from experimentation to both on-screen playback and physical output. 
+Build sketches from primitives (G), shape them through method-chained processors into
+pedal-like effects (E), and arrange the result into layers (L)—each with its own color and line
+width, like pen changes on a plotter. A real-time OpenGL preview keeps the feedback loop
+tight, and the same patch can be exported to PNG, SVG, G-code, and MP4, taking you from
+experimentation to both on-screen playback and physical output.
 """
 
 
@@ -296,7 +296,7 @@ def draw(t):
     # ====================================================================
     discription1 = G(name="Discription1").text(
         activate=True,
-        text="G.polyhedron()\nCreate 3D primitive geometry.",
+        text="G.polyhedron()\nCreate a 3D polyhedral primitive.",
         font="Helvetica.ttc",
         font_index=0,
         text_align="left",
@@ -311,7 +311,7 @@ def draw(t):
     discription1 = e_discription1(discription1)
     discription2 = G(name="Discription2").text(
         activate=True,
-        text="E.fill()\nHatching geometry with parallel\nlines to express surface.",
+        text="E.fill()\nHatch the geometry with parallel\nlines to suggest surface.",
         font="Helvetica.ttc",
         font_index=0,
         text_align="left",
@@ -326,7 +326,7 @@ def draw(t):
     discription2 = e_discription2(discription2)
     discription3 = G(name="Discription3").text(
         activate=True,
-        text="E.subdivide().displace()\nSubdivide line to express smooth\ncurves and displace to add noise.",
+        text="E.subdivide().displace()\nSubdivide the line to smooth the \ncurve, and displace it to introduce\nmotion and variation.",
         font="Helvetica.ttc",
         font_index=0,
         text_align="left",
@@ -341,7 +341,7 @@ def draw(t):
     discription3 = e_discription3(discription3)
     discription4 = G(name="Discription4").text(
         activate=True,
-        text="E.displace(t=t)\nAnimate displacement over time.",
+        text="E.displace(t=t)\nAnimate the displacement over time.",
         font="Helvetica.ttc",
         font_index=0,
         text_align="left",
