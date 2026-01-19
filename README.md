@@ -1,4 +1,4 @@
-![](docs/readme/readme_2.png)
+![](docs/readme/readme.gif)
 
 Grafix is a Python-based creative coding framework compatible with pen plotter.
 
@@ -132,7 +132,7 @@ paths:
 
 ### Geometry (the core data model)
 
-Grafix is built around an immutable `Geometry` node, which represents a *recipe* (not yet realized polylines).
+Grafix is built around an immutable `Geometry` node, which represents a _recipe_ (not yet realized polylines).
 Nodes form a DAG (directed acyclic graph):
 
 - `op`: the operator name (primitive/effect/concat are stored uniformly)
