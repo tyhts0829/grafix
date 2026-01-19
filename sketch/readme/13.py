@@ -6,17 +6,35 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-    layout = P.layout_metallic_rectangles(canvas_h=CANVAS_HEIGHT, canvas_w=CANVAS_WIDTH)
-    c = G.polygon(
+    layout = P.layout_metallic_rectangles(
+        activate=True,
+        canvas_w=148.0,
+        canvas_h=210.0,
+        axes="both",
+        margin_l=8.0,
+        margin_r=8.0,
+        margin_t=8.0,
+        margin_b=8.0,
+        show_center=False,
+        metallic_n=1,
+        levels=8,
+        corner="br",
+        clockwise=False,
+        offset=(0.0, 0.0, 0.0),
+    )
+
+    c = G(name="circle").polygon(
         activate=True,
         n_sides=565,
         phase=0.0,
-        center=(71.739, 105.97800000000001, 0.0),
+        sweep=360.0,
+        center=(73.37, 63.587, 0.0),
         scale=108.47500000000001,
     )
 
     e = (
-        E.repeat(
+        E(name="e_circle")
+        .repeat(
             activate=True,
             count=59,
             cumulative_scale=False,
@@ -38,7 +56,7 @@ def draw(t):
             gradient_center_offset=(0.533, 0.0, 0.0),
             min_gradient_factor=0.0,
             max_gradient_factor=1.549,
-            t=0.381,
+            t=0.41200000000000003,
         )
         .affine(
             activate=True,
@@ -50,7 +68,10 @@ def draw(t):
         )
     )
 
-    return layout, e(c)
+    text = G.text()
+    e_text = E.fill()
+    text = e_text(text)
+    return layout, e(c), text
 
 
 if __name__ == "__main__":
