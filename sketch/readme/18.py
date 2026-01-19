@@ -177,8 +177,8 @@ def draw(t):
         )
         .displace(
             activate=True,
-            amplitude=(4.0, 4.0, 4.0),
-            spatial_freq=(0.08, 0.08, 0.08),
+            amplitude=(4.0, 8.0, 12.0),
+            spatial_freq=(0.06, 0.06, 0.06),
             amplitude_gradient=(0.0, 0.0, 0.0),
             frequency_gradient=(0.0, 0.0, 0.0),
             gradient_center_offset=(0.0, 0.0, 0.0),
@@ -311,7 +311,7 @@ def draw(t):
     discription1 = e_discription1(discription1)
     discription2 = G(name="Discription2").text(
         activate=True,
-        text="E,fill()\nHatching geometry with parallel\nlines to express surface.",
+        text="E.fill()\nHatching geometry with parallel\nlines to express surface.",
         font="Helvetica.ttc",
         font_index=0,
         text_align="left",
@@ -384,7 +384,42 @@ def draw(t):
     explanation = e_explanation(explanation)
     explanation = L(name="explanation", geometry_or_list=[explanation])
 
-    return (l1, title_black, title_gray, g, text, discription, explanation)
+    # ====================================================================
+    h_line1 = G(name="HLine1").line(
+        activate=True,
+        center=(183.0, 83.0, 0.0),
+        length=203.0,
+        angle=0.0,
+    )
+
+    h_line2 = G.line(
+        activate=True,
+        center=(43.5, 83.0, 0.0),
+        length=64.0,
+        angle=0.0,
+    )
+
+    e_line2 = E.bold(
+        activate=True,
+        count=10,
+        radius=0.192,
+        seed=0,
+    )
+
+    h_line2 = e_line2(h_line2)
+
+    line = L(name="line", geometry_or_list=[h_line1, h_line2])
+
+    return (
+        l1,
+        title_black,
+        title_gray,
+        g,
+        text,
+        discription,
+        explanation,
+        line,
+    )
 
 
 if __name__ == "__main__":
