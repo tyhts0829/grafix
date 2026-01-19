@@ -37,6 +37,40 @@ def test_line_center_moves_segment_and_preserves_z() -> None:
     np.testing.assert_allclose(realized.coords[1], [10.5, 20.0, 30.0], rtol=0.0, atol=1e-6)
 
 
+def test_line_anchor_left_uses_center_as_left_endpoint() -> None:
+    """anchor="left" では center が左端になり、+angle 方向へ伸びる。"""
+    realized = realize(
+        Geometry.create(
+            "line",
+            params={
+                "center": (10.0, 20.0, 30.0),
+                "anchor": "left",
+                "length": 2.0,
+                "angle": 0.0,
+            },
+        )
+    )
+    np.testing.assert_allclose(realized.coords[0], [10.0, 20.0, 30.0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(realized.coords[1], [12.0, 20.0, 30.0], rtol=0.0, atol=1e-6)
+
+
+def test_line_anchor_right_uses_center_as_right_endpoint() -> None:
+    """anchor="right" では center が右端になり、-angle 方向へ伸びる。"""
+    realized = realize(
+        Geometry.create(
+            "line",
+            params={
+                "center": (10.0, 20.0, 30.0),
+                "anchor": "right",
+                "length": 2.0,
+                "angle": 0.0,
+            },
+        )
+    )
+    np.testing.assert_allclose(realized.coords[0], [8.0, 20.0, 30.0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(realized.coords[1], [10.0, 20.0, 30.0], rtol=0.0, atol=1e-6)
+
+
 def test_line_zero_length_returns_two_identical_points() -> None:
     """length==0 のとき 2 点（同一点）として返す。"""
     realized = realize(Geometry.create("line", params={"length": 0.0, "center": (1.0, 2.0, 3.0)}))
