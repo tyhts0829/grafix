@@ -31,13 +31,14 @@ class _G(Protocol):
             scale: 等方スケール倍率 s
         """
         ...
-    def line(self, *, activate: bool = ..., center: Vec3 = ..., length: float = ..., angle: float = ...) -> Geometry:
+    def line(self, *, activate: bool = ..., center: Vec3 = ..., anchor: str = ..., length: float = ..., angle: float = ...) -> Geometry:
         """
         正規化済み引数から線分を生成する。
 
         引数:
             activate: bool
-            center: 線分中心の座標 (cx, cy, cz)
+            center: `anchor` で指定した基準点の座標 (cx, cy, cz)
+            anchor: `center` の基準点
             length: 線分の長さ
             angle: 回転角 [deg]
         """
@@ -79,7 +80,7 @@ class _G(Protocol):
             scale: 等方スケール倍率 s
         """
         ...
-    def text(self, *, activate: bool = ..., text: str = ..., font: str = ..., font_index: int = ..., text_align: str = ..., letter_spacing_em: float = ..., line_height: float = ..., quality: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def text(self, *, activate: bool = ..., text: str = ..., font: str = ..., font_index: int = ..., text_align: str = ..., letter_spacing_em: float = ..., line_height: float = ..., use_bounding_box: bool = ..., box_width: float = ..., box_height: float = ..., show_bounding_box: bool = ..., quality: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         フォントアウトラインからテキストのポリライン列を生成する。
 
@@ -91,6 +92,10 @@ class _G(Protocol):
             text_align: 行揃え（`left|center|right`）
             letter_spacing_em: 文字間の追加スペーシング（em 比）
             line_height: 行送り（em 比）
+            use_bounding_box: True のとき `box_width` による自動改行と、`show_bounding_box` による枠描画を有効にする
+            box_width: 幅による自動改行を行う際のボックス幅（出力座標系）
+            box_height: デバッグ用ボックス表示の高さ（出力座標系）
+            show_bounding_box: True のとき、`box_width/box_height` で指定されたボックス枠（4本の線分）を追加で描画する
             quality: 平坦化品質（0..1）
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率 s

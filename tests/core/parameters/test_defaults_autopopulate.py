@@ -23,7 +23,7 @@ def test_polygon_defaults_recorded_when_no_kwargs():
 
     snapshot = store_snapshot(store)
     polygon_args = {key.arg for key in snapshot.keys() if key.op == "polygon"}
-    assert polygon_args == {"activate", "n_sides", "phase", "center", "scale"}
+    assert polygon_args == {"activate", "n_sides", "phase", "sweep", "center", "scale"}
 
 
 def test_effect_defaults_recorded_when_no_kwargs():

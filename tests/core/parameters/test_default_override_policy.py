@@ -27,6 +27,7 @@ def test_implicit_defaults_start_with_override_on():
         "activate": True,
         "n_sides": True,
         "phase": True,
+        "sweep": True,
         "center": True,
         "scale": True,
     }
@@ -46,6 +47,27 @@ def test_explicit_kwargs_start_with_override_off_for_those_args():
         "activate": True,
         "n_sides": True,
         "phase": False,
+        "sweep": True,
+        "center": True,
+        "scale": True,
+    }
+    assert_invariants(store)
+
+
+def test_explicit_sweep_starts_with_override_off_for_sweep() -> None:
+    store = ParamStore()
+
+    def callsite() -> None:
+        G.polygon(sweep=270.0)
+
+    with parameter_context(store=store, cc_snapshot=None):
+        callsite()
+
+    assert _override_by_arg(store, op="polygon") == {
+        "activate": True,
+        "n_sides": True,
+        "phase": True,
+        "sweep": False,
         "center": True,
         "scale": True,
     }
