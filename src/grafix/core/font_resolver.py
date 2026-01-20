@@ -10,7 +10,7 @@ from pathlib import Path
 
 from grafix.core.runtime_config import runtime_config
 
-DEFAULT_FONT_FILENAME = "GoogleSans-Regular.ttf"
+DEFAULT_FONT_FILENAME = "Helvetica.ttc"
 _FONT_EXTENSIONS = (".ttf", ".otf", ".ttc")
 
 
@@ -143,7 +143,7 @@ def resolve_font_path(font: str) -> Path:
 
     searched = ", ".join(str(d) for d in dirs) if dirs else "(none)"
     cfg = runtime_config()
-    example_yaml = "font_dirs:\n  - \"~/Fonts\"\n"
+    example_yaml = 'font_dirs:\n  - "~/Fonts"\n'
     hint = (
         "フォントが見つかりません。"
         " `font` に実在パスを渡すか、config.yaml の `font_dirs` を設定してください"
@@ -172,7 +172,9 @@ def list_font_choices() -> tuple[tuple[str, str, bool, str], ...]:
         stem = fp.stem
         is_ttc = fp.suffix.lower() == ".ttc"
         search_key = f"{value} {stem}".lower()
-        by_value[value] = FontChoice(stem=stem, value=value, is_ttc=is_ttc, search_key=search_key)
+        by_value[value] = FontChoice(
+            stem=stem, value=value, is_ttc=is_ttc, search_key=search_key
+        )
 
     choices = tuple(by_value[v] for v in sorted(by_value.keys(), key=str))
     _FONT_CHOICES_CACHE[key] = choices
