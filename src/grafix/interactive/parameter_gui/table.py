@@ -492,6 +492,7 @@ def render_parameter_table(
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
     effect_step_ordinal_by_site: Mapping[tuple[str, str], int] | None = None,
     last_effective_by_key: Mapping[ParameterKey, object] | None = None,
+    raw_label_by_site: Mapping[tuple[str, str], str] | None = None,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
     collapsed_headers: set[str] | None = None,
@@ -614,6 +615,7 @@ def render_parameter_table(
                         last_effective_by_key=last_effective_by_key,
                         layer_style_name_by_site_id=layer_style_name_by_site_id,
                         step_info_by_site=step_info_by_site,
+                        raw_label_by_site=raw_label_by_site,
                     )
                     want_open_snippet_popup = True
 

@@ -89,6 +89,7 @@ def snippet_for_block(
     last_effective_by_key: Mapping[ParameterKey, object] | None = None,
     layer_style_name_by_site_id: Mapping[str, str] | None = None,
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
+    raw_label_by_site: Mapping[tuple[str, str], str] | None = None,
 ) -> str:
     """1 ブロック（1 ヘッダ相当）のスニペットを返す。"""
 
@@ -169,13 +170,32 @@ def snippet_for_block(
     if group_type == "primitive":
         row0 = rows[0]
         op = str(row0.op)
+        prefix = "G."
+        if raw_label_by_site is not None:
+            raw_label = raw_label_by_site.get((op, str(row0.site_id)))
+            if raw_label is not None:
+                raw_label_s = str(raw_label).strip()
+                if raw_label_s:
+                    prefix = f"G(name={_py_literal(raw_label_s)})."
         kwargs = [
             (str(r.arg), _py_literal(_effective_or_ui_value(r, last_effective_by_key=last_effective_by_key)))
             for r in rows
         ]
-        return _indent_code(_format_kwargs_call("G.", op=op, kwargs=kwargs).rstrip() + "\n")
+        return _indent_code(_format_kwargs_call(prefix, op=op, kwargs=kwargs).rstrip() + "\n")
 
     if group_type == "effect_chain":
+        prefix = "E."
+        if raw_label_by_site is not None:
+            for r in rows:
+                raw_label = raw_label_by_site.get((str(r.op), str(r.site_id)))
+                if raw_label is None:
+                    continue
+                raw_label_s = str(raw_label).strip()
+                if not raw_label_s:
+                    continue
+                prefix = f"E(name={_py_literal(raw_label_s)})."
+                break
+
         steps: dict[tuple[int, str, str], list[ParameterRow]] = {}
         for r in rows:
             step_index = 10**9
@@ -206,7 +226,7 @@ def snippet_for_block(
                 for r in step_rows
             ]
             if i == 0:
-                call = _format_kwargs_call("E.", op=op, kwargs=kwargs)
+                call = _format_kwargs_call(prefix, op=op, kwargs=kwargs)
                 out_lines.extend(call.splitlines())
                 continue
 

@@ -148,3 +148,70 @@ def test_snippet_component_uses_display_op_call_name() -> None:
     assert out.startswith("    ")
     assert "P.snippet_logo(" in out
     assert "x=2.0" in out
+
+
+def test_snippet_primitive_includes_name_when_raw_label_exists() -> None:
+    rows = [
+        _row(op="text", site_id="p:1", ordinal=1, arg="text", kind="str", ui_value="Hello"),
+        _row(op="text", site_id="p:1", ordinal=1, arg="scale", kind="float", ui_value=2.0),
+    ]
+    block = GroupBlock(
+        group_id=("primitive", ("text", 1)),
+        header_id="primitive:text#1",
+        header="text",
+        items=[GroupBlockItem(row=r, visible_label="") for r in rows],
+    )
+    out = snippet_for_block(
+        block,
+        raw_label_by_site={("text", "p:1"): "title1"},
+    )
+
+    assert out.startswith("    ")
+    assert "G(name='title1').text(" in out
+
+
+def test_snippet_primitive_does_not_include_name_without_raw_label() -> None:
+    rows = [
+        _row(op="text", site_id="p:1", ordinal=1, arg="text", kind="str", ui_value="Hello"),
+    ]
+    block = GroupBlock(
+        group_id=("primitive", ("text", 1)),
+        header_id="primitive:text#1",
+        header="text",
+        items=[GroupBlockItem(row=r, visible_label="") for r in rows],
+    )
+    out = snippet_for_block(block)
+
+    assert out.startswith("    ")
+    assert "G.text(" in out
+    assert "G(name=" not in out
+
+
+def test_snippet_effect_chain_includes_name_when_raw_label_exists() -> None:
+    rows = [
+        _row(op="scale", site_id="e:1", ordinal=1, arg="scale", ui_value=(2.0, 2.0, 2.0)),
+        _row(op="rotate", site_id="e:2", ordinal=1, arg="rotation", ui_value=(0.0, 0.0, 45.0)),
+    ]
+    block = GroupBlock(
+        group_id=("effect_chain", "chain:1"),
+        header_id="effect_chain:chain:1",
+        header="xf",
+        items=[GroupBlockItem(row=r, visible_label="") for r in rows],
+    )
+    last = {
+        ParameterKey("scale", "e:1", "scale"): (2.0, 2.0, 2.0),
+        ParameterKey("rotate", "e:2", "rotation"): (0.0, 0.0, 45.0),
+    }
+    step_info = {
+        ("rotate", "e:2"): ("chain:1", 0),
+        ("scale", "e:1"): ("chain:1", 1),
+    }
+    out = snippet_for_block(
+        block,
+        last_effective_by_key=last,
+        step_info_by_site=step_info,
+        raw_label_by_site={("scale", "e:1"): "xf"},
+    )
+
+    assert out.startswith("    ")
+    assert out.index("E(name='xf').rotate") < out.index(".scale")
