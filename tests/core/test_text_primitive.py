@@ -104,3 +104,93 @@ def test_text_quality_increases_point_count() -> None:
     )
 
     assert high.coords.shape[0] > low.coords.shape[0]
+
+
+def _polyline_count(realized) -> int:
+    return int(realized.offsets.size) - 1
+
+
+def test_text_box_width_wraps_increases_y_extent() -> None:
+    base = realize(
+        G.text(text="AAAAA", font="GoogleSans-Regular.ttf", scale=10.0, line_height=1.2)
+    )
+    off = realize(
+        G.text(
+            text="AAAAA",
+            font="GoogleSans-Regular.ttf",
+            scale=10.0,
+            line_height=1.2,
+            box_width=0.1,
+        )
+    )
+    no_wrap = realize(
+        G.text(
+            text="AAAAA",
+            font="GoogleSans-Regular.ttf",
+            scale=10.0,
+            line_height=1.2,
+            use_bounding_box=True,
+        )
+    )
+    wrapped = realize(
+        G.text(
+            text="AAAAA",
+            font="GoogleSans-Regular.ttf",
+            scale=10.0,
+            line_height=1.2,
+            use_bounding_box=True,
+            box_width=0.1,
+        )
+    )
+
+    assert base.coords.shape[0] > 0
+    assert off.coords.shape[0] > 0
+    assert no_wrap.coords.shape[0] > 0
+    assert wrapped.coords.shape[0] > 0
+    assert no_wrap.coords.shape == base.coords.shape
+    assert no_wrap.offsets.tolist() == base.offsets.tolist()
+    assert np.allclose(no_wrap.coords, base.coords, atol=1e-5)
+    assert off.coords.shape == base.coords.shape
+    assert off.offsets.tolist() == base.offsets.tolist()
+    assert np.allclose(off.coords, base.coords, atol=1e-5)
+    assert np.isclose(
+        float(off.coords[:, 1].max()), float(base.coords[:, 1].max()), atol=1e-5
+    )
+    assert float(wrapped.coords[:, 1].max()) > float(no_wrap.coords[:, 1].max()) + 30.0
+
+
+def test_text_show_bounding_box_adds_lines_even_if_text_empty() -> None:
+    empty = realize(G.text(text="", font="GoogleSans-Regular.ttf"))
+    boxed_off = realize(
+        G.text(
+            text="",
+            font="GoogleSans-Regular.ttf",
+            box_width=50.0,
+            box_height=20.0,
+            show_bounding_box=True,
+        )
+    )
+    boxed = realize(
+        G.text(
+            text="",
+            font="GoogleSans-Regular.ttf",
+            use_bounding_box=True,
+            box_width=50.0,
+            box_height=20.0,
+            show_bounding_box=True,
+        )
+    )
+
+    assert _polyline_count(empty) == 0
+    assert _polyline_count(boxed_off) == 0
+    assert _polyline_count(boxed) == 4
+
+
+def test_text_baseline_is_shifted_by_ascent() -> None:
+    base = realize(G.text(text="A", font="GoogleSans-Regular.ttf", scale=100.0))
+    toggled = realize(
+        G.text(text="A", font="GoogleSans-Regular.ttf", scale=100.0, use_bounding_box=True)
+    )
+
+    assert float(base.coords[:, 1].min()) >= -5.0
+    assert np.allclose(toggled.coords, base.coords, atol=1e-5)
