@@ -390,6 +390,23 @@ def render_store_parameter_table(
     # - label: G(name=...) / E(name=...) / L(name=...) が付与した表示名（op, site_id 単位）
     snapshot = store_snapshot_for_gui(store)
 
+    # snippet で `G(name=...)` / `E(name=...)` を復元できるよう、
+    # 永続化される raw label（(op, site_id) -> label）を拾っておく。
+    # 注意: GUI 表示用の dedup 名（name#1 など）とは別物なので、ここでは触れない。
+    raw_label_by_site: dict[tuple[str, str], str] = {}
+    for key, (_meta, _state, _ordinal, label) in snapshot.items():
+        op = str(key.op)
+        if op not in primitive_registry and op not in effect_registry:
+            continue
+        if label is None:
+            continue
+        label_s = str(label).strip()
+        if not label_s:
+            continue
+        group = (op, str(key.site_id))
+        if group not in raw_label_by_site:
+            raw_label_by_site[group] = label_s
+
     # --- 2) Primitive のヘッダ表示名（G(name=...)）を解決 ---
     # snapshot の label を “Primitive グループ” (op, ordinal) へ対応付ける。
     # 同名衝突は表示専用に name#1/#2 を付与して区別する（永続化ラベルは変更しない）。
@@ -519,6 +536,7 @@ def render_store_parameter_table(
         step_info_by_site=step_info_by_site,
         effect_step_ordinal_by_site=effect_step_ordinal_by_site,
         last_effective_by_key=store._runtime_ref().last_effective_by_key,
+        raw_label_by_site=raw_label_by_site,
         midi_learn_state=midi_learn_state,
         midi_last_cc_change=midi_last_cc_change,
         collapsed_headers=store._collapsed_headers_ref(),
