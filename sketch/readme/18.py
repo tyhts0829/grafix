@@ -49,7 +49,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(11.413, 31, -0.8240000000000001),
+        center=(11.413, 19, -0.8240000000000001),
         scale=15.354000000000001,
     )
 
@@ -73,7 +73,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(11.413, 44.505, 0.0),
+        center=(11.413, 32, 0.0),
         scale=15.354000000000001,
     )
     e_title2 = E.fill(
@@ -96,7 +96,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(11.9, 16.304000000000002, 0.0),
+        center=(11.9, 12, 0.0),
         scale=4.237,
     )
 
@@ -204,7 +204,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(11.413, 92.935, 0.0),
+        center=(11.6, 89, 0.0),
         scale=4.0,
     )
 
@@ -228,7 +228,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(81.522, 92.935, 0.0),
+        center=(81.522, 89, 0.0),
         scale=4.0,
     )
 
@@ -252,7 +252,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(151.63, 92.935, 0.0),
+        center=(151.63, 89, 0.0),
         scale=4.0,
     )
 
@@ -276,7 +276,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(221.0, 92.935, 0.0),
+        center=(221.0, 89, 0.0),
         scale=4.0,
     )
 
@@ -303,7 +303,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(11.5, 98.0, 0.0),
+        center=(11.5, 94, 0.0),
         scale=4.0,
     )
 
@@ -318,7 +318,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(81.5, 98.0, 0.0),
+        center=(81.5, 94, 0.0),
         scale=4.0,
     )
 
@@ -333,7 +333,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(151.648, 98.0, 0.0),
+        center=(151.648, 94, 0.0),
         scale=4.0,
     )
 
@@ -348,7 +348,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(221.0, 98.0, 0.0),
+        center=(221.0, 94, 0.0),
         scale=4.0,
     )
 
@@ -369,7 +369,7 @@ def draw(t):
         letter_spacing_em=0.0,
         line_height=1.2,
         quality=0.5,
-        center=(117.0, 11.0, 0.0),
+        center=(117.0, 7, 0.0),
         scale=4.0,
     )
 
@@ -431,6 +431,6 @@ if __name__ == "__main__":
         render_scale=4,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        midi_port_name="Grid",
-        midi_mode="14bit",
+        midi_port_name="TX-6 Bluetooth",
+        midi_mode="7bit",
     )
