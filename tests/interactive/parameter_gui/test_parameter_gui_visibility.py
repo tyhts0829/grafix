@@ -157,3 +157,39 @@ def test_render_store_parameter_table_filters_rows_passed_to_renderer(monkeypatc
     store_bridge.render_store_parameter_table(store, show_inactive_params=True)
     assert captured_args == ["base", "cell_size", "ratio"]
 
+
+def _text_row(*, arg: str, value: object) -> ParameterRow:
+    return ParameterRow(
+        label=f"1:{arg}",
+        op="text",
+        site_id="s:1",
+        arg=str(arg),
+        kind="float",
+        ui_value=value,
+        ui_min=None,
+        ui_max=None,
+        choices=None,
+        cc_key=None,
+        override=True,
+        ordinal=1,
+    )
+
+
+def test_ui_visible_for_text_bounding_box_toggle() -> None:
+    rows_off = [
+        _text_row(arg="use_bounding_box", value=False),
+        _text_row(arg="box_width", value=100.0),
+        _text_row(arg="box_height", value=20.0),
+        _text_row(arg="show_bounding_box", value=True),
+    ]
+    mask_off = active_mask_for_rows(rows_off, show_inactive=False, last_effective_by_key=None)
+    assert mask_off == [True, False, False, False]
+
+    rows_on = [
+        _text_row(arg="use_bounding_box", value=True),
+        _text_row(arg="box_width", value=100.0),
+        _text_row(arg="box_height", value=20.0),
+        _text_row(arg="show_bounding_box", value=True),
+    ]
+    mask_on = active_mask_for_rows(rows_on, show_inactive=False, last_effective_by_key=None)
+    assert mask_on == [True, True, True, True]
