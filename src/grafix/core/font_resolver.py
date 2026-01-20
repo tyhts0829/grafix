@@ -10,7 +10,7 @@ from pathlib import Path
 
 from grafix.core.runtime_config import runtime_config
 
-DEFAULT_FONT_FILENAME = "Helvetica.ttc"
+DEFAULT_FONT_FILENAME = "GoogleSans-Regular.ttf"
 _FONT_EXTENSIONS = (".ttf", ".otf", ".ttc")
 
 
