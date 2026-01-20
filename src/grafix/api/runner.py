@@ -74,6 +74,8 @@ def run(
     midi_port_name : str | None
         MIDI 入力ポート名。
         - `"auto"`: 利用可能な入力ポートがあれば 1 つ目へ自動接続する（既定）。
+          config.yaml に `midi.inputs`（接続優先リスト）があれば、その順に接続を試す。
+          どれも見つからなければ、利用可能な入力ポートの 1 つ目へフォールバックする。
           接続できない場合でも、前回保存した CC スナップショットを凍結して使う（描画が変わらない）。
         - `"TX-6 Bluetooth"` のような文字列: 指定ポートへ接続する。
         - None: MIDI を無効化する。
@@ -140,6 +142,7 @@ def run(
         mode=str(midi_mode),
         profile_name=midi_profile_name,
         save_dir=midi_save_dir,
+        priority_inputs=cfg.midi_inputs,
     )
     frozen_cc_snapshot = maybe_load_frozen_cc_snapshot(
         port_name=midi_port_name,

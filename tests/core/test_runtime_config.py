@@ -30,6 +30,7 @@ def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pyt
     assert cfg.window_pos_parameter_gui == (950, 25)
     assert cfg.parameter_gui_window_size == (800, 1000)
     assert cfg.png_scale == 8.0
+    assert cfg.midi_inputs == ()
 
 
 def test_discovered_config_overrides_packaged_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -62,6 +63,20 @@ def test_discovered_sketch_dir_is_loaded(tmp_path: Path, monkeypatch: pytest.Mon
 
     cfg = runtime_config()
     assert cfg.sketch_dir == Path("sketch")
+
+
+def test_discovered_midi_inputs_are_loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _isolate_config_discovery(tmp_path, monkeypatch)
+
+    discovered = tmp_path / ".grafix" / "config.yaml"
+    discovered.parent.mkdir(parents=True, exist_ok=True)
+    discovered.write_text(
+        'midi:\n  inputs:\n    - port_name: "Grid"\n      mode: "14bit"\n',
+        encoding="utf-8",
+    )
+
+    cfg = runtime_config()
+    assert cfg.midi_inputs == (("Grid", "14bit"),)
 
 
 def test_explicit_config_overrides_discovered_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

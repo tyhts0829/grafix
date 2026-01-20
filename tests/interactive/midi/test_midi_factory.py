@@ -75,3 +75,23 @@ def test_explicit_port_creates_controller(monkeypatch: pytest.MonkeyPatch) -> No
     assert ctrl.port_name == "My Port"
     assert ctrl.mode == "7bit"
     assert ctrl.profile_name == "main"
+
+
+def test_auto_uses_priority_inputs_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    mido = types.ModuleType("mido")
+    mido.get_input_names = lambda: ["P1", "P2"]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mido", mido)
+    monkeypatch.setattr(factory, "MidiController", DummyMidiController)
+
+    ctrl = factory.create_midi_controller(
+        port_name="auto",
+        mode="7bit",
+        profile_name="main",
+        priority_inputs=[
+            ("Missing", "7bit"),
+            ("P2", "14bit"),
+        ],
+    )
+    assert ctrl is not None
+    assert ctrl.port_name == "P2"
+    assert ctrl.mode == "14bit"
