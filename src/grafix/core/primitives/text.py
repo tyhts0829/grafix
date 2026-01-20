@@ -13,10 +13,12 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from grafix.core.font_resolver import DEFAULT_FONT_FILENAME, resolve_font_path
+from grafix.core.font_resolver import resolve_font_path
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import RealizedGeometry
+
+DEFAULT_FONT = "Helvetica.ttc"
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +244,91 @@ def _get_char_advance_em(char: str, tt_font: Any) -> float:
         return 0.0
 
 
+def _get_font_ascent_em(tt_font: Any, *, units_per_em: float) -> float:
+    """フォントの ascent を em 比で返す。
+
+    `y=0` を「ボックスの上辺」として扱うための補正に使う。
+    """
+    ascent_units: float
+    try:
+        ascent_units = float(tt_font["hhea"].ascent)  # type: ignore[index]
+    except Exception:
+        try:
+            ascent_units = float(tt_font["OS/2"].sTypoAscender)  # type: ignore[index]
+        except Exception:
+            try:
+                ascent_units = float(tt_font["head"].yMax)  # type: ignore[index]
+            except Exception:
+                return 0.0
+
+    upm = float(units_per_em)
+    if not np.isfinite(ascent_units) or not np.isfinite(upm) or upm <= 0.0:
+        return 0.0
+    return ascent_units / upm
+
+
+def _wrap_line_by_width_em(
+    line_str: str,
+    *,
+    max_width_em: float,
+    tt_font: Any,
+    letter_spacing_em: float,
+) -> list[str]:
+    """1 行分の文字列を指定幅（em）で折り返して返す。
+
+    空白がある場合は直近の空白で折り、無い場合は文字単位で折る。
+    折り返し直後の行頭空白は落とす（`" "` の連続をスキップ）。
+    """
+    if max_width_em <= 0.0:
+        return [line_str]
+    if not line_str:
+        return [""]
+
+    s_em = float(letter_spacing_em)
+    n = int(len(line_str))
+
+    out: list[str] = []
+    i = 0
+    segment_start = 0
+    segment_width_em = 0.0
+    segment_len = 0
+    last_space: int | None = None
+
+    while i < n:
+        ch = line_str[i]
+        adv = _get_char_advance_em(ch, tt_font)
+        inc = adv + (s_em if segment_len > 0 else 0.0)
+
+        if segment_len > 0 and (segment_width_em + inc) > float(max_width_em):
+            if last_space is not None and last_space > segment_start:
+                out.append(line_str[segment_start:last_space])
+                segment_start = last_space + 1
+                while segment_start < n and line_str[segment_start] == " ":
+                    segment_start += 1
+                i = segment_start
+            else:
+                out.append(line_str[segment_start:i])
+                segment_start = i
+                while segment_start < n and line_str[segment_start] == " ":
+                    segment_start += 1
+                i = segment_start
+
+            segment_width_em = 0.0
+            segment_len = 0
+            last_space = None
+            continue
+
+        if ch == " ":
+            last_space = i
+        segment_width_em += inc
+        segment_len += 1
+        i += 1
+
+    if segment_start < n:
+        out.append(line_str[segment_start:])
+    return out
+
+
 def _glyph_commands_to_polylines_em(
     glyph_commands: Iterable,
     *,
@@ -345,21 +432,35 @@ text_meta = {
     "text_align": ParamMeta(kind="choice", choices=("left", "center", "right")),
     "letter_spacing_em": ParamMeta(kind="float", ui_min=0.0, ui_max=2.0),
     "line_height": ParamMeta(kind="float", ui_min=0.8, ui_max=3.0),
+    "use_bounding_box": ParamMeta(kind="bool"),
+    "box_width": ParamMeta(kind="float", ui_min=0.0, ui_max=300.0),
+    "box_height": ParamMeta(kind="float", ui_min=0.0, ui_max=300.0),
+    "show_bounding_box": ParamMeta(kind="bool"),
     "quality": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
     "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
     "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=50.0),
 }
 
+TEXT_UI_VISIBLE = {
+    "box_width": lambda v: bool(v.get("use_bounding_box")),
+    "box_height": lambda v: bool(v.get("use_bounding_box")),
+    "show_bounding_box": lambda v: bool(v.get("use_bounding_box")),
+}
 
-@primitive(meta=text_meta)
+
+@primitive(meta=text_meta, ui_visible=TEXT_UI_VISIBLE)
 def text(
     *,
     text: str = "HELLO",
-    font: str = DEFAULT_FONT_FILENAME,
+    font: str = DEFAULT_FONT,
     font_index: int | float = 0,
     text_align: str = "left",
     letter_spacing_em: float = 0.0,
     line_height: float = 1.2,
+    use_bounding_box: bool = False,
+    box_width: float = -1.0,
+    box_height: float = -1.0,
+    show_bounding_box: bool = False,
     quality: float = 0.5,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
@@ -384,6 +485,14 @@ def text(
         文字間の追加スペーシング（em 比）。
     line_height : float, optional
         行送り（em 比）。
+    use_bounding_box : bool, optional
+        True のとき `box_width` による自動改行と、`show_bounding_box` による枠描画を有効にする。
+    box_width : float, optional
+        幅による自動改行を行う際のボックス幅（出力座標系）。0 以下なら無効。
+    box_height : float, optional
+        デバッグ用ボックス表示の高さ（出力座標系）。0 以下なら無効。
+    show_bounding_box : bool, optional
+        True のとき、`box_width/box_height` で指定されたボックス枠（4本の線分）を追加で描画する。
     quality : float, optional
         平坦化品質（0..1）。大きいほど精緻（点が増える）。
     center : tuple[float, float, float], optional
@@ -404,6 +513,8 @@ def text(
     Notes
     -----
     基準の座標系は「1em=1.0」で生成し、最後に `scale` と `center` を適用する。
+    `box_width/box_height` は「出力座標系（scale 適用後）」で指定し、内部で em 座標へ換算して折り返し/枠を生成する。
+    `y=0` をボックス上辺として扱えるように、1 行目のベースラインは常にフォントの ascent 分だけ下げる。
     """
     fi = int(font_index)
     if fi < 0:
@@ -424,9 +535,28 @@ def text(
     seg_len_units = max(1.0, flat_seg_len_em * units_per_em)
 
     lines = str(text).split("\n")
+    use_bb = bool(use_bounding_box)
+    s_f = float(scale)
+    s_abs = abs(s_f)
+    bw = float(box_width)
+    bh = float(box_height)
+    if use_bb and bw > 0.0 and s_abs > 0.0:
+        bw_em = bw / s_abs
+        wrapped: list[str] = []
+        for line_str in lines:
+            wrapped.extend(
+                _wrap_line_by_width_em(
+                    line_str,
+                    max_width_em=bw_em,
+                    tt_font=tt_font,
+                    letter_spacing_em=float(letter_spacing_em),
+                )
+            )
+        lines = wrapped
+
     polylines: list[np.ndarray] = []
 
-    y_em = 0.0
+    y_em = _get_font_ascent_em(tt_font, units_per_em=units_per_em)
     for li, line_str in enumerate(lines):
         width_em = 0.0
         for ch in line_str:
@@ -463,5 +593,31 @@ def text(
 
         if li < len(lines) - 1:
             y_em += float(line_height)
+
+    if use_bb and bool(show_bounding_box) and bw > 0.0 and bh > 0.0 and s_abs > 0.0:
+        bw_em = bw / s_abs
+        bh_em = bh / s_abs
+
+        if text_align == "center":
+            x0 = -bw_em / 2.0
+            x1 = bw_em / 2.0
+        elif text_align == "right":
+            x0 = -bw_em
+            x1 = 0.0
+        else:
+            x0 = 0.0
+            x1 = bw_em
+
+        y0 = 0.0
+        y1 = bh_em
+        z0 = 0.0
+        polylines.extend(
+            [
+                np.asarray([[x0, y0, z0], [x1, y0, z0]], dtype=np.float32),
+                np.asarray([[x1, y0, z0], [x1, y1, z0]], dtype=np.float32),
+                np.asarray([[x1, y1, z0], [x0, y1, z0]], dtype=np.float32),
+                np.asarray([[x0, y1, z0], [x0, y0, z0]], dtype=np.float32),
+            ]
+        )
 
     return _polylines_to_realized(polylines, center=center, scale=scale)
