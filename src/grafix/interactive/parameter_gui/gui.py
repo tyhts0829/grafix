@@ -137,7 +137,9 @@ class ParameterGUI:
         self._prev_time = time.monotonic()
         self._closed = False
 
-    def _on_key_press(self, symbol: int, _modifiers: int) -> None:
+    def _on_key_press(self, symbol: int | None, _modifiers: int) -> None:
+        if symbol is None:
+            return
         symbol_i = int(symbol)
         if symbol_i == int(self._range_edit_key_r):
             self._range_edit_r_down = True
@@ -146,7 +148,9 @@ class ParameterGUI:
         if symbol_i == int(self._range_edit_key_t):
             self._range_edit_t_down = True
 
-    def _on_key_release(self, symbol: int, _modifiers: int) -> None:
+    def _on_key_release(self, symbol: int | None, _modifiers: int) -> None:
+        if symbol is None:
+            return
         symbol_i = int(symbol)
         if symbol_i == int(self._range_edit_key_r):
             self._range_edit_r_down = False
