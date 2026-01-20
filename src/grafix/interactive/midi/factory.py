@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from .midi_controller import MidiController
@@ -12,7 +13,12 @@ _AUTO_MIDI_PORT = "auto"
 
 
 def create_midi_controller(
-    *, port_name: str | None, mode: str, profile_name: str, save_dir: Path | None = None
+    *,
+    port_name: str | None,
+    mode: str,
+    profile_name: str,
+    save_dir: Path | None = None,
+    priority_inputs: Sequence[tuple[str, str]] = (),
 ) -> MidiController | None:
     """port_name/mode に従い MidiController を作る。
 
@@ -20,6 +26,7 @@ def create_midi_controller(
     - port_name="auto" の場合:
       - mido が使えて入力ポートが 1 つ以上あるときだけ接続する
       - mido が無い/入力ポートが無い場合は None
+      - priority_inputs があれば、上から順に接続を試す（見つからなければ従来の fallback）
     - 明示ポート指定の場合:
       - mido が無い場合は例外（ユーザーの意図が強いのでエラー）
       - それ以外は MidiController 側の検証に任せる
@@ -33,7 +40,24 @@ def create_midi_controller(
             import mido  # type: ignore
         except Exception:
             return None
+
         names = list(mido.get_input_names())  # type: ignore
+        for candidate_port_name, candidate_mode in priority_inputs:
+            port_s = str(candidate_port_name).strip()
+            mode_s = str(candidate_mode).strip()
+            if not port_s or not mode_s:
+                continue
+            if port_s == _AUTO_MIDI_PORT:
+                if not names:
+                    continue
+                return MidiController(
+                    names[0], mode=mode_s, profile_name=profile_name, save_dir=save_dir
+                )
+            if port_s in names:
+                return MidiController(
+                    port_s, mode=mode_s, profile_name=profile_name, save_dir=save_dir
+                )
+
         if not names:
             return None
         return MidiController(

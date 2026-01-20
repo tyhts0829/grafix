@@ -24,6 +24,7 @@ class RuntimeConfig:
     window_pos_parameter_gui: tuple[int, int]
     parameter_gui_window_size: tuple[int, int]
     png_scale: float
+    midi_inputs: tuple[tuple[str, str], ...]
 
 
 _EXPLICIT_CONFIG_PATH: Path | None = None
@@ -125,6 +126,32 @@ def _as_float(value: Any, *, key: str) -> float | None:
         return float(value)
     except Exception as exc:
         raise RuntimeError(f"{key} は数値である必要があります: got={value!r}") from exc
+
+
+def _as_midi_inputs(value: Any) -> list[tuple[str, str]]:
+    """midi.inputs を (port_name, mode) の list として解釈して返す。"""
+
+    if value is None:
+        return []
+    try:
+        seq = list(value)
+    except Exception:
+        return []
+
+    out: list[tuple[str, str]] = []
+    for item in seq:
+        if not isinstance(item, dict):
+            continue
+        port_name = item.get("port_name")
+        mode = item.get("mode")
+        if port_name is None or mode is None:
+            continue
+        port_s = str(port_name).strip()
+        mode_s = str(mode).strip()
+        if not port_s or not mode_s:
+            continue
+        out.append((port_s, mode_s))
+    return out
 
 
 def _load_yaml_text(text: str, *, source: str) -> dict[str, Any]:
@@ -255,6 +282,9 @@ def runtime_config() -> RuntimeConfig:
     if png_scale <= 0:
         raise ValueError(f"export.png.scale は正の値である必要があります: got={png_scale}")
 
+    midi = _as_mapping(payload.get("midi"), key="midi")
+    midi_inputs = _as_midi_inputs(midi.get("inputs"))
+
     cfg = RuntimeConfig(
         config_path=explicit_path or discovered_path,
         output_dir=output_dir,
@@ -265,6 +295,7 @@ def runtime_config() -> RuntimeConfig:
         window_pos_parameter_gui=window_pos_parameter_gui,
         parameter_gui_window_size=parameter_gui_window_size,
         png_scale=float(png_scale),
+        midi_inputs=tuple(midi_inputs),
     )
     _CONFIG_CACHE = cfg
     return cfg

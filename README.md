@@ -124,6 +124,19 @@ paths:
     - "sketch/presets"
 ```
 
+To prioritize MIDI device connections when using `midi_port_name="auto"`:
+
+```yaml
+midi:
+  inputs:
+    - port_name: "Grid"
+      mode: "14bit"
+    - port_name: "TX-6 Bluetooth"
+      mode: "7bit"
+    - port_name: "auto"
+      mode: "7bit"
+```
+
 ## Not implemented yet
 
 - LFOs to modulate any parameters with rhythm
