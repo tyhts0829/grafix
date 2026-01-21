@@ -39,10 +39,4 @@ midi:
   # `run(..., midi_port_name="auto")` のときに上から順に接続を試す。
   # port_name が利用可能ならそのポートへ接続する。
   # port_name="auto" は「利用可能な入力ポートの 1 つ目」を意味する。
-  inputs:
-    - port_name: "Grid"
-      mode: "14bit"
-    - port_name: "TX-6 Bluetooth"
-      mode: "7bit"
-    - port_name: "auto"
-      mode: "7bit"
+  inputs: []
