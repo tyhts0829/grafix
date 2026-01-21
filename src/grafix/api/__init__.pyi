@@ -771,6 +771,10 @@ class _P(Protocol):
         """preset を `P.<name>(...)` で呼び出す。"""
         ...
 
+    def __call__(self, name: str | None = ..., *, key: str | int | None = ...) -> "_P":
+        """preset に name/key を付与して呼び出すための名前空間を返す。"""
+        ...
+
     def axes(self, *, activate: bool = ..., center: Vec3 = ..., axis_length: float = ..., axis_visible_ratio: float = ..., axis_visible_anchor: str = ..., tick_count_x: int = ..., tick_length: float = ..., tick_offset: float = ..., tick_log: bool = ...) -> Any:
         """
         引数:

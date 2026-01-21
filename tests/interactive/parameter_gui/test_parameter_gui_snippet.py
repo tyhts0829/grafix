@@ -215,3 +215,79 @@ def test_snippet_effect_chain_includes_name_when_raw_label_exists() -> None:
 
     assert out.startswith("    ")
     assert out.index("E(name='xf').rotate") < out.index(".scale")
+
+
+def test_snippet_style_layer_dict_includes_name_when_raw_label_exists() -> None:
+    style_rows = [
+        _row(
+            op=STYLE_OP,
+            site_id="__global__",
+            ordinal=1,
+            arg="background_color",
+            kind="rgb",
+            ui_value=(255, 0, 0),
+        ),
+        _row(
+            op=LAYER_STYLE_OP,
+            site_id="layer:1",
+            ordinal=1,
+            arg="line_color",
+            kind="rgb",
+            ui_value=(0, 128, 255),
+        ),
+        _row(
+            op=LAYER_STYLE_OP,
+            site_id="layer:1",
+            ordinal=1,
+            arg="line_thickness",
+            kind="float",
+            ui_value=0.002,
+        ),
+    ]
+
+    block = GroupBlock(
+        group_id=("style", "global"),
+        header_id="style",
+        header="Style",
+        items=[GroupBlockItem(row=r, visible_label="") for r in style_rows],
+    )
+
+    out = snippet_for_block(
+        block,
+        raw_label_by_site={(LAYER_STYLE_OP, "layer:1"): "outline"},
+    )
+
+    assert out.startswith("    ")
+    assert "name='outline'" in out
+
+
+def test_snippet_preset_includes_name_only_when_raw_label_differs() -> None:
+    @preset(meta={"x": {"kind": "float"}})
+    def snippet_badge(*, x: float = 1.0, name=None, key=None):
+        _ = (x, name, key)
+        return None
+
+    row = _row(op="preset.snippet_badge", site_id="c:1", ordinal=1, arg="x", ui_value=1.0)
+    block = GroupBlock(
+        group_id=("preset", ("preset.snippet_badge", 1)),
+        header_id="preset:preset.snippet_badge#1",
+        header="Badge",
+        items=[GroupBlockItem(row=row, visible_label="")],
+    )
+
+    # raw label が display_op と同じなら name= は出さない
+    out1 = snippet_for_block(
+        block,
+        raw_label_by_site={("preset.snippet_badge", "c:1"): "snippet_badge"},
+    )
+    assert out1.startswith("    ")
+    assert "P.snippet_badge(" in out1
+    assert "P(name=" not in out1
+
+    # raw label が display_op と異なるなら name= を出す
+    out2 = snippet_for_block(
+        block,
+        raw_label_by_site={("preset.snippet_badge", "c:1"): "Badge"},
+    )
+    assert out2.startswith("    ")
+    assert "P(name='Badge').snippet_badge(" in out2

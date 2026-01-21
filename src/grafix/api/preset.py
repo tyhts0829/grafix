@@ -164,6 +164,13 @@ def preset(
             activate_explicit = "activate" in kwargs
             activate_base = bool(kwargs.pop("activate", True))
 
+            # name/key は予約引数として「どの preset でも」受け付けたい。
+            # ただし、元のシグネチャに無い場合は sig.bind が落ちるため、
+            # bind 前に pop して label/site_id のために保持しておく。
+            _missing = object()
+            name_input = kwargs.pop("name", _missing)
+            key_input = kwargs.pop("key", _missing)
+
             # - bind: 呼び出しをシグネチャに当てはめ、引数名で扱えるようにする
             # - explicit_keys: 「ユーザーが明示的に渡した引数名」を記録する（apply_defaults 前）
             #   目的: resolve_params(explicit_args=...) に渡し、初期 override ポリシーへ反映させるため
@@ -171,9 +178,28 @@ def preset(
             explicit_keys = set(bound.arguments.keys())
             bound.apply_defaults()
 
+            # name/key がシグネチャに含まれる場合のみ、実関数呼び出しへ渡す。
+            name_explicit = name_input is not _missing
+            key_explicit = key_input is not _missing
+
             # GUI 非公開の予約引数（preset の挙動や GUI 表示だけに使い、パラメータ行は増やさない）
-            display_name = bound.arguments.get("name", None)
-            key = bound.arguments.get("key", None)
+            display_name = None
+            if name_explicit:
+                display_name = name_input
+            elif "name" in sig.parameters:
+                display_name = bound.arguments.get("name", None)
+
+            key = None
+            if key_explicit:
+                key = key_input
+            elif "key" in sig.parameters:
+                key = bound.arguments.get("key", None)
+
+            # name/key がシグネチャに含まれる場合のみ、実関数呼び出しへ渡す。
+            if "name" in sig.parameters and name_explicit:
+                bound.arguments["name"] = name_input
+            if "key" in sig.parameters and key_explicit:
+                bound.arguments["key"] = key_input
 
             # site_id は「ユーザーの呼び出し箇所」を指すようにする（skip=1）。
             # 同じ行で複数回呼ぶ場合は key で区別する。
