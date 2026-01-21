@@ -7,7 +7,27 @@ CANVAS_HEIGHT = 210
 
 def draw(t):
     # =========== Layouts ===========
-    layout = P.layout_grid_system()
+    layout = P(name="layout1").layout_grid_system(
+        activate=True,
+        canvas_w=148.0,
+        canvas_h=210.0,
+        axes="both",
+        margin_l=8.0,
+        margin_r=8.0,
+        margin_t=8.0,
+        margin_b=8.0,
+        show_center=False,
+        cols=5,
+        rows=8,
+        gutter_x=4.0,
+        gutter_y=4.0,
+        show_column_centers=False,
+        show_baseline=False,
+        baseline_step=8.417,
+        baseline_offset=0.0,
+        offset=(0.0, 0.0, 0.0),
+    )
+
     layout = L(name="layout1", geometry_or_list=layout)
 
     # ====================================================================
