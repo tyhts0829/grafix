@@ -25,10 +25,10 @@
 
 ### 新しい使い方（案）
 
-- 基本: `L(name="...").wrap(geom_or_list)`
-- 追加: `L(name="...", color=(...), thickness=...).wrap(...)`（pending として指定）
+- 基本: `L(name="...").layer(geom_or_list)`
+- 追加: `L(name="...", color=(...), thickness=...).layer(...)`（pending として指定）
 
-※ メソッド名は `wrap` を第一候補（「Geometry を Layer で包む」意味がブレにくい）。
+※ メソッド名は `layer` を採用（`L(name=...).layer(...)` で “Layer 化する” 意味に寄せる）。
 
 ## 設計（最小・素直）
 
@@ -37,7 +37,7 @@
 - `src/grafix/api/layers.py`:
   - `LayerNamespace.__call__(name: str | None = None, *, color: Vec3 | None = None, thickness: float | None = None) -> LayerNamespace`
     - `G/E/P` と同じ “pending 値を持つ別インスタンス” を返す。
-  - `LayerNamespace.wrap(geometry_or_list, *, name=None, color=None, thickness=None) -> list[Layer]`
+  - `LayerNamespace.layer(geometry_or_list, *, name=None, color=None, thickness=None) -> list[Layer]`
     - `name/color/thickness` は **明示 kwargs が優先**、無ければ pending を使う。
     - `caller_site_id(skip=1)` を使って `Layer.site_id` を決める（現行 `L` と同じ）。
     - `ParamStore` がある場合、確定した `name` があれば `set_label(LAYER_STYLE_OP, site_id, name)` を保存する（現行と同じ）。
@@ -53,7 +53,7 @@
 
 - `src/grafix/devtools/generate_stub.py` の `_render_l_protocol()` を更新し、
   - `__call__ -> _L`（pending）
-  - `wrap(...) -> list[Layer]`
+  - `layer(...) -> list[Layer]`
   を出力する。
 - `src/grafix/api/__init__.pyi` は生成物なので `python -m grafix stub` で再生成する。
 
@@ -75,17 +75,16 @@
 
 ## 実装タスク（チェックリスト）
 
-- [ ] 命名確定: メソッド名を `wrap` で良いか最終確認（`layer/of/from_` などにするか）
+- [x] 命名確定: メソッド名は `layer` を採用
 - [ ] `src/grafix/api/layers.py` を `LayerNamespace` 方式に置き換える（`L = LayerNamespace()`）
 - [ ] `tests/api/test_layer_helper.py` を新 API に合わせて更新する
-- [ ] スケッチ/README 用の例を `L(...).wrap(...)` へ移行する（repo 内の `L(` 使用箇所を更新）
+- [ ] スケッチ/README 用の例を `L(...).layer(...)` へ移行する（repo 内の `L(` 使用箇所を更新）
 - [ ] `src/grafix/devtools/generate_stub.py` の `_render_l_protocol()` を更新する
 - [ ] `python -m grafix stub` で `src/grafix/api/__init__.pyi` を再生成する
 - [ ] `PYTHONPATH=src pytest -q tests/api/test_layer_helper.py` を実行して最低限の回帰を確認する
 
 ## 受け入れ条件（Definition of Done）
 
-- `sketch/readme/examples/1.py` から `geometry_or_list=` の例が消え、`L(name="...").wrap(...)` になっている。
+- `sketch/readme/examples/1.py` から `geometry_or_list=` の例が消え、`L(name="...").layer(...)` になっている。
 - `L` の label 保存（Parameter GUI の Layer 名）が引き続き機能する（既存の Layer style 実装を壊さない）。
 - `PYTHONPATH=src pytest -q tests/api/test_layer_helper.py` が通る。
-
