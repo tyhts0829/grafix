@@ -148,6 +148,39 @@ def _render_control_cell(imgui, row: ParameterRow) -> tuple[bool, object]:
     return render_value_widget(row)
 
 
+def _should_auto_enable_override(
+    row: ParameterRow,
+    *,
+    before_ui_value: object,
+    after_ui_value: object,
+) -> bool:
+    """GUI の値編集に応じて override を自動で有効化するか判定する。
+
+    Notes
+    -----
+    - override は「GUI 値を採用するか」を決めるトグル。
+    - parameter_gui では `override=False` の行でも、値を触った瞬間に反映されるのが直感的。
+      そのため「値が編集されたら override=True」を基本とする。
+    - ただし `kind=bool` は override を持たない（常に GUI 値を採用する）ため対象外。
+    - `kind=choice` は choices の変化などで ui_value が自動丸めされる場合がある。
+      そのケースでは override を自動で立てず、base 優先を維持する。
+    """
+
+    if row.kind == "bool":
+        return False
+
+    if row.kind == "choice":
+        choices = list(row.choices) if row.choices is not None else []
+        if choices:
+            before_s = str(before_ui_value)
+            if before_s not in choices:
+                # choices 外の値は widget 側で先頭へ丸められる。
+                # この「自動丸め」だけでは override を立てない。
+                return str(after_ui_value) != str(choices[0])
+
+    return True
+
+
 def _render_minmax_cell(
     imgui,
     *,
@@ -433,7 +466,18 @@ def render_parameter_row_4cols(
         changed, value = _render_control_cell(imgui, row)
         if changed:
             changed_any = True
+            before_ui_value = ui_value
             ui_value = value
+            if (
+                rules.show_override
+                and not bool(override)
+                and _should_auto_enable_override(
+                    row,
+                    before_ui_value=before_ui_value,
+                    after_ui_value=ui_value,
+                )
+            ):
+                override = True
 
         # --- Column 3: min-max（ui_min/ui_max）---
         changed_range, ui_min, ui_max = _render_minmax_cell(

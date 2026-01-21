@@ -19,9 +19,9 @@
 
 ## 仕様（確認したい / 決める）
 
-- [ ] 対象は `ui_value` の変更のみ（slider/入力/choice 等）。`ui_min/ui_max` 変更では立てない。；はい
-- [ ] `kind=bool` は `override` が無い前提なので対象外（現状通り）。；はい
-- [ ] `kind=choice` で「choices が変わって `ui_value` が自動丸めされる」ケースは、`override` を自動で立てない（丸めは store へ反映するが `base` 優先は維持）。；はい
+- [x] 対象は `ui_value` の変更のみ（slider/入力/choice 等）。`ui_min/ui_max` 変更では立てない。；はい
+- [x] `kind=bool` は `override` が無い前提なので対象外（現状通り）。；はい
+- [x] `kind=choice` で「choices が変わって `ui_value` が自動丸めされる」ケースは、`override` を自動で立てない（丸めは store へ反映するが `base` 優先は維持）。；はい
 
 ## 実装方針（案）
 
@@ -39,12 +39,12 @@
 
 ## 実装タスク
 
-- [ ] 案 A / 仕様の最終確定
-- [ ] `src/grafix/interactive/parameter_gui/table.py` に純粋関数 `_should_auto_enable_override(row)` を追加（テスト可能に）
-- [ ] `render_parameter_row_4cols()` で `ui_value` 変更時に `_should_auto_enable_override(...)` が True なら `override=True` をセット
-- [ ] 最低限の単体テスト追加（imgui 依存無し）
-  - [ ] `tests/interactive/parameter_gui/test_parameter_gui_auto_override_on_edit.py` を追加し、kind ごとの挙動を確認
-- [ ] 既存テストを対象限定で実行: `PYTHONPATH=src pytest -q tests/interactive/parameter_gui/test_parameter_gui_auto_override_on_edit.py`
+- [x] 案 A / 仕様の最終確定
+- [x] `src/grafix/interactive/parameter_gui/table.py` に純粋関数 `_should_auto_enable_override(row)` を追加（テスト可能に）
+- [x] `render_parameter_row_4cols()` で `ui_value` 変更時に `_should_auto_enable_override(...)` が True なら `override=True` をセット
+- [x] 最低限の単体テスト追加（imgui 依存無し）
+  - [x] `tests/interactive/parameter_gui/test_parameter_gui_auto_override_on_edit.py` を追加し、kind ごとの挙動を確認
+- [x] 既存テストを対象限定で実行: `PYTHONPATH=src pytest -q tests/interactive/parameter_gui/test_parameter_gui_auto_override_on_edit.py`
 - [ ] （任意）手動確認: `sketch/main.py` 等で explicit kwargs の param を触って即反映されることを確認
 
 ## 影響範囲メモ
