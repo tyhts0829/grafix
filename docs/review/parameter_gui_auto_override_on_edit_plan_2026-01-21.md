@@ -19,9 +19,9 @@
 
 ## 仕様（確認したい / 決める）
 
-- [ ] 対象は `ui_value` の変更のみ（slider/入力/choice 等）。`ui_min/ui_max` 変更では立てない。
-- [ ] `kind=bool` は `override` が無い前提なので対象外（現状通り）。
-- [ ] `kind=choice` で「choices が変わって `ui_value` が自動丸めされる」ケースは、`override` を自動で立てない（丸めは store へ反映するが `base` 優先は維持）。
+- [ ] 対象は `ui_value` の変更のみ（slider/入力/choice 等）。`ui_min/ui_max` 変更では立てない。；はい
+- [ ] `kind=bool` は `override` が無い前提なので対象外（現状通り）。；はい
+- [ ] `kind=choice` で「choices が変わって `ui_value` が自動丸めされる」ケースは、`override` を自動で立てない（丸めは store へ反映するが `base` 優先は維持）。；はい
 
 ## 実装方針（案）
 
@@ -51,4 +51,3 @@
 
 - resolver の優先順位は変えない（`override` が `True` になるだけ）。
 - follow policy は「既定値から外れた」扱いになり、explicit 変化への追従が止まる可能性があるが、ユーザーが触った扱いとして妥当。
-
