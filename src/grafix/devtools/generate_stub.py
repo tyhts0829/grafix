@@ -598,6 +598,16 @@ def _render_p_protocol(preset_names: list[str]) -> str:
     """`P`（preset 名前空間）の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _P(Protocol):\n")
+    lines.append(
+        "    def __call__(\n"
+        "        self,\n"
+        "        name: str | None = None,\n"
+        "        *,\n"
+        "        key: str | int | None = None,\n"
+        "    ) -> _P:\n"
+    )
+    lines.append('        """ラベル付き preset 名前空間を返す。"""\n')
+    lines.append("        ...\n\n")
     lines.append("    def __getattr__(self, name: str) -> Callable[..., Any]:\n")
     lines.append('        """preset を `P.<name>(...)` で呼び出す。"""\n')
     lines.append("        ...\n\n")

@@ -767,6 +767,15 @@ class _L(Protocol):
         ...
 
 class _P(Protocol):
+    def __call__(
+        self,
+        name: str | None = None,
+        *,
+        key: str | int | None = None,
+    ) -> _P:
+        """ラベル付き preset 名前空間を返す。"""
+        ...
+
     def __getattr__(self, name: str) -> Callable[..., Any]:
         """preset を `P.<name>(...)` で呼び出す。"""
         ...
