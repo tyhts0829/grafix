@@ -396,7 +396,12 @@ def render_store_parameter_table(
     raw_label_by_site: dict[tuple[str, str], str] = {}
     for key, (_meta, _state, _ordinal, label) in snapshot.items():
         op = str(key.op)
-        if op not in primitive_registry and op not in effect_registry:
+        if (
+            op not in primitive_registry
+            and op not in effect_registry
+            and op not in preset_registry
+            and op != LAYER_STYLE_OP
+        ):
             continue
         if label is None:
             continue

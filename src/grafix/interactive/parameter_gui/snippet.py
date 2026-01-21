@@ -137,6 +137,12 @@ def snippet_for_block(
             by_arg2 = {str(r.arg): r for r in site_rows}
 
             layer_items: list[tuple[str, str]] = []
+            if raw_label_by_site is not None:
+                raw_label = raw_label_by_site.get((LAYER_STYLE_OP, str(site_id)))
+                if raw_label is not None:
+                    raw_label_s = str(raw_label).strip()
+                    if raw_label_s:
+                        layer_items.append(("name", _py_literal(raw_label_s)))
             if LAYER_STYLE_LINE_COLOR in by_arg2:
                 rgb255 = coerce_rgb255(
                     _effective_or_ui_value(by_arg2[LAYER_STYLE_LINE_COLOR], last_effective_by_key=last_effective_by_key)
@@ -161,11 +167,18 @@ def snippet_for_block(
         row0 = rows[0]
         op = str(row0.op)
         call_name = preset_registry.get_display_op(op)
+        prefix = "P."
+        if raw_label_by_site is not None:
+            raw_label = raw_label_by_site.get((op, str(row0.site_id)))
+            if raw_label is not None:
+                raw_label_s = str(raw_label).strip()
+                if raw_label_s and raw_label_s != str(call_name):
+                    prefix = f"P(name={_py_literal(raw_label_s)})."
         kwargs = [
             (str(r.arg), _py_literal(_effective_or_ui_value(r, last_effective_by_key=last_effective_by_key)))
             for r in rows
         ]
-        return _indent_code(_format_kwargs_call("P.", op=call_name, kwargs=kwargs).rstrip() + "\n")
+        return _indent_code(_format_kwargs_call(prefix, op=call_name, kwargs=kwargs).rstrip() + "\n")
 
     if group_type == "primitive":
         row0 = rows[0]

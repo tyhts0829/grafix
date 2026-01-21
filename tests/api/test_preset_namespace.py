@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from grafix import P
+from grafix.api import preset
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.snapshot_ops import store_snapshot
@@ -104,3 +105,24 @@ def test_preset_namespace_autoload_makes_preset_available(tmp_path: Path) -> Non
         assert ok_args == {"activate", "x"}
     finally:
         set_config_path(None)
+
+
+def test_preset_namespace_supports_p_call_name_without_signature() -> None:
+    @preset(meta={"x": {"kind": "float"}})
+    def b_only_sample(*, x: float = 1.0):
+        return ("ok", float(x))
+
+    store = ParamStore()
+    with parameter_context(store=store, cc_snapshot=None):
+        out = P(name="Custom", key=1).b_only_sample(x=3.0)
+
+    assert out == ("ok", 3.0)
+
+    snap = store_snapshot(store)
+    labels = {
+        label for k, (_meta, _state, _ordinal, label) in snap.items() if k.op == "preset.b_only_sample"
+    }
+    assert labels == {"Custom"}
+
+    site_ids = {k.site_id for k in snap.keys() if k.op == "preset.b_only_sample"}
+    assert any(str(site_id).endswith("|1") for site_id in site_ids)

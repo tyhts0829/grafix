@@ -68,7 +68,31 @@ class PresetNamespace:
         func = preset_func_registry.get(name)
         if func is None:
             raise AttributeError(f"未登録の preset: {name!r}")
-        return func
+        pending_name = self._pending_name
+        pending_key = self._pending_key
+
+        if pending_name is None and pending_key is None:
+            return func
+
+        def _call_with_pending(*args: Any, **kwargs: Any) -> Any:
+            if pending_name is not None and "name" not in kwargs:
+                kwargs["name"] = pending_name
+            if pending_key is not None and "key" not in kwargs:
+                kwargs["key"] = pending_key
+            return func(*args, **kwargs)
+
+        return _call_with_pending
+
+    def __call__(
+        self, name: str | None = None, *, key: str | int | None = None
+    ) -> "PresetNamespace":
+        ns = PresetNamespace()
+        ns._pending_name = name  # type: ignore[attr-defined]
+        ns._pending_key = key  # type: ignore[attr-defined]
+        return ns
+
+    _pending_name: str | None = None
+    _pending_key: str | int | None = None
 
 
 P = PresetNamespace()
