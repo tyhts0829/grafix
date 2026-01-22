@@ -2,15 +2,13 @@
 
 目的: `src/grafix/core/effects/pixelate.py` の `pixelate` を Numba で高速化し、リアルタイムプレビュー時のフレーム落ちを減らす。
 
-## 現状実装の確認（要点）
+## 実装後の構成（要点）
 
 対象: `src/grafix/core/effects/pixelate.py`
 
 - 入力 `coords` を `step=(sx,sy,sz)` で割り、half away from zero で丸めて **整数格子** `(ix,iy,iz)` にスナップする（ここは NumPy ベクトル演算）。
-- 各ポリライン（offsets 区間）ごとに
-  - `_estimate_pixelated_vertices(ix,iy,iz)` で出力頂点数 `est_n` を見積もって `out = np.empty((est_n,3), float32)` を確保
-  - 連続頂点ペアを走査して `_pixelate_segment(...)` で 4-connected の階段点列を **Python ループ**で `out` に書き込む
-- 最後に `out_lines` を `np.concatenate` して `RealizedGeometry` を返す（`MAX_TOTAL_VERTICES` で打ち切りあり）。
+- 1st pass: 各ポリライン（offsets 区間）ごとに `_pixelate_line_length(...)`（Numba）で出力頂点数を数え、`MAX_TOTAL_VERTICES` を超えない範囲だけ採用する。
+- 2nd pass: `coords_out` / `offsets_out` を合計長で一発確保し、各ポリラインは `_pixelate_line_into(...)`（Numba）で `coords_out` の view に直接書き込む。
 
 ## Numba 高速化の余地（効果が見込める点）
 
@@ -54,27 +52,27 @@
 
 ## 0) 事前に決める（あなたの確認が必要）
 
-- [ ] 実装は **案 A（1ポリライン Numba コア）**で進めてよい？；はい
-- [ ] `np.concatenate` のコピー削減（2-pass 化）も同時にやる？（やるなら少し実装量↑、巨大ケースの効果↑）；はい
-- [ ] Numba デコレータは `@njit(cache=True)` のみでよい？（`fastmath=True` は今回は使わない想定）；はい
+- [x] 実装は **案 A（1ポリライン Numba コア）**で進めてよい？；はい
+- [x] `np.concatenate` のコピー削減（2-pass 化）も同時にやる？（やるなら少し実装量↑、巨大ケースの効果↑）；はい
+- [x] Numba デコレータは `@njit(cache=True)` のみでよい？（`fastmath=True` は今回は使わない想定）；はい
 
 ## 1) 受け入れ条件（完了の定義）
 
-- [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_pixelate.py` が通る（出力互換）
-- [ ] `corner="auto|xy|yx"` の差分が維持される（テスト固定）
+- [x] `PYTHONPATH=src pytest -q tests/core/effects/test_pixelate.py` が通る（出力互換）
+- [x] `corner="auto|xy|yx"` の差分が維持される（テスト固定）
 - [ ] ざっくりベンチで改善が確認できる（例: 代表ケースで 2x 以上、理想は 5–20x）
   - ※初回は Numba JIT のコンパイル時間が入るので、計測は warm-up 後に実施
 
 ## 2) 変更箇所（ファイル単位）
 
-- [ ] `src/grafix/core/effects/pixelate.py`
-  - [ ] Numba コア関数追加（案Aまたは案B）
-  - [ ] `pixelate(...)` から Numba コアを利用
+- [x] `src/grafix/core/effects/pixelate.py`
+  - [x] Numba コア関数追加（案A）
+  - [x] `pixelate(...)` から Numba コアを利用
 - [ ] （任意）ベンチ用の小さなスクリプト追加
   - 置き場所は `tools/` か `docs/` のどちらが良いか要相談
 
 ## 3) 実行コマンド（ローカル確認）
 
-- [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_pixelate.py`
-- [ ] `ruff check src/grafix/core/effects/pixelate.py`
+- [x] `PYTHONPATH=src pytest -q tests/core/effects/test_pixelate.py`
+- [x] `ruff check src/grafix/core/effects/pixelate.py`
 - [ ] （任意）ベンチ: warm-up → 計測（`time.perf_counter` / `timeit`）
