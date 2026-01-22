@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Sequence
 
 import numpy as np
+from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
@@ -29,29 +30,31 @@ def _round_half_away_from_zero(values: np.ndarray) -> np.ndarray:
     return np.sign(values) * np.floor(np.abs(values) + 0.5)
 
 
-def _estimate_pixelated_vertices(ix: np.ndarray, iy: np.ndarray, iz: np.ndarray) -> int:
-    """ポリライン 1 本の pixelate 後頂点数を見積もる。"""
+@njit(cache=True)
+def _pixelate_line_length(ix: np.ndarray, iy: np.ndarray, iz: np.ndarray) -> int:
+    """ポリライン 1 本の pixelate 後頂点数（厳密）を返す（Numba）。"""
     n = int(ix.shape[0])
     if n <= 0:
         return 0
     if n == 1:
         return 1
 
-    dx = np.abs(ix[1:] - ix[:-1])
-    dy = np.abs(iy[1:] - iy[:-1])
-    steps = int(dx.sum() + dy.sum())
+    steps = 0
+    for i in range(n - 1):
+        dx = int(ix[i + 1] - ix[i])
+        dy = int(iy[i + 1] - iy[i])
+        ax = abs(dx)
+        ay = abs(dy)
+        steps += ax + ay
+        if ax == 0 and ay == 0 and int(iz[i + 1]) != int(iz[i]):
+            steps += 1
 
-    same_xy = (dx == 0) & (dy == 0)
-    if np.any(same_xy):
-        dz = iz[1:] - iz[:-1]
-        steps += int(np.count_nonzero(same_xy & (dz != 0)))
-
-    return 1 + steps
+    return 1 + int(steps)
 
 
-def _pixelate_segment(
+@njit(cache=True)
+def _pixelate_segment_core(
     out: np.ndarray,
-    *,
     write_index: int,
     ix0: int,
     iy0: int,
@@ -63,10 +66,7 @@ def _pixelate_segment(
     sy: float,
     corner_mode: int,
 ) -> int:
-    """1 セグメントを 4-connected の階段へ展開して out へ書き込む。
-
-    返り値は書き込み後の write_index。
-    """
+    """1 セグメントを 4-connected の階段へ展開して out へ書き込む（Numba）。"""
     dx = int(ix1 - ix0)
     dy = int(iy1 - iy0)
     ax = int(abs(dx))
@@ -74,9 +74,9 @@ def _pixelate_segment(
 
     if ax == 0 and ay == 0:
         if z0 != z1:
-            out[write_index, 0] = float(ix0) * sx
-            out[write_index, 1] = float(iy0) * sy
-            out[write_index, 2] = float(z1)
+            out[write_index, 0] = ix0 * sx
+            out[write_index, 1] = iy0 * sy
+            out[write_index, 2] = z1
             return write_index + 1
         return write_index
 
@@ -95,7 +95,8 @@ def _pixelate_segment(
     elif corner_mode == 2:
         diag_first_is_x = False
     else:
-        diag_first_is_x = bool(ax >= ay)
+        diag_first_is_x = ax >= ay
+
     if ax >= ay:
         d = 2 * ay - ax
         for _ in range(ax):
@@ -104,32 +105,32 @@ def _pixelate_segment(
                     x += sx_i
                     step_index += 1
                     t = step_index / total_steps
-                    out[write_index, 0] = float(x) * sx
-                    out[write_index, 1] = float(y) * sy
+                    out[write_index, 0] = x * sx
+                    out[write_index, 1] = y * sy
                     out[write_index, 2] = z0 + dz * t
                     write_index += 1
 
                     y += sy_i
                     step_index += 1
                     t = step_index / total_steps
-                    out[write_index, 0] = float(x) * sx
-                    out[write_index, 1] = float(y) * sy
+                    out[write_index, 0] = x * sx
+                    out[write_index, 1] = y * sy
                     out[write_index, 2] = z0 + dz * t
                     write_index += 1
                 else:
                     y += sy_i
                     step_index += 1
                     t = step_index / total_steps
-                    out[write_index, 0] = float(x) * sx
-                    out[write_index, 1] = float(y) * sy
+                    out[write_index, 0] = x * sx
+                    out[write_index, 1] = y * sy
                     out[write_index, 2] = z0 + dz * t
                     write_index += 1
 
                     x += sx_i
                     step_index += 1
                     t = step_index / total_steps
-                    out[write_index, 0] = float(x) * sx
-                    out[write_index, 1] = float(y) * sy
+                    out[write_index, 0] = x * sx
+                    out[write_index, 1] = y * sy
                     out[write_index, 2] = z0 + dz * t
                     write_index += 1
 
@@ -138,8 +139,8 @@ def _pixelate_segment(
                 x += sx_i
                 step_index += 1
                 t = step_index / total_steps
-                out[write_index, 0] = float(x) * sx
-                out[write_index, 1] = float(y) * sy
+                out[write_index, 0] = x * sx
+                out[write_index, 1] = y * sy
                 out[write_index, 2] = z0 + dz * t
                 write_index += 1
 
@@ -152,32 +153,32 @@ def _pixelate_segment(
                     x += sx_i
                     step_index += 1
                     t = step_index / total_steps
-                    out[write_index, 0] = float(x) * sx
-                    out[write_index, 1] = float(y) * sy
+                    out[write_index, 0] = x * sx
+                    out[write_index, 1] = y * sy
                     out[write_index, 2] = z0 + dz * t
                     write_index += 1
 
                     y += sy_i
                     step_index += 1
                     t = step_index / total_steps
-                    out[write_index, 0] = float(x) * sx
-                    out[write_index, 1] = float(y) * sy
+                    out[write_index, 0] = x * sx
+                    out[write_index, 1] = y * sy
                     out[write_index, 2] = z0 + dz * t
                     write_index += 1
                 else:
                     y += sy_i
                     step_index += 1
                     t = step_index / total_steps
-                    out[write_index, 0] = float(x) * sx
-                    out[write_index, 1] = float(y) * sy
+                    out[write_index, 0] = x * sx
+                    out[write_index, 1] = y * sy
                     out[write_index, 2] = z0 + dz * t
                     write_index += 1
 
                     x += sx_i
                     step_index += 1
                     t = step_index / total_steps
-                    out[write_index, 0] = float(x) * sx
-                    out[write_index, 1] = float(y) * sy
+                    out[write_index, 0] = x * sx
+                    out[write_index, 1] = y * sy
                     out[write_index, 2] = z0 + dz * t
                     write_index += 1
 
@@ -186,12 +187,47 @@ def _pixelate_segment(
                 y += sy_i
                 step_index += 1
                 t = step_index / total_steps
-                out[write_index, 0] = float(x) * sx
-                out[write_index, 1] = float(y) * sy
+                out[write_index, 0] = x * sx
+                out[write_index, 1] = y * sy
                 out[write_index, 2] = z0 + dz * t
                 write_index += 1
 
                 d += 2 * ax
+
+    return write_index
+
+
+@njit(cache=True)
+def _pixelate_line_into(
+    out: np.ndarray,
+    ix: np.ndarray,
+    iy: np.ndarray,
+    iz: np.ndarray,
+    sx: float,
+    sy: float,
+    sz: float,
+    corner_mode: int,
+) -> int:
+    """単一ポリラインを pixelate して out へ書き込む（Numba）。"""
+    n = int(ix.shape[0])
+    if n <= 0:
+        return 0
+
+    out[0, 0] = ix[0] * sx
+    out[0, 1] = iy[0] * sy
+    out[0, 2] = iz[0] * sz
+    write_index = 1
+
+    for i in range(n - 1):
+        ix0 = int(ix[i])
+        iy0 = int(iy[i])
+        ix1 = int(ix[i + 1])
+        iy1 = int(iy[i + 1])
+        z0 = float(iz[i]) * sz
+        z1 = float(iz[i + 1]) * sz
+        write_index = _pixelate_segment_core(
+            out, write_index, ix0, iy0, ix1, iy1, z0, z1, sx, sy, corner_mode
+        )
 
     return write_index
 
@@ -259,7 +295,8 @@ def pixelate(
     if n_lines <= 0:
         return base
 
-    out_lines: list[np.ndarray] = []
+    line_ranges: list[tuple[int, int]] = []
+    line_lengths: list[int] = []
     total_vertices = 0
 
     for li in range(n_lines):
@@ -272,56 +309,32 @@ def pixelate(
         iy = iy_all[s:e]
         iz = iz_all[s:e]
 
-        est_n = _estimate_pixelated_vertices(ix, iy, iz)
+        est_n = int(_pixelate_line_length(ix, iy, iz))
         remaining = MAX_TOTAL_VERTICES - total_vertices
         if remaining <= 0 or est_n <= 0 or est_n > remaining:
             break
 
-        out = np.empty((est_n, 3), dtype=np.float32)
-        write_index = 0
+        line_ranges.append((s, e))
+        line_lengths.append(est_n)
+        total_vertices += est_n
 
-        # 先頭点
-        out[write_index, 0] = float(ix[0]) * sx
-        out[write_index, 1] = float(iy[0]) * sy
-        out[write_index, 2] = float(iz[0]) * sz
-        write_index += 1
-
-        for i in range(int(ix.shape[0]) - 1):
-            ix0 = int(ix[i])
-            iy0 = int(iy[i])
-            ix1 = int(ix[i + 1])
-            iy1 = int(iy[i + 1])
-            z0 = float(iz[i]) * sz
-            z1 = float(iz[i + 1]) * sz
-            write_index = _pixelate_segment(
-                out,
-                write_index=write_index,
-                ix0=ix0,
-                iy0=iy0,
-                ix1=ix1,
-                iy1=iy1,
-                z0=z0,
-                z1=z1,
-                sx=sx,
-                sy=sy,
-                corner_mode=corner_mode,
-            )
-
-        if write_index != est_n:
-            out = out[:write_index]
-        out_lines.append(out)
-        total_vertices += int(out.shape[0])
-
-    if not out_lines:
+    if not line_ranges:
         return _empty_geometry()
 
-    offsets_out = np.zeros((len(out_lines) + 1,), dtype=np.int32)
+    offsets_out = np.empty((len(line_ranges) + 1,), dtype=np.int32)
     acc = 0
-    coords_list: list[np.ndarray] = []
-    for i, line in enumerate(out_lines):
-        coords_list.append(line)
-        acc += int(line.shape[0])
+    offsets_out[0] = 0
+    for i, n in enumerate(line_lengths):
+        acc += int(n)
         offsets_out[i + 1] = acc
 
-    coords_out = np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), np.float32)
+    coords_out = np.empty((acc, 3), dtype=np.float32)
+    for i, (s, e) in enumerate(line_ranges):
+        ws = int(offsets_out[i])
+        we = int(offsets_out[i + 1])
+        out_view = coords_out[ws:we]
+        write_index = _pixelate_line_into(
+            out_view, ix_all[s:e], iy_all[s:e], iz_all[s:e], sx, sy, sz, corner_mode
+        )
+        assert int(write_index) == int(out_view.shape[0])
     return RealizedGeometry(coords=coords_out, offsets=offsets_out)
