@@ -16,7 +16,9 @@ def draw(t: float):
     eff2 = E.scale().rotate()
     ply2 = G.polygon()
 
-    return L(eff1(ply1)), L(eff2(ply2), thickness=0.002, color=(1.0, 0.0, 0.0))
+    return L.layer(eff1(ply1)), L.layer(
+        eff2(ply2), thickness=0.002, color=(1.0, 0.0, 0.0)
+    )
 
 
 if __name__ == "__main__":
