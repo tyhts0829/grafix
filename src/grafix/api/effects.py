@@ -22,6 +22,7 @@ from grafix.core.effects import wobble as _effect_wobble  # noqa: F401
 from grafix.core.effects import affine as _effect_affine  # noqa: F401
 from grafix.core.effects import subdivide as _effect_subdivide  # noqa: F401
 from grafix.core.effects import quantize as _effect_quantize  # noqa: F401
+from grafix.core.effects import pixelate as _effect_pixelate  # noqa: F401
 from grafix.core.effects import partition as _effect_partition  # noqa: F401
 from grafix.core.effects import mirror as _effect_mirror  # noqa: F401
 from grafix.core.effects import mirror3d as _effect_mirror3d  # noqa: F401
