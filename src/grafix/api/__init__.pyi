@@ -757,11 +757,17 @@ class _E(Protocol):
 class _L(Protocol):
     def __call__(
         self,
+        name: str | None = None,
+    ) -> _L:
+        """ラベル付き Layer 名前空間を返す。"""
+        ...
+
+    def layer(
+        self,
         geometry_or_list: Geometry | Sequence[Geometry],
         *,
         color: Vec3 | None = ...,
         thickness: float | None = ...,
-        name: str | None = ...,
     ) -> list[Layer]:
         """単体/複数の Geometry から Layer を生成する。"""
         ...

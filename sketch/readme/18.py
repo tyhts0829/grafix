@@ -37,7 +37,7 @@ def draw(t):
         offset=(0.0, 0.0, 0.0),
     )
 
-    l1 = L(name="l1", geometry_or_list=l1)
+    l1 = L(name="l1").layer(l1)
 
     # ====================================================================
     title1 = G.text(
@@ -110,8 +110,8 @@ def draw(t):
     )
 
     title3 = e_title3(title3)
-    title_black = L(name="title_black", geometry_or_list=[title1])
-    title_gray = L(name="title_gray", geometry_or_list=[title2, title3])
+    title_black = L(name="title_black").layer([title1])
+    title_gray = L(name="title_gray").layer([title2, title3])
 
     # ====================================================================
     g = G.polyhedron(
@@ -192,7 +192,7 @@ def draw(t):
     g2 = e2(g1)
     g3 = e3(g2)
     g4 = e4(g2)
-    g = L(name="polyhedrons", geometry_or_list=[g1, g2, g3, g4])
+    g = L(name="polyhedrons").layer([g1, g2, g3, g4])
 
     # ====================================================================
     text1 = G.text(
@@ -291,7 +291,7 @@ def draw(t):
 
     text4 = e_text4(text4)
 
-    text = L(name="Principals", geometry_or_list=[text1, text2, text3, text4])
+    text = L(name="Principals").layer([text1, text2, text3, text4])
 
     # ====================================================================
     discription1 = G(name="Discription1").text(
@@ -354,9 +354,8 @@ def draw(t):
 
     e_discription4 = E.fill(density=450.0)
     discription4 = e_discription4(discription4)
-    discription = L(
-        name="Discription",
-        geometry_or_list=[discription1, discription2, discription3, discription4],
+    discription = L(name="Discription").layer(
+        [discription1, discription2, discription3, discription4]
     )
 
     # ====================================================================
@@ -382,7 +381,7 @@ def draw(t):
         remove_boundary=False,
     )
     explanation = e_explanation(explanation)
-    explanation = L(name="explanation", geometry_or_list=[explanation])
+    explanation = L(name="explanation").layer([explanation])
 
     # ====================================================================
     h_line1 = G(name="HLine1").line(
@@ -408,7 +407,7 @@ def draw(t):
 
     h_line2 = e_line2(h_line2)
 
-    line = L(name="line", geometry_or_list=[h_line1, h_line2])
+    line = L(name="line").layer([h_line1, h_line2])
 
     return (
         l1,
