@@ -14,6 +14,7 @@ bg 更新 off 設定を run 引数に。
 メタボール的 effect
 Signed Distance Field を用いたなにか
 保存系は shift+key にする。
+pixelate numba化
 skills:
 
 - コードレビュー
