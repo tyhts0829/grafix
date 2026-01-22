@@ -312,6 +312,16 @@ class _EffectBuilder(Protocol):
             pivot: auto_center=False のときの pivot（ワールド座標）
         """
         ...
+    def pixelate(self, *, activate: bool = ..., step: Vec3 = ..., corner: str = ...) -> _EffectBuilder:
+        """
+        ポリラインをグリッド上の階段線へ変換する（XY）。
+
+        引数:
+            activate: bool
+            step: 各軸の格子間隔 (sx, sy, sz)
+            corner: 対角（x と y が同時に動く）を 2 手へ分解するときの順序
+        """
+        ...
     def quantize(self, *, activate: bool = ..., step: Vec3 = ...) -> _EffectBuilder:
         """
         頂点座標を各軸のステップ幅で量子化する（XYZ）。
@@ -629,6 +639,16 @@ class _E(Protocol):
             site_density_slope: 正規化座標 t∈[-1,+1] に対する密度勾配（軸別）
             auto_center: True のとき `pivot` を無視し、入力 bbox の中心を pivot として扱う
             pivot: auto_center=False のときの pivot（ワールド座標）
+        """
+        ...
+    def pixelate(self, *, activate: bool = ..., step: Vec3 = ..., corner: str = ...) -> _EffectBuilder:
+        """
+        ポリラインをグリッド上の階段線へ変換する（XY）。
+
+        引数:
+            activate: bool
+            step: 各軸の格子間隔 (sx, sy, sz)
+            corner: 対角（x と y が同時に動く）を 2 手へ分解するときの順序
         """
         ...
     def quantize(self, *, activate: bool = ..., step: Vec3 = ...) -> _EffectBuilder:

@@ -22,29 +22,29 @@
 
 ## 0) 事前に決める（あなたの確認が必要）
 
-- [ ] effect 名: `pixelate` で確定してよい？；OK
+- [x] effect 名: `pixelate` で確定してよい？；OK
 - [x] 期待挙動: 「長い斜めは格子 1 ステップごとの階段（頂点が増える）」を採用
-- [ ] Z の扱い（提案）
-  - 案 A: XY のみ階段化し、z は入力頂点を `step[2]` でスナップした後に線形補間（推奨）；これで
-  - 案 B: XY のみ階段化し、z は入力のまま（スナップなし）
-  - 案 C: 3D も含めて 6-connected（x/y/z のどれか 1 軸だけ動く）で階段化（実装増、将来）
-- [ ] 対角分解の順序（8-connected の対角移動を 2 手に分けるとき）
-  - 案 A: major axis を先に進める（`abs(dx) >= abs(dy)` なら x→y、逆なら y→x、推奨）；これで
-  - 案 B: 常に x→y（スタイル固定）
-  - 案 C: 常に y→x（スタイル固定）
-- [ ] 出力頂点数の上限ガード
-  - 上限値: 案 A: `MAX_TOTAL_VERTICES = 10_000_000`（`subdivide` と同じ） / 案 B: 小さめ（例: 2_000_000）；Aで
-  - 超過時の挙動: 案 A: そこで打ち切り（残りポリラインは出さない） / 案 B: no-op で入力を返す / 案 C: 例外；Aで
+- [x] Z の扱い（提案）
+  - [x] 案 A: XY のみ階段化し、z は入力頂点を `step[2]` でスナップした後に線形補間（推奨）；これで
+  - [ ] 案 B: XY のみ階段化し、z は入力のまま（スナップなし）
+  - [ ] 案 C: 3D も含めて 6-connected（x/y/z のどれか 1 軸だけ動く）で階段化（実装増、将来）
+- [x] 対角分解の順序（8-connected の対角移動を 2 手に分けるとき）
+  - [x] 案 A: major axis を先に進める（`abs(dx) >= abs(dy)` なら x→y、逆なら y→x、推奨）；これで
+  - [ ] 案 B: 常に x→y（スタイル固定）
+  - [ ] 案 C: 常に y→x（スタイル固定）
+- [x] 出力頂点数の上限ガード
+  - [x] 上限値: 案 A: `MAX_TOTAL_VERTICES = 10_000_000`（`subdivide` と同じ） / 案 B: 小さめ（例: 2_000_000）；Aで
+  - [x] 超過時の挙動: 案 A: そこで打ち切り（残りポリラインは出さない） / 案 B: no-op で入力を返す / 案 C: 例外；Aで
 
 ## 1) 受け入れ条件（完了の定義）
 
-- [ ] 出力の各セグメントで `dx==0 or dy==0`（XY で斜めが出ない）
-- [ ] 各セグメント長は `sx` または `sy` の 1 ステップ（0 長セグメントは許容/要確認）
-- [ ] `step<=0` を含む場合は no-op（`quantize` と同様）
-- [ ] 空/頂点 0/ポリライン長 <2 で落ちない
-- [ ] 負方向（右下/左上）や非等方 step でも期待どおり
-- [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_pixelate.py` が通る
-- [ ] `PYTHONPATH=src python -m grafix stub` 後、`PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py` が通る
+- [x] 出力の各セグメントで `dx==0 or dy==0`（XY で斜めが出ない）
+- [x] 各セグメント長は `sx` または `sy` の 1 ステップ（0 長セグメントは許容/要確認）
+- [x] `step<=0` を含む場合は no-op（`quantize` と同様）
+- [x] 空/頂点 0/ポリライン長 <2 で落ちない
+- [x] 負方向（右下/左上）や非等方 step でも期待どおり
+- [x] `PYTHONPATH=src pytest -q tests/core/effects/test_pixelate.py` が通る
+- [x] `PYTHONPATH=src python -m grafix stub` 後、`PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py` が通る
 
 ## 2) 仕様案（API/パラメータ）
 
@@ -88,25 +88,25 @@
 
 （※実装フェーズに入ってから着手）
 
-- [ ] `src/grafix/core/effects/pixelate.py`（新規）
-  - [ ] `pixelate_meta` 定義（`step`）
-  - [ ] `@effect(meta=...)` で登録
-  - [ ] スナップ + 階段化 + vertex 上限ガード
-- [ ] `src/grafix/api/effects.py`
-  - [ ] import 1 行追加（レジストリ登録）
-- [ ] `tests/core/effects/test_pixelate.py`（新規）
-  - [ ] 斜め入力が階段化される（全セグメントで `dx==0 or dy==0` を検証）
-  - [ ] 非等方 step（例: `(2.0, 0.5, 1.0)`）でも 1 ステップ移動になる
-  - [ ] 負方向（右下/左上）でも崩れない
-  - [ ] `step<=0` の no-op
-- [ ] スタブ再生成（手編集しない）
-  - [ ] `PYTHONPATH=src python -m grafix stub`
+- [x] `src/grafix/core/effects/pixelate.py`（新規）
+  - [x] `pixelate_meta` 定義（`step`）
+  - [x] `@effect(meta=...)` で登録
+  - [x] スナップ + 階段化 + vertex 上限ガード
+- [x] `src/grafix/api/effects.py`
+  - [x] import 1 行追加（レジストリ登録）
+- [x] `tests/core/effects/test_pixelate.py`（新規）
+  - [x] 斜め入力が階段化される（全セグメントで `dx==0 or dy==0` を検証）
+  - [x] 非等方 step（例: `(2.0, 0.5, 1.0)`）でも 1 ステップ移動になる
+  - [x] 負方向（右下/左上）でも崩れない
+  - [x] `step<=0` の no-op
+- [x] スタブ再生成（手編集しない）
+  - [x] `PYTHONPATH=src python -m grafix stub`
 
 ## 5) 実行コマンド（ローカル確認）
 
-- [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_pixelate.py`
-- [ ] `PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py`
-- [ ] `ruff check src/grafix/core/effects/pixelate.py tests/core/effects/test_pixelate.py`
+- [x] `PYTHONPATH=src pytest -q tests/core/effects/test_pixelate.py`
+- [x] `PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py`
+- [x] `ruff check src/grafix/core/effects/pixelate.py tests/core/effects/test_pixelate.py`
 - [ ] `mypy src/grafix`（任意）
 
 ## 追加で事前確認したほうがいい点（気づいたら追記）
