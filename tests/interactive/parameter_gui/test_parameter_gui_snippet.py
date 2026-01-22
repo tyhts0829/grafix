@@ -87,9 +87,11 @@ def test_snippet_style_converts_rgb255_to_rgb01_and_maps_keys() -> None:
         layer_style_name_by_site_id={"layer:1": "outline"},
         last_effective_by_key={},
         step_info_by_site={},
+        raw_label_by_site={(LAYER_STYLE_OP, "layer:1"): "outline"},
     )
 
     assert out.startswith("    ")
+    assert "dict(" not in out
     assert "background_color=(1.0, 0.0, 0.0)" in out
     assert "line_thickness=0.001" in out
     assert "line_color=(0.0, 0.0, 0.0)" in out
@@ -258,7 +260,8 @@ def test_snippet_style_layer_dict_includes_name_when_raw_label_exists() -> None:
     )
 
     assert out.startswith("    ")
-    assert "name='outline'" in out
+    assert "dict(" not in out
+    assert "L(name='outline').layer" in out
 
 
 def test_snippet_preset_includes_name_only_when_raw_label_differs() -> None:
