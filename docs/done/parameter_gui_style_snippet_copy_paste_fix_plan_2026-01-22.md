@@ -84,15 +84,15 @@ Style snippet を **2 セクション**に分け、どちらも “貼る場所�
 
 ## 実装タスク（チェックリスト）
 
-- [ ] `snippet.py`: Style snippet を “kwargs断片 + セクション見出し” へ変更
-  - [ ] global style: `dict(` wrapper をやめ、`background_color=...,` 等をそのまま出す
-  - [ ] layer style: raw label がある site のみ出す（無名はまとめて注意コメント）
-  - [ ] layer style の `name=` key は出さない（`L(name=...)` 側で指定するため）
-- [ ] `test_parameter_gui_snippet.py`: Style snippet のテスト更新/追加
-  - [ ] global: `dict(` が含まれないこと
-  - [ ] layer: raw label がある場合のみ出ること（無名 layer は出ない）
-  - [ ] 断片として貼りやすいよう、各 kwargs 行が `,` で終わること
-- [ ] `PYTHONPATH=src pytest -q tests/interactive/parameter_gui/test_parameter_gui_snippet.py`
+- [x] `snippet.py`: Style snippet を “kwargs断片 + セクション見出し” へ変更
+  - [x] global style: `dict(` wrapper をやめ、`background_color=...,` 等をそのまま出す
+  - [x] layer style: raw label がある site のみ出す（無名はまとめて注意コメント）
+  - [x] layer style の `name=` key は出さない（`L(name=...)` 側で指定するため）
+- [x] `test_parameter_gui_snippet.py`: Style snippet のテスト更新/追加
+  - [x] global: `dict(` が含まれないこと
+  - [x] layer: raw label がある場合のみ出ること（無名 layer は出ない）
+  - [x] 断片として貼りやすいよう、各 kwargs 行が `,` で終わること
+- [x] `PYTHONPATH=src pytest -q tests/interactive/parameter_gui/test_parameter_gui_snippet.py`
 
 ## 受け入れ条件（Definition of Done）
 
@@ -100,4 +100,3 @@ Style snippet を **2 セクション**に分け、どちらも “貼る場所�
   - `run(...)` に貼れる global kwargs 断片
   - `L(name=...).layer(...)` に貼れる（名前付きのみの）layer kwargs 断片
   を含み、無名 layer の `dict(color=..., thickness=...)` が連発しない。
-
