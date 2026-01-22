@@ -1,0 +1,2 @@
+- python -m grafix stub
+- python -m grafix benchmark
