@@ -61,30 +61,27 @@ def draw(t: float):
 
     return (
         (
-            L(
-                name="text",
-                geometry_or_list=[
+            L(name="text").layer(
+                [
                     title_effed,
                     subtitle_effed,
                     func_text_effed,
                     description_effed,
                     footer_effed,
-                ],
+                ]
             ),
-            L(
-                name="shapes",
-                geometry_or_list=[
+            L(name="shapes").layer(
+                [
                     poly_affine(poly_affined + poly_filled + poly_displaced),
                     line,
                     footer_squared,
-                ],
+                ]
             ),
         ),
-        L(
-            name="grid_pattern",
-            geometry_or_list=[grid, filled_circle],
+        L(name="grid_pattern").layer(
+            [grid, filled_circle],
         ),
-        L(name="footer", geometry_or_list=footer),
+        L(name="footer").layer(footer),
     )
 
 

@@ -582,11 +582,19 @@ def _render_l_protocol() -> str:
     lines.append(
         "    def __call__(\n"
         "        self,\n"
+        "        name: str | None = None,\n"
+        "    ) -> _L:\n"
+    )
+    lines.append('        """ラベル付き Layer 名前空間を返す。"""\n')
+    lines.append("        ...\n\n")
+
+    lines.append(
+        "    def layer(\n"
+        "        self,\n"
         "        geometry_or_list: Geometry | Sequence[Geometry],\n"
         "        *,\n"
         "        color: Vec3 | None = ...,\n"
         "        thickness: float | None = ...,\n"
-        "        name: str | None = ...,\n"
         "    ) -> list[Layer]:\n"
     )
     lines.append('        """単体/複数の Geometry から Layer を生成する。"""\n')

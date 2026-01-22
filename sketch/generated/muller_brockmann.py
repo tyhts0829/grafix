@@ -158,13 +158,14 @@ def draw(t: float):
     red_mark = E.fill(angle=0.0, density=18.0, remove_boundary=False)(red_mark)
 
     layers: list[object] = []
-    layers += L(grid, thickness=0.00055, name="grid")
-    layers += L(axis + rule + caption + type_block, thickness=0.00105, name="type")
-    layers += L(block, thickness=0.00075, name="block")
-    layers += L(arcs, thickness=0.00125, color=(0.85, 0.0, 0.0), name="accent")
-    layers += L(red_mark, thickness=0.0009, color=(0.85, 0.0, 0.0), name="accent_mark")
+    layers += L(name="grid").layer(grid, thickness=0.00055)
+    layers += L(name="type").layer(axis + rule + caption + type_block, thickness=0.00105)
+    layers += L(name="block").layer(block, thickness=0.00075)
+    layers += L(name="accent").layer(arcs, thickness=0.00125, color=(0.85, 0.0, 0.0))
+    layers += L(name="accent_mark").layer(
+        red_mark, thickness=0.0009, color=(0.85, 0.0, 0.0)
+    )
     return layers
 
 
 __all__ = ["CANVAS_SIZE", "draw"]
-

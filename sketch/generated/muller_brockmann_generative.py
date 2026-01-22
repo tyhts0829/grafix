@@ -140,15 +140,16 @@ def draw(t: float):
     )
 
     layers: list[object] = []
-    layers += L(minor, thickness=0.00032, name="grid_minor")
-    layers += L(major, thickness=0.00052, name="grid_major")
-    layers += L(axis + rule, thickness=0.00105, name="rules")
-    layers += L(barcode, thickness=0.00078, name="rhythm")
-    layers += L(arcs, thickness=0.00120, name="arcs")
-    layers += L(accent, thickness=0.00125, color=(0.85, 0.0, 0.0), name="accent")
-    layers += L(title + caption, thickness=0.00110, name="type")
+    layers += L(name="grid_minor").layer(minor, thickness=0.00032)
+    layers += L(name="grid_major").layer(major, thickness=0.00052)
+    layers += L(name="rules").layer(axis + rule, thickness=0.00105)
+    layers += L(name="rhythm").layer(barcode, thickness=0.00078)
+    layers += L(name="arcs").layer(arcs, thickness=0.00120)
+    layers += L(name="accent").layer(
+        accent, thickness=0.00125, color=(0.85, 0.0, 0.0)
+    )
+    layers += L(name="type").layer(title + caption, thickness=0.00110)
     return layers
 
 
 __all__ = ["CANVAS_SIZE", "draw"]
-

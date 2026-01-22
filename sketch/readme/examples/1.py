@@ -28,7 +28,7 @@ def draw(t):
         offset=(0.0, 0.0, 0.0),
     )
 
-    layout = L(name="layout1", geometry_or_list=layout)
+    layout = L(name="layout1").layer(layout)
 
     # ====================================================================
     line = G.line()
