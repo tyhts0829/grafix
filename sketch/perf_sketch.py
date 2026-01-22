@@ -90,7 +90,8 @@ def _upload_skip_layers() -> list[Layer]:
     # GPU upload が支配的になるよう、大きい 1 本ポリラインを静的に用意する。
     # - geometry_id が安定 → upload skip が効けば、2 フレーム目以降は upload が消える。
     # - Layer は複数回同一 geometry を描く（既定 2）。これで 1 フレーム目からキャッシュが昇格する。
-    g = G.circle(r=0.45, segments=max(3, int(_UPLOAD_SEGMENTS)))
+    # NOTE: G.circle は存在しないため、G.polygon（高辺数）で円近似する。
+    g = G.polygon(n_sides=max(3, int(_UPLOAD_SEGMENTS)), scale=0.9)
     site_id = "perf_sketch:upload_skip"
 
     layers: list[Layer] = []
@@ -130,15 +131,15 @@ def draw(t: float):
 
     if _CASE == "many_vertices":
         # indices/転送を強くする: 巨大ポリライン（segments が大きいほど重い）。
-        circle = G.circle(r=0.45, segments=_CIRCLE_SEGMENTS)
+        g = G.polygon(n_sides=max(3, int(_CIRCLE_SEGMENTS)), scale=0.9)
         eff = E.rotate(rotation=(0.0, 0.0, t * 10.0))
-        return L(eff(circle))
+        return L.layer(eff(g))
 
     if _CASE == "cpu_draw":
         # draw 自体が支配的になる状況を作る（mp-draw の計測用）。
         burn = _cpu_burn(t, _CPU_ITERS) if _CPU_ITERS > 0 else 0.0
         r = 0.25 + 0.05 * (burn % 1.0)
-        return L(G.circle(r=r, segments=256))
+        return L.layer(G.polygon(n_sides=256, scale=2.0 * r))
 
     if _CASE == "many_layers":
         # “レイヤー数”で負荷を作る。各レイヤーは軽いが、draw と realize の両方が増える。
@@ -146,7 +147,7 @@ def draw(t: float):
         for i in range(max(1, int(_MANY_LAYERS))):
             phase = (t * 30.0 + float(i)) % 360.0
             g = G.polygon(n_sides=6, phase=phase)
-            layers.append(L(g, thickness=0.001))
+            layers.append(L.layer(g, thickness=0.001))
         return layers
 
     if _CASE == "static_layers":
@@ -168,7 +169,7 @@ def draw(t: float):
         .displace()
         .rotate(rotation=(t * 5, t * 5, t * 5))
     )
-    return L(eff1(ply1))
+    return L.layer(eff1(ply1))
 
 
 if __name__ == "__main__":
