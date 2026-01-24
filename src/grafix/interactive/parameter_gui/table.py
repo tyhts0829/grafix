@@ -744,6 +744,8 @@ def render_parameter_table(
             imgui.same_line()
             if imgui.button("Copy"):
                 imgui.set_clipboard_text(str(_SNIPPET_POPUP_TEXT))
+                imgui.close_current_popup()
+                _SNIPPET_POPUP_FOCUS_NEXT = False
             imgui.same_line()
             imgui.text_disabled("macOS Cmd+A→Cmd+C / Win/Linux Ctrl+A→Ctrl+C")
 
