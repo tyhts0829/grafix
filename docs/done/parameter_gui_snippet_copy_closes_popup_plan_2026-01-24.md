@@ -12,9 +12,9 @@
 
 ## 0) 事前に決める（あなたの確認が必要）
 
-- [ ] `Copy` ボタン押下で「クリップボードへコピー → `imgui.close_current_popup()`」まで行う（要求通り）
-- [ ] `Close` ボタンは残す（要求通り）
-- [ ] テキスト欄フォーカス中の `Cmd/Ctrl+C` は「コピーのみ」で閉じない（現状維持でよい？）
+- [x] `Copy` ボタン押下で「クリップボードへコピー → `imgui.close_current_popup()`」まで行う（要求通り）
+- [x] `Close` ボタンは残す（要求通り）
+- [x] テキスト欄フォーカス中の `Cmd/Ctrl+C` は「コピーのみ」で閉じない（現状維持でよい？）
 
 ## 1) 変更後の仕様（挙動の約束）
 
@@ -30,19 +30,19 @@
 
 ## 3) 変更箇所（ファイル単位）
 
-- [ ] `src/grafix/interactive/parameter_gui/table.py`
+- [x] `src/grafix/interactive/parameter_gui/table.py`
 
 ## 4) 手順（実装順）
 
-- [ ] 事前確認: `git status --porcelain` を見て、依頼範囲外の差分は触らない
-- [ ] `table.py`: `Copy` ボタン押下時に `close_current_popup()` を呼ぶ
-- [ ] 最小確認:（任意）関連テスト/静的チェックを実行
+- [x] 事前確認: `git status --porcelain` を見て、依頼範囲外の差分は触らない
+- [x] `table.py`: `Copy` ボタン押下時に `close_current_popup()` を呼ぶ
+- [x] 最小確認:（任意）関連テスト/静的チェックを実行
 - [ ] 手動確認: GUI 上で `Copy` を押すと閉じることを確認
 
 ## 5) 実行コマンド（ローカル確認）
 
-- [ ] （任意）`PYTHONPATH=src pytest -q tests/interactive/parameter_gui`
-- [ ] （任意）`ruff check src/grafix/interactive/parameter_gui`
+- [x] （任意）`PYTHONPATH=src pytest -q tests/interactive/parameter_gui/test_parameter_gui_snippet.py`
+- [x] （任意）`ruff check src/grafix/interactive/parameter_gui/table.py`
 - [ ] （任意）`mypy src/grafix/interactive/parameter_gui`
 
 ## 6) 手動確認（実機）
