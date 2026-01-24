@@ -12,8 +12,8 @@ from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_ops import set_meta
 from grafix.core.parameters.snapshot_ops import store_snapshot_for_gui
-from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.store import ParamStore
+from grafix.core.parameters.style import STYLE_OP
 from grafix.interactive.midi import MidiController
 
 from .midi_learn import MidiLearnState
@@ -24,9 +24,9 @@ from .pyglet_backend import (
     _install_imgui_clipboard_callbacks,
     _sync_imgui_io_for_window,
 )
+from .range_edit import RangeEditMode, apply_range_shift
 from .store_bridge import clear_all_midi_assignments, render_store_parameter_table
 from .table import COLUMN_WEIGHTS_DEFAULT
-from .range_edit import RangeEditMode, apply_range_shift
 
 
 def _default_gui_font_path() -> Path | None:
@@ -331,7 +331,9 @@ class ParameterGUI:
         # pyglet backend は `io.mouse_wheel = scroll` をそのまま入れるため、
         # ここで「このフレームのホイールΔ」だけ符号反転して扱う。
         io = imgui.get_io()
-        io.mouse_wheel = float(-float(io.mouse_wheel))
+        wheel = float(-float(io.mouse_wheel))
+        wheel = max(-0.5, min(0.5, wheel))
+        io.mouse_wheel = float(wheel)
 
         # --- ImGui フレーム開始 ---
         imgui.new_frame()
@@ -375,19 +377,22 @@ class ParameterGUI:
         imgui.begin_child("##parameter_table_scroll", 0, 0, border=False)
         try:
             # ParamStore をテーブルとして描画し、編集結果を store に反映する。
-            changed_any = bool(
-                render_store_parameter_table(
-                    self._store,
-                    column_weights=self._column_weights,
-                    show_inactive_params=bool(self._show_inactive_params),
-                    midi_learn_state=self._midi_learn_state,
-                    midi_last_cc_change=(
-                        None
-                        if self._midi_controller is None
-                        else self._midi_controller.last_cc_change
-                    ),
+            changed_any = (
+                bool(
+                    render_store_parameter_table(
+                        self._store,
+                        column_weights=self._column_weights,
+                        show_inactive_params=bool(self._show_inactive_params),
+                        midi_learn_state=self._midi_learn_state,
+                        midi_last_cc_change=(
+                            None
+                            if self._midi_controller is None
+                            else self._midi_controller.last_cc_change
+                        ),
+                    )
                 )
-            ) or changed_any
+                or changed_any
+            )
         finally:
             imgui.end_child()
         imgui.end()
