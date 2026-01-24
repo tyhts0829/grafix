@@ -7,19 +7,13 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from grafix.core.geometry import Geometry
+from grafix.core.builtins import ensure_builtin_primitives_registered
 from grafix.core.parameters import caller_site_id
 from grafix.core.primitive_registry import primitive_registry
 
-# primitive 実装モジュールをインポートしてレジストリに登録させる。
-from grafix.core.primitives import grid as _primitive_grid  # noqa: F401
-from grafix.core.primitives import line as _primitive_line  # noqa: F401
-from grafix.core.primitives import polygon as _primitive_polygon  # noqa: F401
-from grafix.core.primitives import polyhedron as _primitive_polyhedron  # noqa: F401
-from grafix.core.primitives import sphere as _primitive_sphere  # noqa: F401
-from grafix.core.primitives import text as _primitive_text  # noqa: F401
-from grafix.core.primitives import torus as _primitive_torus  # noqa: F401
-
 from ._param_resolution import resolve_api_params, set_api_label
+
+ensure_builtin_primitives_registered()
 
 
 class PrimitiveNamespace:

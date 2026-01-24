@@ -17,11 +17,11 @@
 
 ## 0) 事前に決める（あなたの確認が必要）
 
-- [ ] 方式: **A を推奨**
-  - [ ] A: 「明示リストを 1 箇所に集約」する（最小変更・挙動が読みやすい）
+- [x] 方式: **A**
+  - [x] A: 「明示リストを 1 箇所に集約」する（最小変更・挙動が読みやすい）
   - [ ] B: `pkgutil` / `importlib` で `grafix.core.effects` / `primitives` を自動探索して import（列挙不要だが、意図しない import/起動コスト増のリスク）
-- [ ] 初期化タイミング: **A を推奨（まず安全に集約）**
-  - [ ] A: `grafix.api.effects` / `grafix.api.primitives` import 時に確実に登録（現状互換）
+- [x] 初期化タイミング: **A**
+  - [x] A: `grafix.api.effects` / `grafix.api.primitives` import 時に確実に登録（現状互換）
   - [ ] B: `G.<name>` / `E.<name>` の初回アクセスで遅延登録（`import grafix` を軽くできるが、テスト/CLI の前提が変わる）
   - [ ] C: 利用側が明示的に `ensure_*()` を呼ぶ（最も純粋だが利用負担が増える）
 
@@ -29,11 +29,11 @@
 
 ## 1) 受け入れ条件（完了の定義）
 
-- [ ] built-in 登録の入口が **1 箇所**（単一関数）に集約されている
-- [ ] built-in の列挙（採用方式Aの場合）が **1 箇所**だけに存在し、重複リストが無い
-- [ ] `interactive/runtime/mp_draw.py` が built-in 登録のために `grafix.api.*` を import しない
-- [ ] `python -m grafix list` / `python -m grafix stub` が「registry 初期化のための `grafix.api.*` import」に依存しない（依存するなら、依存先が単一入口に置き換わっている）
-- [ ] `PYTHONPATH=src pytest -q` が通る（少なくとも依存境界テストと core/api の主要テスト）
+- [x] built-in 登録の入口が **1 箇所**（単一関数）に集約されている
+- [x] built-in の列挙（採用方式Aの場合）が **1 箇所**だけに存在し、重複リストが無い
+- [x] `interactive/runtime/mp_draw.py` が built-in 登録のために `grafix.api.*` を import しない
+- [x] `python -m grafix list` / `python -m grafix stub` が「registry 初期化のための `grafix.api.*` import」に依存しない（依存するなら、依存先が単一入口に置き換わっている）
+- [ ] `PYTHONPATH=src pytest -q` が通る（この環境では `tests/tools/test_cache_visualize.py` が `tools` import で collection error）
 
 ---
 
@@ -41,7 +41,7 @@
 
 ### 2.1 新規モジュール（単一入口）
 
-- [ ] `src/grafix/core/builtins.py`（新規）を追加
+- [x] `src/grafix/core/builtins.py`（新規）を追加
   - `ensure_builtin_primitives_registered()`
   - `ensure_builtin_effects_registered()`
   - `ensure_builtin_ops_registered()`（↑2つを呼ぶ）
@@ -50,19 +50,19 @@
 
 ### 2.2 呼び出し箇所の置換（分散初期化の撤去）
 
-- [ ] `src/grafix/api/primitives.py`
+- [x] `src/grafix/api/primitives.py`
   - built-in 手動 import 列挙を削除
   - `ensure_builtin_primitives_registered()` を呼ぶ（タイミングは 0) の選択に従う）
-- [ ] `src/grafix/api/effects.py`
+- [x] `src/grafix/api/effects.py`
   - built-in 手動 import 列挙を削除
   - `ensure_builtin_effects_registered()` を呼ぶ（タイミングは 0) の選択に従う）
-- [ ] `src/grafix/interactive/runtime/mp_draw.py`
+- [x] `src/grafix/interactive/runtime/mp_draw.py`
   - worker 起動時の `import grafix.api.effects/primitives` を削除
   - 代わりに `ensure_builtin_ops_registered()` を呼ぶ（層の穴を塞ぐ）
-- [ ] `src/grafix/devtools/list_builtins.py`
+- [x] `src/grafix/devtools/list_builtins.py`
   - `importlib.import_module("grafix.api.*")` を削除
   - 代わりに `ensure_builtin_ops_registered()` を呼ぶ
-- [ ] `src/grafix/devtools/generate_stub.py`
+- [x] `src/grafix/devtools/generate_stub.py`
   - registry 集計の前に `ensure_builtin_ops_registered()` を呼ぶ（遅延初期化に寄せる場合でも安定化）
 
 ---
@@ -82,11 +82,11 @@
 
 ### Phase 1（集約して分散を潰す / 互換維持）
 
-- [ ] `src/grafix/core/builtins.py` を追加（単一入口 + 単一リスト）
-- [ ] `api/effects.py` / `api/primitives.py` の built-in 列挙 import を撤去し、単一入口を呼ぶ
-- [ ] `interactive/runtime/mp_draw.py` を単一入口呼び出しへ置換
-- [ ] `devtools/list_builtins.py` を単一入口呼び出しへ置換
-- [ ] `devtools/generate_stub.py` を単一入口呼び出しへ置換
+- [x] `src/grafix/core/builtins.py` を追加（単一入口 + 単一リスト）
+- [x] `api/effects.py` / `api/primitives.py` の built-in 列挙 import を撤去し、単一入口を呼ぶ
+- [x] `interactive/runtime/mp_draw.py` を単一入口呼び出しへ置換
+- [x] `devtools/list_builtins.py` を単一入口呼び出しへ置換
+- [x] `devtools/generate_stub.py` を単一入口呼び出しへ置換
 
 ### Phase 2（任意: import を軽くする / 遅延初期化へ）
 
@@ -97,10 +97,10 @@
 
 ## 5) 確認コマンド（ローカル）
 
-- [ ] `PYTHONPATH=src pytest -q tests/architecture/test_dependency_boundaries.py`
-- [ ] `PYTHONPATH=src pytest -q tests/core/test_effect_bypass.py`
-- [ ] `PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py`
-- [ ] `PYTHONPATH=src python -m grafix list all`
+- [x] `PYTHONPATH=src pytest -q tests/architecture/test_dependency_boundaries.py`
+- [x] `PYTHONPATH=src pytest -q tests/core/test_effect_bypass.py`
+- [x] `PYTHONPATH=src pytest -q tests/stubs/test_api_stub_sync.py`
+- [x] `PYTHONPATH=src python -m grafix list all`
 - [ ] `PYTHONPATH=src python -m grafix stub`
 
 ---
@@ -109,4 +109,3 @@
 
 - 互換ラッパー/シムは作らず、必要なら破壊的に整理する（ただし Phase 1 は挙動維持が目的）。
 - built-in の “正” は `core/builtins.py` に置き、他の場所に列挙を増やさない。
-
