@@ -22,19 +22,16 @@
 
 ## 0) 事前に決める（あなたの確認が必要）
 
-- [ ] `site_id` の新フォーマットは `"{path}:{lineno}:{col}"` にする（`path` は原則 sketch_dir 基準の相対、`lineno/col` は PEP 657 由来）
-- [ ] `lineno/col` は **0-based col** で保存する（PEP 657 の `col_offset` に合わせる）／それとも 1-based に寄せる
-- [ ] `path` の決め方（優先順）:
+- [x] `site_id` の新フォーマットは `"{path}:{lineno}:{col}"` にする（自動生成デフォルト）
+- [x] `lineno/col` は `lineno=1-based` / `col=0-based` で保存する（PEP 657 の値に合わせる）
+- [x] `path` の決め方（優先順）:
   - A. `sketch_dir` 配下なら sketch_root 相対（例: `generated/foo.py`）
-  - B. それ以外は `__name__`（module 名）優先
+  - B. それ以外は `__name__`（module 名）優先。ただし `__name__ != "__main__"` のときのみ有効扱い
   - C. 最後に basename（`foo.py`）へフォールバック
-- [ ] 明示キーの導線: API から `key=` を受け付ける（`G.*` / `E.*` / `L.layer` / `P.*`）
-- [ ] `key` 指定時の site_id 仕様:
-  - 案1: `"{path}|{key}"`（**lineno/col を捨てる**。編集耐性を優先）
-  - 案2: `"{path}:{lineno}:{col}|{key}"`（衝突回避は強いが、編集耐性は弱い）
-- [ ] 互換/移行は作らず、既存 JSON が直接一致しなくなるのは許容する（必要なら reconcile に期待する）
-  - ※この方針はリポガイド（互換ラッパー/シムを作らない）に合わせる
-- [ ] preset の `key=` の意味も上記に合わせて **編集耐性目的の key** に寄せる（現状は `base_site_id|key`）
+- [x] 明示キーの導線: API から `key=` を受け付ける（`G.*` / `E.*` / `L.layer` / `P.*`）
+- [x] `key` 指定時の site_id 仕様: `"{path}|{key}"`（**lineno/col を捨てる**。整形・行移動に強くする）
+- [x] 互換/移行は作らない（既存 JSON は reconcile に期待、ダメなら初期化で割り切る）
+- [x] preset の `key=` も同じ意味に寄せる（`base_site_id|key` は廃止し、`caller_site_id(..., key=key)` に統一）
 
 ---
 
@@ -45,12 +42,12 @@
 - 目的: **環境差に揺れにくい**・**同一行の複数呼び出しを区別できる**。
 - `path`:
   - `runtime_config().sketch_dir` が設定され、呼び出し元ファイルがその配下にある場合は **sketch_root 相対パス**を採用する。
-  - それ以外は module 名や basename にフォールバック（0) で確定した優先順に従う）。
+  - それ以外は `__name__`（`__name__ != "__main__"` の場合）→ basename の順でフォールバックする。
 - `lineno/col`:
   - `inspect.getframeinfo(frame).positions`（PEP 657）から start position を取得し、`lineno/col` として使う。
   - 取得不能なら `frame.f_lineno` と `col=0` にフォールバックする。
 - 文字列化:
-  - `site_id = f\"{path}:{lineno}:{col}\"`。
+  - `site_id = f\"{path}:{lineno}:{col}\"`（lineno は 1-based、col は 0-based）。
 
 ### 1.2 ユーザーが指定する安定キー（escape hatch）
 
@@ -58,7 +55,7 @@
 - API から `key=`（`str|int`）を受け取り、site_id を構成する。
   - `key` の型や空文字などの扱いは簡潔に（過度に防御しない）。
   - 文字列化して使う（例: `str(key)`）。
-- `key` 指定時の site_id は 0) で確定した案に従う（lineno/col を捨てるかどうかが重要）。
+- `key` 指定時の site_id は `site_id = f\"{path}|{key}\"`（lineno/col を含めない）。
 
 ### 1.3 既存 ParamStore との関係
 
@@ -92,7 +89,7 @@
 - `src/grafix/api/layers.py`:
   - `LayerNamespace.layer(..., *, key=None, color=None, thickness=None)` のように kw-only 追加し、`caller_site_id(skip=1, key=key)`。
 - `src/grafix/api/preset.py`:
-  - `_preset_site_id()` を 0) で確定した仕様へ寄せる（`base_site_id|key` から脱却するかどうか）。
+  - `_preset_site_id()` は廃止し、`caller_site_id(skip=1, key=key)` へ統一する（`key` の意味を揃える）。
 
 ### 2.3 ドキュメント更新
 
@@ -150,4 +147,3 @@
 - [ ] 既存スケッチを起動し、GUI でいくつか override して保存 → 再起動で復元される
 - [ ] スケッチを別ディレクトリへ移動（または別マシンへコピー）して起動 → **同じ行が同じ GUI 行として復元**される（期待）
 - [ ] 重要な呼び出しに `key=` を付け、空行追加/引数追加などの軽微な編集後でも同じ GUI 行として残る
-
