@@ -8,7 +8,7 @@ CANVAS_HEIGHT = 210
 def draw(t):
     # =========== Layouts ===========
     layout = P(name="layout").layout_grid_system(
-        activate=True,
+        activate=True,  # THIS GONNA BE VARIABLE
         canvas_w=148.0,
         canvas_h=210.0,
         axes="both",
@@ -28,7 +28,10 @@ def draw(t):
         offset=(0.0, 0.0, 0.0),
     )
 
-    layout = L(name="layout").layer(layout)
+    layout = L(name="layout").layer(
+        layout,
+        color=(0.75, 0.75, 0.75),  # THIS GONNA BE VARIABLE
+    )
 
     # ====================================================================
     line = G(name="separate_line").line(
@@ -66,7 +69,7 @@ def draw(t):
     series_name = e_series_name(series_name)
     number = G(name="number").text(
         activate=True,
-        text="1",
+        text="1",  # THIS GONNA BE VARIABLE
         font="Helvetica.ttc",
         font_index=0,
         text_align="left",
@@ -91,7 +94,7 @@ def draw(t):
 
     explanation = G(name="explanation").text(
         activate=True,
-        text="G.polygon()\nE.repeat().displace()",
+        text="G.polygon()\nE.repeat().displace()",  # THIS GONNA BE VARIABLE
         font="Helvetica.ttc",
         font_index=0,
         text_align="right",
@@ -117,7 +120,7 @@ def draw(t):
 
     explanation = e_explanation(explanation)
 
-    bars = G(name="bars").polygon(
+    bar = G(name="bars").polygon(
         activate=True,
         n_sides=4,
         phase=45.0,
@@ -145,9 +148,20 @@ def draw(t):
         )
     )
 
-    bars = e_bars(bars)
+    bar = e_bars(bar)
 
-    return layout, line, series_name, number, explanation, bars
+    # ====================================================================
+    template = L(name="template").layer(
+        [
+            line,
+            series_name,
+            number,
+            explanation,
+            bar,
+        ],
+        color=(0.0, 0.0, 0.0),  # THIS GONNA BE VARIABLE
+    )
+    return layout, template
 
 
 if __name__ == "__main__":
