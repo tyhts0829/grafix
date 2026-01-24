@@ -216,6 +216,8 @@ def _type_for_kind(kind: str) -> str:
         return "str"
     if kind == "vec3":
         return "Vec3"
+    if kind == "rgb":
+        return "tuple[int, int, int]"
     return "Any"
 
 

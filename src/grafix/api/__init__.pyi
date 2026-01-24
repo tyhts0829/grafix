@@ -845,6 +845,17 @@ class _P(Protocol):
             displace_frequency: vec3, range [0.0, 0.5]
         """
         ...
+    def grn_at_frame(self, *, activate: bool = ..., show_layout: bool = ..., layout_color_rgb255: tuple[int, int, int] = ..., number_text: str = ..., explanation_text: str = ..., template_color_rgb255: tuple[int, int, int] = ...) -> Any:
+        """
+        引数:
+            activate: bool
+            show_layout: bool
+            layout_color_rgb255: rgb, range [0, 255]
+            number_text: str
+            explanation_text: str
+            template_color_rgb255: rgb, range [0, 255]
+        """
+        ...
     def layout_bounds(self, *, activate: bool = ..., canvas_w: float = ..., canvas_h: float = ..., axes: str = ..., margin_l: float = ..., margin_r: float = ..., margin_t: float = ..., margin_b: float = ..., show_center: bool = ..., border: bool = ..., show_margin: bool = ..., trim: float = ..., show_trim: bool = ..., offset: Vec3 = ...) -> Any:
         """
         外枠（canvas / safe / trim）を描く。
