@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from grafix import preset
 
 from .common import (
@@ -19,7 +21,7 @@ from .common import (
     _rect_outline,
 )
 
-meta = {
+meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
     "border": {"kind": "bool"},
     "show_margin": {"kind": "bool"},

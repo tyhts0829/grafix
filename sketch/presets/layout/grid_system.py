@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from grafix import preset
 
 from .common import (
@@ -19,7 +21,7 @@ from .common import (
     _rect_from_canvas,
 )
 
-meta = {
+meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
     "cols": {"kind": "int", "ui_min": 1, "ui_max": 24},
     "rows": {"kind": "int", "ui_min": 1, "ui_max": 24},

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from grafix import preset
 
 from .common import (
@@ -20,7 +22,7 @@ from .common import (
     _rect_outline,
 )
 
-meta = {
+meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
     "ratio": {"kind": "float", "ui_min": 1.01, "ui_max": 10.0},
     "levels": {"kind": "int", "ui_min": 1, "ui_max": 8},
