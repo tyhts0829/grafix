@@ -45,7 +45,7 @@ def draw(t):
         n_sides=565,
         phase=0.0,
         sweep=360.0,
-        center=(75.824, 80.769, 0.0),
+        center=(74, 80.769, 0.0),
         scale=111.684,
     )
 
@@ -87,9 +87,9 @@ def draw(t):
 
     c = e(c)
     # ====================================================================
-    title = G(name="title").text(
+    series_name = G(name="series_name").text(
         activate=True,
-        text="Grafix\nResearch",
+        text="Grafix\nResearch\nNotes",
         font="Helvetica.ttc",
         font_index=0,
         text_align="left",
@@ -98,10 +98,10 @@ def draw(t):
         use_bounding_box=False,
         quality=0.5,
         center=(11.538, 178.022, 0.0),
-        scale=8.0,
+        scale=7.388,
     )
 
-    e_title = E(name="e_title").fill(
+    e_series_name = E(name="e_series_name").fill(
         activate=True,
         angle_sets=1,
         angle=45.0,
@@ -110,8 +110,7 @@ def draw(t):
         remove_boundary=False,
     )
 
-    title = e_title(title)
-
+    series_name = e_series_name(series_name)
     number = G(name="number").text(
         activate=True,
         text="1",
@@ -123,7 +122,7 @@ def draw(t):
         use_bounding_box=False,
         quality=0.5,
         center=(63.0, 178.022, 0.0),
-        scale=5.0,
+        scale=4.553,
     )
 
     e_number = E(name="e_number").fill(
@@ -139,23 +138,26 @@ def draw(t):
 
     explanation = G(name="explanation").text(
         activate=True,
-        text="polygon -> repeat -> displace",
+        text="G.polygon()\nE.repeat().displace()",
         font="Helvetica.ttc",
         font_index=0,
-        text_align="left",
+        text_align="right",
         letter_spacing_em=0.0,
         line_height=1.2,
-        use_bounding_box=False,
+        use_bounding_box=True,
+        box_width=46.907000000000004,
+        box_height=20.103,
+        show_bounding_box=False,
         quality=0.5,
-        center=(89.011, 178.022, 0.0),
-        scale=3.0,
+        center=(136.0, 178.022, 0.0),
+        scale=2.9210000000000003,
     )
 
     e_explanation = E(name="e_explanation").fill(
         activate=True,
         angle_sets=1,
         angle=45.0,
-        density=572.165,
+        density=300.0,
         spacing_gradient=0.0,
         remove_boundary=False,
     )
@@ -167,7 +169,7 @@ def draw(t):
         n_sides=4,
         phase=45.0,
         sweep=360.0,
-        center=(24.725, 197.5, 0.0),
+        center=(126.923, 197.5, 0.0),
         scale=5.155,
     )
 
@@ -192,7 +194,7 @@ def draw(t):
 
     bars = e_bars(bars)
 
-    return layout, c, line, title, number, explanation, bars, P.axes()
+    return layout, c, line, series_name, number, explanation, bars
 
 
 if __name__ == "__main__":
