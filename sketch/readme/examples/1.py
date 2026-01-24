@@ -39,7 +39,6 @@ def draw(t):
         n_sides=565,
         phase=0.0,
         sweep=360.0,
-        center=(73.37, 117.033, 0.0),
         scale=111.684,
     )
 
@@ -80,34 +79,10 @@ def draw(t):
     )
 
     # ====================================================================
-    grafix = G(name="grafix").text(
-        activate=True,
-        text="Grafix",
-        font="Helvetica.ttc",
-        font_index=0,
-        text_align="left",
-        letter_spacing_em=0.0,
-        line_height=1.2,
-        use_bounding_box=False,
-        quality=0.5,
-        center=(89.011, 8.242, 0.0),
-        scale=19.244,
-    )
-
-    e_grafix = E(name="e_grafix").fill(
-        activate=True,
-        angle_sets=1,
-        angle=45.0,
-        density=603.093,
-        spacing_gradient=0.0,
-        remove_boundary=False,
-    )
-
-    grafix = e_grafix(grafix)
     description = G(name="description").text()
     e_description = E(name="e_description").fill()
     description = e_description(description)
-    return layout, e(c), grafix, description, line
+    return layout, e(c), description, line
 
 
 if __name__ == "__main__":
