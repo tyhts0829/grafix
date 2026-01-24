@@ -8,37 +8,12 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ._param_resolution import resolve_api_params, set_api_label
+from grafix.core.builtins import ensure_builtin_effects_registered
 from grafix.core.effect_registry import effect_registry
 from grafix.core.geometry import Geometry
-
-# effect 実装モジュールをインポートしてレジストリに登録させる。
-from grafix.core.effects import collapse as _effect_collapse  # noqa: F401
-from grafix.core.effects import scale as _effect_scale  # noqa: F401
-from grafix.core.effects import rotate as _effect_rotate  # noqa: F401
-from grafix.core.effects import fill as _effect_fill  # noqa: F401
-from grafix.core.effects import dash as _effect_dash  # noqa: F401
-from grafix.core.effects import displace as _effect_displace  # noqa: F401
-from grafix.core.effects import wobble as _effect_wobble  # noqa: F401
-from grafix.core.effects import affine as _effect_affine  # noqa: F401
-from grafix.core.effects import subdivide as _effect_subdivide  # noqa: F401
-from grafix.core.effects import quantize as _effect_quantize  # noqa: F401
-from grafix.core.effects import pixelate as _effect_pixelate  # noqa: F401
-from grafix.core.effects import partition as _effect_partition  # noqa: F401
-from grafix.core.effects import mirror as _effect_mirror  # noqa: F401
-from grafix.core.effects import mirror3d as _effect_mirror3d  # noqa: F401
-from grafix.core.effects import metaball as _effect_metaball  # noqa: F401
-from grafix.core.effects import translate as _effect_translate  # noqa: F401
-from grafix.core.effects import extrude as _effect_extrude  # noqa: F401
-from grafix.core.effects import repeat as _effect_repeat  # noqa: F401
-from grafix.core.effects import buffer as _effect_buffer  # noqa: F401
-from grafix.core.effects import bold as _effect_bold  # noqa: F401
-from grafix.core.effects import drop as _effect_drop  # noqa: F401
-from grafix.core.effects import trim as _effect_trim  # noqa: F401
-from grafix.core.effects import clip as _effect_clip  # noqa: F401
-from grafix.core.effects import twist as _effect_twist  # noqa: F401
-from grafix.core.effects import weave as _effect_weave  # noqa: F401
-from grafix.core.effects import relax as _effect_relax  # noqa: F401
 from grafix.core.parameters import caller_site_id
+
+ensure_builtin_effects_registered()
 
 
 @dataclass(frozen=True, slots=True)

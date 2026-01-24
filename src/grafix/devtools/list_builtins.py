@@ -7,9 +7,9 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import sys
 
+from grafix.core.builtins import ensure_builtin_ops_registered
 from grafix.core.effect_registry import effect_registry
 from grafix.core.primitive_registry import primitive_registry
 
@@ -27,9 +27,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _import_builtin_ops() -> None:
-    # public API 起点で import し、registry を初期化する。
-    importlib.import_module("grafix.api.primitives")
-    importlib.import_module("grafix.api.effects")
+    ensure_builtin_ops_registered()
 
 
 def _list_effects() -> list[str]:
@@ -70,4 +68,3 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     raise AssertionError(f"unknown target: {target!r}")
-

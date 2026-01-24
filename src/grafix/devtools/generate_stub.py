@@ -668,15 +668,14 @@ def generate_stubs_str() -> str:
 
     Notes
     -----
-    - registry を初期化するために `grafix.api.*` を import する（副作用あり）。
+    - registry を初期化するために built-in 登録を行う（副作用あり）。
     - primitives/effects は「実装関数が import できるもの」だけを採用する。
     - presets は `runtime_config().preset_module_dirs` 配下からロードされたものだけを採用する。
     """
 
-    # public API 起点で import し、registry を初期化する。
-    importlib.import_module("grafix.api.primitives")
-    importlib.import_module("grafix.api.effects")
-    importlib.import_module("grafix.api.layers")
+    from grafix.core.builtins import ensure_builtin_ops_registered
+
+    ensure_builtin_ops_registered()
     presets = importlib.import_module("grafix.api.presets")
     presets._autoload_preset_modules()  # type: ignore[attr-defined]
 

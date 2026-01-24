@@ -94,8 +94,9 @@ def _draw_worker_main(
     # draw 側が `from grafix.api import G/E` を行っていないケースでも動くようにする。
     # `spawn` では worker が新規プロセスになるため、親プロセスで済んでいる import の
     # 副作用（登録）を期待せず、ここで明示的に初期化しておく。
-    import grafix.api.effects  # noqa: F401
-    import grafix.api.primitives  # noqa: F401
+    from grafix.core.builtins import ensure_builtin_ops_registered
+
+    ensure_builtin_ops_registered()
 
     while True:
         task = task_q.get()
