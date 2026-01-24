@@ -1,16 +1,43 @@
-from grafix import E, G, L, P, run
+"""
+どこで: `sketch/presets/grn/at_frame.py`。
+何を: A5 向けのテンプレート枠（layout + template）を生成する preset。
+なぜ: サンプル集の “テンプレフォーマット枠” を 1 つの呼び出しにまとめるため。
+"""
 
-# A5
-CANVAS_WIDTH = 148
-CANVAS_HEIGHT = 210
+from __future__ import annotations
+
+from grafix import E, G, L, P, preset
+
+CANVAS_SIZE = (148, 210)  # A5 (mm)
 
 
-def draw(t):
-    # =========== Layouts ===========
-    layout = P(name="layout").layout_grid_system(
-        activate=True,  # THIS GONNA BE VARIABLE
-        canvas_w=148.0,
-        canvas_h=210.0,
+def _rgb255_to_rgb01(rgb255: tuple[int, int, int]) -> tuple[float, float, float]:
+    r, g, b = rgb255
+    return float(r) / 255.0, float(g) / 255.0, float(b) / 255.0
+
+
+meta = {
+    "show_layout": {"kind": "bool"},
+    "layout_color_rgb255": {"kind": "rgb", "ui_min": 0, "ui_max": 255},
+    "number_text": {"kind": "str"},
+    "explanation_text": {"kind": "str"},
+    "template_color_rgb255": {"kind": "rgb", "ui_min": 0, "ui_max": 255},
+}
+
+
+@preset(meta=meta)
+def grn_at_frame(
+    *,
+    show_layout: bool = True,
+    layout_color_rgb255: tuple[int, int, int] = (191, 191, 191),
+    number_text: str = "1",
+    explanation_text: str = "G.polygon()\nE.repeat().displace()",
+    template_color_rgb255: tuple[int, int, int] = (0, 0, 0),
+):
+    layout_geom = P.layout_grid_system(
+        activate=bool(show_layout),
+        canvas_w=float(CANVAS_SIZE[0]),
+        canvas_h=float(CANVAS_SIZE[1]),
         axes="both",
         margin_l=12.0,
         margin_r=12.0,
@@ -29,12 +56,11 @@ def draw(t):
     )
 
     layout = L(name="layout").layer(
-        layout,
-        color=(0.75, 0.75, 0.75),  # THIS GONNA BE VARIABLE
+        layout_geom,
+        color=_rgb255_to_rgb01(layout_color_rgb255),
     )
 
-    # ====================================================================
-    line = G(name="separate_line").line(
+    line = G.line(
         activate=True,
         center=(11.5, 174.5, 0.0),
         anchor="left",
@@ -42,8 +68,7 @@ def draw(t):
         angle=0.0,
     )
 
-    # ====================================================================
-    series_name = G(name="series_name").text(
+    series_name = G.text(
         activate=True,
         text="Grafix\nResearch\nNotes",
         font="Helvetica.ttc",
@@ -56,20 +81,18 @@ def draw(t):
         center=(11.538, 178.022, 0.0),
         scale=7.388,
     )
-
-    e_series_name = E(name="e_series_name").fill(
+    series_name = E.fill(
         activate=True,
         angle_sets=1,
         angle=45.0,
         density=838.488,
         spacing_gradient=0.0,
         remove_boundary=False,
-    )
+    )(series_name)
 
-    series_name = e_series_name(series_name)
-    number = G(name="number").text(
+    number = G.text(
         activate=True,
-        text="1",  # THIS GONNA BE VARIABLE
+        text=str(number_text),
         font="Helvetica.ttc",
         font_index=0,
         text_align="left",
@@ -80,21 +103,18 @@ def draw(t):
         center=(63.0, 178.022, 0.0),
         scale=4.553,
     )
-
-    e_number = E(name="e_number").fill(
+    number = E.fill(
         activate=True,
         angle_sets=1,
         angle=45.0,
         density=35.0,
         spacing_gradient=0.0,
         remove_boundary=False,
-    )
+    )(number)
 
-    number = e_number(number)
-
-    explanation = G(name="explanation").text(
+    explanation = G.text(
         activate=True,
-        text="G.polygon()\nE.repeat().displace()",  # THIS GONNA BE VARIABLE
+        text=str(explanation_text),
         font="Helvetica.ttc",
         font_index=0,
         text_align="right",
@@ -108,19 +128,16 @@ def draw(t):
         center=(136.0, 178.022, 0.0),
         scale=2.9210000000000003,
     )
-
-    e_explanation = E(name="e_explanation").fill(
+    explanation = E.fill(
         activate=True,
         angle_sets=1,
         angle=45.0,
         density=300.0,
         spacing_gradient=0.0,
         remove_boundary=False,
-    )
+    )(explanation)
 
-    explanation = e_explanation(explanation)
-
-    bar = G(name="bars").polygon(
+    bar = G.polygon(
         activate=True,
         n_sides=4,
         phase=45.0,
@@ -128,17 +145,14 @@ def draw(t):
         center=(126.923, 197.5, 0.0),
         scale=5.155,
     )
-
-    e_bars = (
-        E(name="e_bars")
-        .scale(
+    bar = (
+        E.scale(
             activate=True,
             mode="all",
             auto_center=True,
             pivot=(0.0, 0.0, 0.0),
             scale=(5.824, 0.22, 1.0),
-        )
-        .fill(
+        ).fill(
             activate=True,
             angle_sets=1,
             angle=45.0,
@@ -146,11 +160,8 @@ def draw(t):
             spacing_gradient=0.0,
             remove_boundary=False,
         )
-    )
+    )(bar)
 
-    bar = e_bars(bar)
-
-    # ====================================================================
     template = L(name="template").layer(
         [
             line,
@@ -159,20 +170,6 @@ def draw(t):
             explanation,
             bar,
         ],
-        color=(0.0, 0.0, 0.0),  # THIS GONNA BE VARIABLE
+        color=_rgb255_to_rgb01(template_color_rgb255),
     )
-    return layout, template
-
-
-if __name__ == "__main__":
-    run(
-        draw,
-        background_color=(1.0, 1.0, 1.0),
-        line_thickness=0.001,
-        line_color=(0.0, 0.0, 0.0),
-        render_scale=5,
-        canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
-        parameter_gui=True,
-        midi_port_name="auto",
-        midi_mode="14bit",
-    )
+    return layout + template
