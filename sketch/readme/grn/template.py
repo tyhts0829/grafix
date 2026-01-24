@@ -6,8 +6,8 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-
-    return P.grn_a5_frame()
+    frame = P.grn_a5_frame()
+    return frame
 
 
 if __name__ == "__main__":
