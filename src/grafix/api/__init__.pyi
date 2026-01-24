@@ -845,7 +845,7 @@ class _P(Protocol):
             displace_frequency: vec3, range [0.0, 0.5]
         """
         ...
-    def grn_at_frame(self, *, activate: bool = ..., show_layout: bool = ..., layout_color_rgb255: tuple[int, int, int] = ..., number_text: str = ..., explanation_text: str = ..., template_color_rgb255: tuple[int, int, int] = ...) -> Any:
+    def grn_a5_frame(self, *, activate: bool = ..., show_layout: bool = ..., layout_color_rgb255: tuple[int, int, int] = ..., number_text: str = ..., explanation_text: str = ..., template_color_rgb255: tuple[int, int, int] = ...) -> Any:
         """
         引数:
             activate: bool

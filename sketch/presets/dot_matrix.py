@@ -1,8 +1,10 @@
+from collections.abc import Mapping
+
 from grafix import E, G, preset, run
 
 CANVAS_SIZE = (100, 100)
 
-meta = {
+meta: dict[str, Mapping[str, object]] = {
     "center": {"kind": "vec3", "ui_min": 0.0, "ui_max": 100.0},
     "matrix_size": {"kind": "vec3", "ui_min": 0.0, "ui_max": 5.0},
     "dot_size": {"kind": "float", "ui_min": 0.1, "ui_max": 20.0},

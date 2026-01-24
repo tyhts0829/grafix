@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from grafix import preset
 
 from .common import (
@@ -20,7 +22,7 @@ from .common import (
     _square_grid,
 )
 
-meta = {
+meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
     "cell_size": {"kind": "float", "ui_min": 1.0, "ui_max": 50.0},
 }

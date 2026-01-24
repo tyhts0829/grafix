@@ -39,7 +39,7 @@ def draw(t):
             gradient_center_offset=(0.533, 0.0, 0.0),
             min_gradient_factor=0.0,
             max_gradient_factor=1.549,
-            t=0.41200000000000003,
+            t=0.617,
         )
         .affine(
             activate=True,
@@ -53,7 +53,16 @@ def draw(t):
 
     c = e(c)
 
-    return c, P.grn_at_frame()
+    frame = P.grn_a5_frame(
+        activate=True,
+        show_layout=False,
+        layout_color_rgb255=(191, 191, 191),
+        number_text="1",
+        explanation_text="G.polygon()\nE.repeat().displace()",
+        template_color_rgb255=(0, 0, 0),
+    )
+
+    return c, frame
 
 
 if __name__ == "__main__":

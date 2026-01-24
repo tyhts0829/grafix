@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from grafix import preset
 
 from .common import (
@@ -20,7 +22,7 @@ from .common import (
     _thirds_lines,
 )
 
-meta = {**META_COMMON}
+meta: dict[str, Mapping[str, object]] = {**META_COMMON}
 
 
 @preset(meta=meta)

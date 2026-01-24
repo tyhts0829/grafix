@@ -2,13 +2,14 @@
 # 何を: X 軸と目盛りを生成するプリセット。
 # なぜ: `line` と `repeat` の組み合わせで、最小構成のガイドを手早く描けるようにするため。
 
+from collections.abc import Mapping
 import math
 
 from grafix import E, G, preset, run
 
 CANVAS_SIZE = (100, 100)
 
-meta = {
+meta: dict[str, Mapping[str, object]] = {
     "center": {"kind": "vec3", "ui_min": 0.0, "ui_max": 300.0},
     "axis_length": {"kind": "float", "ui_min": 0.0, "ui_max": 300.0},
     "axis_visible_ratio": {"kind": "float", "ui_min": 0.0, "ui_max": 1.0},

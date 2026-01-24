@@ -1,6 +1,8 @@
-from grafix import E, G, L, cc, preset, run
+from collections.abc import Mapping
 
-meta = {
+from grafix import E, G, preset, run
+
+meta: dict[str, Mapping[str, object]] = {
     "center": {"kind": "vec3", "ui_min": 0.0, "ui_max": 100.0},
     "scale": {"kind": "vec3", "ui_min": 0.0, "ui_max": 5.0},
     "fill_density_coef": {"kind": "float", "ui_min": 0.0, "ui_max": 1.0},

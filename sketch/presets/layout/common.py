@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from bisect import bisect_left
 import math
 from typing import cast
@@ -16,7 +17,7 @@ CANVAS_SIZE = (148, 210)  # A5 (mm)
 _GOLDEN_F = (math.sqrt(5.0) - 1.0) / 2.0  # 0.618...
 _GOLDEN_T = 1.0 - _GOLDEN_F  # 0.382...
 
-META_COMMON = {
+META_COMMON: dict[str, Mapping[str, object]] = {
     "canvas_w": {"kind": "float", "ui_min": 10.0, "ui_max": 1000.0},
     "canvas_h": {"kind": "float", "ui_min": 10.0, "ui_max": 1000.0},
     "axes": {"kind": "choice", "choices": ["both", "vertical", "horizontal"]},

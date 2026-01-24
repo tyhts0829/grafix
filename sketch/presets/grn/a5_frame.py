@@ -1,10 +1,12 @@
 """
-どこで: `sketch/presets/grn/at_frame.py`。
+どこで: `sketch/presets/grn/a5_frame.py`。
 何を: A5 向けのテンプレート枠（layout + template）を生成する preset。
 なぜ: サンプル集の “テンプレフォーマット枠” を 1 つの呼び出しにまとめるため。
 """
 
 from __future__ import annotations
+
+from collections.abc import Mapping
 
 from grafix import E, G, L, P, preset
 
@@ -16,7 +18,7 @@ def _rgb255_to_rgb01(rgb255: tuple[int, int, int]) -> tuple[float, float, float]
     return float(r) / 255.0, float(g) / 255.0, float(b) / 255.0
 
 
-meta = {
+meta: dict[str, Mapping[str, object]] = {
     "show_layout": {"kind": "bool"},
     "layout_color_rgb255": {"kind": "rgb", "ui_min": 0, "ui_max": 255},
     "number_text": {"kind": "str"},
@@ -26,7 +28,7 @@ meta = {
 
 
 @preset(meta=meta)
-def grn_at_frame(
+def grn_a5_frame(
     *,
     show_layout: bool = True,
     layout_color_rgb255: tuple[int, int, int] = (191, 191, 191),
