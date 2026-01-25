@@ -8,7 +8,7 @@ CANVAS_HEIGHT = 210
 def draw(t):
     frame = P.grn_a5_frame()
     g = G.sphere()
-    e = E.rotate()
+    e = E.rotate().bold()
     g = e(g)
     return frame, g
 
