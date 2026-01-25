@@ -29,18 +29,7 @@ if __name__ == "__main__":
 ## Examples
 
 <!-- BEGIN:README_EXAMPLES_GRN -->
-<table>
-  <tr>
-    <td><img src="docs/readme/grn/1.png" width="320" alt="grn 1" /></td>
-    <td><img src="docs/readme/grn/2.png" width="320" alt="grn 2" /></td>
-    <td><img src="docs/readme/grn/3.png" width="320" alt="grn 3" /></td>
-  </tr>
-  <tr>
-    <td><img src="docs/readme/grn/4.png" width="320" alt="grn 4" /></td>
-    <td><img src="docs/readme/grn/5.png" width="320" alt="grn 5" /></td>
-    <td><img src="docs/readme/grn/6.png" width="320" alt="grn 6" /></td>
-  </tr>
-</table>
+<div><img src="docs/readme/grn/1.png" width="160" alt="grn 1" /><img src="docs/readme/grn/2.png" width="160" alt="grn 2" /><img src="docs/readme/grn/3.png" width="160" alt="grn 3" /><img src="docs/readme/grn/4.png" width="160" alt="grn 4" /><img src="docs/readme/grn/5.png" width="160" alt="grn 5" /><img src="docs/readme/grn/6.png" width="160" alt="grn 6" /></div>
 <!-- END:README_EXAMPLES_GRN -->
 
 ## Core API
