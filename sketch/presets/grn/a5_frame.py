@@ -23,6 +23,7 @@ meta: dict[str, Mapping[str, object]] = {
     "layout_color_rgb255": {"kind": "rgb", "ui_min": 0, "ui_max": 255},
     "number_text": {"kind": "str"},
     "explanation_text": {"kind": "str"},
+    "explanation_density": {"kind": "float", "ui_min": 0.0, "ui_max": 1000.0},
     "template_color_rgb255": {"kind": "rgb", "ui_min": 0, "ui_max": 255},
 }
 
@@ -34,6 +35,7 @@ def grn_a5_frame(
     layout_color_rgb255: tuple[int, int, int] = (191, 191, 191),
     number_text: str = "1",
     explanation_text: str = "G.polygon()\nE.repeat().displace()",
+    explanation_density: float = 500.0,
     template_color_rgb255: tuple[int, int, int] = (0, 0, 0),
 ):
     layout_geom = P.layout_grid_system(
@@ -109,7 +111,7 @@ def grn_a5_frame(
         activate=True,
         angle_sets=1,
         angle=45.0,
-        density=35.0,
+        density=100.0,
         spacing_gradient=0.0,
         remove_boundary=False,
     )(number)
@@ -134,7 +136,7 @@ def grn_a5_frame(
         activate=True,
         angle_sets=1,
         angle=45.0,
-        density=300.0,
+        density=explanation_density,
         spacing_gradient=0.0,
         remove_boundary=False,
     )(explanation)

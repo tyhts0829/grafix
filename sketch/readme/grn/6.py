@@ -10,7 +10,7 @@ CANVAS_HEIGHT = 210
 def draw(t):
     frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
     g = G.polygon()
-    e = E.rotate().buffer().buffer().repeat().fill()
+    e = E.repeat().repeat().drop().fill()
     g = e(g)
     return frame, g
 
