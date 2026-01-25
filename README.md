@@ -26,6 +26,21 @@ if __name__ == "__main__":
     run(draw, canvas_size=(800, 800), render_scale=2.0)
 ```
 
+## Examples
+
+<!-- BEGIN:README_EXAMPLES_GRN -->
+<table>
+  <tr>
+    <td><img src="docs/readme/grn/1.png" width="160" alt="grn 1" /></td>
+    <td><img src="docs/readme/grn/2.png" width="160" alt="grn 2" /></td>
+    <td><img src="docs/readme/grn/3.png" width="160" alt="grn 3" /></td>
+    <td><img src="docs/readme/grn/4.png" width="160" alt="grn 4" /></td>
+    <td><img src="docs/readme/grn/5.png" width="160" alt="grn 5" /></td>
+    <td><img src="docs/readme/grn/6.png" width="160" alt="grn 6" /></td>
+  </tr>
+</table>
+<!-- END:README_EXAMPLES_GRN -->
+
 ## Core API
 
 - `G` lets you generate primitives such as `sphere`, `polyhedron`, `grid`, and more.
