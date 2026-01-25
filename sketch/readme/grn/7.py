@@ -9,8 +9,61 @@ CANVAS_HEIGHT = 210
 
 def draw(t):
     frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
-    g = G.text()
-    e = E.fill().subdivide().displace().mirror().rotate()
+    g = G.text(
+        activate=True,
+        text="ds",
+        font="Bodoni Ornaments.ttf",
+        font_index=0,
+        text_align="center",
+        letter_spacing_em=0.0,
+        line_height=1.2,
+        use_bounding_box=False,
+        quality=0.5,
+        center=(75.824, 67.58200000000001, 0.0),
+        scale=67.526,
+    )
+
+    e = (
+        E.fill(
+            activate=True,
+            angle_sets=1,
+            angle=45.0,
+            density=1000.0,
+            spacing_gradient=0.0,
+            remove_boundary=False,
+        )
+        .subdivide(
+            activate=True,
+            subdivisions=5,
+        )
+        .displace(
+            activate=False,
+            amplitude=(8.0, 8.0, 8.0),
+            spatial_freq=(0.04, 0.0, 0.04),
+            amplitude_gradient=(0.0, 0.0, 0.0),
+            frequency_gradient=(0.0, 0.0, 0.0),
+            gradient_center_offset=(0.0, 0.0, 0.0),
+            min_gradient_factor=0.1,
+            max_gradient_factor=2.0,
+            t=0.0,
+        )
+        .mirror(
+            activate=True,
+            n_mirror=3,
+            cx=74.0,
+            cy=95.876,
+            source_positive_x=True,
+            source_positive_y=True,
+            show_planes=False,
+        )
+        .rotate(
+            activate=True,
+            auto_center=True,
+            pivot=(0.0, 0.0, 0.0),
+            rotation=(0.0, 0.0, 30.0),
+        )
+    )
+
     g = e(g)
     return frame, g
 
