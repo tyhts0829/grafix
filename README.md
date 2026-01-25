@@ -40,6 +40,11 @@ if __name__ == "__main__":
     <td><img src="docs/readme/grn/5.png" width="320" alt="grn 5" /></td>
     <td><img src="docs/readme/grn/6.png" width="320" alt="grn 6" /></td>
   </tr>
+  <tr>
+    <td><img src="docs/readme/grn/7.png" width="320" alt="grn 7" /></td>
+    <td><img src="docs/readme/grn/8.png" width="320" alt="grn 8" /></td>
+    <td><img src="docs/readme/grn/9.png" width="320" alt="grn 9" /></td>
+  </tr>
 </table>
 <!-- END:README_EXAMPLES_GRN -->
 
