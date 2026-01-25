@@ -116,10 +116,10 @@ def grn_a5_frame(
         remove_boundary=False,
     )(number)
 
-    explanation = G.text(
+    code = G.text(
         activate=True,
         text=str(explanation_text),
-        font="Helvetica.ttc",
+        font="HackGen35-Regular.ttf",
         font_index=0,
         text_align="right",
         letter_spacing_em=0.0,
@@ -132,14 +132,14 @@ def grn_a5_frame(
         center=(136.0, 178.022, 0.0),
         scale=2.9210000000000003,
     )
-    explanation = E.fill(
+    code = E.fill(
         activate=True,
         angle_sets=1,
         angle=45.0,
         density=explanation_density,
         spacing_gradient=0.0,
         remove_boundary=False,
-    )(explanation)
+    )(code)
 
     bar = G.polygon(
         activate=True,
@@ -171,7 +171,7 @@ def grn_a5_frame(
             line,
             series_name,
             number,
-            explanation,
+            code,
             bar,
         ],
         color=_rgb255_to_rgb01(template_color_rgb255),
