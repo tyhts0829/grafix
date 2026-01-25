@@ -9,10 +9,13 @@ CANVAS_HEIGHT = 210
 
 def draw(t):
     frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
-    g1 = G.polygon()
-    e1 = E.repeat().metaball().fill().rotate()
-    g1 = e1(g1)
-    return frame, g1
+    g1 = P.dot_matrix()
+    g2 = P.dot_matrix()
+
+    e2 = E.rotate()
+
+    g2 = e2(g2)
+    return frame, g1, g2
 
 
 if __name__ == "__main__":
