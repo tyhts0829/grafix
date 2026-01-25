@@ -37,7 +37,7 @@
 macOS-first の方針に合わせ、依存追加無しで `sips` を使って縮小する。
 
 - 変換後の長辺: 600px（例: `sips -Z 600 ...`）
-- README での表示幅: 180〜200px（6 枚が 1 行に収まりやすい値）
+- README での表示幅: 160px（6 枚が 1 行に収まりやすい値）
 
 ### README 更新方式
 
@@ -47,15 +47,15 @@ macOS-first の方針に合わせ、依存追加無しで `sips` を使って縮
 ## 実装手順（チェックリスト）
 
 - [x] 仕様確定（余りは末尾を落とす / 出力名は番号のみ）
-- [ ] 自動生成スクリプト追加: `src/grafix/devtools/prepare_readme_examples_grn.py`
-  - [ ] 入力: `data/output/png/readme/grn`
-  - [ ] 出力: `docs/readme/grn/<番号>.png`
-  - [ ] `sips` の存在チェック + 実行（subprocess）
-  - [ ] 6 枚で割り切れる枚数に丸めて採用（例: 13→12）
-  - [ ] 既存出力は上書き（増分追加の運用を優先）
-  - [ ] `README.md` の BEGIN/END ブロック内を生成して差し替え
-- [ ] スクリプトを実行して `docs/readme/grn/*.png` を生成/更新
-- [ ] `README.md` に `## Examples` を追加（`## Quick start` の次）
-  - [ ] 6 列 × 複数行のタイル（HTML table など）
-  - [ ] 参照先は `docs/readme/grn/<番号>.png`
-- [ ] 表示確認（GitHub README 想定の Markdown/HTML で崩れないこと）
+- [x] 自動生成スクリプト追加: `src/grafix/devtools/prepare_readme_examples_grn.py`
+  - [x] 入力: `data/output/png/readme/grn`
+  - [x] 出力: `docs/readme/grn/<番号>.png`
+  - [x] `sips` の存在チェック + 実行（subprocess）
+  - [x] 6 枚で割り切れる枚数に丸めて採用（例: 13→12）
+  - [x] 既存出力は上書き（増分追加の運用を優先）
+  - [x] `README.md` の BEGIN/END ブロック内を生成して差し替え
+- [x] スクリプトを実行して `docs/readme/grn/*.png` を生成/更新
+- [x] `README.md` に `## Examples` を追加（`## Quick start` の次）
+  - [x] 6 列 × 複数行のタイル（HTML table）
+  - [x] 参照先は `docs/readme/grn/<番号>.png`
+- [x] 表示確認（GitHub README 想定の Markdown/HTML で崩れないこと）
