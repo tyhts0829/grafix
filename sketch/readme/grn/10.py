@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from grafix import G, P, run
+from grafix import E, G, P, run
 from grafix.api import primitive
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import RealizedGeometry
@@ -628,6 +628,9 @@ def draw(t):
         thinning_iters=40,
         min_points=24,
     )
+
+    e = E.fill()
+    maze = e(maze)
 
     frame = P.grn_a5_frame(
         activate=True,
