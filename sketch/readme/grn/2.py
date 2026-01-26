@@ -12,6 +12,7 @@ def draw(t):
         layout_color_rgb255=(191, 191, 191),
         number_text="2",
         explanation_text="G.text()\nG.text()\nG.text()\nG.text()\nE.fill()",
+        explanation_density=200.0,
         template_color_rgb255=(0, 0, 0),
     )
 
