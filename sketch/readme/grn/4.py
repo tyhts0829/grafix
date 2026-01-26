@@ -12,6 +12,7 @@ def draw(t):
         layout_color_rgb255=(191, 191, 191),
         number_text="4",
         explanation_text="G.sphere()\nE.rotate().extrude()",
+        explanation_density=100.0,
         template_color_rgb255=(0, 0, 0),
     )
 
