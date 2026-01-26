@@ -845,7 +845,7 @@ class _P(Protocol):
             displace_frequency: vec3, range [0.0, 0.5]
         """
         ...
-    def grn_a5_frame(self, *, activate: bool = ..., show_layout: bool = ..., layout_color_rgb255: tuple[int, int, int] = ..., number_text: str = ..., explanation_text: str = ..., template_color_rgb255: tuple[int, int, int] = ...) -> Any:
+    def grn_a5_frame(self, *, activate: bool = ..., show_layout: bool = ..., layout_color_rgb255: tuple[int, int, int] = ..., number_text: str = ..., explanation_text: str = ..., explanation_density: float = ..., template_color_rgb255: tuple[int, int, int] = ...) -> Any:
         """
         引数:
             activate: bool
@@ -853,6 +853,7 @@ class _P(Protocol):
             layout_color_rgb255: rgb, range [0, 255]
             number_text: str
             explanation_text: str
+            explanation_density: float, range [0.0, 1000.0]
             template_color_rgb255: rgb, range [0, 255]
         """
         ...

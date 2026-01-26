@@ -19,8 +19,8 @@ def draw(t):
         line_height=1.2,
         use_bounding_box=False,
         quality=0.5,
-        center=(75.824, 67.58200000000001, 0.0),
-        scale=67.526,
+        center=(75.824, 75.824, 0.0),
+        scale=56.186,
     )
 
     e = (
@@ -51,7 +51,7 @@ def draw(t):
             activate=True,
             n_mirror=3,
             cx=74.0,
-            cy=95.876,
+            cy=96.907,
             source_positive_x=True,
             source_positive_y=True,
             show_planes=False,
