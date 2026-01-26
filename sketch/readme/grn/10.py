@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from numba import njit
 
 from grafix import E, G, P, run
 from grafix.api import primitive
@@ -14,7 +15,76 @@ CANVAS_WIDTH = 148
 CANVAS_HEIGHT = 210
 
 
+# --- Field cache (disabled) -------------------------------------------------
+# To re-enable:
+# - Uncomment `_FIELD_CACHE` and `_gray_scott_field_cached()`
+# - Replace `_gray_scott_field(...)` with `_gray_scott_field_cached(...)` in `gray_scott_lines`.
+#
 _FIELD_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+
+
+@njit
+def _gray_scott_simulate(
+    u: np.ndarray,
+    v: np.ndarray,
+    *,
+    steps: int,
+    du: float,
+    dv: float,
+    feed: float,
+    kill: float,
+    dt: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Gray-Scott を周期境界で時間発展させる（Numba 最適化）。"""
+    ny, nx = u.shape
+    u_next = np.empty_like(u)
+    v_next = np.empty_like(v)
+
+    w_edge = 0.2
+    w_corner = 0.05
+    one = 1.0
+    fk = feed + kill
+
+    for _ in range(int(steps)):
+        for j in range(ny):
+            jn = j - 1 if j > 0 else ny - 1
+            js = j + 1 if j < ny - 1 else 0
+            for i in range(nx):
+                iw = i - 1 if i > 0 else nx - 1
+                ie = i + 1 if i < nx - 1 else 0
+
+                u_c = u[j, i]
+                v_c = v[j, i]
+
+                lap_u = -u_c
+                lap_u += w_edge * (u[jn, i] + u[js, i] + u[j, ie] + u[j, iw])
+                lap_u += w_corner * (u[jn, ie] + u[jn, iw] + u[js, ie] + u[js, iw])
+
+                lap_v = -v_c
+                lap_v += w_edge * (v[jn, i] + v[js, i] + v[j, ie] + v[j, iw])
+                lap_v += w_corner * (v[jn, ie] + v[jn, iw] + v[js, ie] + v[js, iw])
+
+                uvv = u_c * v_c * v_c
+                u_val = u_c + (du * lap_u - uvv + feed * (one - u_c)) * dt
+                v_val = v_c + (dv * lap_v + uvv - fk * v_c) * dt
+
+                if u_val < 0.0:
+                    u_val = 0.0
+                elif u_val > 1.0:
+                    u_val = 1.0
+
+                if v_val < 0.0:
+                    v_val = 0.0
+                elif v_val > 1.0:
+                    v_val = 1.0
+
+                u_next[j, i] = u_val
+                v_next[j, i] = v_val
+
+        u, u_next = u_next, u
+        v, v_next = v_next, v
+
+    return u, v
 
 
 def _empty_geometry() -> RealizedGeometry:
@@ -68,35 +138,16 @@ def _gray_scott_field(
     k_f = float(kill)
     dt_f = float(dt)
 
-    # 9 点ラプラシアン（よく使われる重み）
-    #   -1.0*center + 0.2*(N,S,E,W) + 0.05*(NE,NW,SE,SW)
-    for _ in range(int(steps)):
-        u_n = np.roll(u, -1, axis=0)
-        u_s = np.roll(u, 1, axis=0)
-        u_e = np.roll(u, -1, axis=1)
-        u_w = np.roll(u, 1, axis=1)
-        u_ne = np.roll(u_n, -1, axis=1)
-        u_nw = np.roll(u_n, 1, axis=1)
-        u_se = np.roll(u_s, -1, axis=1)
-        u_sw = np.roll(u_s, 1, axis=1)
-        lap_u = -u + 0.2 * (u_n + u_s + u_e + u_w) + 0.05 * (u_ne + u_nw + u_se + u_sw)
-
-        v_n = np.roll(v, -1, axis=0)
-        v_s = np.roll(v, 1, axis=0)
-        v_e = np.roll(v, -1, axis=1)
-        v_w = np.roll(v, 1, axis=1)
-        v_ne = np.roll(v_n, -1, axis=1)
-        v_nw = np.roll(v_n, 1, axis=1)
-        v_se = np.roll(v_s, -1, axis=1)
-        v_sw = np.roll(v_s, 1, axis=1)
-        lap_v = -v + 0.2 * (v_n + v_s + v_e + v_w) + 0.05 * (v_ne + v_nw + v_se + v_sw)
-
-        uvv = u * v * v
-        u += (du_f * lap_u - uvv + f_f * (1.0 - u)) * dt_f
-        v += (dv_f * lap_v + uvv - (f_f + k_f) * v) * dt_f
-        np.clip(u, 0.0, 1.0, out=u)
-        np.clip(v, 0.0, 1.0, out=v)
-
+    u, v = _gray_scott_simulate(
+        u,
+        v,
+        steps=int(steps),
+        du=du_f,
+        dv=dv_f,
+        feed=f_f,
+        kill=k_f,
+        dt=dt_f,
+    )
     return v
 
 
