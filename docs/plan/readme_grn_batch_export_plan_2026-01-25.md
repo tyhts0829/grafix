@@ -73,13 +73,12 @@
 ## 実装手順（チェックリスト）
 
 - [ ] 既存スケッチ群の前提確認（全て `draw(t)` と `CANVAS_WIDTH/HEIGHT` を持つか）
-- [ ] 一括 export スクリプト追加（例: `src/grafix/devtools/export_readme_grn_batch.py`）
-  - [ ] 入力列挙（`^\d+\.py$` のみ、数字順）
-  - [ ] 各スケッチをファイルパス import → `draw` / `CANVAS_*` を取得
-  - [ ] SVG 出力（`output_path_for_draw(kind="svg", ...)`）
-  - [ ] PNG 出力（SVG → `resvg` で生成、`default_png_output_path(...)` の場所へ）
-  - [ ] 失敗時の表示（どのスケッチで失敗したかを明示）
-- [ ] export 後に `prepare_readme_examples_grn.main()` を呼んで README 反映まで一括更新
+- [x] 一括 export スクリプト追加: `src/grafix/devtools/refresh_readme_grn.py`
+  - [x] 入力列挙（`^\\d+\\.py$` のみ、数字順）
+  - [x] 各スケッチをファイルパス import → `draw` / `CANVAS_*` を取得
+  - [x] SVG 出力（`output_path_for_draw(kind="svg", ...)`）
+  - [x] PNG 出力（SVG → `resvg` で生成、`default_png_output_path(...)` の場所へ）
+  - [x] export 後に `prepare_readme_examples_grn.main()` を呼んで README 反映まで一括更新（ON/OFF は定数で制御）
 - [ ] 手元で実行して `data/output/*` と `docs/readme/grn` と `README.md` が更新されることを確認
 
 ## 確認したい点

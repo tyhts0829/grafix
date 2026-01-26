@@ -3,6 +3,12 @@
 何を: README の Examples（grn）用画像を生成し、README のタイルを自動生成する。
 なぜ: `data/output/png/readme/grn` に PNG が増えていく前提で、README 更新作業を最小化するため。
 
+Notes
+-----
+- このスクリプトは「原本（data/output）→README 用アセット（docs/readme）+ README 更新」の後段だけを担当する。
+  `sketch/readme/grn` から原本 PNG を一括生成したい場合は
+  `src/grafix/devtools/refresh_readme_grn.py` を使う。
+
 前提:
 - macOS の `sips` を使う（依存追加なし）。
 - 画像は「6 列で割り切れる最大枚数」だけ採用し、余りは末尾（新しい側）を落とす。

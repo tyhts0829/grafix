@@ -10,6 +10,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from grafix.core.layer import LayerStyleDefaults
+from grafix.core.parameters.context import parameter_context
+from grafix.core.parameters.persistence import default_param_store_path, load_param_store
 from grafix.core.pipeline import RealizedLayer, realize_scene
 from grafix.core.scene import SceneItem
 from grafix.export.gcode import export_gcode
@@ -36,6 +38,7 @@ class Export:
         line_color: tuple[float, float, float] = (0.0, 0.0, 0.0),
         line_thickness: float = 0.01,
         background_color: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        run_id: str | None = None,
     ) -> None:
         """export を実行する。
 
@@ -57,12 +60,20 @@ class Export:
             Layer の既定線幅。
         background_color : tuple[float, float, float]
             背景色（0..1）。画像出力で使用する想定。
+        run_id : str | None
+            ParamStore の既定パス（読み込み元）の run_id suffix。
         """
         self.path = Path(path)
         self.fmt = str(fmt).lower().strip()
 
         defaults = LayerStyleDefaults(color=line_color, thickness=float(line_thickness))
-        self.layers: list[RealizedLayer] = realize_scene(draw, float(t), defaults)
+
+        # headless export でも ParamStore の保存値（GUI で調整した値）を反映する。
+        # これにより「コードに明示されていないパラメータ」も保存済みの UI 値で解決できる。
+        store_path = default_param_store_path(draw, run_id=run_id)
+        store = load_param_store(store_path)
+        with parameter_context(store):
+            self.layers: list[RealizedLayer] = realize_scene(draw, float(t), defaults)
 
         if self.fmt == "svg":
             export_svg(self.layers, self.path, canvas_size=canvas_size)
