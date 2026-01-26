@@ -32,7 +32,7 @@ from pathlib import Path
 COLUMNS = 3
 
 # リサイズ後の長辺 px（`sips -Z` に渡す）。
-MAX_DIM = 600
+MAX_DIM = 1200
 
 # README での表示 width（`<img width="...">`）。
 IMG_WIDTH = 320
