@@ -15,7 +15,6 @@ CANVAS_HEIGHT = 210
 
 
 _FIELD_CACHE: dict[tuple[object, ...], np.ndarray] = {}
-_GEOMETRY_CACHE: dict[tuple[object, ...], RealizedGeometry] = {}
 
 
 def _empty_geometry() -> RealizedGeometry:
@@ -569,31 +568,6 @@ def gray_scott_lines(
     x0 = float(cx) - 0.5 * float(w)
     y0 = float(cy) - 0.5 * float(h)
 
-    geom_key = (
-        "gs_lines",
-        int(nx),
-        int(ny),
-        int(steps),
-        float(du),
-        float(dv),
-        float(feed),
-        float(kill),
-        float(dt),
-        int(seed),
-        str(mode),
-        float(level),
-        int(thinning_iters),
-        int(min_points),
-        float(cx),
-        float(cy),
-        float(cz),
-        float(w),
-        float(h),
-    )
-    cached = _GEOMETRY_CACHE.get(geom_key)
-    if cached is not None:
-        return cached
-
     field_v = _gray_scott_field_cached(
         nx=int(nx),
         ny=int(ny),
@@ -631,8 +605,6 @@ def gray_scott_lines(
         )
     else:
         geom = _empty_geometry()
-
-    _GEOMETRY_CACHE[geom_key] = geom
     return geom
 
 
