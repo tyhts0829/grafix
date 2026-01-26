@@ -8,7 +8,16 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-    frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
+    frame = P.grn_a5_frame(
+        activate=True,
+        show_layout=False,
+        layout_color_rgb255=(191, 191, 191),
+        number_text="6",
+        explanation_text="G.polygon()\nE.repeat().repeat()\n.drop().fill()",
+        explanation_density=500.0,
+        template_color_rgb255=(0, 0, 0),
+    )
+
     g = G.polygon(
         activate=True,
         n_sides=4,
