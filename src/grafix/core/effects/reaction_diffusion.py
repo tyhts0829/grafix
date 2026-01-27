@@ -1,4 +1,4 @@
-"""閉曲線マスク内で Gray-Scott 反応拡散を回し、等値線/スケルトンをポリライン化する effect。"""
+"""閉曲線マスク内で Gray-Scott 反応拡散を回し、等値線（閉ループ）をポリライン化する effect。"""
 
 from __future__ import annotations
 
@@ -30,10 +30,8 @@ reaction_diffusion_meta = {
     "seed": ParamMeta(kind="int", ui_min=0, ui_max=9999),
     "seed_radius": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
     "noise": ParamMeta(kind="float", ui_min=0.0, ui_max=0.1),
-    "mode": ParamMeta(kind="choice", choices=("contour", "skeleton")),
     "level": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
-    "thinning_iters": ParamMeta(kind="int", ui_min=1, ui_max=200),
-    "min_points": ParamMeta(kind="int", ui_min=2, ui_max=200),
+    "min_points": ParamMeta(kind="int", ui_min=4, ui_max=200),
     "boundary": ParamMeta(kind="choice", choices=("noflux", "dirichlet")),
 }
 
@@ -261,7 +259,7 @@ def _quant_key(x: float, y: float, snap: float) -> tuple[int, int]:
     return (int(np.rint(x / snap)), int(np.rint(y / snap)))
 
 
-def _stitch_segments_to_paths(
+def _stitch_segments_to_loops(
     segments: list[tuple[tuple[int, int], tuple[int, int]]],
 ) -> list[list[tuple[int, int]]]:
     adj: dict[tuple[int, int], list[tuple[int, int]]] = {}
@@ -274,36 +272,7 @@ def _stitch_segments_to_paths(
     def _edge_key(u: tuple[int, int], v: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
         return (u, v) if u <= v else (v, u)
 
-    paths: list[list[tuple[int, int]]] = []
-
-    endpoints = [k for k, neighs in adj.items() if len(neighs) == 1]
-    for start in endpoints:
-        for nxt in adj.get(start, []):
-            ek = _edge_key(start, nxt)
-            if ek in visited_edges:
-                continue
-            visited_edges.add(ek)
-            path = [start, nxt]
-            prev = start
-            cur = nxt
-            while True:
-                cand = adj.get(cur, [])
-                next_node: tuple[int, int] | None = None
-                for nn in cand:
-                    if nn == prev:
-                        continue
-                    ek2 = _edge_key(cur, nn)
-                    if ek2 in visited_edges:
-                        continue
-                    next_node = nn
-                    visited_edges.add(ek2)
-                    break
-                if next_node is None:
-                    break
-                path.append(next_node)
-                prev, cur = cur, next_node
-            paths.append(path)
-
+    loops: list[list[tuple[int, int]]] = []
     for start, neighs in adj.items():
         for nxt in neighs:
             ek = _edge_key(start, nxt)
@@ -334,9 +303,10 @@ def _stitch_segments_to_paths(
                 prev, cur = cur, next_node
                 if cur == start:
                     break
-            paths.append(path)
+            if len(path) >= 4 and path[-1] == start:
+                loops.append(path)
 
-    return paths
+    return loops
 
 
 def _marching_squares_segments_masked(
@@ -457,244 +427,7 @@ def _marching_squares_segments_masked(
     return segments
 
 
-@njit(cache=True)
-def _zhang_suen_thinning(binary: np.ndarray, max_iters: int) -> np.ndarray:
-    img = binary.copy()
-    h = int(img.shape[0])
-    w = int(img.shape[1])
-    if h < 3 or w < 3:
-        return img
-
-    changed = True
-    it = 0
-    while changed and it < int(max_iters):
-        changed = False
-
-        to_del = np.zeros((h, w), dtype=np.uint8)
-        for y in range(1, h - 1):
-            for x in range(1, w - 1):
-                if img[y, x] == 0:
-                    continue
-                p2 = int(img[y - 1, x])
-                p3 = int(img[y - 1, x + 1])
-                p4 = int(img[y, x + 1])
-                p5 = int(img[y + 1, x + 1])
-                p6 = int(img[y + 1, x])
-                p7 = int(img[y + 1, x - 1])
-                p8 = int(img[y, x - 1])
-                p9 = int(img[y - 1, x - 1])
-                n = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
-                if n < 2 or n > 6:
-                    continue
-                s = 0
-                if p2 == 0 and p3 == 1:
-                    s += 1
-                if p3 == 0 and p4 == 1:
-                    s += 1
-                if p4 == 0 and p5 == 1:
-                    s += 1
-                if p5 == 0 and p6 == 1:
-                    s += 1
-                if p6 == 0 and p7 == 1:
-                    s += 1
-                if p7 == 0 and p8 == 1:
-                    s += 1
-                if p8 == 0 and p9 == 1:
-                    s += 1
-                if p9 == 0 and p2 == 1:
-                    s += 1
-                if s != 1:
-                    continue
-                if p2 * p4 * p6 != 0:
-                    continue
-                if p4 * p6 * p8 != 0:
-                    continue
-                to_del[y, x] = 1
-
-        for y in range(1, h - 1):
-            for x in range(1, w - 1):
-                if to_del[y, x] == 1:
-                    img[y, x] = 0
-                    changed = True
-
-        to_del2 = np.zeros((h, w), dtype=np.uint8)
-        for y in range(1, h - 1):
-            for x in range(1, w - 1):
-                if img[y, x] == 0:
-                    continue
-                p2 = int(img[y - 1, x])
-                p3 = int(img[y - 1, x + 1])
-                p4 = int(img[y, x + 1])
-                p5 = int(img[y + 1, x + 1])
-                p6 = int(img[y + 1, x])
-                p7 = int(img[y + 1, x - 1])
-                p8 = int(img[y, x - 1])
-                p9 = int(img[y - 1, x - 1])
-                n = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
-                if n < 2 or n > 6:
-                    continue
-                s = 0
-                if p2 == 0 and p3 == 1:
-                    s += 1
-                if p3 == 0 and p4 == 1:
-                    s += 1
-                if p4 == 0 and p5 == 1:
-                    s += 1
-                if p5 == 0 and p6 == 1:
-                    s += 1
-                if p6 == 0 and p7 == 1:
-                    s += 1
-                if p7 == 0 and p8 == 1:
-                    s += 1
-                if p8 == 0 and p9 == 1:
-                    s += 1
-                if p9 == 0 and p2 == 1:
-                    s += 1
-                if s != 1:
-                    continue
-                if p2 * p4 * p8 != 0:
-                    continue
-                if p2 * p6 * p8 != 0:
-                    continue
-                to_del2[y, x] = 1
-
-        for y in range(1, h - 1):
-            for x in range(1, w - 1):
-                if to_del2[y, x] == 1:
-                    img[y, x] = 0
-                    changed = True
-
-        it += 1
-
-    return img
-
-
-def _trace_skeleton_paths(skel: np.ndarray) -> list[list[tuple[int, int]]]:
-    h, w = int(skel.shape[0]), int(skel.shape[1])
-    if h <= 0 or w <= 0:
-        return []
-
-    offsets_8 = [
-        (-1, -1),
-        (-1, 0),
-        (-1, 1),
-        (0, -1),
-        (0, 1),
-        (1, -1),
-        (1, 0),
-        (1, 1),
-    ]
-
-    deg = np.zeros_like(skel, dtype=np.uint8)
-    for y in range(h):
-        for x in range(w):
-            if skel[y, x] == 0:
-                continue
-            d = 0
-            for dy, dx in offsets_8:
-                yy = y + dy
-                xx = x + dx
-                if 0 <= yy < h and 0 <= xx < w and skel[yy, xx] != 0:
-                    d += 1
-            deg[y, x] = np.uint8(d)
-
-    def edge_key(a: tuple[int, int], b: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
-        return (a, b) if a <= b else (b, a)
-
-    visited: set[tuple[tuple[int, int], tuple[int, int]]] = set()
-
-    def neighbors(node: tuple[int, int]) -> list[tuple[int, int]]:
-        y, x = node
-        out: list[tuple[int, int]] = []
-        for dy, dx in offsets_8:
-            yy = y + dy
-            xx = x + dx
-            if 0 <= yy < h and 0 <= xx < w and skel[yy, xx] != 0:
-                out.append((yy, xx))
-        return out
-
-    paths: list[list[tuple[int, int]]] = []
-
-    # endpoints / junctions から伸ばす（junction で止める）
-    for y in range(h):
-        for x in range(w):
-            if skel[y, x] == 0:
-                continue
-            d = int(deg[y, x])
-            if d != 1 and d < 3:
-                continue
-            start = (y, x)
-            for nxt in neighbors(start):
-                ek = edge_key(start, nxt)
-                if ek in visited:
-                    continue
-                visited.add(ek)
-                path = [start, nxt]
-                prev = start
-                cur = nxt
-                while True:
-                    dcur = int(deg[cur[0], cur[1]])
-                    if dcur != 2:
-                        break
-                    cand = neighbors(cur)
-                    next_node: tuple[int, int] | None = None
-                    for nn in cand:
-                        if nn == prev:
-                            continue
-                        ek2 = edge_key(cur, nn)
-                        if ek2 in visited:
-                            continue
-                        next_node = nn
-                        visited.add(ek2)
-                        break
-                    if next_node is None:
-                        break
-                    path.append(next_node)
-                    prev, cur = cur, next_node
-                paths.append(path)
-
-    # ループ（degree==2 のみの残り）を拾う
-    for y in range(h):
-        for x in range(w):
-            if skel[y, x] == 0 or int(deg[y, x]) != 2:
-                continue
-            start = (y, x)
-            for nxt in neighbors(start):
-                ek = edge_key(start, nxt)
-                if ek in visited:
-                    continue
-                visited.add(ek)
-                path = [start, nxt]
-                prev = start
-                cur = nxt
-                while True:
-                    cand = neighbors(cur)
-                    next_node: tuple[int, int] | None = None
-                    for nn in cand:
-                        if nn == prev:
-                            continue
-                        ek2 = edge_key(cur, nn)
-                        if ek2 in visited:
-                            continue
-                        next_node = nn
-                        visited.add(ek2)
-                        break
-                    if next_node is None:
-                        break
-                    path.append(next_node)
-                    prev, cur = cur, next_node
-                    if cur == start:
-                        break
-                paths.append(path)
-
-    return paths
-
-
-@effect(
-    meta=reaction_diffusion_meta,
-    n_inputs=1,
-    ui_visible={"thinning_iters": lambda p: str(p.get("mode", "contour")) == "skeleton"},
-)
+@effect(meta=reaction_diffusion_meta, n_inputs=1)
 def reaction_diffusion(
     inputs: Sequence[RealizedGeometry],
     *,
@@ -708,9 +441,7 @@ def reaction_diffusion(
     seed: int = 0,
     seed_radius: float = 10.0,
     noise: float = 0.02,
-    mode: str = "contour",  # "contour" | "skeleton"
     level: float = 0.2,
-    thinning_iters: int = 60,
     min_points: int = 16,
     boundary: str = "noflux",  # "noflux" | "dirichlet"
 ) -> RealizedGeometry:
@@ -736,12 +467,8 @@ def reaction_diffusion(
         中心ブロブの半径（0 ならブロブ無し）。
     noise : float, default 0.02
         初期ノイズ量（V に一様ノイズを加える）。
-    mode : str, default "contour"
-        `"contour"` は等値線、`"skeleton"` は細線化中心線。
     level : float, default 0.2
-        等値線/二値化の閾値。
-    thinning_iters : int, default 60
-        `mode="skeleton"` のときの細線化反復上限。
+        等値線の閾値。
     min_points : int, default 16
         出力するポリラインの最小点数。
     boundary : str, default "noflux"
@@ -854,33 +581,8 @@ def reaction_diffusion(
         boundary=int(boundary_i),
     )
 
-    mode_s = str(mode)
     out_lines: list[np.ndarray] = []
 
-    if mode_s == "skeleton":
-        binary = ((v_final >= float(level)) & mask_bool).astype(np.uint8)
-        iters = int(thinning_iters)
-        if iters > 0:
-            binary = _zhang_suen_thinning(binary, iters)
-        paths = _trace_skeleton_paths(binary)
-
-        for path in paths:
-            if len(path) < int(min_points):
-                continue
-            pts_xy = np.empty((len(path), 2), dtype=np.float64)
-            for pi, (yy, xx) in enumerate(path):
-                pts_xy[pi, 0] = float(xs[int(xx)])
-                pts_xy[pi, 1] = float(ys[int(yy)])
-            v3 = np.zeros((pts_xy.shape[0], 3), dtype=np.float64)
-            v3[:, 0:2] = pts_xy
-            out = transform_back(v3, rotation_matrix, float(z_offset)).astype(
-                np.float32, copy=False
-            )
-            out_lines.append(out)
-
-        return _lines_to_realized(out_lines)
-
-    # contour
     field = v_final.astype(np.float64, copy=False)
     snap = max(1e-9, pitch * 1e-6)
     key_to_xy: dict[tuple[int, int], tuple[float, float]] = {}
@@ -893,12 +595,14 @@ def reaction_diffusion(
         snap=float(snap),
         key_to_xy=key_to_xy,
     )
-    paths = _stitch_segments_to_paths(segments)
+    loops = _stitch_segments_to_loops(segments)
 
-    for path in paths:
-        if len(path) < int(min_points):
+    for loop in loops:
+        if len(loop) < int(min_points):
             continue
-        pts_xy = np.asarray([key_to_xy[k] for k in path], dtype=np.float64)
+        pts_xy = np.asarray([key_to_xy[k] for k in loop], dtype=np.float64)
+        if pts_xy.shape[0] >= 2 and not np.all(pts_xy[0] == pts_xy[-1]):
+            pts_xy = np.concatenate([pts_xy, pts_xy[:1]], axis=0)
         v3 = np.zeros((pts_xy.shape[0], 3), dtype=np.float64)
         v3[:, 0:2] = pts_xy
         out = transform_back(v3, rotation_matrix, float(z_offset)).astype(
