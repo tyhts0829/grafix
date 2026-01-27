@@ -1,6 +1,14 @@
+from __future__ import annotations
+
 from pathlib import Path
 
+import numpy as np
+from numba import njit
+
 from grafix import E, G, P, run
+from grafix.api import primitive
+from grafix.core.parameters.meta import ParamMeta
+from grafix.core.realized_geometry import RealizedGeometry
 
 # A5
 CANVAS_WIDTH = 148
@@ -8,20 +16,57 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-    frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
-    g1 = G.polygon()
-    g2 = G.polygon()
-    g3 = G.polygon()
-    g = g1 + g2 + g3
+    g = G.text(
+        activate=True,
+        text="Grafix",
+        font="Geist-Black.ttf",
+        font_index=0,
+        text_align="center",
+        letter_spacing_em=0.0,
+        line_height=1.2,
+        use_bounding_box=False,
+        quality=0.5,
+        center=(75.824, 72.527, 0.0),
+        scale=32.01,
+    )
 
-    e1 = E.buffer().buffer().weave()
-    e2 = E.bold()
-    e3 = E.clip()
-    g_weave = e1(g)
-    g_weave = e3([g_weave, g])
-    g_fill = e2(g)
-    g = g_weave + g_fill
-    return frame, g
+    e = E.reaction_diffusion(
+        activate=True,
+        grid_pitch=0.386,
+        steps=1134,
+        du=0.191,
+        dv=0.038,
+        feed=0.022,
+        kill=0.058,
+        dt=0.9420000000000001,
+        seed=42,
+        seed_radius=46.392,
+        noise=0.041,
+        level=0.057,
+        min_points=5,
+        boundary="dirichlet",
+    ).fill(
+        activate=True,
+        angle_sets=1,
+        angle=45.0,
+        density=3000.0,
+        spacing_gradient=0.0,
+        remove_boundary=False,
+    )
+
+    g = e(g)
+
+    frame = P.grn_a5_frame(
+        activate=True,
+        show_layout=False,
+        layout_color_rgb255=(191, 191, 191),
+        number_text="12",
+        explanation_text="G.text()\nE.reaction_diffusion()\n.fill()",
+        explanation_density=500.0,
+        template_color_rgb255=(255, 255, 255),
+    )
+
+    return g, frame
 
 
 if __name__ == "__main__":
