@@ -29,7 +29,7 @@ def draw(t):
     e = (
         E.repeat(
             activate=True,
-            count=149,
+            count=60,
             cumulative_scale=False,
             cumulative_offset=False,
             cumulative_rotate=False,
@@ -46,16 +46,16 @@ def draw(t):
         )
         .displace(
             activate=True,
-            amplitude=(0.0, 6.0440000000000005, 8.0),
-            spatial_freq=(0.121, 0.307, 0.04),
+            amplitude=(0.0, 8.516, 8.0),
+            spatial_freq=(0.121, 0.157, 0.04),
             amplitude_gradient=(-4.0, 0.967, 0.0),
             frequency_gradient=(0.0, 0.0, 0.0),
             gradient_center_offset=(0.0, 0.0, 0.0),
             gradient_profile="radial",
-            gradient_radius=(0.367, 0.458, 0.5),
+            gradient_radius=(0.307, 1.803, 0.5),
             min_gradient_factor=0.048,
             max_gradient_factor=2.062,
-            t=0.308,
+            t=0.447,
         )
     )
 
