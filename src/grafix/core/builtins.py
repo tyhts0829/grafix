@@ -41,6 +41,8 @@ _BUILTIN_EFFECT_MODULES: tuple[str, ...] = (
     "grafix.core.effects.bold",
     "grafix.core.effects.drop",
     "grafix.core.effects.trim",
+    "grafix.core.effects.lowpass",
+    "grafix.core.effects.highpass",
     "grafix.core.effects.clip",
     "grafix.core.effects.twist",
     "grafix.core.effects.weave",
