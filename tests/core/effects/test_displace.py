@@ -35,6 +35,23 @@ def displace_test_empty() -> RealizedGeometry:
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
+@primitive
+def displace_test_radial_points_xy() -> RealizedGeometry:
+    """(x,y) 方向の円形マスク検証用の点列を返す。"""
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0, 0.0],
+            [5.0, 5.0, 0.0],
+            [9.0, 5.0, 0.0],
+            [9.0, 9.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    offsets = np.array([0, coords.shape[0]], dtype=np.int32)
+    return RealizedGeometry(coords=coords, offsets=offsets)
+
+
 def test_displace_amplitude_zero_is_noop() -> None:
     g = G.displace_test_polyline()
     base = realize(g)
@@ -183,6 +200,32 @@ def test_displace_gradient_center_offset_changes_output_with_gradient() -> None:
     assert float(np.max(np.abs(out1.coords - out0.coords))) > 1e-4
 
 
+def test_displace_gradient_profile_default_is_linear() -> None:
+    g = G.displace_test_polyline()
+    base = realize(g)
+    out0 = displace_impl(
+        [base],
+        amplitude=(8.0, 8.0, 8.0),
+        spatial_freq=(0.04, 0.04, 0.04),
+        amplitude_gradient=(2.0, 0.0, 0.0),
+        min_gradient_factor=0.1,
+        max_gradient_factor=2.0,
+        t=0.0,
+    )
+    out1 = displace_impl(
+        [base],
+        amplitude=(8.0, 8.0, 8.0),
+        spatial_freq=(0.04, 0.04, 0.04),
+        amplitude_gradient=(2.0, 0.0, 0.0),
+        gradient_profile="linear",
+        min_gradient_factor=0.1,
+        max_gradient_factor=2.0,
+        t=0.0,
+    )
+    np.testing.assert_allclose(out1.coords, out0.coords, rtol=0.0, atol=0.0)
+    assert out1.offsets.tolist() == out0.offsets.tolist()
+
+
 def test_E_displace_gradient_center_offset_zero_equals_omitted() -> None:
     g = G.displace_test_polyline()
 
@@ -206,3 +249,40 @@ def test_E_displace_gradient_center_offset_zero_equals_omitted() -> None:
 
     np.testing.assert_allclose(out1.coords, out0.coords, rtol=0.0, atol=0.0)
     assert out1.offsets.tolist() == out0.offsets.tolist()
+
+
+def test_displace_radial_profile_round_mask_in_xy() -> None:
+    g = G.displace_test_radial_points_xy()
+    base = realize(g)
+    out = displace_impl(
+        [base],
+        amplitude=(50.0, 0.0, 0.0),
+        spatial_freq=(0.0, 0.0, 0.0),
+        amplitude_gradient=(1.0, 0.0, 0.0),
+        gradient_profile="radial",
+        gradient_radius=(0.5, 0.5, 0.5),
+        min_gradient_factor=0.0,
+        max_gradient_factor=4.0,
+        t=0.123,
+    )
+    dx = out.coords[:, 0] - base.coords[:, 0]
+    np.testing.assert_allclose(dx[[0, 1, 4]], 0.0, rtol=0.0, atol=0.0)
+    assert abs(float(dx[2])) > abs(float(dx[3])) > 1e-4
+
+
+def test_displace_radial_profile_inverts_with_negative_gradient() -> None:
+    g = G.displace_test_radial_points_xy()
+    base = realize(g)
+    out = displace_impl(
+        [base],
+        amplitude=(50.0, 0.0, 0.0),
+        spatial_freq=(0.0, 0.0, 0.0),
+        amplitude_gradient=(-1.0, 0.0, 0.0),
+        gradient_profile="radial",
+        gradient_radius=(0.5, 0.5, 0.5),
+        min_gradient_factor=0.0,
+        max_gradient_factor=4.0,
+        t=0.123,
+    )
+    dx = out.coords[:, 0] - base.coords[:, 0]
+    assert abs(float(dx[0])) > abs(float(dx[2])) > 1e-4
