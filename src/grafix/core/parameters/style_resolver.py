@@ -1,14 +1,14 @@
-# どこで: `src/grafix/interactive/runtime/style_resolver.py`。
+# どこで: `src/grafix/core/parameters/style_resolver.py`。
 # 何を: ParamStore の style エントリから、そのフレームの背景色/線色/線幅を確定する。
-# なぜ: DrawWindowSystem の冒頭ロジックを分離し、仕様の置き場所を明確にするため。
+# なぜ: interactive と headless export で同一規則を共有するため。
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from grafix.core.parameters import ParamStore
-from grafix.core.parameters.style_ops import ensure_style_entries
-from grafix.core.parameters.style import (
+from .store import ParamStore
+from .style_ops import ensure_style_entries
+from .style import (
     coerce_rgb255,
     rgb01_to_rgb255,
     rgb255_to_rgb01,
@@ -81,3 +81,7 @@ class StyleResolver:
             global_line_color_rgb01=rgb255_to_rgb01(line255),
             global_thickness=float(thickness),
         )
+
+
+__all__ = ["FrameStyle", "StyleResolver"]
+

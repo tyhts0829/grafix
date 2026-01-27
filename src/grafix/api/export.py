@@ -12,6 +12,7 @@ from pathlib import Path
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.persistence import default_param_store_path, load_param_store
+from grafix.core.parameters.style_resolver import FrameStyle, StyleResolver
 from grafix.core.pipeline import RealizedLayer, realize_scene
 from grafix.core.scene import SceneItem
 from grafix.export.gcode import export_gcode
@@ -66,12 +67,23 @@ class Export:
         self.path = Path(path)
         self.fmt = str(fmt).lower().strip()
 
-        defaults = LayerStyleDefaults(color=line_color, thickness=float(line_thickness))
-
         # headless export でも ParamStore の保存値（GUI で調整した値）を反映する。
         # これにより「コードに明示されていないパラメータ」も保存済みの UI 値で解決できる。
         store_path = default_param_store_path(draw, run_id=run_id)
         store = load_param_store(store_path)
+
+        # interactive と同じルールで style（背景・既定線色・線幅）を解決する。
+        self.style: FrameStyle = StyleResolver(
+            store,
+            base_background_color_rgb01=background_color,
+            base_global_thickness=float(line_thickness),
+            base_global_line_color_rgb01=line_color,
+        ).resolve()
+
+        defaults = LayerStyleDefaults(
+            color=self.style.global_line_color_rgb01,
+            thickness=float(self.style.global_thickness),
+        )
         with parameter_context(store):
             self.layers: list[RealizedLayer] = realize_scene(draw, float(t), defaults)
 
@@ -83,7 +95,7 @@ class Export:
                 self.layers,
                 self.path,
                 canvas_size=canvas_size,
-                background_color=background_color,
+                background_color=self.style.bg_color_rgb01,
             )
             return
         if self.fmt in {"gcode", "g-code"}:

@@ -51,22 +51,22 @@
 
 ## 実装手順（チェックリスト）
 
-- [ ] `StyleResolver` の置き場所を決める
+- [x] `StyleResolver` の置き場所を決める
   - 案A（最小）: `grafix.interactive.runtime.style_resolver.StyleResolver` を headless 側でも直接 import
   - 案B（整理）: `StyleResolver` を `src/grafix/core/`（または `src/grafix/core/parameters/`）へ移動し、interactive/export の両方から参照
-- [ ] `src/grafix/api/export.py` を更新
-  - [ ] ParamStore をロード後、style を解決して `LayerStyleDefaults`（色/線幅）を確定
-  - [ ] PNG 生成時に解決済み背景色を `export_image` へ渡す
-  - [ ] `Export` インスタンスから「解決済み背景色」を参照できるようにする（`refresh_readme_grn.py` が使う）
-- [ ] `src/grafix/devtools/refresh_readme_grn.py` を更新
-  - [ ] `Export(...)` を変数に保持し、解決済み背景色を `rasterize_svg_to_png` に渡す
-  - [ ] `BACKGROUND_COLOR` は「base 値」として残す（ParamStore が無い場合の既定）
-- [ ] テスト追加/更新
-  - [ ] `StyleResolver` を移動した場合、既存テストの import を更新
-  - [ ] `Export` が `export_image` に渡す `background_color` を style 解決結果にしていることを確認するテストを追加
+- [x] `src/grafix/api/export.py` を更新
+  - [x] ParamStore をロード後、style を解決して `LayerStyleDefaults`（色/線幅）を確定
+  - [x] PNG 生成時に解決済み背景色を `export_image` へ渡す
+  - [x] `Export` インスタンスから「解決済み背景色」を参照できるようにする（`refresh_readme_grn.py` が使う）
+- [x] `src/grafix/devtools/refresh_readme_grn.py` を更新
+  - [x] `Export(...)` を変数に保持し、解決済み背景色を `rasterize_svg_to_png` に渡す
+  - [x] `BACKGROUND_COLOR` は「base 値」として残す（ParamStore が無い場合の既定）
+- [x] テスト追加/更新
+  - [x] `StyleResolver` を移動した場合、既存テストの import を更新
+  - [x] `Export` が `export_image` に渡す `background_color` を style 解決結果にしていることを確認するテストを追加
     - `pytest` の monkeypatch で `grafix.api.export.export_image` を差し替え、引数を検証（`resvg` は呼ばない）
 - [ ] 手元確認
-  - [ ] `PYTHONPATH=src pytest -q`（少なくとも追加/変更したテスト）
+  - [x] `PYTHONPATH=src pytest -q`（少なくとも追加/変更したテスト）
   - [ ] `PYTHONPATH=src python src/grafix/devtools/refresh_readme_grn.py` を実行し、`docs/readme/grn/11.png` が真っ白でなくなること
 
 ## 確認したい点
