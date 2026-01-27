@@ -44,23 +44,23 @@
 ## 3) 手順
 
 - [x] 仕様確定（この計画の「確認」項目にあなたが回答）
-- [ ] `src/grafix/core/effects/lowpass.py` を新規作成
-  - [ ] `lowpass_meta` 定義（`step`, `sigma`, `closed`）
-  - [ ] polyline ごとに (1) 等間隔 resample → (2) gaussian smoothing を実施
-  - [ ] open/closed の境界条件を実装（reflect / wrap）
-  - [ ] `RealizedGeometry(coords, offsets)` を組み立てて返す
-- [ ] `src/grafix/core/builtins.py` の `_BUILTIN_EFFECT_MODULES` に `grafix.core.effects.lowpass` を追加
-- [ ] `tests/core/effects/test_lowpass.py` を追加
-  - [ ] zigzag ノイズ（高周波）を入力し、出力の「粗さ」が下がることを確認
+- [x] `src/grafix/core/effects/lowpass.py` を新規作成
+  - [x] `lowpass_meta` 定義（`step`, `sigma`, `closed`）
+  - [x] polyline ごとに (1) 等間隔 resample → (2) gaussian smoothing を実施
+  - [x] open/closed の境界条件を実装（reflect / wrap）
+  - [x] `RealizedGeometry(coords, offsets)` を組み立てて返す
+- [x] `src/grafix/core/builtins.py` の `_BUILTIN_EFFECT_MODULES` に `grafix.core.effects.lowpass` を追加
+- [x] `tests/core/effects/test_lowpass.py` を追加
+  - [x] zigzag ノイズ（高周波）を入力し、出力の「粗さ」が下がることを確認
     - 例: 2 階差分（離散曲率相当）の L2 が減る / 総変動が減る、など単純な指標
-  - [ ] open と closed（始点==終点）で動作し、closed の場合は閉じが維持されること
-  - [ ] `sigma=0` または `step<=0` が no-op であること（または定義した仕様どおり）
+  - [x] open と closed（始点==終点）で動作し、closed の場合は閉じが維持されること
+  - [x] `sigma=0` または `step<=0` が no-op であること（または定義した仕様どおり）
 - [ ] 最小の検証コマンド（任意）
-  - [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_lowpass.py`
+  - [x] `PYTHONPATH=src pytest -q tests/core/effects/test_lowpass.py`
 
 ## 4) 受け入れ条件（完了の定義）
 
-- [ ] `E.lowpass(step=..., sigma=..., closed=...)` が使える（未登録エラーにならない）
+- [x] `E.lowpass(step=..., sigma=..., closed=...)` が使える（未登録エラーにならない）
 - [ ] 高周波（細かいギザギザ）が目視で明確に減り、コーナーが丸まる
-- [ ] open/closed の両方で破綻しない（例外/NaN なし）
-- [ ] `tests/core/effects/test_lowpass.py` が通る
+- [x] open/closed の両方で破綻しない（例外/NaN なし）
+- [x] `tests/core/effects/test_lowpass.py` が通る
