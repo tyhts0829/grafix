@@ -193,7 +193,7 @@ class _EffectBuilder(Protocol):
             offset_jitter: ポリラインごとに offset に加えるジッター量 [mm]
         """
         ...
-    def displace(self, *, activate: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
+    def displace(self, *, activate: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., gradient_profile: str = ..., gradient_radius: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
         """
         3D Perlin ノイズで頂点を変位する。
 
@@ -204,6 +204,8 @@ class _EffectBuilder(Protocol):
             amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
             frequency_gradient: 周波数の軸方向グラデーション係数（各軸別）
             gradient_center_offset: 勾配計算の中心オフセット（bbox 正規化座標、各軸別）
+            gradient_profile: 勾配の形状
+            gradient_radius: `"radial"` の距離 `d` を作るための半径（bbox 正規化座標、各軸別）
             min_gradient_factor: 勾配適用時の最小係数（0.0–1.0）
             max_gradient_factor: 勾配適用時の最大係数（1.0–4.0）
             t: 時間オフセット（位相）
@@ -249,6 +251,29 @@ class _EffectBuilder(Protocol):
             density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
             spacing_gradient: スキャン方向に沿った線間隔勾配（シーケンス指定時はグループごとにサイクル適用）
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
+        """
+        ...
+    def highpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., gain: float = ..., closed: str = ...) -> _EffectBuilder:
+        """
+        ポリライン列を highpass（高周波強調）する。
+
+        引数:
+            activate: bool
+            step: 再サンプル間隔（弧長）
+            sigma: 低域成分を作るガウス平滑半径（`sigma/step` が実効的なスケール）
+            gain: 高周波強調係数
+            closed: 境界条件
+        """
+        ...
+    def lowpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., closed: str = ...) -> _EffectBuilder:
+        """
+        ポリライン列を低域通過（ローパス）して滑らかにする。
+
+        引数:
+            activate: bool
+            step: 再サンプル間隔（弧長）
+            sigma: ガウス平滑半径
+            closed: 境界条件
         """
         ...
     def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., output: str = ..., keep_original: bool = ...) -> _EffectBuilder:
@@ -331,7 +356,7 @@ class _EffectBuilder(Protocol):
             step: 各軸の格子間隔 (sx, sy, sz)
         """
         ...
-    def reaction_diffusion(self, *, activate: bool = ..., grid_pitch: float = ..., steps: int = ..., du: float = ..., dv: float = ..., feed: float = ..., kill: float = ..., dt: float = ..., seed: int = ..., seed_radius: float = ..., noise: float = ..., mode: str = ..., level: float = ..., thinning_iters: int = ..., min_points: int = ..., boundary: str = ...) -> _EffectBuilder:
+    def reaction_diffusion(self, *, activate: bool = ..., grid_pitch: float = ..., steps: int = ..., du: float = ..., dv: float = ..., feed: float = ..., kill: float = ..., dt: float = ..., seed: int = ..., seed_radius: float = ..., noise: float = ..., level: float = ..., min_points: int = ..., boundary: str = ...) -> _EffectBuilder:
         """
         閉曲線マスク内で反応拡散を走らせ、線として出力する。
 
@@ -347,9 +372,7 @@ class _EffectBuilder(Protocol):
             seed: 乱数シード（初期条件用）
             seed_radius: 中心ブロブの半径（0 ならブロブ無し）
             noise: 初期ノイズ量（V に一様ノイズを加える）
-            mode: `"contour"` は等値線、`"skeleton"` は細線化中心線
-            level: 等値線/二値化の閾値
-            thinning_iters: `mode="skeleton"` のときの細線化反復上限
+            level: 等値線の閾値
             min_points: 出力するポリラインの最小点数
             boundary: マスク境界の扱い
         """
@@ -545,7 +568,7 @@ class _E(Protocol):
             offset_jitter: ポリラインごとに offset に加えるジッター量 [mm]
         """
         ...
-    def displace(self, *, activate: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
+    def displace(self, *, activate: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., gradient_profile: str = ..., gradient_radius: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ...) -> _EffectBuilder:
         """
         3D Perlin ノイズで頂点を変位する。
 
@@ -556,6 +579,8 @@ class _E(Protocol):
             amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
             frequency_gradient: 周波数の軸方向グラデーション係数（各軸別）
             gradient_center_offset: 勾配計算の中心オフセット（bbox 正規化座標、各軸別）
+            gradient_profile: 勾配の形状
+            gradient_radius: `"radial"` の距離 `d` を作るための半径（bbox 正規化座標、各軸別）
             min_gradient_factor: 勾配適用時の最小係数（0.0–1.0）
             max_gradient_factor: 勾配適用時の最大係数（1.0–4.0）
             t: 時間オフセット（位相）
@@ -601,6 +626,29 @@ class _E(Protocol):
             density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
             spacing_gradient: スキャン方向に沿った線間隔勾配（シーケンス指定時はグループごとにサイクル適用）
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
+        """
+        ...
+    def highpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., gain: float = ..., closed: str = ...) -> _EffectBuilder:
+        """
+        ポリライン列を highpass（高周波強調）する。
+
+        引数:
+            activate: bool
+            step: 再サンプル間隔（弧長）
+            sigma: 低域成分を作るガウス平滑半径（`sigma/step` が実効的なスケール）
+            gain: 高周波強調係数
+            closed: 境界条件
+        """
+        ...
+    def lowpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., closed: str = ...) -> _EffectBuilder:
+        """
+        ポリライン列を低域通過（ローパス）して滑らかにする。
+
+        引数:
+            activate: bool
+            step: 再サンプル間隔（弧長）
+            sigma: ガウス平滑半径
+            closed: 境界条件
         """
         ...
     def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., output: str = ..., keep_original: bool = ...) -> _EffectBuilder:
@@ -683,7 +731,7 @@ class _E(Protocol):
             step: 各軸の格子間隔 (sx, sy, sz)
         """
         ...
-    def reaction_diffusion(self, *, activate: bool = ..., grid_pitch: float = ..., steps: int = ..., du: float = ..., dv: float = ..., feed: float = ..., kill: float = ..., dt: float = ..., seed: int = ..., seed_radius: float = ..., noise: float = ..., mode: str = ..., level: float = ..., thinning_iters: int = ..., min_points: int = ..., boundary: str = ...) -> _EffectBuilder:
+    def reaction_diffusion(self, *, activate: bool = ..., grid_pitch: float = ..., steps: int = ..., du: float = ..., dv: float = ..., feed: float = ..., kill: float = ..., dt: float = ..., seed: int = ..., seed_radius: float = ..., noise: float = ..., level: float = ..., min_points: int = ..., boundary: str = ...) -> _EffectBuilder:
         """
         閉曲線マスク内で反応拡散を走らせ、線として出力する。
 
@@ -699,9 +747,7 @@ class _E(Protocol):
             seed: 乱数シード（初期条件用）
             seed_radius: 中心ブロブの半径（0 ならブロブ無し）
             noise: 初期ノイズ量（V に一様ノイズを加える）
-            mode: `"contour"` は等値線、`"skeleton"` は細線化中心線
-            level: 等値線/二値化の閾値
-            thinning_iters: `mode="skeleton"` のときの細線化反復上限
+            level: 等値線の閾値
             min_points: 出力するポリラインの最小点数
             boundary: マスク境界の扱い
         """

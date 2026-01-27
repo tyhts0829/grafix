@@ -15,7 +15,7 @@
 - 「線化」は以下を両方実装して使い分ける
   - 迷路: V の等値線（Marching Squares → セグメント → ポリライン）
   - 葉脈: V を閾値で 2 値化 → Zhang-Suen thinning（細線化）→ 8近傍グラフをトレースして中心線
-- 重い計算は **パラメータでキー化した簡単なキャッシュ** を 10.py 内に置き、GUI 再描画で毎フレーム回さない；primitiveデコレータにDAGベースのキャッシュ機能はすでにある
+- 重い計算は **パラメータでキー化した簡単なキャッシュ** を 10.py 内に置き、GUI 再描画で毎フレーム回さない（実体ジオメトリ自体は `grafix.core.realize.realize_cache` が GeometryId ベースでキャッシュ）
 
 ## 仕様（案）
 
@@ -32,11 +32,12 @@
 
 ## 実装手順（チェックリスト）
 
-- [ ] `sketch/readme/grn/10.py` に `@primitive` を追加し、Gray-Scott を NumPy で実装
-- [ ] Marching Squares で等値線を抽出し、ポリラインに stitch して `RealizedGeometry` 化
-- [ ] Zhang-Suen thinning で細線化し、スケルトンをポリラインにトレースして `RealizedGeometry` 化
-- [ ] `draw(t)` を「上段(迷路) + 下段(葉脈) + frame」に組み直す
-- [ ] 目視用のパラメータ（F/K/steps/level/解像度/サイズ/配置）を 10.py 先頭にまとめる
+- [x] `sketch/readme/grn/10.py` に `@primitive` を追加し、Gray-Scott を NumPy で実装
+- [x] Marching Squares で等値線を抽出し、ポリラインに stitch して `RealizedGeometry` 化
+- [x] Zhang-Suen thinning で細線化し、スケルトンをポリラインにトレースして `RealizedGeometry` 化
+- [x] `draw(t)` を「上段(迷路) + 下段(葉脈) + frame」に組み直す
+- [x] 目視用のパラメータ（F/K/steps/level/解像度/サイズ/配置）を 10.py 先頭にまとめる
+- [x] primitive 内の二重キャッシュ（RealizeCache と重複）を解消し、field キャッシュのみ残す
 
 ## 確認したい点
 
