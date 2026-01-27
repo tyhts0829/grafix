@@ -58,7 +58,7 @@ from grafix.interactive.midi import MidiController
 from grafix.interactive.runtime.frame_clock import RealTimeClock
 from grafix.interactive.runtime.recording_system import VideoRecordingSystem
 from grafix.interactive.runtime.scene_runner import SceneRunner
-from grafix.interactive.runtime.style_resolver import StyleResolver
+from grafix.core.parameters.style_resolver import StyleResolver
 from grafix.interactive.runtime.video_recorder import default_video_output_path
 
 _logger = logging.getLogger(__name__)

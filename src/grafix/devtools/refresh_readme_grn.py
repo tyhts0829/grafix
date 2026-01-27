@@ -119,7 +119,7 @@ def _export_one(*, draw: object, canvas_size: tuple[int, int]) -> tuple[Path, Pa
         draw=draw,  # type: ignore[arg-type]
         canvas_size=canvas_size,
     )
-    Export(
+    exp = Export(
         draw,  # type: ignore[arg-type]
         t=float(EXPORT_T),
         fmt="svg",
@@ -135,7 +135,7 @@ def _export_one(*, draw: object, canvas_size: tuple[int, int]) -> tuple[Path, Pa
         svg_path,
         png_path,
         output_size=png_output_size(canvas_size),
-        background_color_rgb01=BACKGROUND_COLOR,
+        background_color_rgb01=exp.style.bg_color_rgb01,
     )
     return svg_path, png_path
 

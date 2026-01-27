@@ -4,7 +4,7 @@ from grafix.core.parameters import ParamStore
 from grafix.core.parameters.invariants import assert_invariants
 from grafix.core.parameters.style import style_key
 from grafix.core.parameters.ui_ops import update_state_from_ui
-from grafix.interactive.runtime.style_resolver import StyleResolver
+from grafix.core.parameters.style_resolver import StyleResolver
 
 
 def test_style_resolver_respects_override_flags():
