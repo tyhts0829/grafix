@@ -45,6 +45,7 @@ _BUILTIN_EFFECT_MODULES: tuple[str, ...] = (
     "grafix.core.effects.twist",
     "grafix.core.effects.weave",
     "grafix.core.effects.relax",
+    "grafix.core.effects.reaction_diffusion",
 )
 
 _BUILTIN_PRIMITIVES_REGISTERED = False
@@ -85,4 +86,3 @@ __all__ = [
     "ensure_builtin_ops_registered",
     "ensure_builtin_primitives_registered",
 ]
-

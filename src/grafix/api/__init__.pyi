@@ -331,6 +331,29 @@ class _EffectBuilder(Protocol):
             step: 各軸の格子間隔 (sx, sy, sz)
         """
         ...
+    def reaction_diffusion(self, *, activate: bool = ..., grid_pitch: float = ..., steps: int = ..., du: float = ..., dv: float = ..., feed: float = ..., kill: float = ..., dt: float = ..., seed: int = ..., seed_radius: float = ..., noise: float = ..., mode: str = ..., level: float = ..., thinning_iters: int = ..., min_points: int = ..., boundary: str = ...) -> _EffectBuilder:
+        """
+        閉曲線マスク内で反応拡散を走らせ、線として出力する。
+
+        引数:
+            activate: bool
+            grid_pitch: 計算グリッドのピッチ（出力座標系の長さ単位）
+            steps: Gray-Scott の反復回数
+            du: float, range [0.0, 1.0]
+            dv: float, range [0.0, 1.0]
+            feed: float, range [0.0, 0.1]
+            kill: float, range [0.0, 0.1]
+            dt: 時間刻み
+            seed: 乱数シード（初期条件用）
+            seed_radius: 中心ブロブの半径（0 ならブロブ無し）
+            noise: 初期ノイズ量（V に一様ノイズを加える）
+            mode: `"contour"` は等値線、`"skeleton"` は細線化中心線
+            level: 等値線/二値化の閾値
+            thinning_iters: `mode="skeleton"` のときの細線化反復上限
+            min_points: 出力するポリラインの最小点数
+            boundary: マスク境界の扱い
+        """
+        ...
     def relax(self, *, activate: bool = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
         """
         線分ネットワークをグラフとして弾性緩和する。
@@ -658,6 +681,29 @@ class _E(Protocol):
         引数:
             activate: bool
             step: 各軸の格子間隔 (sx, sy, sz)
+        """
+        ...
+    def reaction_diffusion(self, *, activate: bool = ..., grid_pitch: float = ..., steps: int = ..., du: float = ..., dv: float = ..., feed: float = ..., kill: float = ..., dt: float = ..., seed: int = ..., seed_radius: float = ..., noise: float = ..., mode: str = ..., level: float = ..., thinning_iters: int = ..., min_points: int = ..., boundary: str = ...) -> _EffectBuilder:
+        """
+        閉曲線マスク内で反応拡散を走らせ、線として出力する。
+
+        引数:
+            activate: bool
+            grid_pitch: 計算グリッドのピッチ（出力座標系の長さ単位）
+            steps: Gray-Scott の反復回数
+            du: float, range [0.0, 1.0]
+            dv: float, range [0.0, 1.0]
+            feed: float, range [0.0, 0.1]
+            kill: float, range [0.0, 0.1]
+            dt: 時間刻み
+            seed: 乱数シード（初期条件用）
+            seed_radius: 中心ブロブの半径（0 ならブロブ無し）
+            noise: 初期ノイズ量（V に一様ノイズを加える）
+            mode: `"contour"` は等値線、`"skeleton"` は細線化中心線
+            level: 等値線/二値化の閾値
+            thinning_iters: `mode="skeleton"` のときの細線化反復上限
+            min_points: 出力するポリラインの最小点数
+            boundary: マスク境界の扱い
         """
         ...
     def relax(self, *, activate: bool = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
