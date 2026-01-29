@@ -143,21 +143,17 @@ g = G.asemic(
 
 ## 実装手順（チェックリスト）
 
-- [ ] `G.asemic` に `text` + レイアウト系パラメータを追加（meta/ui_visible も更新）
-- [ ] glyph 生成を `_generate_asemic_glyph(seed_char, ...)` として抽出
-- [ ] `seed_char` の安定ハッシュ関数を実装（blake2b など）
-- [ ] レイアウト（改行/align/advance）を実装
-- [ ] `box_width` 折り返し（text.py と同等のロジック）を実装
-- [ ] デバッグ bounding box を追加（任意）
-- [ ] `python -m grafix stub` で `src/grafix/api/__init__.pyi` 更新
-- [ ] `tests/core/test_asemic_primitive.py` を拡張
-- [ ] `PYTHONPATH=src pytest -q tests/core/test_asemic_primitive.py tests/stubs/test_api_stub_sync.py`
+- [x] `G.asemic` に `text` + レイアウト系パラメータを追加（meta/ui_visible も更新）
+- [x] glyph 生成を `_generate_asemic_glyph(seed_char, ...)` として抽出
+- [x] `seed_char` の安定ハッシュ関数を実装（blake2b など）
+- [x] レイアウト（改行/align/advance）を実装
+- [x] `box_width` 折り返し（text.py と同等のロジック）を実装
+- [x] デバッグ bounding box を追加（任意）
+- [x] `python -m grafix stub` で `src/grafix/api/__init__.pyi` 更新
+- [x] `tests/core/test_asemic_primitive.py` を拡張
+- [x] `PYTHONPATH=src pytest -q tests/core/test_asemic_primitive.py tests/stubs/test_api_stub_sync.py`
 
-## 懸念/論点（計画段階で決めたい）
+## 確定事項
 
-- 座標原点の扱い:
-  - A) `text` レイアウトは text.py 同様「左上起点」に統一（1文字でも左上起点）；はい
-  - B) 1文字のときだけ現行どおり「原点中心」を維持し、複数文字のときだけ左上起点；1文字のときも左上起点でいい。
-- `text` の default:
-  - `""`（空）で「従来の 1 glyph（seed そのまま）」にするか
-  - `"A"` のように「常に text として解釈」するか；こちらで
+- 座標原点は text.py 同様に「左上起点」に統一（1文字でも左上起点）
+- `text` の default は `"A"`（常に text として解釈）
