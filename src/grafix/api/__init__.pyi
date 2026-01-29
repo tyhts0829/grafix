@@ -19,6 +19,26 @@ class _G(Protocol):
     def __call__(self, name: str | None = None) -> _G:
         """ラベル付き primitive 名前空間を返す。"""
         ...
+    def asemic(self, *, activate: bool = ..., seed: int = ..., n_nodes: int = ..., candidates: int = ..., stroke_min: int = ..., stroke_max: int = ..., walk_min_steps: int = ..., walk_max_steps: int = ..., stroke_style: str = ..., bezier_samples: int = ..., bezier_tension: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+        """
+        擬似文字（asemic）のストローク群を生成する。
+
+        引数:
+            activate: bool
+            seed: 乱数 seed（同一 seed/params で決定的に同じ出力）
+            n_nodes: ノード数（少なすぎるとストロークが生成できないことがある）
+            candidates: best-candidate の候補数（大きいほど均一になりやすい）
+            stroke_min: ストローク本数の最小値
+            stroke_max: ストローク本数の最大値
+            walk_min_steps: ランダムウォークの最小ステップ数
+            walk_max_steps: ランダムウォークの最大ステップ数
+            stroke_style: ストロークの描画スタイル
+            bezier_samples: `"bezier"` 時の 1 セグメントあたりのサンプル点数（2 以上）
+            bezier_tension: `"bezier"` 時の張り（0=曲がりやすい, 1=直線寄り）
+            center: 平行移動ベクトル (cx, cy, cz)
+            scale: 等方スケール倍率
+        """
+        ...
     def grid(self, *, activate: bool = ..., nx: int = ..., ny: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         グリッド（縦線 nx 本 + 横線 ny 本）を生成する。

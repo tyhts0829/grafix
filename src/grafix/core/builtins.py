@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 
 _BUILTIN_PRIMITIVE_MODULES: tuple[str, ...] = (
+    "grafix.core.primitives.asemic",
     "grafix.core.primitives.grid",
     "grafix.core.primitives.line",
     "grafix.core.primitives.polygon",
