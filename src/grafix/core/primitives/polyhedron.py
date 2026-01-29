@@ -1,7 +1,7 @@
 """
-どこで: `src/grafix/core/primitives/polyhedron.py`。正多面体プリミティブの実体生成。
+どこで: `src/grafix/core/primitives/polyhedron.py`。多面体（正多面体 + アルキメデス立体）プリミティブの実体生成。
 何を: `grafix/resource/regular_polyhedron/*_vertices_list.npz`（同梱データ）から面ポリライン列を読み込み、選択して返す。
-なぜ: 正多面体データを primitive として提供し、プレビューとエクスポートで再利用するため。
+なぜ: 多面体データを primitive として提供し、プレビューとエクスポートで再利用するため。
 """
 
 from __future__ import annotations
@@ -16,7 +16,27 @@ from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import RealizedGeometry
 
 # `type_index`（0..N-1）で参照する型順序を固定する。
-_TYPE_ORDER = ["tetrahedron", "hexahedron", "octahedron", "dodecahedron", "icosahedron"]
+_TYPE_ORDER = [
+    # Platonic solids
+    "tetrahedron",
+    "hexahedron",
+    "octahedron",
+    "dodecahedron",
+    "icosahedron",
+    # Archimedean solids (+ snub chirality variants)
+    "cuboctahedron",
+    "icosidodecahedron",
+    "truncated_tetrahedron",
+    "truncated_cube",
+    "truncated_octahedron",
+    "truncated_dodecahedron",
+    "truncated_icosahedron",
+    "rhombicuboctahedron",
+    "snub_cube_left",
+    "snub_cube_right",
+    "snub_dodecahedron_left",
+    "snub_dodecahedron_right",
+]
 
 _DATA_DIR = resources.files("grafix").joinpath("resource", "regular_polyhedron")
 _POLYHEDRON_CACHE: dict[str, tuple[np.ndarray, ...]] = {}
@@ -112,13 +132,18 @@ def polyhedron(
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
 ) -> RealizedGeometry:
-    """正多面体を面ポリライン列として生成する。
+    """多面体を面ポリライン列として生成する。
 
     Parameters
     ----------
     type_index : int, optional
         形状の選択インデックス（0..N-1）。範囲外はクランプする。
-        0=tetrahedron, 1=hexahedron, 2=octahedron, 3=dodecahedron, 4=icosahedron。
+        0=tetrahedron, 1=hexahedron, 2=octahedron, 3=dodecahedron, 4=icosahedron,
+        5=cuboctahedron, 6=icosidodecahedron, 7=truncated_tetrahedron,
+        8=truncated_cube, 9=truncated_octahedron, 10=truncated_dodecahedron,
+        11=truncated_icosahedron, 12=rhombicuboctahedron,
+        13=snub_cube_left, 14=snub_cube_right,
+        15=snub_dodecahedron_left, 16=snub_dodecahedron_right。
     center : tuple[float, float, float], optional
         平行移動ベクトル (cx, cy, cz)。
     scale : float, optional

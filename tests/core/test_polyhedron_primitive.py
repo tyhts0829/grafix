@@ -6,25 +6,20 @@ import numpy as np
 
 from grafix.api import G
 from grafix.core.realize import realize
+from grafix.core.primitives import polyhedron as polyhedron_mod
 
 
 def test_polyhedron_data_files_exist() -> None:
     data_dir = resources.files("grafix").joinpath("resource", "regular_polyhedron")
     assert data_dir.is_dir()
 
-    expected = [
-        "tetrahedron_vertices_list.npz",
-        "hexahedron_vertices_list.npz",
-        "octahedron_vertices_list.npz",
-        "dodecahedron_vertices_list.npz",
-        "icosahedron_vertices_list.npz",
-    ]
-    for name in expected:
+    for kind in polyhedron_mod._TYPE_ORDER:
+        name = f"{kind}_vertices_list.npz"
         assert data_dir.joinpath(name).is_file()
 
 
 def test_polyhedron_realize_returns_nonempty_geometry() -> None:
-    for type_index in range(5):
+    for type_index in range(len(polyhedron_mod._TYPE_ORDER)):
         realized = realize(G.polyhedron(type_index=type_index))
         assert realized.coords.dtype == np.float32
         assert realized.offsets.dtype == np.int32
