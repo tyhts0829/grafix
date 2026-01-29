@@ -7,13 +7,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from grafix.core.font_resolver import default_font_path
+from grafix.core.font_resolver import default_font_path, resolve_font_path
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_ops import set_meta
 from grafix.core.parameters.snapshot_ops import store_snapshot_for_gui
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.style import STYLE_OP
+from grafix.core.runtime_config import runtime_config
 from grafix.interactive.midi import MidiController
 
 from .midi_learn import MidiLearnState
@@ -38,6 +39,29 @@ def _default_gui_font_path() -> Path | None:
 
 _DEFAULT_GUI_FONT_PATH = _default_gui_font_path()
 _GUI_FONT_SIZE_BASE_PX = 12.0
+
+
+def _gui_fallback_font_path_for_japanese() -> Path | None:
+    """parameter_gui の日本語表示用フォールバックフォントを解決して返す。"""
+
+    try:
+        cfg = runtime_config()
+        specified = cfg.parameter_gui_fallback_font_japanese
+    except Exception:
+        specified = None
+
+    if specified:
+        try:
+            return resolve_font_path(str(specified))
+        except Exception:
+            return None
+
+    for font in ("Hiragino Sans GB.ttc", "NotoSansJP-VariableFont_wght.ttf"):
+        try:
+            return resolve_font_path(str(font))
+        except Exception:
+            continue
+    return None
 
 
 def _compute_window_backing_scale(gui_window: Any) -> float:
@@ -129,6 +153,7 @@ class ParameterGUI:
 
         self._custom_font_path = _DEFAULT_GUI_FONT_PATH
         self._font_backing_scale: float | None = None
+        self._font_fallback_path_for_japanese: Path | None = None
         self._sync_font_for_window()
 
         import time
@@ -279,21 +304,41 @@ class ParameterGUI:
             return
 
         backing_scale = _compute_window_backing_scale(self._window)
-        if self._font_backing_scale == backing_scale:
+        fallback = _gui_fallback_font_path_for_japanese()
+        if (
+            self._font_backing_scale == backing_scale
+            and self._font_fallback_path_for_japanese == fallback
+        ):
             return
 
         io = self._imgui.get_io()
         io.fonts.clear()
+        font_px = float(_GUI_FONT_SIZE_BASE_PX * backing_scale)
         io.fonts.add_font_from_file_ttf(
             str(self._custom_font_path),
-            float(_GUI_FONT_SIZE_BASE_PX * backing_scale),
+            float(font_px),
+            glyph_ranges=io.fonts.get_glyph_ranges_default(),
         )
+
+        if fallback is not None and fallback.is_file():
+            try:
+                if fallback.resolve() != self._custom_font_path.resolve():
+                    cfg = self._imgui.core.FontConfig(merge_mode=True)
+                    io.fonts.add_font_from_file_ttf(
+                        str(fallback),
+                        float(font_px),
+                        font_config=cfg,
+                        glyph_ranges=io.fonts.get_glyph_ranges_japanese(),
+                    )
+            except Exception:
+                pass
 
         refresh_font = getattr(self._renderer, "refresh_font_texture", None)
         if callable(refresh_font):
             refresh_font()
 
         self._font_backing_scale = backing_scale
+        self._font_fallback_path_for_japanese = fallback
 
     def draw_frame(self) -> bool:
         """1 フレーム分の GUI を描画し、変更があれば store に反映する。

@@ -194,3 +194,12 @@ def test_text_baseline_is_shifted_by_ascent() -> None:
 
     assert float(base.coords[:, 1].min()) >= -5.0
     assert np.allclose(toggled.coords, base.coords, atol=1e-5)
+
+
+def test_text_missing_glyph_is_treated_as_space() -> None:
+    spaced = realize(G.text(text="A A", font="GoogleSans-Regular.ttf", scale=10.0))
+    missing = realize(G.text(text="A日A", font="GoogleSans-Regular.ttf", scale=10.0))
+
+    assert missing.coords.shape == spaced.coords.shape
+    assert missing.offsets.tolist() == spaced.offsets.tolist()
+    assert np.allclose(missing.coords, spaced.coords, atol=1e-5)
