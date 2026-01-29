@@ -1,12 +1,13 @@
 """
-どこで: `src/grafix/primitives/polyhedron.py`。正多面体プリミティブの実体生成。
-何を: `data/regular_polyhedron/*_vertices_list.npz` から面ポリライン列を読み込み、選択して返す。
+どこで: `src/grafix/core/primitives/polyhedron.py`。正多面体プリミティブの実体生成。
+何を: `grafix/resource/regular_polyhedron/*_vertices_list.npz`（同梱データ）から面ポリライン列を読み込み、選択して返す。
 なぜ: 正多面体データを primitive として提供し、プレビューとエクスポートで再利用するため。
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from io import BytesIO
+from importlib import resources
 
 import numpy as np
 
@@ -17,7 +18,7 @@ from grafix.core.realized_geometry import RealizedGeometry
 # `type_index`（0..N-1）で参照する型順序を固定する。
 _TYPE_ORDER = ["tetrahedron", "hexahedron", "octahedron", "dodecahedron", "icosahedron"]
 
-_DATA_DIR = Path(__file__).parent / "regular_polyhedron"
+_DATA_DIR = resources.files("grafix").joinpath("resource", "regular_polyhedron")
 _POLYHEDRON_CACHE: dict[str, tuple[np.ndarray, ...]] = {}
 
 polyhedron_meta = {
@@ -33,11 +34,12 @@ def _load_face_polylines(kind: str) -> tuple[np.ndarray, ...]:
     if cached is not None:
         return cached
 
-    npz_path = _DATA_DIR / f"{kind}_vertices_list.npz"
-    if not npz_path.exists():
-        raise FileNotFoundError(f"polyhedron データが見つかりません: {npz_path}")
+    npz_file = _DATA_DIR.joinpath(f"{kind}_vertices_list.npz")
+    if not npz_file.is_file():
+        raise FileNotFoundError(f"polyhedron データが見つかりません: {npz_file}")
 
-    with np.load(npz_path, allow_pickle=False) as data:
+    blob = npz_file.read_bytes()
+    with np.load(BytesIO(blob), allow_pickle=False) as data:
         if "arrays" in data.files:
             raw_lines = list(data["arrays"])
         else:
@@ -46,7 +48,7 @@ def _load_face_polylines(kind: str) -> tuple[np.ndarray, ...]:
                 key=lambda k: int(k.split("_")[1]),
             )
             if not keys:
-                raise ValueError(f"polyhedron データが空です: {npz_path.name}")
+                raise ValueError(f"polyhedron データが空です: {npz_file.name}")
             raw_lines = [data[k] for k in keys]
 
     polylines: list[np.ndarray] = []
@@ -130,7 +132,7 @@ def polyhedron(
     Raises
     ------
     FileNotFoundError
-        `data/regular_polyhedron` のデータが見つからない場合。
+        `grafix/resource/regular_polyhedron` のデータが見つからない場合。
     ValueError
         データ内容が不正な場合。
     """

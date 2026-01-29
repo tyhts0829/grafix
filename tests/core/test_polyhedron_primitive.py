@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from importlib import resources
 
 import numpy as np
 
@@ -9,9 +9,7 @@ from grafix.core.realize import realize
 
 
 def test_polyhedron_data_files_exist() -> None:
-    import grafix.core.primitives.polyhedron as polyhedron_module
-
-    data_dir = Path(polyhedron_module.__file__).parent / "regular_polyhedron"
+    data_dir = resources.files("grafix").joinpath("resource", "regular_polyhedron")
     assert data_dir.is_dir()
 
     expected = [
@@ -22,7 +20,7 @@ def test_polyhedron_data_files_exist() -> None:
         "icosahedron_vertices_list.npz",
     ]
     for name in expected:
-        assert (data_dir / name).is_file()
+        assert data_dir.joinpath(name).is_file()
 
 
 def test_polyhedron_realize_returns_nonempty_geometry() -> None:
