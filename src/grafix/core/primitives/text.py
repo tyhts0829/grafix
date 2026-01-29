@@ -222,26 +222,33 @@ class TextRenderer:
 TEXT_RENDERER = TextRenderer()
 
 
+def _get_space_advance_em(tt_font: Any) -> float:
+    """1em=1.0 とした space の advance 比率を返す。無ければ 0.25em を返す。"""
+
+    try:
+        space_width = tt_font["hmtx"].metrics["space"][0]  # type: ignore[index]
+        return float(space_width) / float(tt_font["head"].unitsPerEm)  # type: ignore[index]
+    except Exception:
+        return 0.25
+
+
 def _get_char_advance_em(char: str, tt_font: Any) -> float:
     """1em を 1.0 とした advance の比率を返す。"""
+    space_advance = _get_space_advance_em(tt_font)
     if char == " ":
-        try:
-            space_width = tt_font["hmtx"].metrics["space"][0]  # type: ignore[index]
-            return float(space_width) / float(tt_font["head"].unitsPerEm)  # type: ignore[index]
-        except Exception:
-            return 0.25
+        return space_advance
 
     cmap = tt_font.getBestCmap()
     if cmap is None:
-        return 0.0
+        return space_advance
     glyph_name = cmap.get(ord(char))
     if glyph_name is None:
-        return 0.0
+        return space_advance
     try:
         advance_width = tt_font["hmtx"].metrics[glyph_name][0]  # type: ignore[index]
         return float(advance_width) / float(tt_font["head"].unitsPerEm)  # type: ignore[index]
     except Exception:
-        return 0.0
+        return space_advance
 
 
 def _get_font_ascent_em(tt_font: Any, *, units_per_em: float) -> float:

@@ -29,6 +29,7 @@ def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pyt
     assert cfg.window_pos_draw == (25, 25)
     assert cfg.window_pos_parameter_gui == (950, 25)
     assert cfg.parameter_gui_window_size == (800, 1000)
+    assert cfg.parameter_gui_fallback_font_japanese is None
     assert cfg.png_scale == 8.0
     assert cfg.midi_inputs == ()
 

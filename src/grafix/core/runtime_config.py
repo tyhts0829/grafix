@@ -23,6 +23,7 @@ class RuntimeConfig:
     window_pos_draw: tuple[int, int]
     window_pos_parameter_gui: tuple[int, int]
     parameter_gui_window_size: tuple[int, int]
+    parameter_gui_fallback_font_japanese: str | None
     png_scale: float
     midi_inputs: tuple[tuple[str, str], ...]
 
@@ -69,6 +70,13 @@ def _as_optional_path(value: Any) -> Path | None:
     if not s:
         return None
     return Path(_expand_path_text(s))
+
+
+def _as_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return None if not s else s
 
 
 def _as_path_list(value: Any) -> list[Path]:
@@ -272,6 +280,10 @@ def runtime_config() -> RuntimeConfig:
             "ui.parameter_gui.window_size が未設定です（同梱 default_config.yaml を確認してください）"
         )
 
+    parameter_gui_fallback_font_japanese = _as_optional_str(
+        parameter_gui.get("fallback_font_japanese")
+    )
+
     export = _as_mapping(payload.get("export"), key="export")
     png = _as_mapping(export.get("png"), key="export.png")
     png_scale = _as_float(png.get("scale"), key="export.png.scale")
@@ -294,6 +306,7 @@ def runtime_config() -> RuntimeConfig:
         window_pos_draw=window_pos_draw,
         window_pos_parameter_gui=window_pos_parameter_gui,
         parameter_gui_window_size=parameter_gui_window_size,
+        parameter_gui_fallback_font_japanese=parameter_gui_fallback_font_japanese,
         png_scale=float(png_scale),
         midi_inputs=tuple(midi_inputs),
     )

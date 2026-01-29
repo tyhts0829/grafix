@@ -29,6 +29,9 @@ ui:
   # Parameter GUI ウィンドウサイズ（ピクセル）。
   parameter_gui:
     window_size: [800, 1000]
+    # GUI の日本語表示用フォールバックフォント（ファイル名 / パス / 部分一致）。
+    # 未指定（null/空）なら自動選択（例: Hiragino Sans GB → NotoSansJP）。
+    fallback_font_japanese: null
 
 export:
   # PNG 変換のスケール倍率（canvas_size に対するピクセル倍率）。

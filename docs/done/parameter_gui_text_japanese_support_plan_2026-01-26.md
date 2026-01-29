@@ -123,18 +123,18 @@ glyph range が既定（`get_glyph_ranges_default()` 相当）になりやすい
 
 ### parameter_gui
 
-- [ ] 1. `fallback_font_japanese` の仕様確定（string 1つ / 未指定は自動選択）
-- [ ] 2. GUI フォント atlas を “ベース + 日本語フォールバック merge” に変更
-- [ ] 3. 既存テストが通ることを確認（parameter_gui）
-  - [ ] `PYTHONPATH=src pytest -q tests/interactive/parameter_gui`
+- [x] 1. `fallback_font_japanese` の仕様確定（string 1つ / 未指定は自動選択）
+- [x] 2. GUI フォント atlas を “ベース + 日本語フォールバック merge” に変更
+- [x] 3. 既存テストが通ることを確認（parameter_gui）
+  - [x] `PYTHONPATH=src pytest -q tests/interactive/parameter_gui`
 - [ ] 4. 目視確認（任意）
   - [ ] `name="日本語ラベル"` 等が GUI 上で豆腐にならない
 
 ### `G.text`
 
 - [ ] 1. 欠字を含むときの現状挙動を確認（advance が詰まる再現）
-- [ ] 2. `_get_char_advance_em(...)` の欠字分岐を “スペース幅” に変更
-- [ ] 3. テスト追加（欠字 advance が空白と等価になること）
-  - [ ] `G.text(text="A A")` と `G.text(text="A日A")`（日が欠字）で `coords/offsets` が一致する
-- [ ] 4. 対象テスト実行
-  - [ ] `PYTHONPATH=src pytest -q tests/core -k text`
+- [x] 2. `_get_char_advance_em(...)` の欠字分岐を “スペース幅” に変更
+- [x] 3. テスト追加（欠字 advance が空白と等価になること）
+  - [x] `G.text(text="A A")` と `G.text(text="A日A")`（日が欠字）で `coords/offsets` が一致する
+- [x] 4. 対象テスト実行
+  - [x] `PYTHONPATH=src pytest -q tests/core -k text`
