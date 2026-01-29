@@ -1,4 +1,4 @@
-# 新規 primitive: 相対近傍グラフ + ランダムウォークで「字形っぽいストローク」を生成（仮: G.asemic）
+# 新規 primitive: 相対近傍グラフ + ランダムウォークで「字形っぽいストローク」を生成（G.asemic）
 
 作成日: 2026-01-29
 
@@ -43,7 +43,7 @@
 ## API 案（仮）
 
 ```python
-from grafix.api import G, E
+from grafix.api import G
 
 g = G.asemic(
     seed=0,
@@ -53,13 +53,12 @@ g = G.asemic(
     stroke_max=5,
     walk_min_steps=2,
     walk_max_steps=4,
+    stroke_style="bezier",
+    bezier_samples=12,
+    bezier_tension=0.5,
     center=(150.0, 150.0, 0.0),
     scale=120.0,
 )
-
-# 例: ちょっと滑らかにしたい場合は effect を併用（方針）
-g2 = E.subdivide(level=2)(g)
-g3 = E.relax(iterations=20)(g2)
 ```
 
 ## meta（Parameter GUI）案
@@ -74,6 +73,12 @@ g3 = E.relax(iterations=20)(g2)
   - UI range: 0..20（`stroke_min <= stroke_max` を前提に簡潔に扱う）
 - `walk_min_steps: int`, `walk_max_steps: int`
   - UI range: 1..20
+- `stroke_style: choice`
+  - `"line"|"bezier"`
+- `bezier_samples: int`
+  - UI range: 2..64
+- `bezier_tension: float`
+  - UI range: 0.0..1.0
 - `center: vec3`
   - UI range: 0..300
 - `scale: float`
@@ -109,6 +114,7 @@ g3 = E.relax(iterations=20)(g2)
 
 ### 4) RealizedGeometry 化
 
+- ストロークは `stroke_style="bezier"` のとき、折れ線を合成 Bézier としてサンプル点列化する（primitive 内で完結）
 - 各ストロークのノード列を XY 座標へ変換し、z は `center[2]` で埋める
 - `coords` はストロークを連結した 1 本の配列、`offsets` は各ストローク開始 index の配列（最後に終端）
 - `scale` と `center` を最後に適用（`coords = coords * scale + center`）
@@ -123,19 +129,20 @@ g3 = E.relax(iterations=20)(g2)
 
 ## 実装手順（チェックリスト）
 
-- [ ] primitive 名・パラメータ名（`asemic` / `stroke_min` など）を確定
-- [ ] `src/grafix/core/primitives/asemic.py` 追加（module docstring + `@primitive(meta=...)` + docstring）
-- [ ] best-candidate 実装（`seed` 決定性）
-- [ ] RNG 構築（adjacency）
-- [ ] ランダムウォーク + エッジ削除でストローク生成
-- [ ] `RealizedGeometry(coords, offsets)` に詰める（scale/center）
-- [ ] `src/grafix/core/builtins.py` へ登録追加
-- [ ] `python -m grafix stub` で `src/grafix/api/__init__.pyi` 更新
-- [ ] `tests/core/test_asemic_primitive.py` 追加
-- [ ] `PYTHONPATH=src pytest -q`（対象テスト中心で可）
+- [x] primitive 名・パラメータ名（`asemic` / `stroke_min` など）を確定
+- [x] `src/grafix/core/primitives/asemic.py` 追加（module docstring + `@primitive(meta=...)` + docstring）
+- [x] best-candidate 実装（`seed` 決定性）
+- [x] RNG 構築（adjacency）
+- [x] ランダムウォーク + エッジ削除でストローク生成
+- [x] 合成 Bézier のサンプル点列化（primitive 内で完結）
+- [x] `RealizedGeometry(coords, offsets)` に詰める（scale/center）
+- [x] `src/grafix/core/builtins.py` へ登録追加
+- [x] `python -m grafix stub` で `src/grafix/api/__init__.pyi` 更新
+- [x] `tests/core/test_asemic_primitive.py` 追加
+- [x] `PYTHONPATH=src pytest -q tests/core/test_asemic_primitive.py tests/stubs/test_api_stub_sync.py`
 
-## 追加で確認したい点（決めたい）
+## 確定事項
 
-- primitive 名は `asemic` で良い？（より具体にするなら `asemic_glyph` など）；asemicで
-- Bézier 相当の滑らかさは「primitive 内でサンプル点列化」までやる？それとも `subdivide/relax` の利用を基本にする？；このprimitiveに閉じていてほしい。外部エフェクトを使ってはならない。
-- `stroke_min/max` や `walk_min/max` のデフォルト値は `asemic.md` どおりで固定して良い？；パラメータ化してね。初期値はmd参考で。
+- primitive 名は `asemic`
+- 滑らかさは `stroke_style="bezier"` + `bezier_samples`/`bezier_tension` で primitive 内に閉じる（外部 effect は不要/不使用）
+- `stroke_min/max` と `walk_min/max` はパラメータ化し、初期値は `asemic.md` 参考（2–5 / 2–4）
