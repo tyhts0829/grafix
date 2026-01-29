@@ -8,57 +8,54 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-    frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
-    g1 = G.polygon(
+    frame = P.grn_a5_frame(
         activate=True,
-        n_sides=128,
-        phase=45.0,
-        sweep=360.0,
-        center=(74.176, 58.253, 0.0),
-        scale=75.94500000000001,
+        show_layout=False,
+        layout_color_rgb255=(191, 191, 191),
+        number_text=(Path(__file__).stem),
+        explanation_text="G.text()\nE.pixelate()\n.lowpass().fill()",
+        explanation_density=500.0,
+        template_color_rgb255=(255, 255, 255),
     )
 
-    e1 = (
-        E.repeat(
+    g = G.text(
+        activate=True,
+        text="グラフィックス\nパイソンベース\nクリエイティブ\nコーディング\nフレームワーク\n\n",
+        font="Hiragino Sans GB.ttc",
+        font_index=0,
+        text_align="center",
+        letter_spacing_em=-0.10400000000000001,
+        line_height=1.431,
+        use_bounding_box=False,
+        quality=0.5,
+        center=(74.176, 34.615, 0.0),
+        scale=16.581,
+    )
+
+    e = (
+        E.pixelate(
             activate=True,
-            count=1,
-            cumulative_scale=False,
-            cumulative_offset=False,
-            cumulative_rotate=False,
-            offset=(0.0, 52.747, 0.0),
-            rotation_step=(0.0, 0.0, 0.0),
-            scale=(1.0, 1.0, 1.0),
-            curve=1.0,
-            auto_center=True,
-            pivot=(0.0, 0.0, 0.0),
+            step=(3.7800000000000002, 3.7800000000000002, 1.0),
+            corner="yx",
         )
-        .metaball(
+        .lowpass(
             activate=True,
-            radius=1.804,
-            threshold=0.387,
-            grid_pitch=0.61,
-            auto_close_threshold=0.001,
-            output="both",
-            keep_original=True,
+            step=0.157,
+            sigma=0.9450000000000001,
+            closed="auto",
         )
         .fill(
             activate=True,
             angle_sets=1,
             angle=45.0,
-            density=1000.0,
+            density=527.491,
             spacing_gradient=0.0,
             remove_boundary=False,
         )
-        .rotate(
-            activate=True,
-            auto_center=True,
-            pivot=(0.0, 0.0, 0.0),
-            rotation=(0.0, 0.0, 180.0),
-        )
     )
 
-    g1 = e1(g1)
-    return frame, g1
+    g = e(g)
+    return frame, g
 
 
 if __name__ == "__main__":

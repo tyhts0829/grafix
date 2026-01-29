@@ -16,11 +16,53 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-    g = G.text()
-    e = E.pixelate().lowpass().fill()
+    g = G.text(
+        activate=True,
+        text="grafix is \na python-based\ncreative coding\nframework.",
+        font="karakaze-R.otf",
+        font_index=0,
+        text_align="left",
+        letter_spacing_em=0.017,
+        line_height=1.412,
+        use_bounding_box=False,
+        quality=0.5,
+        center=(19.78, 59.341, 0.0),
+        scale=14.003,
+    )
+
+    e = (
+        E.pixelate(
+            activate=True,
+            step=(1.719, 1.719, 1.0),
+            corner="yx",
+        )
+        .lowpass(
+            activate=True,
+            step=0.275,
+            sigma=1.8900000000000001,
+            closed="auto",
+        )
+        .fill(
+            activate=True,
+            angle_sets=1,
+            angle=45.0,
+            density=407.216,
+            spacing_gradient=0.0,
+            remove_boundary=False,
+        )
+    )
+
     g = e(g)
 
-    frame = P.grn_a5_frame()
+    frame = P.grn_a5_frame(
+        activate=True,
+        show_layout=False,
+        layout_color_rgb255=(191, 191, 191),
+        number_text="14",
+        explanation_text="G.text()\nE.pixelate()\nlowpass().fill()",
+        explanation_density=500.0,
+        template_color_rgb255=(255, 255, 255),
+    )
 
     return g, frame
 
