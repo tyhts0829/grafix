@@ -11,7 +11,7 @@
 
 ## ゴール
 
-- `repeat` に配置レイアウト（座標系）を追加し、直交（cartesian）に加えて円柱（cylindrical）配置を選べる。
+- `repeat` に配置レイアウト（座標系）を追加し、グリッド（grid）に加えて円柱（cylindrical）配置を選べる。
 - njit カーネルの形は維持し、コピーごとの平行移動ベクトル計算だけを `layout` 分岐で差し替える。
 - Parameter GUI / stub / テストで仕様を固定する（最小 1 ケース）。
 
@@ -29,18 +29,16 @@
 
 ### 新パラメータ
 
-- `layout: {"cartesian","cylindrical"} = "cartesian"`
+- `layout: {"grid","cylindrical"} = "grid"`
 - `offset_start: vec3 = (0,0,0)`（新規）
 - `offset: vec3 = (0,0,0)`（既存。実質 `offset_end`）
 
 ### 解釈
 
-#### `layout="cartesian"`（現状の延長）
+#### `layout="grid"`（現状維持）
 
-- `offset_start` と `offset` を XYZ の「開始/終点オフセット [mm]」として扱い、
-  `t_offset` で線形補間してコピーごとの平行移動ベクトル `Δ` を作る:
-  - `Δ(t) = lerp(offset_start, offset_end, t_offset)`
-  - 既存挙動は `offset_start=(0,0,0)` により維持
+- `offset` を XYZ の終点オフセット [mm] として扱い、0 → offset を補間して配置する（既存挙動）。
+- `offset_start` は **この layout では使わない**（UI では隠す）。
 
 #### `layout="cylindrical"`（今回追加したいもの）
 
@@ -66,11 +64,11 @@
 ### 1) meta / signature / docstring
 
 - `repeat_meta` に追加:
-  - `layout: ParamMeta(kind="choice", choices=("cartesian","cylindrical"))`
+  - `layout: ParamMeta(kind="choice", choices=("grid","cylindrical"))`
   - `offset_start: ParamMeta(kind="vec3", ...)`
 - `repeat()` に `layout` と `offset_start` を追加
 - docstring を更新:
-  - `layout` によって `offset_start/offset` の意味が変わること（cartesian: XYZ / cylindrical: r,θ,z）を明記
+  - `layout` によって `offset_start/offset` の意味が変わること（grid: XYZ / cylindrical: r,θ,z）を明記
 
 ### 2) njit カーネル
 
@@ -78,7 +76,7 @@
 その部分を下記に置換する（擬似コード）:
 
 - `offset_vec = lerp(offset_start, offset_end, t_offset)`（まずは 3 成分を補間）
-- `if layout == "cartesian": (ox,oy,oz) = offset_vec`
+- `if layout == "grid": (ox,oy,oz) = offset_end * t_offset`（既存）
 - `if layout == "cylindrical":`
   - `r = offset_vec[0]`
   - `theta = deg2rad(offset_vec[1])`
@@ -101,12 +99,12 @@
 
 ## 実装手順（チェックリスト）
 
-- [ ] `layout` の値名（`cartesian/cylindrical` で良いか）を確定; grid/cylindricalで。
-- [ ] `offset_start` を入れる（円周配置のため必須と判断）
-- [ ] `src/grafix/core/effects/repeat.py` を更新（meta / signature / docstring / njit）
-- [ ] `tests/core/effects/test_repeat.py` に円柱配置テストを追加
-- [ ] stub 更新（`src/grafix/api/__init__.pyi`）
-- [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_repeat.py` を実行
+- [x] `layout` の値名（grid/cylindrical）を確定
+- [x] `offset_start` を追加（`layout="cylindrical"` の開始）
+- [x] `src/grafix/core/effects/repeat.py` を更新（meta / signature / docstring / njit + `ui_visible`）
+- [x] `tests/core/effects/test_repeat.py` に円柱配置テストを追加
+- [x] stub 更新（`src/grafix/api/__init__.pyi`）
+- [x] `PYTHONPATH=src pytest -q tests/core/effects/test_repeat.py` を実行
 
 ## 確認したい点（あなたに質問）
 
