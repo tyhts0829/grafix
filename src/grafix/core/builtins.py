@@ -35,6 +35,7 @@ _BUILTIN_EFFECT_MODULES: tuple[str, ...] = (
     "grafix.core.effects.mirror",
     "grafix.core.effects.mirror3d",
     "grafix.core.effects.metaball",
+    "grafix.core.effects.isocontour",
     "grafix.core.effects.translate",
     "grafix.core.effects.extrude",
     "grafix.core.effects.repeat",

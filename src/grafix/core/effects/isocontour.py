@@ -287,23 +287,91 @@ def _stitch_segments_to_loops(
     return loops
 
 
-def _marching_squares_segments(
+@njit(cache=True)
+def _interp_zero(a: float, b: float) -> float:
+    denom = b - a
+    if denom == 0.0:
+        return 0.5
+    t = -a / denom
+    if t < 0.0:
+        return 0.0
+    if t > 1.0:
+        return 1.0
+    return float(t)
+
+
+@njit(cache=True)
+def _count_marching_squares_zero_segments_numba(
     field: np.ndarray,
+    sdf: np.ndarray,
+    lo: float,
+    hi: float,
+) -> int:
+    ny, nx = int(field.shape[0]), int(field.shape[1])
+    n = 0
+    for j in range(ny - 1):
+        for i in range(nx - 1):
+            v00 = float(field[j, i])
+            v10 = float(field[j, i + 1])
+            v11 = float(field[j + 1, i + 1])
+            v01 = float(field[j + 1, i])
+
+            b0 = v00 >= 0.0
+            b1 = v10 >= 0.0
+            b2 = v11 >= 0.0
+            b3 = v01 >= 0.0
+            idx = (1 if b0 else 0) | (2 if b1 else 0) | (4 if b2 else 0) | (8 if b3 else 0)
+            if idx == 0 or idx == 15:
+                continue
+
+            e0 = b0 != b1
+            e1 = b1 != b2
+            e2 = b3 != b2
+            e3 = b0 != b3
+
+            valid = 0
+            if e0:
+                t = _interp_zero(v00, v10)
+                s = float(sdf[j, i]) + t * float(sdf[j, i + 1] - sdf[j, i])
+                if s >= lo and s <= hi:
+                    valid += 1
+            if e1:
+                t = _interp_zero(v10, v11)
+                s = float(sdf[j, i + 1]) + t * float(sdf[j + 1, i + 1] - sdf[j, i + 1])
+                if s >= lo and s <= hi:
+                    valid += 1
+            if e2:
+                t = _interp_zero(v01, v11)
+                s = float(sdf[j + 1, i]) + t * float(sdf[j + 1, i + 1] - sdf[j + 1, i])
+                if s >= lo and s <= hi:
+                    valid += 1
+            if e3:
+                t = _interp_zero(v00, v01)
+                s = float(sdf[j, i]) + t * float(sdf[j + 1, i] - sdf[j, i])
+                if s >= lo and s <= hi:
+                    valid += 1
+
+            if valid == 2:
+                n += 1
+            elif valid == 4:
+                n += 2
+
+    return int(n)
+
+
+@njit(cache=True)
+def _fill_marching_squares_zero_segments_xy_numba(
+    field: np.ndarray,
+    sdf: np.ndarray,
     xs: np.ndarray,
     ys: np.ndarray,
     *,
-    level: float,
-    snap: float,
-    key_to_xy: dict[tuple[int, int], tuple[float, float]],
-) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+    lo: float,
+    hi: float,
+    out_segments: np.ndarray,
+) -> int:
     ny, nx = int(field.shape[0]), int(field.shape[1])
-    segments: list[tuple[tuple[int, int], tuple[int, int]]] = []
-
-    def _interp(a: float, b: float, t_level: float) -> float:
-        denom = b - a
-        if denom == 0.0:
-            return 0.5
-        return (t_level - a) / denom
+    cursor = 0
 
     for j in range(ny - 1):
         y0 = float(ys[j])
@@ -317,10 +385,10 @@ def _marching_squares_segments(
             v11 = float(field[j + 1, i + 1])
             v01 = float(field[j + 1, i])
 
-            b0 = v00 >= level
-            b1 = v10 >= level
-            b2 = v11 >= level
-            b3 = v01 >= level
+            b0 = v00 >= 0.0
+            b1 = v10 >= 0.0
+            b2 = v11 >= 0.0
+            b3 = v01 >= 0.0
             idx = (1 if b0 else 0) | (2 if b1 else 0) | (4 if b2 else 0) | (8 if b3 else 0)
             if idx == 0 or idx == 15:
                 continue
@@ -330,101 +398,159 @@ def _marching_squares_segments(
             e2 = b3 != b2
             e3 = b0 != b3
 
-            p0 = None
-            p1 = None
-            p2 = None
-            p3 = None
+            has0 = False
+            has1 = False
+            has2 = False
+            has3 = False
+            p0x = 0.0
+            p0y = 0.0
+            p1x = 0.0
+            p1y = 0.0
+            p2x = 0.0
+            p2y = 0.0
+            p3x = 0.0
+            p3y = 0.0
 
             if e0:
-                t = _interp(v00, v10, level)
-                x = x0 + float(np.clip(t, 0.0, 1.0)) * (x1 - x0)
-                y = y0
-                k = _quant_key(x, y, snap)
-                key_to_xy.setdefault(k, (x, y))
-                p0 = k
+                t = _interp_zero(v00, v10)
+                s = float(sdf[j, i]) + t * float(sdf[j, i + 1] - sdf[j, i])
+                if s >= lo and s <= hi:
+                    has0 = True
+                    p0x = x0 + t * (x1 - x0)
+                    p0y = y0
             if e1:
-                t = _interp(v10, v11, level)
-                x = x1
-                y = y0 + float(np.clip(t, 0.0, 1.0)) * (y1 - y0)
-                k = _quant_key(x, y, snap)
-                key_to_xy.setdefault(k, (x, y))
-                p1 = k
+                t = _interp_zero(v10, v11)
+                s = float(sdf[j, i + 1]) + t * float(sdf[j + 1, i + 1] - sdf[j, i + 1])
+                if s >= lo and s <= hi:
+                    has1 = True
+                    p1x = x1
+                    p1y = y0 + t * (y1 - y0)
             if e2:
-                t = _interp(v01, v11, level)
-                x = x0 + float(np.clip(t, 0.0, 1.0)) * (x1 - x0)
-                y = y1
-                k = _quant_key(x, y, snap)
-                key_to_xy.setdefault(k, (x, y))
-                p2 = k
+                t = _interp_zero(v01, v11)
+                s = float(sdf[j + 1, i]) + t * float(sdf[j + 1, i + 1] - sdf[j + 1, i])
+                if s >= lo and s <= hi:
+                    has2 = True
+                    p2x = x0 + t * (x1 - x0)
+                    p2y = y1
             if e3:
-                t = _interp(v00, v01, level)
-                x = x0
-                y = y0 + float(np.clip(t, 0.0, 1.0)) * (y1 - y0)
-                k = _quant_key(x, y, snap)
-                key_to_xy.setdefault(k, (x, y))
-                p3 = k
+                t = _interp_zero(v00, v01)
+                s = float(sdf[j, i]) + t * float(sdf[j + 1, i] - sdf[j, i])
+                if s >= lo and s <= hi:
+                    has3 = True
+                    p3x = x0
+                    p3y = y0 + t * (y1 - y0)
 
-            pts = [p for p in (p0, p1, p2, p3) if p is not None]
-            if len(pts) == 2:
-                segments.append((pts[0], pts[1]))
+            npts = 0
+            if has0:
+                npts += 1
+            if has1:
+                npts += 1
+            if has2:
+                npts += 1
+            if has3:
+                npts += 1
+
+            if npts == 2:
+                ax = 0.0
+                ay = 0.0
+                bx = 0.0
+                by = 0.0
+                found_first = False
+                if has0:
+                    ax, ay = p0x, p0y
+                    found_first = True
+                if has1:
+                    if not found_first:
+                        ax, ay = p1x, p1y
+                        found_first = True
+                    else:
+                        bx, by = p1x, p1y
+                if has2:
+                    if not found_first:
+                        ax, ay = p2x, p2y
+                        found_first = True
+                    else:
+                        bx, by = p2x, p2y
+                if has3:
+                    if not found_first:
+                        ax, ay = p3x, p3y
+                        found_first = True
+                    else:
+                        bx, by = p3x, p3y
+
+                out_segments[cursor, 0] = ax
+                out_segments[cursor, 1] = ay
+                out_segments[cursor, 2] = bx
+                out_segments[cursor, 3] = by
+                cursor += 1
                 continue
-            if len(pts) != 4:
+
+            if npts != 4:
                 continue
 
             vc = 0.25 * (v00 + v10 + v11 + v01)
-            center_inside = vc >= level
+            center_inside = vc >= 0.0
             if idx == 5:
                 if center_inside:
-                    segments.append((p0, p1))  # type: ignore[arg-type]
-                    segments.append((p2, p3))  # type: ignore[arg-type]
+                    out_segments[cursor, 0] = p0x
+                    out_segments[cursor, 1] = p0y
+                    out_segments[cursor, 2] = p1x
+                    out_segments[cursor, 3] = p1y
+                    cursor += 1
+                    out_segments[cursor, 0] = p2x
+                    out_segments[cursor, 1] = p2y
+                    out_segments[cursor, 2] = p3x
+                    out_segments[cursor, 3] = p3y
+                    cursor += 1
                 else:
-                    segments.append((p0, p3))  # type: ignore[arg-type]
-                    segments.append((p1, p2))  # type: ignore[arg-type]
+                    out_segments[cursor, 0] = p0x
+                    out_segments[cursor, 1] = p0y
+                    out_segments[cursor, 2] = p3x
+                    out_segments[cursor, 3] = p3y
+                    cursor += 1
+                    out_segments[cursor, 0] = p1x
+                    out_segments[cursor, 1] = p1y
+                    out_segments[cursor, 2] = p2x
+                    out_segments[cursor, 3] = p2y
+                    cursor += 1
                 continue
             if idx == 10:
                 if center_inside:
-                    segments.append((p0, p3))  # type: ignore[arg-type]
-                    segments.append((p1, p2))  # type: ignore[arg-type]
+                    out_segments[cursor, 0] = p0x
+                    out_segments[cursor, 1] = p0y
+                    out_segments[cursor, 2] = p3x
+                    out_segments[cursor, 3] = p3y
+                    cursor += 1
+                    out_segments[cursor, 0] = p1x
+                    out_segments[cursor, 1] = p1y
+                    out_segments[cursor, 2] = p2x
+                    out_segments[cursor, 3] = p2y
+                    cursor += 1
                 else:
-                    segments.append((p0, p1))  # type: ignore[arg-type]
-                    segments.append((p2, p3))  # type: ignore[arg-type]
+                    out_segments[cursor, 0] = p0x
+                    out_segments[cursor, 1] = p0y
+                    out_segments[cursor, 2] = p1x
+                    out_segments[cursor, 3] = p1y
+                    cursor += 1
+                    out_segments[cursor, 0] = p2x
+                    out_segments[cursor, 1] = p2y
+                    out_segments[cursor, 2] = p3x
+                    out_segments[cursor, 3] = p3y
+                    cursor += 1
                 continue
 
-            segments.append((p0, p1))  # type: ignore[arg-type]
-            segments.append((p2, p3))  # type: ignore[arg-type]
+            out_segments[cursor, 0] = p0x
+            out_segments[cursor, 1] = p0y
+            out_segments[cursor, 2] = p1x
+            out_segments[cursor, 3] = p1y
+            cursor += 1
+            out_segments[cursor, 0] = p2x
+            out_segments[cursor, 1] = p2y
+            out_segments[cursor, 2] = p3x
+            out_segments[cursor, 3] = p3y
+            cursor += 1
 
-    return segments
-
-
-def _build_levels(
-    *,
-    spacing: float,
-    phase: float,
-    max_dist: float,
-    mode: str,
-    level_step: int,
-) -> list[float]:
-    if max_dist < 0.0:
-        return []
-    if mode == "inside":
-        lo, hi = -max_dist, 0.0
-    elif mode == "outside":
-        lo, hi = 0.0, max_dist
-    else:
-        lo, hi = -max_dist, max_dist
-
-    k_start = int(math.ceil((lo - phase) / spacing))
-    k_end = int(math.floor((hi - phase) / spacing))
-    if k_start > k_end:
-        return []
-
-    out: list[float] = []
-    step = max(1, int(level_step))
-    for k in range(int(k_start), int(k_end) + 1):
-        if step > 1 and (k % step) != 0:
-            continue
-        out.append(float(k) * float(spacing) + float(phase))
-    return out
+    return int(cursor)
 
 
 @effect(meta=isocontour_meta, n_inputs=1)
@@ -492,6 +618,8 @@ def isocontour(
     max_d = float(max_dist)
     if not math.isfinite(max_d):
         return _empty_geometry()
+    if max_d < 0.0:
+        return _empty_geometry()
 
     mode_s = str(mode)
     if mode_s not in {"inside", "outside", "both"}:
@@ -541,7 +669,7 @@ def isocontour(
     ys = y0 + pitch * np.arange(ny, dtype=np.float64)
 
     ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
-    field = _evaluate_sdf_grid_numba(
+    sdf = _evaluate_sdf_grid_numba(
         xs.astype(np.float64, copy=False),
         ys.astype(np.float64, copy=False),
         ring_vertices,
@@ -552,37 +680,60 @@ def isocontour(
         float(gamma_f),
     )
 
-    levels = _build_levels(
-        spacing=spacing_f,
-        phase=float(phase_f),
-        max_dist=float(max_d),
-        mode=mode_s,
-        level_step=int(level_step),
-    )
-    if not levels:
+    level_step_i = max(1, int(level_step))
+    spacing_eff = float(spacing_f) * float(level_step_i)
+    field = np.sin(np.pi * (sdf - float(phase_f)) / spacing_eff).astype(np.float64, copy=False)
+
+    if mode_s == "inside":
+        lo, hi = -max_d, 0.0
+    elif mode_s == "outside":
+        lo, hi = 0.0, max_d
+    else:
+        lo, hi = -max_d, max_d
+
+    n_segments = _count_marching_squares_zero_segments_numba(field, sdf, float(lo), float(hi))
+    if n_segments <= 0:
         return _empty_geometry()
 
+    segments_xy = np.empty((int(n_segments), 4), dtype=np.float64)
+    filled = _fill_marching_squares_zero_segments_xy_numba(
+        field,
+        sdf,
+        xs,
+        ys,
+        lo=float(lo),
+        hi=float(hi),
+        out_segments=segments_xy,
+    )
+    segments_xy = segments_xy[: int(filled)]
+
     snap = max(1e-9, pitch * 1e-6)
+    key_to_xy: dict[tuple[int, int], tuple[float, float]] = {}
+    segments: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    for seg in segments_xy:
+        ax = float(seg[0])
+        ay = float(seg[1])
+        bx = float(seg[2])
+        by = float(seg[3])
+        k0 = _quant_key(ax, ay, snap)
+        k1 = _quant_key(bx, by, snap)
+        if k0 == k1:
+            continue
+        key_to_xy.setdefault(k0, (ax, ay))
+        key_to_xy.setdefault(k1, (bx, by))
+        segments.append((k0, k1))
+
+    loops = _stitch_segments_to_loops(segments)
+
     out_lines: list[np.ndarray] = []
-    for level in levels:
-        key_to_xy: dict[tuple[int, int], tuple[float, float]] = {}
-        segments = _marching_squares_segments(
-            field,
-            xs,
-            ys,
-            level=float(level),
-            snap=float(snap),
-            key_to_xy=key_to_xy,
-        )
-        loops = _stitch_segments_to_loops(segments)
-        for loop in loops:
-            pts_xy = np.asarray([key_to_xy[k] for k in loop], dtype=np.float64)
-            if pts_xy.shape[0] < 4:
-                continue
-            v3 = np.zeros((pts_xy.shape[0], 3), dtype=np.float64)
-            v3[:, 0:2] = pts_xy
-            out = transform_back(v3, rot, float(z_off)).astype(np.float32, copy=False)
-            out_lines.append(out)
+    for loop in loops:
+        pts_xy = np.asarray([key_to_xy[k] for k in loop], dtype=np.float64)
+        if pts_xy.shape[0] < 4:
+            continue
+        v3 = np.zeros((pts_xy.shape[0], 3), dtype=np.float64)
+        v3[:, 0:2] = pts_xy
+        out = transform_back(v3, rot, float(z_off)).astype(np.float32, copy=False)
+        out_lines.append(out)
 
     if bool(keep_original):
         for i in range(int(mask.offsets.size) - 1):
