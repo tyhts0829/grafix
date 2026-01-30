@@ -64,6 +64,65 @@ def test_repeat_offset_interpolates_over_count() -> None:
     assert out.offsets.tolist() == [0, 2, 4, 6]
 
 
+def test_repeat_layout_radial_places_copies_on_circle() -> None:
+    g = G.repeat_test_line_0_1()
+    out = realize(
+        E.repeat(
+            layout="radial",
+            radius=10.0,
+            theta=0.0,
+            n_theta=4,
+            n_radius=2,
+        )(g)
+    )
+
+    expected = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [11.0, 0.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [1.0, 10.0, 0.0],
+            [-10.0, 0.0, 0.0],
+            [-9.0, 0.0, 0.0],
+            [0.0, -10.0, 0.0],
+            [1.0, -10.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(out.coords, expected, rtol=0.0, atol=1e-6)
+    assert out.offsets.tolist() == [0, 2, 4, 6, 8, 10]
+
+
+def test_repeat_layout_radial_steps_rotation_over_phase() -> None:
+    g = G.repeat_test_line_1_2()
+    out = realize(
+        E.repeat(
+            layout="radial",
+            radius=10.0,
+            theta=0.0,
+            n_theta=2,
+            n_radius=1,
+            auto_center=False,
+            pivot=(0.0, 0.0, 0.0),
+            rotation_step=(0.0, 0.0, 90.0),
+        )(g)
+    )
+
+    expected = np.array(
+        [
+            [11.0, 0.0, 0.0],
+            [12.0, 0.0, 0.0],
+            [-10.0, 1.0, 0.0],
+            [-10.0, 2.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(out.coords, expected, rtol=0.0, atol=1e-6)
+    assert out.offsets.tolist() == [0, 2, 4]
+
+
 def test_repeat_scale_uses_pivot_when_auto_center_false() -> None:
     g = G.repeat_test_line_1_2()
     out = realize(
