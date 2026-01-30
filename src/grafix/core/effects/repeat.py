@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
@@ -13,7 +14,12 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import RealizedGeometry
 
 repeat_meta = {
+    "layout": ParamMeta(kind="choice", choices=("grid", "radial")),
     "count": ParamMeta(kind="int", ui_min=0, ui_max=100),
+    "radius": ParamMeta(kind="float", ui_min=0.0, ui_max=300.0),
+    "theta": ParamMeta(kind="float", ui_min=-180.0, ui_max=180.0),
+    "n_theta": ParamMeta(kind="int", ui_min=1, ui_max=64),
+    "n_radius": ParamMeta(kind="int", ui_min=1, ui_max=64),
     "cumulative_scale": ParamMeta(kind="bool"),
     "cumulative_offset": ParamMeta(kind="bool"),
     "cumulative_rotate": ParamMeta(kind="bool"),
@@ -23,6 +29,25 @@ repeat_meta = {
     "curve": ParamMeta(kind="float", ui_min=0.1, ui_max=5.0),
     "auto_center": ParamMeta(kind="bool"),
     "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
+}
+
+def _layout_is(name: str):
+    def _pred(v: Mapping[str, Any]) -> bool:
+        return str(v.get("layout", "grid")) == name
+
+    return _pred
+
+
+repeat_ui_visible = {
+    # grid 配置
+    "count": _layout_is("grid"),
+    "cumulative_offset": _layout_is("grid"),
+    "offset": _layout_is("grid"),
+    # radial 配置
+    "radius": _layout_is("radial"),
+    "theta": _layout_is("radial"),
+    "n_theta": _layout_is("radial"),
+    "n_radius": _layout_is("radial"),
 }
 
 
@@ -137,11 +162,121 @@ def _repeat_fill_all(
             out_coords[v_start + i, 2] = rz0 + cz + oz
 
 
-@effect(meta=repeat_meta)
+@njit(cache=True, fastmath=True)  # type: ignore[misc]
+def _repeat_fill_radial(
+    base_coords: np.ndarray,
+    base_offsets_tail: np.ndarray,
+    curve: float,
+    cumulative_scale: bool,
+    cumulative_rotate: bool,
+    center: np.ndarray,
+    out_coords: np.ndarray,
+    out_offsets: np.ndarray,
+    radius: float,
+    theta0: float,
+    n_theta: int,
+    n_radius: int,
+    scale_end: np.ndarray,
+    rotate_end: np.ndarray,
+) -> None:
+    """radial レイアウトの全コピーを 1 カーネルで生成する。"""
+    n_vertices = base_coords.shape[0]
+    n_lines = base_offsets_tail.shape[0]
+
+    out_offsets[0] = 0
+
+    cx = float(center[0])
+    cy = float(center[1])
+    cz = float(center[2])
+
+    scale_end_x = float(scale_end[0])
+    scale_end_y = float(scale_end[1])
+    scale_end_z = float(scale_end[2])
+    rot_end_x = float(rotate_end[0])
+    rot_end_y = float(rotate_end[1])
+    rot_end_z = float(rotate_end[2])
+
+    curve_f = float(curve)
+    two_pi = 2.0 * math.pi
+
+    if n_radius <= 1:
+        copies = n_theta
+    else:
+        copies = 1 + (n_radius - 1) * n_theta
+    denom_copy = float(copies - 1) if copies > 1 else 1.0
+
+    k = 0
+    n_rings = 1 if n_radius <= 1 else n_radius
+    denom_r = float(n_radius - 1) if n_radius > 1 else 1.0
+    for ring_i in range(n_rings):
+        ring_t = float(ring_i) / denom_r if n_radius > 1 else 1.0
+        r = float(radius) * ring_t
+        n_j = n_theta if (n_radius <= 1 or ring_i != 0) else 1
+        for j in range(n_j):
+            angle = theta0 + two_pi * float(j) / float(n_theta)
+            ox = r * math.cos(angle)
+            oy = r * math.sin(angle)
+
+            t = 1.0 if copies <= 1 else float(k) / denom_copy
+            t_curve = t**curve_f if (cumulative_scale or cumulative_rotate) else t
+            t_scale = t_curve if cumulative_scale else t
+            t_rotate = t_curve if cumulative_rotate else t
+
+            sx = 1.0 + (scale_end_x - 1.0) * t_scale
+            sy = 1.0 + (scale_end_y - 1.0) * t_scale
+            sz = 1.0 + (scale_end_z - 1.0) * t_scale
+
+            rx = rot_end_x * t_rotate
+            ry = rot_end_y * t_rotate
+            rz = rot_end_z * t_rotate
+
+            sin_x = math.sin(rx)
+            cos_x = math.cos(rx)
+            sin_y = math.sin(ry)
+            cos_y = math.cos(ry)
+            sin_z = math.sin(rz)
+            cos_z = math.cos(rz)
+
+            r00 = cos_y * cos_z
+            r01 = sin_x * sin_y * cos_z - cos_x * sin_z
+            r02 = cos_x * sin_y * cos_z + sin_x * sin_z
+            r10 = cos_y * sin_z
+            r11 = sin_x * sin_y * sin_z + cos_x * cos_z
+            r12 = cos_x * sin_y * sin_z - sin_x * cos_z
+            r20 = -sin_y
+            r21 = sin_x * cos_y
+            r22 = cos_x * cos_y
+
+            v_start = k * n_vertices
+            o_start = 1 + k * n_lines
+            for li in range(n_lines):
+                out_offsets[o_start + li] = int(base_offsets_tail[li]) + int(v_start)
+
+            for i in range(n_vertices):
+                x = (float(base_coords[i, 0]) - cx) * sx
+                y = (float(base_coords[i, 1]) - cy) * sy
+                z = (float(base_coords[i, 2]) - cz) * sz
+
+                rx0 = x * r00 + y * r01 + z * r02
+                ry0 = x * r10 + y * r11 + z * r12
+                rz0 = x * r20 + y * r21 + z * r22
+
+                out_coords[v_start + i, 0] = rx0 + cx + ox
+                out_coords[v_start + i, 1] = ry0 + cy + oy
+                out_coords[v_start + i, 2] = rz0 + cz
+            k += 1
+
+
+@effect(meta=repeat_meta, ui_visible=repeat_ui_visible)
 def repeat(
     inputs: Sequence[RealizedGeometry],
     *,
+    layout: str = "grid",
     count: int = 3,
+    radius: float = 0.0,
+    theta: float = 0.0,
+    n_theta: int = 6,
+    n_radius: int = 1,
     cumulative_scale: bool = False,
     cumulative_offset: bool = False,
     cumulative_rotate: bool = False,
@@ -158,16 +293,30 @@ def repeat(
     ----------
     inputs : Sequence[RealizedGeometry]
         入力の実体ジオメトリ列。通常は 1 要素。
+    layout : {"grid","radial"}, default "grid"
+        `"grid"` は `count/offset` による直交配置（現状維持）。
+        `"radial"` は `radius/theta/n_theta/n_radius` による円形（放射）配置。
     count : int, default 3
         複製回数。0 以下で no-op（入力をそのまま返す）。
+        `layout="radial"` のときは無視される（コピー数は n_theta/n_radius で決まる）。
+    radius : float, default 0.0
+        `layout="radial"` の外周半径 [mm]。
+    theta : float, default 0.0
+        `layout="radial"` の開始角 [deg]。
+    n_theta : int, default 6
+        `layout="radial"` の周方向配置数。
+    n_radius : int, default 1
+        `layout="radial"` の半径方向配置数。
     cumulative_scale : bool, default False
         True のときスケール補間にカーブ（t' = t**curve）を用いる。
     cumulative_offset : bool, default False
         True のときオフセット補間にカーブ（t' = t**curve）を用いる。
+        `layout="radial"` のときは無視される。
     cumulative_rotate : bool, default False
         True のとき回転補間にカーブ（t' = t**curve）を用いる。
     offset : tuple[float, float, float], default (0.0, 0.0, 0.0)
         終点オフセット [mm]。始点 0 から offset までを補間する。
+        `layout="radial"` のときは無視される。
     rotation_step : tuple[float, float, float], default (0.0, 0.0, 0.0)
         終点回転角 [deg]（rx, ry, rz）。始点 0 から rotation_step までを補間する。
     scale : tuple[float, float, float], default (1.0, 1.0, 1.0)
@@ -188,6 +337,7 @@ def repeat(
     -----
     変換順序は「中心移動 → スケール → 回転 → 平行移動 → 中心に戻す」。
     回転は旧仕様（Rz・Ry・Rx の合成）を踏襲する。
+    `layout="radial"` のとき、スケール/回転の補間パラメータ t は生成されるコピーの順序で 0→1 に変化する（位相でも変化する）。
     """
     if not inputs:
         return _empty_geometry()
@@ -196,8 +346,8 @@ def repeat(
     if base.coords.shape[0] == 0:
         return base
 
-    n_dups = int(count)
-    if n_dups <= 0:
+    layout_s = str(layout)
+    if layout_s not in {"grid", "radial"}:
         return base
 
     n_vertices = int(base.coords.shape[0])
@@ -220,9 +370,6 @@ def repeat(
         )
 
     center32 = np.asarray(center, dtype=np.float32)
-    offset_end = np.array(
-        [float(offset[0]), float(offset[1]), float(offset[2])], dtype=np.float32
-    )
     scale_end = np.array(
         [float(scale[0]), float(scale[1]), float(scale[2])], dtype=np.float32
     )
@@ -232,24 +379,69 @@ def repeat(
     )
     rotate_end = np.deg2rad(rotate_end_deg).astype(np.float32, copy=False)
 
-    copies = n_dups + 1
+    base_tail = base.offsets[1:]
+
+    if layout_s == "grid":
+        n_dups = int(count)
+        if n_dups <= 0:
+            return base
+
+        offset_end = np.array(
+            [float(offset[0]), float(offset[1]), float(offset[2])], dtype=np.float32
+        )
+
+        copies = n_dups + 1
+        out_coords = np.empty((n_vertices * copies, 3), dtype=np.float32)
+        out_offsets = np.empty((n_lines * copies + 1,), dtype=np.int32)
+        _repeat_fill_all(
+            base.coords,
+            base_tail,
+            int(n_dups),
+            float(curve),
+            bool(cumulative_scale),
+            bool(cumulative_offset),
+            bool(cumulative_rotate),
+            center32,
+            out_coords,
+            out_offsets,
+            offset_end,
+            scale_end,
+            rotate_end,
+        )
+        return RealizedGeometry(coords=out_coords, offsets=out_offsets)
+
+    n_theta_i = int(n_theta)
+    n_radius_i = int(n_radius)
+    if n_theta_i <= 0 or n_radius_i <= 0:
+        return base
+
+    if n_radius_i == 1:
+        copies = n_theta_i
+    else:
+        copies = 1 + (n_radius_i - 1) * n_theta_i
+
+    radius_f = float(radius)
+    if not np.isfinite(radius_f):
+        radius_f = 0.0
+
+    theta_rad = float(np.deg2rad(float(theta)))
+
     out_coords = np.empty((n_vertices * copies, 3), dtype=np.float32)
     out_offsets = np.empty((n_lines * copies + 1,), dtype=np.int32)
-    base_tail = base.offsets[1:]
-    _repeat_fill_all(
+    _repeat_fill_radial(
         base.coords,
         base_tail,
-        int(n_dups),
         float(curve),
         bool(cumulative_scale),
-        bool(cumulative_offset),
         bool(cumulative_rotate),
         center32,
         out_coords,
         out_offsets,
-        offset_end,
+        float(radius_f),
+        float(theta_rad),
+        int(n_theta_i),
+        int(n_radius_i),
         scale_end,
         rotate_end,
     )
-
     return RealizedGeometry(coords=out_coords, offsets=out_offsets)
