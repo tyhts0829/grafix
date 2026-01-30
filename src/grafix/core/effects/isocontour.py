@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-from numba import njit, prange  # type: ignore[import-untyped]
+from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
@@ -230,8 +230,276 @@ def _pack_rings(
     return ring_vertices, ring_offsets, ring_mins, ring_maxs
 
 
-@njit(cache=True, parallel=True)
-def _evaluate_sdf_grid_numba(
+_EDT_INF = 1e20
+
+
+@njit(cache=True)
+def _build_inside_mask_evenodd_numba(
+    ys: np.ndarray,
+    x0: float,
+    pitch: float,
+    nx: int,
+    ring_vertices: np.ndarray,
+    ring_offsets: np.ndarray,
+    ring_mins: np.ndarray,
+    ring_maxs: np.ndarray,
+) -> np.ndarray:
+    """even-odd（奇偶）規則で inside_mask を作る（スキャンライン塗りつぶし）。
+
+    Notes
+    -----
+    - グリッド点（xs[i], ys[j]）をサンプル点とし、外周＋穴をまとめて扱う。
+    - 交点の厳密不等号を使い、「境界は outside 寄り」にする。
+    """
+
+    ny = int(ys.shape[0])
+    inside = np.zeros((ny, int(nx)), dtype=np.uint8)
+    n_rings = int(ring_offsets.shape[0]) - 1
+
+    # 行ごとの交点数は一定ではないため、最大長（頂点数）でバッファを 1 本だけ確保して使い回す。
+    xints = np.empty((int(ring_vertices.shape[0]),), dtype=np.float64)
+
+    for j in range(ny):
+        y = float(ys[j])
+        nints = 0
+
+        for ri in range(n_rings):
+            # AABB 外なら、その行で交差しない。
+            if y < float(ring_mins[ri, 1]) or y > float(ring_maxs[ri, 1]):
+                continue
+
+            s = int(ring_offsets[ri])
+            e = int(ring_offsets[ri + 1])
+            for k in range(s, e - 1):
+                ay = float(ring_vertices[k, 1])
+                by = float(ring_vertices[k + 1, 1])
+                if (ay > y) == (by > y):
+                    continue
+                ax = float(ring_vertices[k, 0])
+                bx = float(ring_vertices[k + 1, 0])
+                xints[nints] = ax + (y - ay) * (bx - ax) / (by - ay)
+                nints += 1
+
+        if nints < 2:
+            continue
+
+        xints[:nints].sort()
+        for p in range(0, nints - 1, 2):
+            x_left = float(xints[p])
+            x_right = float(xints[p + 1])
+            if x_right <= x_left:
+                continue
+
+            # inside は [x_left, x_right) とし、右端は outside に寄せる。
+            i0 = int(math.ceil((x_left - float(x0)) / float(pitch)))
+            i1 = int(math.ceil((x_right - float(x0)) / float(pitch)))
+            if i0 < 0:
+                i0 = 0
+            if i1 > int(nx):
+                i1 = int(nx)
+            for i in range(i0, i1):
+                inside[j, i] = 1
+
+    return inside
+
+
+@njit(cache=True)
+def _round_to_int_numba(x: float) -> int:
+    """float を最近傍の整数へ丸める（Numba 用）。"""
+
+    if x >= 0.0:
+        return int(math.floor(x + 0.5))
+    return int(math.ceil(x - 0.5))
+
+
+@njit(cache=True)
+def _rasterize_boundary_mask_numba(
+    boundary: np.ndarray,
+    ring_vertices: np.ndarray,
+    ring_offsets: np.ndarray,
+    x0: float,
+    y0: float,
+    inv_pitch: float,
+) -> None:
+    """リング線分をグリッドへラスタライズして boundary_mask を作る。
+
+    Notes
+    -----
+    - ここでの boundary は「EDT の seed」なので、厳密さより速度を優先する。
+    - ラスタライズは整数格子上の Bresenham に落とす。
+    """
+
+    ny = int(boundary.shape[0])
+    nx = int(boundary.shape[1])
+    n_rings = int(ring_offsets.shape[0]) - 1
+
+    for ri in range(n_rings):
+        s = int(ring_offsets[ri])
+        e = int(ring_offsets[ri + 1])
+        for k in range(s, e - 1):
+            ax = float(ring_vertices[k, 0])
+            ay = float(ring_vertices[k, 1])
+            bx = float(ring_vertices[k + 1, 0])
+            by = float(ring_vertices[k + 1, 1])
+
+            i0 = _round_to_int_numba((ax - float(x0)) * float(inv_pitch))
+            j0 = _round_to_int_numba((ay - float(y0)) * float(inv_pitch))
+            i1 = _round_to_int_numba((bx - float(x0)) * float(inv_pitch))
+            j1 = _round_to_int_numba((by - float(y0)) * float(inv_pitch))
+
+            dx = abs(int(i1 - i0))
+            dy = abs(int(j1 - j0))
+            sx = 1 if i0 < i1 else -1
+            sy = 1 if j0 < j1 else -1
+            err = dx - dy
+
+            while True:
+                if 0 <= i0 < nx and 0 <= j0 < ny:
+                    boundary[j0, i0] = 1
+                if i0 == i1 and j0 == j1:
+                    break
+                e2 = 2 * err
+                if e2 > -dy:
+                    err -= dy
+                    i0 += sx
+                if e2 < dx:
+                    err += dx
+                    j0 += sy
+
+
+@njit(cache=True)
+def _add_boundary_from_inside_diff_numba(boundary: np.ndarray, inside: np.ndarray) -> None:
+    """inside/outside の境界（4近傍差分）を boundary_mask に追加する。"""
+
+    ny = int(inside.shape[0])
+    nx = int(inside.shape[1])
+    for j in range(ny):
+        for i in range(nx):
+            v = int(inside[j, i])
+            if i + 1 < nx and v != int(inside[j, i + 1]):
+                boundary[j, i] = 1
+                boundary[j, i + 1] = 1
+            if j + 1 < ny and v != int(inside[j + 1, i]):
+                boundary[j, i] = 1
+                boundary[j + 1, i] = 1
+
+
+@njit(cache=True)
+def _edt_1d_squared_inplace_numba(f: np.ndarray, out: np.ndarray, v: np.ndarray, z: np.ndarray) -> None:
+    """1D squared distance transform（Felzenszwalb & Huttenlocher）。
+
+    `out[i] = min_j ( f[j] + (i-j)^2 )` を計算する。
+
+    Notes
+    -----
+    `f[j]` は feature で 0、それ以外は `_EDT_INF` のような大きい値を想定する。
+    """
+
+    n = int(f.shape[0])
+
+    # すべて INF だと (INF - INF) で NaN になるので、有限要素があるかを先に見る。
+    first = -1
+    for i in range(n):
+        if float(f[i]) < float(_EDT_INF):
+            first = i
+            break
+    if first < 0:
+        for i in range(n):
+            out[i] = float(_EDT_INF)
+        return
+
+    k = 0
+    v[0] = np.int64(first)
+    z[0] = -1e30
+    z[1] = 1e30
+
+    for q in range(first + 1, n):
+        fq = float(f[q])
+        if fq >= float(_EDT_INF):
+            continue
+        while True:
+            r = int(v[k])
+            fr = float(f[r])
+            s = ((fq + float(q * q)) - (fr + float(r * r))) / (2.0 * float(q - r))
+            if s <= float(z[k]):
+                k -= 1
+                if k < 0:
+                    k = 0
+                    break
+                continue
+            break
+        k += 1
+        v[k] = np.int64(q)
+        z[k] = float(s)
+        z[k + 1] = 1e30
+
+    k = 0
+    for q in range(n):
+        while float(z[k + 1]) < float(q):
+            k += 1
+        r = int(v[k])
+        dq = float(q - r)
+        out[q] = dq * dq + float(f[r])
+
+
+@njit(cache=True)
+def _edt_2d_squared_numba(boundary: np.ndarray) -> np.ndarray:
+    """2D squared EDT（依存なし / 2-pass）。"""
+
+    ny = int(boundary.shape[0])
+    nx = int(boundary.shape[1])
+
+    # 1) x 方向（各行）
+    g = np.empty((ny, nx), dtype=np.float64)
+    f_row = np.empty((nx,), dtype=np.float64)
+    out_row = np.empty((nx,), dtype=np.float64)
+    v = np.empty((nx,), dtype=np.int64)
+    z = np.empty((nx + 1,), dtype=np.float64)
+
+    for j in range(ny):
+        has = False
+        for i in range(nx):
+            if int(boundary[j, i]) != 0:
+                f_row[i] = 0.0
+                has = True
+            else:
+                f_row[i] = float(_EDT_INF)
+        if not has:
+            for i in range(nx):
+                g[j, i] = float(_EDT_INF)
+            continue
+        _edt_1d_squared_inplace_numba(f_row, out_row, v, z)
+        for i in range(nx):
+            g[j, i] = out_row[i]
+
+    # 2) y 方向（各列）
+    dist2 = np.empty((ny, nx), dtype=np.float64)
+    f_col = np.empty((ny,), dtype=np.float64)
+    out_col = np.empty((ny,), dtype=np.float64)
+    v2 = np.empty((ny,), dtype=np.int64)
+    z2 = np.empty((ny + 1,), dtype=np.float64)
+
+    for i in range(nx):
+        has = False
+        for j in range(ny):
+            val = float(g[j, i])
+            f_col[j] = val
+            if val < float(_EDT_INF):
+                has = True
+        if not has:
+            for j in range(ny):
+                dist2[j, i] = float(_EDT_INF)
+            continue
+
+        _edt_1d_squared_inplace_numba(f_col, out_col, v2, z2)
+        for j in range(ny):
+            dist2[j, i] = out_col[j]
+
+    return dist2
+
+
+@njit(cache=True)
+def _evaluate_sdf_grid_edt_numba(
     xs: np.ndarray,
     ys: np.ndarray,
     ring_vertices: np.ndarray,
@@ -240,94 +508,47 @@ def _evaluate_sdf_grid_numba(
     ring_maxs: np.ndarray,
     max_dist: float,
     gamma: float,
+    pitch: float,
 ) -> np.ndarray:
-    """グリッド上で SDF（内側が負）を評価する（Numba 実装）。
-
-    - 距離: 全リングの全線分に対する最短距離（ユークリッド）
-    - 符号: even-odd 規則の内外判定（リング同士は XOR で合成）
-
-    Notes
-    -----
-    - 内外判定はリング AABB 内の点にだけ実行して少し高速化している。
-    - `gamma != 1` のときは `max_dist` を基準に距離を非線形に歪める。
-    """
+    """EDT（近似）で SDF を `O(Ngrid)` に寄せて評価する。"""
 
     ny = int(ys.shape[0])
     nx = int(xs.shape[0])
-    n_rings = int(ring_offsets.shape[0]) - 1
+    x0 = float(xs[0])
+    y0 = float(ys[0])
+    inv_pitch = 1.0 / float(pitch)
 
-    out = np.empty((ny, nx), dtype=np.float64)
-    for j in prange(ny):
-        y = float(ys[j])
+    inside = _build_inside_mask_evenodd_numba(
+        ys,
+        float(x0),
+        float(pitch),
+        int(nx),
+        ring_vertices,
+        ring_offsets,
+        ring_mins,
+        ring_maxs,
+    )
+
+    boundary = np.zeros((ny, nx), dtype=np.uint8)
+    _rasterize_boundary_mask_numba(boundary, ring_vertices, ring_offsets, float(x0), float(y0), float(inv_pitch))
+    _add_boundary_from_inside_diff_numba(boundary, inside)
+
+    dist2 = _edt_2d_squared_numba(boundary)
+
+    sdf = np.empty((ny, nx), dtype=np.float64)
+    for j in range(ny):
         for i in range(nx):
-            x = float(xs[i])
-            min_ds = 1e300
-            inside_parity = 0
-
-            for ri in range(n_rings):
-                s = int(ring_offsets[ri])
-                e = int(ring_offsets[ri + 1])
-
-                # AABB 外なら「そのリングの内側」には絶対にならないので、
-                # 奇偶規則の計算（レイ交差判定）を丸ごと省略できる。
-                inside_possible = (
-                    x >= float(ring_mins[ri, 0])
-                    and x <= float(ring_maxs[ri, 0])
-                    and y >= float(ring_mins[ri, 1])
-                    and y <= float(ring_maxs[ri, 1])
-                )
-
-                inside = 0
-                for k in range(s, e - 1):
-                    ax = float(ring_vertices[k, 0])
-                    ay = float(ring_vertices[k, 1])
-                    bx = float(ring_vertices[k + 1, 0])
-                    by = float(ring_vertices[k + 1, 1])
-
-                    # 線分への最短距離^2（sqrt は最後に 1 回だけ）
-                    dx = bx - ax
-                    dy = by - ay
-                    denom = dx * dx + dy * dy
-                    if denom <= 0.0:
-                        ds = (x - ax) * (x - ax) + (y - ay) * (y - ay)
-                    else:
-                        # 端点を含む線分の射影で最近点を求め、区間にクランプする。
-                        t = ((x - ax) * dx + (y - ay) * dy) / denom
-                        if t < 0.0:
-                            t = 0.0
-                        elif t > 1.0:
-                            t = 1.0
-                        cx = ax + t * dx
-                        cy = ay + t * dy
-                        ds = (x - cx) * (x - cx) + (y - cy) * (y - cy)
-                    if ds < min_ds:
-                        min_ds = ds
-
-                    # even-odd（奇偶）規則の内外判定。
-                    # `x < x_int` のように「厳密不等号」を使い、境界上は outside 扱いに寄せる。
-                    if inside_possible and ((ay > y) != (by > y)):
-                        x_int = ax + (y - ay) * (bx - ax) / (by - ay)
-                        if x < x_int:
-                            inside ^= 1
-
-                # リングごとの inside を XOR で合成することで、
-                # 外周＋穴（ネストも含む）を 1 つの領域として扱える。
-                inside_parity ^= inside
-
-            dist = math.sqrt(min_ds)
+            dist = math.sqrt(float(dist2[j, i])) * float(pitch)
             if max_dist > 0.0 and gamma != 1.0:
-                # `max_dist` を固定して「0..max_dist」の距離分布だけを歪める。
-                # 抽出レベル自体は SDF の値で決まるため、見た目の密度調整として使う。
-                t = dist / max_dist
+                t = dist / float(max_dist)
                 if t < 0.0:
                     t = 0.0
-                dist = max_dist * math.pow(t, gamma)
-
-            if inside_parity != 0:
+                dist = float(max_dist) * math.pow(t, float(gamma))
+            if int(inside[j, i]) != 0:
                 dist = -dist
-            out[j, i] = dist
+            sdf[j, i] = float(dist)
 
-    return out
+    return sdf
 
 
 @njit(cache=True)
@@ -943,9 +1164,9 @@ def isocontour(
     xs = x0 + pitch * np.arange(nx, dtype=np.float64)
     ys = y0 + pitch * np.arange(ny, dtype=np.float64)
 
-    # 1) グリッド上で SDF を評価する（Numba: 並列）。
+    # 1) グリッド上で SDF を評価する（EDT: 近似 / `O(Ngrid)`）。
     ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
-    sdf = _evaluate_sdf_grid_numba(
+    sdf = _evaluate_sdf_grid_edt_numba(
         xs.astype(np.float64, copy=False),
         ys.astype(np.float64, copy=False),
         ring_vertices,
@@ -954,6 +1175,7 @@ def isocontour(
         ring_maxs,
         float(max_d),
         float(gamma_f),
+        float(pitch),
     )
 
     # 2) `sin()` の 0 交差を取ることで複数レベルの等値線を一括抽出する。
