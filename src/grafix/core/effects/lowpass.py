@@ -19,7 +19,7 @@ MAX_TOTAL_VERTICES = 10_000_000
 MAX_KERNEL_RADIUS = 2048
 
 lowpass_meta = {
-    "step": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
+    "step": ParamMeta(kind="float", ui_min=0.01, ui_max=20.0),
     "sigma": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
     "closed": ParamMeta(kind="choice", choices=("auto", "open", "closed")),
 }
@@ -386,16 +386,22 @@ def lowpass(
         if is_closed and v.shape[0] >= 3:
             v0 = v[:-1] if _is_closed_auto(v) else v
             if v0.shape[0] < 3:
-                resampled = _resample_open_nb(v.astype(np.float32, copy=False), float(step_size))
+                resampled = _resample_open_nb(
+                    v.astype(np.float32, copy=False), float(step_size)
+                )
                 out = _smooth_reflect_nb(resampled, kernel)
             else:
-                resampled = _resample_closed_nb(v0.astype(np.float32, copy=False), float(step_size))
+                resampled = _resample_closed_nb(
+                    v0.astype(np.float32, copy=False), float(step_size)
+                )
                 smoothed = _smooth_wrap_nb(resampled, kernel)
                 out = np.empty((smoothed.shape[0] + 1, 3), dtype=np.float32)
                 out[:-1] = smoothed
                 out[-1] = smoothed[0]
         else:
-            resampled = _resample_open_nb(v.astype(np.float32, copy=False), float(step_size))
+            resampled = _resample_open_nb(
+                v.astype(np.float32, copy=False), float(step_size)
+            )
             out = _smooth_reflect_nb(resampled, kernel)
 
         total_vertices += int(out.shape[0])
@@ -415,7 +421,11 @@ def lowpass(
         cursor += int(v.shape[0])
         offsets_out[i + 1] = cursor
 
-    coords_out = np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), np.float32)
+    coords_out = (
+        np.concatenate(coords_list, axis=0)
+        if coords_list
+        else np.zeros((0, 3), np.float32)
+    )
     return RealizedGeometry(coords=coords_out, offsets=offsets_out)
 
 
@@ -424,4 +434,3 @@ __all__ = [
     "lowpass",
     "lowpass_meta",
 ]
-
