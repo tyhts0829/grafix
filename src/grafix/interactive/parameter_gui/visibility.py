@@ -52,6 +52,15 @@ def active_mask_for_rows(
 
     ui_visible_by_op: dict[str, dict[str, object]] = {}
 
+    # activate=False の group は、activate 行以外を一律で非表示にする。
+    # 目的: ui_visible を書かなくても「無効化中は引数の海にならない」状態にする。
+    disabled_groups: set[tuple[str, str]] = set()
+    for group, values in values_by_group.items():
+        if "activate" not in values:
+            continue
+        if not bool(values.get("activate", True)):
+            disabled_groups.add(group)
+
     def _rules_for_op(op: str) -> dict[str, object]:
         cached = ui_visible_by_op.get(op)
         if cached is not None:
@@ -71,13 +80,18 @@ def active_mask_for_rows(
     for row in rows:
         op = str(row.op)
         arg = str(row.arg)
+
+        group = (str(row.op), str(row.site_id))
+        if group in disabled_groups:
+            mask.append(arg == "activate")
+            continue
+
         rules = _rules_for_op(op)
         pred = rules.get(arg)
         if pred is None:
             mask.append(True)
             continue
 
-        group = (str(row.op), str(row.site_id))
         values = values_by_group.get(group, {})
         try:
             mask.append(bool(pred(values)))  # type: ignore[misc]
@@ -88,4 +102,3 @@ def active_mask_for_rows(
             mask.append(True)
 
     return mask
-

@@ -10,6 +10,7 @@
 - 影響範囲: **Parameter GUI の表示のみ**
 - 非活性行の値・override・MIDI 割当を **勝手に変更しない**
 - `Show inactive params` を ON にすれば **いつでも全行表示** に戻せる
+- 既定挙動: `activate=False` の group は **activate 行以外を自動で非表示**（`ui_visible` を書かなくても動く）
 
 ## 仕組み（内部の動き）
 
