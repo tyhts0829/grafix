@@ -24,6 +24,10 @@ displace_meta = {
     "t": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
 }
 
+displace_ui_visible = {
+    "gradient_radius": lambda v: str(v.get("gradient_profile", "linear")) == "radial",
+}
+
 # ノイズ位相進行の係数（freq と独立）。
 # 目的: noise(pos * freq + phase) の phase を time 起因で滑らかに進行させる。
 PHASE_SPEED: float = 10.0
@@ -734,7 +738,7 @@ def _apply_noise_to_coords(
     return result
 
 
-@effect(meta=displace_meta)
+@effect(meta=displace_meta, ui_visible=displace_ui_visible)
 def displace(
     inputs: Sequence[RealizedGeometry],
     *,

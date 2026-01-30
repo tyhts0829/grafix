@@ -26,6 +26,9 @@ partition_meta = {
     "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
 }
 
+partition_ui_visible = {
+    "pivot": lambda v: not bool(v.get("auto_center", True)),
+}
 
 @dataclass(frozen=True, slots=True)
 class _PlaneBasis:
@@ -308,7 +311,7 @@ def _build_evenodd_groups(polys, rings_2d, Point):  # type: ignore[no-untyped-de
     return ordered
 
 
-@effect(meta=partition_meta)
+@effect(meta=partition_meta, ui_visible=partition_ui_visible)
 def partition(
     inputs: Sequence[RealizedGeometry],
     *,

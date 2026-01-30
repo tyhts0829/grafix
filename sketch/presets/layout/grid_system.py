@@ -33,8 +33,12 @@ meta: dict[str, Mapping[str, object]] = {
     "baseline_offset": {"kind": "float", "ui_min": -50.0, "ui_max": 50.0},
 }
 
+LAYOUT_GRID_SYSTEM_UI_VISIBLE = {
+    "baseline_step": lambda v: bool(v.get("show_baseline")),
+    "baseline_offset": lambda v: bool(v.get("show_baseline")),
+}
 
-@preset(meta=meta)
+@preset(meta=meta, ui_visible=LAYOUT_GRID_SYSTEM_UI_VISIBLE)
 def layout_grid_system(
     *,
     canvas_w: float = float(CANVAS_SIZE[0]),

@@ -23,6 +23,9 @@ collapse_meta = {
     "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
 }
 
+collapse_ui_visible = {
+    "pivot": lambda v: not bool(v.get("auto_center", True)),
+}
 
 def _empty_geometry() -> RealizedGeometry:
     coords = np.zeros((0, 3), dtype=np.float32)
@@ -30,7 +33,7 @@ def _empty_geometry() -> RealizedGeometry:
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
-@effect(meta=collapse_meta)
+@effect(meta=collapse_meta, ui_visible=collapse_ui_visible)
 def collapse(
     inputs: Sequence[RealizedGeometry],
     *,

@@ -23,6 +23,11 @@ mirror_meta = {
     "show_planes": ParamMeta(kind="bool"),
 }
 
+mirror_ui_visible = {
+    "cy": lambda v: int(v.get("n_mirror", 1)) != 1,
+    "source_positive_x": lambda v: int(v.get("n_mirror", 1)) in {1, 2},
+    "source_positive_y": lambda v: int(v.get("n_mirror", 1)) == 2,
+}
 
 def _empty_geometry() -> RealizedGeometry:
     coords = np.zeros((0, 3), dtype=np.float32)
@@ -30,7 +35,7 @@ def _empty_geometry() -> RealizedGeometry:
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
-@effect(meta=mirror_meta)
+@effect(meta=mirror_meta, ui_visible=mirror_ui_visible)
 def mirror(
     inputs: Sequence[RealizedGeometry],
     *,

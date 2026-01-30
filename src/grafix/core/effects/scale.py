@@ -19,6 +19,18 @@ scale_meta = {
     "scale": ParamMeta(kind="vec3", ui_min=0.0, ui_max=10.0),
 }
 
+def _mode_is(name: str):
+    def _pred(v) -> bool:
+        return str(v.get("mode", "all")) == name
+
+    return _pred
+
+
+scale_ui_visible = {
+    "auto_center": _mode_is("all"),
+    "pivot": lambda v: str(v.get("mode", "all")) == "all" and not bool(v.get("auto_center", True)),
+}
+
 
 def _is_closed_polyline(vertices: np.ndarray) -> bool:
     if vertices.shape[0] < 2:
@@ -26,7 +38,7 @@ def _is_closed_polyline(vertices: np.ndarray) -> bool:
     return bool(np.allclose(vertices[0], vertices[-1], rtol=0.0, atol=_CLOSED_ATOL))
 
 
-@effect(meta=scale_meta)
+@effect(meta=scale_meta, ui_visible=scale_ui_visible)
 def scale(
     inputs: Sequence[RealizedGeometry],
     *,

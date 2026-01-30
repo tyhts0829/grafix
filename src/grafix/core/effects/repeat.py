@@ -38,6 +38,17 @@ def _layout_is(name: str):
     return _pred
 
 
+def _curve_visible(v: Mapping[str, Any]) -> bool:
+    layout = str(v.get("layout", "grid"))
+    if layout == "radial":
+        return bool(v.get("cumulative_scale")) or bool(v.get("cumulative_rotate"))
+    return (
+        bool(v.get("cumulative_scale"))
+        or bool(v.get("cumulative_offset"))
+        or bool(v.get("cumulative_rotate"))
+    )
+
+
 repeat_ui_visible = {
     # grid 配置
     "count": _layout_is("grid"),
@@ -48,6 +59,9 @@ repeat_ui_visible = {
     "theta": _layout_is("radial"),
     "n_theta": _layout_is("radial"),
     "n_radius": _layout_is("radial"),
+    # 共通
+    "curve": _curve_visible,
+    "pivot": lambda v: not bool(v.get("auto_center", True)),
 }
 
 

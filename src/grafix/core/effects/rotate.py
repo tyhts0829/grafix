@@ -16,8 +16,11 @@ rotate_meta = {
     "rotation": ParamMeta(kind="vec3", ui_min=-180.0, ui_max=180.0),
 }
 
+rotate_ui_visible = {
+    "pivot": lambda v: not bool(v.get("auto_center", True)),
+}
 
-@effect(meta=rotate_meta)
+@effect(meta=rotate_meta, ui_visible=rotate_ui_visible)
 def rotate(
     inputs: Sequence[RealizedGeometry],
     *,
