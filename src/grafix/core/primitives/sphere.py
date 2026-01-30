@@ -31,6 +31,11 @@ sphere_meta = {
     "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
 }
 
+SPHERE_UI_VISIBLE = {
+    # mode は latlon / rings スタイル専用（0: 横/緯度のみ, 1: 縦/経度のみ, 2: 両方）
+    "mode": lambda v: int(v.get("type_index", 0)) in {0, 3},
+}
+
 
 def _clamp_int(value: int | float, lo: int, hi: int) -> int:
     v = int(round(float(value)))
@@ -344,7 +349,7 @@ def _sphere_rings(subdivisions: int, mode: int) -> list[np.ndarray]:
     return polylines
 
 
-@primitive(meta=sphere_meta)
+@primitive(meta=sphere_meta, ui_visible=SPHERE_UI_VISIBLE)
 def sphere(
     *,
     subdivisions: int | float = 1,

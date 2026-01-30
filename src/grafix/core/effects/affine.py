@@ -21,8 +21,11 @@ affine_meta = {
     "delta": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
 }
 
+affine_ui_visible = {
+    "pivot": lambda v: not bool(v.get("auto_center", True)),
+}
 
-@effect(meta=affine_meta)
+@effect(meta=affine_meta, ui_visible=affine_ui_visible)
 def affine(
     inputs: Sequence[RealizedGeometry],
     *,

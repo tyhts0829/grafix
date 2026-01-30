@@ -17,8 +17,11 @@ twist_meta = {
     "axis_dir": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0),
 }
 
+twist_ui_visible = {
+    "pivot": lambda v: not bool(v.get("auto_center", True)),
+}
 
-@effect(meta=twist_meta)
+@effect(meta=twist_meta, ui_visible=twist_ui_visible)
 def twist(
     inputs: Sequence[RealizedGeometry],
     *,

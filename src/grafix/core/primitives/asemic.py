@@ -45,6 +45,8 @@ asemic_meta = {
 }
 
 ASEMIC_UI_VISIBLE = {
+    "bezier_samples": lambda v: str(v.get("stroke_style", "bezier")) == "bezier",
+    "bezier_tension": lambda v: str(v.get("stroke_style", "bezier")) == "bezier",
     "box_width": lambda v: bool(v.get("use_bounding_box")),
     "box_height": lambda v: bool(v.get("use_bounding_box")),
     "show_bounding_box": lambda v: bool(v.get("use_bounding_box")),

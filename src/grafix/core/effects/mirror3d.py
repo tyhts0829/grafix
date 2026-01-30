@@ -26,6 +26,26 @@ mirror3d_meta = {
     "show_planes": ParamMeta(kind="bool"),
 }
 
+def _mode_is(name: str):
+    def _pred(v) -> bool:
+        return str(v.get("mode", "azimuth")) == name
+
+    return _pred
+
+
+mirror3d_ui_visible = {
+    "n_azimuth": _mode_is("azimuth"),
+    "axis": _mode_is("azimuth"),
+    "phi0": _mode_is("azimuth"),
+    "mirror_equator": _mode_is("azimuth"),
+    "source_side": lambda v: (
+        str(v.get("mode", "azimuth")) == "azimuth"
+        and bool(v.get("mirror_equator", False))
+    ),
+    "group": _mode_is("polyhedral"),
+    "use_reflection": _mode_is("polyhedral"),
+}
+
 
 def _empty_geometry() -> RealizedGeometry:
     coords = np.zeros((0, 3), dtype=np.float32)
@@ -33,7 +53,7 @@ def _empty_geometry() -> RealizedGeometry:
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
-@effect(meta=mirror3d_meta)
+@effect(meta=mirror3d_meta, ui_visible=mirror3d_ui_visible)
 def mirror3d(
     inputs: Sequence[RealizedGeometry],
     *,

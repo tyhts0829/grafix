@@ -29,8 +29,11 @@ meta: dict[str, Mapping[str, object]] = {
     "show_trim": {"kind": "bool"},
 }
 
+LAYOUT_BOUNDS_UI_VISIBLE = {
+    "trim": lambda v: bool(v.get("show_trim")),
+}
 
-@preset(meta=meta)
+@preset(meta=meta, ui_visible=LAYOUT_BOUNDS_UI_VISIBLE)
 def layout_bounds(
     *,
     canvas_w: float = float(CANVAS_SIZE[0]),

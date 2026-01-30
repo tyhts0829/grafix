@@ -27,8 +27,11 @@ meta: dict[str, Mapping[str, object]] = {
     "template_color_rgb255": {"kind": "rgb", "ui_min": 0, "ui_max": 255},
 }
 
+GRN_A5_FRAME_UI_VISIBLE = {
+    "layout_color_rgb255": lambda v: bool(v.get("show_layout")),
+}
 
-@preset(meta=meta)
+@preset(meta=meta, ui_visible=GRN_A5_FRAME_UI_VISIBLE)
 def grn_a5_frame(
     *,
     show_layout: bool = True,
