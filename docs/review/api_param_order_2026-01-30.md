@@ -6,9 +6,19 @@
 - source: registry の `param_order`（GUI/永続化の表示順）
 - excluded: `activate` / `name` / `key`
 
+## 全体コメント（改善案）
+
+- 座標系の「中心」系は、可能なら `center`（vec3）に寄せる（`cx/cy` などの分割名は例外扱いにする、など方針化すると比較が速い）。
+- 平行移動は `delta` と `offset` が混在しているため、どちらを標準にするか（または役割を分けるか）を決めると迷いが減る。
+- 乱数は `seed` の置き場所が op により揺れているので、末尾寄せ等のルールを決めると揃えやすい。
+- 「トグル → 依存パラメータ」（例: `show_*` とその値）の順に置くと、GUI 上の操作が自然になる（トグルが先に見える）。
+- transform 系は `scale → rotation → translate(delta)` の並びに揃えると読みやすい（`affine` が基準になる）。
+
 ## Primitives（G.* / 8）
 
 ### `G.asemic`
+
+> コメント: `*_min`/`*_max` のペア、`*_steps` のペアなどがまとまっていて読みやすい。今後増やすなら「ペアは隣接」のルールを維持すると良い。
 
 - `text`
 - `seed`
@@ -125,6 +135,8 @@
 
 ### `E.collapse`
 
+> コメント: `auto_center/pivot` を持つ他の transform 系（`rotate/scale/affine/twist`）が先頭寄りなのに対し、ここでは末尾寄り。方針を揃えるなら `auto_center, pivot` を先頭（または `intensity` の直後）へ移動すると横断比較しやすい。
+
 - `intensity`
 - `subdivisions`
 - `intensity_mask_base`
@@ -141,6 +153,8 @@
 
 ### `E.displace`
 
+> コメント: 周波数が `spatial_freq` / `frequency_gradient` と命名揺れしている（`spatial_` を付けるなら gradient 側も揃える等）。時間相当が `t` で、他の揺れ系（例: `wobble` の `phase`）と語彙が違うので、`phase`/`time` などに統一する余地がある。
+
 - `amplitude`
 - `spatial_freq`
 - `amplitude_gradient`
@@ -153,6 +167,8 @@
 - `t`
 
 ### `E.drop`
+
+> コメント: `keep_original`（出力に元を混ぜる）と `keep_mode`（条件に一致したものを残す/捨てる）がどちらも「keep」なので混同しやすい。`keep_mode` は `mode`/`action`/`select` などへ寄せるか、bool へ落とすと意味が明確になる。ついでに `seed` を末尾寄せすると他 op と揃えやすい。
 
 - `interval`
 - `index_offset`
@@ -215,6 +231,8 @@
 
 ### `E.mirror`
 
+> コメント: 中心が `cx/cy` になっているが、他の多くが `center`（vec3）なので語彙が分かれている。`center` へ寄せるか（2D なら `center_xy` 等）、せめて `center_x/center_y` のように揃えると一貫性が上がる。
+
 - `n_mirror`
 - `cx`
 - `cy`
@@ -236,6 +254,8 @@
 - `show_planes`
 
 ### `E.partition`
+
+> コメント: `seed` の位置が中盤にあり、他 op の「末尾寄せ」案とずれる。`mode` が先頭にあるのは良いので、揃えるなら `seed` の配置ルールだけ決めると良さそう。
 
 - `mode`
 - `site_count`
@@ -276,6 +296,8 @@
 - `step`
 
 ### `E.repeat`
+
+> コメント: `offset/rotation_step/scale` の並びが `scale→rotation→translate`（`affine`）と逆順で、さらに docstring の「変換順序」ともズレている。UI での読みやすさ重視なら `scale, rotation_step, offset` の順にする案がある。`offset` も `delta` と語彙が割れているので、`offset_step` のように役割を明示するのも手。
 
 - `layout`
 - `count`
@@ -364,6 +386,8 @@
 
 ### `P.flow`
 
+> コメント: `displace_frequency` は effect 側が `spatial_freq` なので語彙がズレる。`displace_spatial_freq` などに寄せると「下にある effect と同じ概念」が読み取りやすい。
+
 - `center`
 - `scale`
 - `fill_density_coef`
@@ -382,6 +406,8 @@
 - `template_color_rgb255`
 
 ### `P.layout_bounds`
+
+> コメント: `show_trim` が `trim` の後にあるが、`show_trim` がトグルで `trim` が値なので、GUI 操作の自然さ重視なら `show_trim → trim` の順にする案がある（他の `show_baseline → baseline_*` と揃う）。
 
 - `canvas_w`
 - `canvas_h`
