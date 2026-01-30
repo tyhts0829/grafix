@@ -153,10 +153,10 @@
 
 ### `E.displace`
 
-> コメント: 周波数が `spatial_freq` / `frequency_gradient` と命名揺れしている（`spatial_` を付けるなら gradient 側も揃える等）。時間相当が `t` で、他の揺れ系（例: `wobble` の `phase`）と語彙が違うので、`phase`/`time` などに統一する余地がある。
+> コメント: 周波数は `wobble` が `frequency` なので、`spatial_freq` も `frequency` へ寄せると揃う。時間/位相は `t` より `phase` の方が（`wobble` と）語彙が揃う。
 
 - `amplitude`
-- `spatial_freq`
+- `spatial_freq` -> `frequency`
 - `amplitude_gradient`
 - `frequency_gradient`
 - `gradient_center_offset`
@@ -164,11 +164,11 @@
 - `gradient_radius`
 - `min_gradient_factor`
 - `max_gradient_factor`
-- `t`
+- `t` -> `phase`
 
 ### `E.drop`
 
-> コメント: `keep_original`（出力に元を混ぜる）と `keep_mode`（条件に一致したものを残す/捨てる）がどちらも「keep」なので混同しやすい。`keep_mode` は `mode`/`action`/`select` などへ寄せるか、bool へ落とすと意味が明確になる。ついでに `seed` を末尾寄せすると他 op と揃えやすい。
+> コメント: `keep_original`（出力に元を混ぜる）と `keep_mode`（条件に一致したものを残す/捨てる）がどちらも「keep」なので混同しやすい。まずは `keep_mode` を `mode` 等へ寄せて衝突しない語彙にするのが分かりやすい。
 
 - `interval`
 - `index_offset`
@@ -178,7 +178,7 @@
 - `probability_slope`
 - `by`
 - `seed`
-- `keep_mode`
+- `keep_mode` -> `mode`
 
 ### `E.extrude`
 
@@ -231,11 +231,11 @@
 
 ### `E.mirror`
 
-> コメント: 中心が `cx/cy` になっているが、他の多くが `center`（vec3）なので語彙が分かれている。`center` へ寄せるか（2D なら `center_xy` 等）、せめて `center_x/center_y` のように揃えると一貫性が上がる。
+> コメント: 中心が `cx/cy` になっているが、他の多くが `center`（vec3）なので語彙が分かれている。2D を分割名で持つなら `center_x/center_y` のように揃えると一貫性が上がる。
 
 - `n_mirror`
-- `cx`
-- `cy`
+- `cx` -> `center_x`
+- `cy` -> `center_y`
 - `source_positive_x`
 - `source_positive_y`
 - `show_planes`
@@ -297,7 +297,7 @@
 
 ### `E.repeat`
 
-> コメント: `offset/rotation_step/scale` の並びが `scale→rotation→translate`（`affine`）と逆順で、さらに docstring の「変換順序」ともズレている。UI での読みやすさ重視なら `scale, rotation_step, offset` の順にする案がある。`offset` も `delta` と語彙が割れているので、`offset_step` のように役割を明示するのも手。
+> コメント: 平行移動は `translate/affine` が `delta` なので `offset` も `delta` に寄せると語彙が揃う。回転も `rotation` へ寄せると transform 群の見通しが良くなる。
 
 - `layout`
 - `count`
@@ -308,8 +308,8 @@
 - `cumulative_scale`
 - `cumulative_offset`
 - `cumulative_rotate`
-- `offset`
-- `rotation_step`
+- `offset` -> `delta`
+- `rotation_step` -> `rotation`
 - `scale`
 - `curve`
 - `auto_center`
@@ -386,7 +386,7 @@
 
 ### `P.flow`
 
-> コメント: `displace_frequency` は effect 側が `spatial_freq` なので語彙がズレる。`displace_spatial_freq` などに寄せると「下にある effect と同じ概念」が読み取りやすい。
+> コメント: `E.displace` 側を `spatial_freq -> frequency` に寄せると、preset 側の `displace_frequency` との対応が自然になる（引数名の “翻訳” が減る）。
 
 - `center`
 - `scale`
