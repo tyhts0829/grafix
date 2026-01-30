@@ -19,13 +19,14 @@ class _G(Protocol):
     def __call__(self, name: str | None = None) -> _G:
         """ラベル付き primitive 名前空間を返す。"""
         ...
-    def asemic(self, *, activate: bool = ..., seed: int = ..., n_nodes: int = ..., candidates: int = ..., stroke_min: int = ..., stroke_max: int = ..., walk_min_steps: int = ..., walk_max_steps: int = ..., stroke_style: str = ..., bezier_samples: int = ..., bezier_tension: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def asemic(self, *, activate: bool = ..., text: str = ..., seed: int = ..., n_nodes: int = ..., candidates: int = ..., stroke_min: int = ..., stroke_max: int = ..., walk_min_steps: int = ..., walk_max_steps: int = ..., stroke_style: str = ..., bezier_samples: int = ..., bezier_tension: float = ..., text_align: str = ..., glyph_advance_em: float = ..., space_advance_em: float = ..., letter_spacing_em: float = ..., line_height: float = ..., use_bounding_box: bool = ..., box_width: float = ..., box_height: float = ..., show_bounding_box: bool = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
-        擬似文字（asemic）のストローク群を生成する。
+        擬似文字（asemic）の文章をポリライン列として生成する。
 
         引数:
             activate: bool
-            seed: 乱数 seed（同一 seed/params で決定的に同じ出力）
+            text: 描画する文字列
+            seed: 全体 seed
             n_nodes: ノード数（少なすぎるとストロークが生成できないことがある）
             candidates: best-candidate の候補数（大きいほど均一になりやすい）
             stroke_min: ストローク本数の最小値
@@ -35,6 +36,15 @@ class _G(Protocol):
             stroke_style: ストロークの描画スタイル
             bezier_samples: `"bezier"` 時の 1 セグメントあたりのサンプル点数（2 以上）
             bezier_tension: `"bezier"` 時の張り（0=曲がりやすい, 1=直線寄り）
+            text_align: 行揃え
+            glyph_advance_em: 空白以外の文字送り（em）
+            space_advance_em: 空白の文字送り（em）
+            letter_spacing_em: 追加の文字間スペーシング（em）
+            line_height: 行送り（em）
+            use_bounding_box: True のとき `box_width` による自動改行と、`show_bounding_box` による枠描画を有効にする
+            box_width: 幅による自動改行を行う際のボックス幅（出力座標系）
+            box_height: デバッグ用ボックス表示の高さ（出力座標系）
+            show_bounding_box: True のとき、`box_width/box_height` で指定されたボックス枠（4本の線分）を追加で描画する
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率
         """
@@ -78,7 +88,7 @@ class _G(Protocol):
         ...
     def polyhedron(self, *, activate: bool = ..., type_index: int = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
-        正多面体を面ポリライン列として生成する。
+        多面体を面ポリライン列として生成する。
 
         引数:
             activate: bool
@@ -285,6 +295,23 @@ class _EffectBuilder(Protocol):
             closed: 境界条件
         """
         ...
+    def isocontour(self, *, activate: bool = ..., spacing: float = ..., phase: float = ..., max_dist: float = ..., mode: str = ..., grid_pitch: float = ..., gamma: float = ..., level_step: int = ..., auto_close_threshold: float = ..., keep_original: bool = ...) -> _EffectBuilder:
+        """
+        閉曲線群から等高線（等値線）を複数レベル抽出して出力する。
+
+        引数:
+            activate: bool
+            spacing: レベル間隔
+            phase: レベルの位相（`0` だと境界 `SDF=0` が含まれる）
+            max_dist: 抽出範囲（`|SDF| <= max_dist`）
+            mode: `"inside"` は内側のみ、`"outside"` は外側のみ、`"both"` は両側を抽出する
+            grid_pitch: SDF 評価グリッドのピッチ
+            gamma: 距離の非線形（`1.0` は線形）
+            level_step: レベルの間引き
+            auto_close_threshold: 閉曲線とみなす端点距離閾値
+            keep_original: True のとき、生成結果に加えて元の入力も出力に含める
+        """
+        ...
     def lowpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., closed: str = ...) -> _EffectBuilder:
         """
         ポリライン列を低域通過（ローパス）して滑らかにする。
@@ -407,13 +434,18 @@ class _EffectBuilder(Protocol):
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
         """
         ...
-    def repeat(self, *, activate: bool = ..., count: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
+    def repeat(self, *, activate: bool = ..., layout: str = ..., count: int = ..., radius: float = ..., theta: float = ..., n_theta: int = ..., n_radius: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         入力ジオメトリを複製して、規則的な配列を作る。
 
         引数:
             activate: bool
+            layout: `"grid"` は `count/offset` による直交配置（現状維持）
             count: 複製回数
+            radius: `layout="radial"` の外周半径 [mm]
+            theta: `layout="radial"` の開始角 [deg]
+            n_theta: `layout="radial"` の周方向配置数
+            n_radius: `layout="radial"` の半径方向配置数
             cumulative_scale: True のときスケール補間にカーブ（t' = t**curve）を用いる
             cumulative_offset: True のときオフセット補間にカーブ（t' = t**curve）を用いる
             cumulative_rotate: True のとき回転補間にカーブ（t' = t**curve）を用いる
@@ -660,6 +692,23 @@ class _E(Protocol):
             closed: 境界条件
         """
         ...
+    def isocontour(self, *, activate: bool = ..., spacing: float = ..., phase: float = ..., max_dist: float = ..., mode: str = ..., grid_pitch: float = ..., gamma: float = ..., level_step: int = ..., auto_close_threshold: float = ..., keep_original: bool = ...) -> _EffectBuilder:
+        """
+        閉曲線群から等高線（等値線）を複数レベル抽出して出力する。
+
+        引数:
+            activate: bool
+            spacing: レベル間隔
+            phase: レベルの位相（`0` だと境界 `SDF=0` が含まれる）
+            max_dist: 抽出範囲（`|SDF| <= max_dist`）
+            mode: `"inside"` は内側のみ、`"outside"` は外側のみ、`"both"` は両側を抽出する
+            grid_pitch: SDF 評価グリッドのピッチ
+            gamma: 距離の非線形（`1.0` は線形）
+            level_step: レベルの間引き
+            auto_close_threshold: 閉曲線とみなす端点距離閾値
+            keep_original: True のとき、生成結果に加えて元の入力も出力に含める
+        """
+        ...
     def lowpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., closed: str = ...) -> _EffectBuilder:
         """
         ポリライン列を低域通過（ローパス）して滑らかにする。
@@ -782,13 +831,18 @@ class _E(Protocol):
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
         """
         ...
-    def repeat(self, *, activate: bool = ..., count: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
+    def repeat(self, *, activate: bool = ..., layout: str = ..., count: int = ..., radius: float = ..., theta: float = ..., n_theta: int = ..., n_radius: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ...) -> _EffectBuilder:
         """
         入力ジオメトリを複製して、規則的な配列を作る。
 
         引数:
             activate: bool
+            layout: `"grid"` は `count/offset` による直交配置（現状維持）
             count: 複製回数
+            radius: `layout="radial"` の外周半径 [mm]
+            theta: `layout="radial"` の開始角 [deg]
+            n_theta: `layout="radial"` の周方向配置数
+            n_radius: `layout="radial"` の半径方向配置数
             cumulative_scale: True のときスケール補間にカーブ（t' = t**curve）を用いる
             cumulative_offset: True のときオフセット補間にカーブ（t' = t**curve）を用いる
             cumulative_rotate: True のとき回転補間にカーブ（t' = t**curve）を用いる

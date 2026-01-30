@@ -172,6 +172,9 @@ def _validate(kind: str, vertices: np.ndarray, faces: list[tuple[list[int], np.n
         "truncated_dodecahedron": (60, {3: 20, 10: 12}, 32, 90),
         "truncated_icosahedron": (60, {5: 12, 6: 20}, 32, 90),
         "rhombicuboctahedron": (24, {3: 8, 4: 18}, 26, 48),
+        "truncated_cuboctahedron": (48, {4: 12, 6: 8, 8: 6}, 26, 72),
+        "rhombicosidodecahedron": (60, {3: 20, 4: 30, 5: 12}, 62, 120),
+        "truncated_icosidodecahedron": (120, {4: 30, 6: 20, 10: 12}, 62, 180),
         "snub_cube_left": (24, {3: 32, 4: 6}, 38, 60),
         "snub_cube_right": (24, {3: 32, 4: 6}, 38, 60),
         "snub_dodecahedron_left": (60, {3: 80, 5: 12}, 92, 150),
@@ -325,6 +328,54 @@ def _rhombicuboctahedron_vertices() -> np.ndarray:
     return _normalize_to_radius(verts)
 
 
+def _truncated_cuboctahedron_vertices() -> np.ndarray:
+    s2 = 2.0**0.5
+    a = 1.0
+    b = 1.0 + s2
+    c = 1.0 + 2.0 * s2
+
+    points: list[np.ndarray] = []
+    for perm in permutations([a, b, c], 3):
+        p = np.array(perm, dtype=np.float64)
+        for sx, sy, sz in product([-1.0, 1.0], repeat=3):
+            points.append(p * np.array([sx, sy, sz], dtype=np.float64))
+
+    verts = _unique_rows(np.asarray(points, dtype=np.float64))
+    return _normalize_to_radius(verts)
+
+
+def _rhombicosidodecahedron_vertices() -> np.ndarray:
+    phi = (1.0 + 5.0**0.5) / 2.0
+    v0 = np.array([0.0, 2.0 + phi, phi * phi], dtype=np.float64)
+    r = float(np.linalg.norm(v0))
+
+    mats = _icosahedral_rotations()
+    verts = np.array([M @ v0 for M in mats], dtype=np.float64) * (0.5 / r)
+
+    uniq = np.unique(np.round(verts, 12), axis=0)
+    assert int(uniq.shape[0]) == 60
+    return verts
+
+
+def _truncated_icosidodecahedron_vertices() -> np.ndarray:
+    phi = (1.0 + 5.0**0.5) / 2.0
+
+    # det=1 の回転群（60）だけでは vertex orbit が 60 で止まるため、反射した orbit を union する。
+    v0 = np.array([1.0, 3.0 + 2.0 * phi, 1.0 + 2.0 * phi], dtype=np.float64)
+    r = float(np.linalg.norm(v0))
+    v1 = v0.copy()
+    v1[0] *= -1.0
+
+    mats = _icosahedral_rotations()
+    verts0 = np.array([M @ v0 for M in mats], dtype=np.float64)
+    verts1 = np.array([M @ v1 for M in mats], dtype=np.float64)
+    verts = np.concatenate([verts0, verts1], axis=0) * (0.5 / r)
+
+    uniq = np.unique(np.round(verts, 12), axis=0)
+    assert int(uniq.shape[0]) == 120
+    return verts
+
+
 def _build(kind: str, vertices: np.ndarray) -> list[np.ndarray]:
     faces = _convex_hull_faces(vertices)
     _validate(kind, vertices, faces)
@@ -343,6 +394,9 @@ def generate_all() -> list[Path]:
         ("truncated_dodecahedron", _truncate_from("dodecahedron", t=_uniform_truncation_ratio(5))),
         ("truncated_icosahedron", _truncate_from("icosahedron")),
         ("rhombicuboctahedron", _rhombicuboctahedron_vertices()),
+        ("truncated_cuboctahedron", _truncated_cuboctahedron_vertices()),
+        ("rhombicosidodecahedron", _rhombicosidodecahedron_vertices()),
+        ("truncated_icosidodecahedron", _truncated_icosidodecahedron_vertices()),
     ]
 
     snub_cube_left = _snub_cube_vertices()

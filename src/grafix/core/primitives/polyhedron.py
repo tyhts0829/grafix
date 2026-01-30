@@ -36,6 +36,9 @@ _TYPE_ORDER = [
     "snub_cube_right",
     "snub_dodecahedron_left",
     "snub_dodecahedron_right",
+    "truncated_cuboctahedron",
+    "rhombicosidodecahedron",
+    "truncated_icosidodecahedron",
 ]
 
 _DATA_DIR = resources.files("grafix").joinpath("resource", "regular_polyhedron")
@@ -143,7 +146,9 @@ def polyhedron(
         8=truncated_cube, 9=truncated_octahedron, 10=truncated_dodecahedron,
         11=truncated_icosahedron, 12=rhombicuboctahedron,
         13=snub_cube_left, 14=snub_cube_right,
-        15=snub_dodecahedron_left, 16=snub_dodecahedron_right。
+        15=snub_dodecahedron_left, 16=snub_dodecahedron_right,
+        17=truncated_cuboctahedron, 18=rhombicosidodecahedron,
+        19=truncated_icosidodecahedron。
     center : tuple[float, float, float], optional
         平行移動ベクトル (cx, cy, cz)。
     scale : float, optional
