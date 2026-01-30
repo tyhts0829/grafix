@@ -114,6 +114,54 @@ def test_active_mask_predicate_error_does_not_hide() -> None:
     assert mask == [True, True]
 
 
+def _row2(*, site_id: str, arg: str, value: object) -> ParameterRow:
+    kind = "bool" if arg == "activate" else "float"
+    return ParameterRow(
+        label=f"{site_id}:{arg}",
+        op="preset._vis_preset",
+        site_id=str(site_id),
+        arg=str(arg),
+        kind=kind,
+        ui_value=value,
+        ui_min=None,
+        ui_max=None,
+        choices=None,
+        cc_key=None,
+        override=True,
+        ordinal=1,
+    )
+
+
+def test_active_mask_activate_off_hides_other_params() -> None:
+    rows = [
+        _row2(site_id="s:1", arg="activate", value=False),
+        _row2(site_id="s:1", arg="base", value="square"),
+        _row2(site_id="s:1", arg="cell_size", value=10.0),
+    ]
+    mask = active_mask_for_rows(rows, show_inactive=False, last_effective_by_key=None)
+    assert mask == [True, False, False]
+
+
+def test_active_mask_activate_off_show_inactive_returns_all_true() -> None:
+    rows = [
+        _row2(site_id="s:1", arg="activate", value=False),
+        _row2(site_id="s:1", arg="base", value="square"),
+        _row2(site_id="s:1", arg="cell_size", value=10.0),
+    ]
+    mask = active_mask_for_rows(rows, show_inactive=True, last_effective_by_key=None)
+    assert mask == [True, True, True]
+
+
+def test_active_mask_activate_off_uses_last_effective_by_key() -> None:
+    rows = [
+        _row2(site_id="s:1", arg="activate", value=True),
+        _row2(site_id="s:1", arg="base", value="square"),
+    ]
+    eff = {ParameterKey(op="preset._vis_preset", site_id="s:1", arg="activate"): False}
+    mask = active_mask_for_rows(rows, show_inactive=False, last_effective_by_key=eff)
+    assert mask == [True, False]
+
+
 def test_render_store_parameter_table_filters_rows_passed_to_renderer(monkeypatch) -> None:
     store = ParamStore()
     merge_frame_params(
