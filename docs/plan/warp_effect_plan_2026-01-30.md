@@ -160,6 +160,5 @@ out = E.warp(
 
 ## 追加で決めること（統合時の微調整）
 
-- `strength` の UI レンジ（lens は 0..2、attract は -1..+1）をどう折り合うか
-- `show_mask` と `keep_original` の出力順序（デバッグ時に見やすい順）
-
+- `strength` の UI レンジ（lens は 0..2、attract は -1..+1）をどう折り合うか: strength の UI レンジ問題は、strength を 0..2（lens寄り）に統一して、mode="attract" の反発/吸着は 別パラメータ direction=("attract"|"repel") に分離（= 符号を strength に背負わせない）
+- `show_mask` と `keep_original` の出力順序（デバッグ時に見やすい順） : - show_mask と keep_original の出力順は、result → keep_original → show_mask（maskは最後）
