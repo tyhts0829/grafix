@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-from numba import njit  # type: ignore[import-untyped]
+from numba import njit, prange  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
@@ -151,7 +151,7 @@ def _pack_rings(
     return ring_vertices, ring_offsets, ring_mins, ring_maxs
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _evaluate_sdf_grid_numba(
     xs: np.ndarray,
     ys: np.ndarray,
@@ -167,7 +167,7 @@ def _evaluate_sdf_grid_numba(
     n_rings = int(ring_offsets.shape[0]) - 1
 
     out = np.empty((ny, nx), dtype=np.float64)
-    for j in range(ny):
+    for j in prange(ny):
         y = float(ys[j])
         for i in range(nx):
             x = float(xs[i])
@@ -232,59 +232,171 @@ def _evaluate_sdf_grid_numba(
     return out
 
 
-def _quant_key(x: float, y: float, snap: float) -> tuple[int, int]:
-    return (int(np.rint(x / snap)), int(np.rint(y / snap)))
+@njit(cache=True)
+def _build_neighbors_numba(
+    n_nodes: int,
+    edges_a: np.ndarray,
+    edges_b: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    neighbors = np.full((n_nodes, 2), -1, dtype=np.int64)
+    deg = np.zeros((n_nodes,), dtype=np.int32)
+    for k in range(int(edges_a.shape[0])):
+        a = int(edges_a[k])
+        b = int(edges_b[k])
+
+        da = int(deg[a])
+        if da < 2:
+            neighbors[a, da] = b
+        deg[a] = da + 1
+
+        db = int(deg[b])
+        if db < 2:
+            neighbors[b, db] = a
+        deg[b] = db + 1
+
+    return neighbors, deg
 
 
-def _stitch_segments_to_loops(
-    segments: list[tuple[tuple[int, int], tuple[int, int]]],
-) -> list[list[tuple[int, int]]]:
-    adj: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    for a, b in segments:
-        adj.setdefault(a, []).append(b)
-        adj.setdefault(b, []).append(a)
+@njit(cache=True)
+def _collect_cycles_info_numba(
+    neighbors: np.ndarray,
+    deg: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    n_nodes = int(neighbors.shape[0])
+    visited = np.zeros((n_nodes,), dtype=np.uint8)
+    cycle_starts = np.empty((n_nodes,), dtype=np.int64)
+    cycle_lengths = np.empty((n_nodes,), dtype=np.int32)
+    n_cycles = 0
 
-    visited_edges: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    for start in range(n_nodes):
+        if int(deg[start]) != 2 or int(visited[start]) != 0:
+            continue
+        if int(neighbors[start, 0]) < 0 or int(neighbors[start, 1]) < 0:
+            visited[start] = 1
+            continue
+        if int(neighbors[start, 0]) == int(neighbors[start, 1]):
+            visited[start] = 1
+            continue
 
-    def _edge_key(u: tuple[int, int], v: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
-        return (u, v) if u <= v else (v, u)
+        prev = -1
+        cur = start
+        length = 0
+        valid = True
 
-    loops: list[list[tuple[int, int]]] = []
-    for start, neighs in adj.items():
-        for nxt in neighs:
-            ek = _edge_key(start, nxt)
-            if ek in visited_edges:
-                continue
-
-            path = [start, nxt]
-            visited_edges.add(ek)
-            prev = start
-            cur = nxt
-            while True:
-                cand = adj.get(cur, [])
-                next_node: tuple[int, int] | None = None
-                for nn in cand:
-                    if nn == prev:
-                        continue
-                    ek2 = _edge_key(cur, nn)
-                    if ek2 in visited_edges:
-                        continue
-                    next_node = nn
-                    visited_edges.add(ek2)
-                    break
-
-                if next_node is None:
-                    break
-
-                path.append(next_node)
-                prev, cur = cur, next_node
+        while True:
+            if int(visited[cur]) != 0:
                 if cur == start:
                     break
+                valid = False
+                break
 
-            if len(path) >= 4 and path[-1] == start:
-                loops.append(path)
+            visited[cur] = 1
+            length += 1
 
-    return loops
+            n0 = int(neighbors[cur, 0])
+            n1 = int(neighbors[cur, 1])
+            nxt = n0 if n0 != prev else n1
+            if nxt < 0 or int(deg[nxt]) != 2:
+                valid = False
+                break
+            if nxt == prev:
+                valid = False
+                break
+
+            prev = cur
+            cur = nxt
+            if cur == start:
+                break
+
+        if valid and length >= 3:
+            cycle_starts[n_cycles] = start
+            cycle_lengths[n_cycles] = int(length)
+            n_cycles += 1
+
+    return cycle_starts, cycle_lengths, int(n_cycles)
+
+
+@njit(cache=True)
+def _fill_cycles_indices_numba(
+    neighbors: np.ndarray,
+    cycle_starts: np.ndarray,
+    cycle_lengths: np.ndarray,
+    n_cycles: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    offsets = np.empty((n_cycles + 1,), dtype=np.int32)
+    offsets[0] = 0
+    total = 0
+    for ci in range(int(n_cycles)):
+        total += int(cycle_lengths[ci]) + 1
+        offsets[ci + 1] = int(total)
+
+    idx_flat = np.empty((int(total),), dtype=np.int64)
+    cursor = 0
+    for ci in range(int(n_cycles)):
+        start = int(cycle_starts[ci])
+        length = int(cycle_lengths[ci])
+        prev = -1
+        cur = start
+        for _ in range(length):
+            idx_flat[cursor] = cur
+            cursor += 1
+            n0 = int(neighbors[cur, 0])
+            n1 = int(neighbors[cur, 1])
+            nxt = n0 if n0 != prev else n1
+            prev = cur
+            cur = nxt
+        idx_flat[cursor] = start
+        cursor += 1
+
+    return idx_flat, offsets
+
+
+def _stitch_segments_xy_to_loops_xy(
+    segments_xy: np.ndarray,
+    *,
+    snap: float,
+) -> list[np.ndarray]:
+    if segments_xy.shape[0] <= 0:
+        return []
+    snap_f = float(snap)
+    if snap_f <= 0.0 or not math.isfinite(snap_f):
+        return []
+
+    a = segments_xy[:, 0:2].astype(np.float64, copy=False)
+    b = segments_xy[:, 2:4].astype(np.float64, copy=False)
+    pts_xy = np.concatenate([a, b], axis=0).astype(np.float64, copy=False)
+    pts_q = np.rint(pts_xy / snap_f).astype(np.int64, copy=False)
+
+    _unique_q, idx_first, inv = np.unique(pts_q, axis=0, return_index=True, return_inverse=True)
+    if inv.size <= 0:
+        return []
+    unique_xy = pts_xy[np.asarray(idx_first, dtype=np.int64)]
+
+    n_segments = int(segments_xy.shape[0])
+    edges_a = inv[:n_segments].astype(np.int64, copy=False)
+    edges_b = inv[n_segments:].astype(np.int64, copy=False)
+    nondeg = edges_a != edges_b
+    edges_a = edges_a[nondeg]
+    edges_b = edges_b[nondeg]
+    if edges_a.size <= 0:
+        return []
+
+    neighbors, deg = _build_neighbors_numba(int(unique_xy.shape[0]), edges_a, edges_b)
+    cycle_starts, cycle_lengths, n_cycles = _collect_cycles_info_numba(neighbors, deg)
+    if n_cycles <= 0:
+        return []
+
+    idx_flat, offsets = _fill_cycles_indices_numba(neighbors, cycle_starts, cycle_lengths, int(n_cycles))
+    loops_xy: list[np.ndarray] = []
+    for i in range(int(offsets.size) - 1):
+        s = int(offsets[i])
+        e = int(offsets[i + 1])
+        if e - s < 4:
+            continue
+        loop_idx = idx_flat[s:e]
+        loops_xy.append(unique_xy[loop_idx])
+
+    return loops_xy
 
 
 @njit(cache=True)
@@ -708,26 +820,10 @@ def isocontour(
     segments_xy = segments_xy[: int(filled)]
 
     snap = max(1e-9, pitch * 1e-6)
-    key_to_xy: dict[tuple[int, int], tuple[float, float]] = {}
-    segments: list[tuple[tuple[int, int], tuple[int, int]]] = []
-    for seg in segments_xy:
-        ax = float(seg[0])
-        ay = float(seg[1])
-        bx = float(seg[2])
-        by = float(seg[3])
-        k0 = _quant_key(ax, ay, snap)
-        k1 = _quant_key(bx, by, snap)
-        if k0 == k1:
-            continue
-        key_to_xy.setdefault(k0, (ax, ay))
-        key_to_xy.setdefault(k1, (bx, by))
-        segments.append((k0, k1))
-
-    loops = _stitch_segments_to_loops(segments)
+    loops_xy = _stitch_segments_xy_to_loops_xy(segments_xy, snap=float(snap))
 
     out_lines: list[np.ndarray] = []
-    for loop in loops:
-        pts_xy = np.asarray([key_to_xy[k] for k in loop], dtype=np.float64)
+    for pts_xy in loops_xy:
         if pts_xy.shape[0] < 4:
             continue
         v3 = np.zeros((pts_xy.shape[0], 3), dtype=np.float64)
