@@ -110,20 +110,19 @@ out = E.sdf_attract(
 
 ## 実装手順（チェックリスト）
 
-- [ ] `src/grafix/core/effects/sdf_attract.py` を追加（effects/AGENTS.md を遵守）
-- [ ] `@effect(meta=..., n_inputs=2)` で登録
-- [ ] mask 基準で平面整列（util 使用）＋ planarity 最小チェック
-- [ ] mask リング抽出（閉曲線のみ採用）
-- [ ] Numba で `signed distance + outward normal` を点列に対して評価
-- [ ] base へ変位を適用（bias/snap_band/falloff/strength）
-- [ ] `src/grafix/core/builtins.py` にモジュール追加
-- [ ] `src/grafix/api/__init__.pyi` を生成結果で更新
-- [ ] `tests/core/effects/test_sdf_attract.py` を追加
-- [ ] `PYTHONPATH=src pytest -q`（対象テストでも可）
+- [x] `src/grafix/core/effects/sdf_attract.py` を追加（effects/AGENTS.md を遵守）
+- [x] `@effect(meta=..., n_inputs=2)` で登録
+- [x] mask 基準で平面整列（util 使用）＋ planarity 最小チェック
+- [x] mask リング抽出（閉曲線のみ採用）
+- [x] Numba で `signed distance + outward normal` を点列に対して評価
+- [x] base へ変位を適用（bias/snap_band/falloff/strength）
+- [x] `src/grafix/core/builtins.py` にモジュール追加
+- [x] `src/grafix/api/__init__.pyi` を生成結果で更新
+- [x] `tests/core/effects/test_sdf_attract.py` を追加
+- [x] `PYTHONPATH=src pytest -q`（対象テストでも可）
 
 ## 追加で確認したい点
 
 - `strength` は **-1..+1 のスナップ係数**で良い？（mm 強度にしたいなら式を変える）
 - `bias` は「目標の signed distance」として良い？（= オフセット境界へ吸着）
 - v1 の `preserve_length` は無しで進めて、必要なら後で追加する方針で OK？
-

@@ -520,6 +520,31 @@ class _EffectBuilder(Protocol):
             axis_dir: ねじり軸方向（ベクトル）
         """
         ...
+    def warp(self, *, activate: bool = ..., mode: str = ..., strength: float = ..., show_mask: bool = ..., keep_original: bool = ..., kind: str = ..., profile: str = ..., band: float = ..., inside_only: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: float = ..., angle: float = ..., shear: Vec3 = ..., direction: str = ..., bias: float = ..., snap_band: float = ..., falloff: float = ...) -> _EffectBuilder:
+        """
+        マスク距離場で、入力線を lens/attract 変形する。
+
+        引数:
+            activate: bool
+            mode: `"lens"` は座標変換をブレンドして歪ませる
+            strength: 変形の強さ（0..2 を想定）
+            show_mask: True のとき、mask 入力も出力に含める（位置確認用）
+            keep_original: True のとき、元の base も出力に含める（比較用）
+            kind: `mode="lens"` のときの座標変換種別
+            profile: `mode="lens"` の距離プロファイル
+            band: `mode="lens"` の距離スケール [mm]
+            inside_only: `mode="lens"` で mask 内側だけに効かせるか
+            auto_center: `mode="lens"` の中心を mask AABB center にする
+            pivot: `auto_center=False` のときの中心
+            scale: `kind="scale"` の倍率
+            angle: `kind in {"rotate","swirl"}` の角度 [deg]
+            shear: `kind="shear"` の shear 係数（x,y を使用）
+            direction: `mode="attract"` の向き（吸着/反発）
+            bias: `mode="attract"` の目標 signed distance [mm]（0 で境界）
+            snap_band: `mode="attract"` で変形対象にする `|d-bias|` の上限（0 で無制限）
+            falloff: `mode="attract"` の距離減衰スケール [mm]（0 でフラット）
+        """
+        ...
     def weave(self, *, activate: bool = ..., num_candidate_lines: int = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
         """
         入力閉曲線からウェブ状の線分ネットワークを生成する。
@@ -915,6 +940,31 @@ class _E(Protocol):
             pivot: ねじり軸（`axis_dir` に平行な直線）の通過点（`auto_center=False` のとき有効）
             angle: 最大ねじれ角 [deg]
             axis_dir: ねじり軸方向（ベクトル）
+        """
+        ...
+    def warp(self, *, activate: bool = ..., mode: str = ..., strength: float = ..., show_mask: bool = ..., keep_original: bool = ..., kind: str = ..., profile: str = ..., band: float = ..., inside_only: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: float = ..., angle: float = ..., shear: Vec3 = ..., direction: str = ..., bias: float = ..., snap_band: float = ..., falloff: float = ...) -> _EffectBuilder:
+        """
+        マスク距離場で、入力線を lens/attract 変形する。
+
+        引数:
+            activate: bool
+            mode: `"lens"` は座標変換をブレンドして歪ませる
+            strength: 変形の強さ（0..2 を想定）
+            show_mask: True のとき、mask 入力も出力に含める（位置確認用）
+            keep_original: True のとき、元の base も出力に含める（比較用）
+            kind: `mode="lens"` のときの座標変換種別
+            profile: `mode="lens"` の距離プロファイル
+            band: `mode="lens"` の距離スケール [mm]
+            inside_only: `mode="lens"` で mask 内側だけに効かせるか
+            auto_center: `mode="lens"` の中心を mask AABB center にする
+            pivot: `auto_center=False` のときの中心
+            scale: `kind="scale"` の倍率
+            angle: `kind in {"rotate","swirl"}` の角度 [deg]
+            shear: `kind="shear"` の shear 係数（x,y を使用）
+            direction: `mode="attract"` の向き（吸着/反発）
+            bias: `mode="attract"` の目標 signed distance [mm]（0 で境界）
+            snap_band: `mode="attract"` で変形対象にする `|d-bias|` の上限（0 で無制限）
+            falloff: `mode="attract"` の距離減衰スケール [mm]（0 でフラット）
         """
         ...
     def weave(self, *, activate: bool = ..., num_candidate_lines: int = ..., relaxation_iterations: int = ..., step: float = ...) -> _EffectBuilder:
