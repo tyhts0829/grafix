@@ -19,7 +19,7 @@ MAX_TOTAL_VERTICES = 10_000_000
 MAX_KERNEL_RADIUS = 2048
 
 lowpass_meta = {
-    "step": ParamMeta(kind="float", ui_min=0.01, ui_max=20.0),
+    "step": ParamMeta(kind="float", ui_min=0.1, ui_max=20.0),
     "sigma": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
     "closed": ParamMeta(kind="choice", choices=("auto", "open", "closed")),
 }
