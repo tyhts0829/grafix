@@ -690,60 +690,129 @@ def _fill_cycles_indices_numba(
     return idx_flat, offsets
 
 
-def _stitch_segments_xy_to_loops_xy(
-    segments_xy: np.ndarray,
-    *,
-    snap: float,
-) -> list[np.ndarray]:
-    """線分群を「スナップしながら」閉ループ（頂点列）へ復元する。
-
-    Parameters
-    ----------
-    segments_xy : np.ndarray
-        (N, 4) 配列で各行が (ax, ay, bx, by)。
-    snap : float
-        端点同士を同一点とみなすスナップ幅（量子化グリッドのピッチ）。
-
-    Returns
-    -------
-    list[np.ndarray]
-        各要素は (M, 2) の閉ループ（先頭＝末尾）。
+@njit(cache=True)
+def _compact_edge_ids_numba(
+    edges_a: np.ndarray,
+    edges_b: np.ndarray,
+    n_total_edges: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """使用された edge-id を 0..n_nodes-1 に詰め直す。
 
     Notes
     -----
-    端点は浮動小数の補間で生じる微小誤差を含むため、
-    `snap` で丸めた格子点に投影してからグラフを作る。
-    その後「次数 2 の成分」だけをサイクルとして取り出す。
+    - node id をグリッド辺の総数（~2*nx*ny）で持つとメモリが増えるため、
+      使用 edge のみを compact 化する。
     """
 
-    if segments_xy.shape[0] <= 0:
-        return []
-    snap_f = float(snap)
-    if snap_f <= 0.0 or not math.isfinite(snap_f):
+    n_segments = int(edges_a.shape[0])
+    used = np.zeros((int(n_total_edges),), dtype=np.uint8)
+    for k in range(n_segments):
+        used[int(edges_a[k])] = 1
+        used[int(edges_b[k])] = 1
+
+    n_nodes = 0
+    for e in range(int(n_total_edges)):
+        n_nodes += int(used[e])
+
+    node_edge_ids = np.empty((int(n_nodes),), dtype=np.int32)
+    edge_to_node = np.full((int(n_total_edges),), -1, dtype=np.int32)
+    cursor = 0
+    for e in range(int(n_total_edges)):
+        if int(used[e]) != 0:
+            edge_to_node[e] = np.int32(cursor)
+            node_edge_ids[cursor] = np.int32(e)
+            cursor += 1
+
+    edges_a_compact = np.empty((n_segments,), dtype=np.int32)
+    edges_b_compact = np.empty((n_segments,), dtype=np.int32)
+    for k in range(n_segments):
+        edges_a_compact[k] = edge_to_node[int(edges_a[k])]
+        edges_b_compact[k] = edge_to_node[int(edges_b[k])]
+
+    return node_edge_ids, edges_a_compact, edges_b_compact
+
+
+@njit(cache=True)
+def _edge_nodes_to_xy_numba(
+    node_edge_ids: np.ndarray,
+    edge_t_h: np.ndarray,
+    edge_t_v: np.ndarray,
+    x0: float,
+    y0: float,
+    pitch: float,
+    nx: int,
+    ny: int,
+) -> np.ndarray:
+    """edge-id と補間係数から交点座標 (x,y) を復元する。"""
+
+    h_count = int(ny) * (int(nx) - 1)
+    out = np.empty((int(node_edge_ids.shape[0]), 2), dtype=np.float64)
+    for n in range(int(node_edge_ids.shape[0])):
+        eid = int(node_edge_ids[n])
+        if eid < h_count:
+            j = eid // (int(nx) - 1)
+            i = eid - j * (int(nx) - 1)
+            t = float(edge_t_h[eid])
+            out[n, 0] = float(x0) + float(pitch) * (float(i) + t)
+            out[n, 1] = float(y0) + float(pitch) * float(j)
+        else:
+            e = eid - h_count
+            j = e // int(nx)
+            i = e - j * int(nx)
+            t = float(edge_t_v[e])
+            out[n, 0] = float(x0) + float(pitch) * float(i)
+            out[n, 1] = float(y0) + float(pitch) * (float(j) + t)
+
+    return out
+
+
+def _stitch_segments_edge_to_loops_xy(
+    edges_a: np.ndarray,
+    edges_b: np.ndarray,
+    *,
+    edge_t_h: np.ndarray,
+    edge_t_v: np.ndarray,
+    x0: float,
+    y0: float,
+    pitch: float,
+    nx: int,
+    ny: int,
+) -> list[np.ndarray]:
+    """edge-id の線分群を閉ループ（頂点列）へ復元する。"""
+
+    if edges_a.size <= 0:
         return []
 
-    a = segments_xy[:, 0:2].astype(np.float64, copy=False)
-    b = segments_xy[:, 2:4].astype(np.float64, copy=False)
-    pts_xy = np.concatenate([a, b], axis=0).astype(np.float64, copy=False)
-    # 端点を格子に量子化して「同一点」を作る（縫合のためのスナップ）。
-    pts_q = np.rint(pts_xy / snap_f).astype(np.int64, copy=False)
-
-    _unique_q, idx_first, inv = np.unique(pts_q, axis=0, return_index=True, return_inverse=True)
-    if inv.size <= 0:
-        return []
-    unique_xy = pts_xy[np.asarray(idx_first, dtype=np.int64)]
-
-    n_segments = int(segments_xy.shape[0])
-    edges_a = inv[:n_segments].astype(np.int64, copy=False)
-    edges_b = inv[n_segments:].astype(np.int64, copy=False)
-    # 量子化の結果、端点が同じセルに落ちた線分は長さ 0 になるので捨てる。
     nondeg = edges_a != edges_b
     edges_a = edges_a[nondeg]
     edges_b = edges_b[nondeg]
     if edges_a.size <= 0:
         return []
 
-    neighbors, deg = _build_neighbors_numba(int(unique_xy.shape[0]), edges_a, edges_b)
+    h_count = int(ny) * (int(nx) - 1)
+    v_count = (int(ny) - 1) * int(nx)
+    n_total_edges = int(h_count + v_count)
+
+    node_edge_ids, edges_a_compact, edges_b_compact = _compact_edge_ids_numba(
+        edges_a.astype(np.int32, copy=False),
+        edges_b.astype(np.int32, copy=False),
+        int(n_total_edges),
+    )
+    if node_edge_ids.size <= 0:
+        return []
+
+    node_xy = _edge_nodes_to_xy_numba(
+        node_edge_ids,
+        edge_t_h,
+        edge_t_v,
+        float(x0),
+        float(y0),
+        float(pitch),
+        int(nx),
+        int(ny),
+    )
+
+    neighbors, deg = _build_neighbors_numba(int(node_xy.shape[0]), edges_a_compact, edges_b_compact)
     cycle_starts, cycle_lengths, n_cycles = _collect_cycles_info_numba(neighbors, deg)
     if n_cycles <= 0:
         return []
@@ -756,7 +825,7 @@ def _stitch_segments_xy_to_loops_xy(
         if e - s < 4:
             continue
         loop_idx = idx_flat[s:e]
-        loops_xy.append(unique_xy[loop_idx])
+        loops_xy.append(node_xy[loop_idx])
 
     return loops_xy
 
@@ -777,7 +846,7 @@ def _interp_zero(a: float, b: float) -> float:
 
 
 @njit(cache=True)
-def _count_marching_squares_zero_segments_numba(
+def _count_marching_squares_zero_segments_edge_numba(
     field: np.ndarray,
     sdf: np.ndarray,
     lo: float,
@@ -838,35 +907,35 @@ def _count_marching_squares_zero_segments_numba(
 
 
 @njit(cache=True)
-def _fill_marching_squares_zero_segments_xy_numba(
+def _fill_marching_squares_zero_segments_edge_numba(
     field: np.ndarray,
     sdf: np.ndarray,
-    xs: np.ndarray,
-    ys: np.ndarray,
     *,
     lo: float,
     hi: float,
-    out_segments: np.ndarray,
+    out_edges_a: np.ndarray,
+    out_edges_b: np.ndarray,
+    edge_t_h: np.ndarray,
+    edge_t_v: np.ndarray,
 ) -> int:
-    """Marching Squares で 0 等値線の線分を列挙し、(ax,ay,bx,by) へ書き込む。
+    """Marching Squares で 0 等値線の線分を列挙し、(edge_a, edge_b) へ書き込む。
 
     Notes
     -----
     - `field` の符号変化を見て 0 等値線を取る（`field == 0` を直接探さない）。
     - 交点の SDF 値が `[lo, hi]` のときだけ採用することで、
       inside/outside/both の抽出範囲を制御する。
+    - edge-id はグリッド辺で一意になるように定義する:
+      - 水平辺: `h_id(j,i)=j*(nx-1)+i`（`0<=j<ny, 0<=i<nx-1`）
+      - 垂直辺: `v_id(j,i)=h_count + j*nx + i`（`0<=j<ny-1, 0<=i<nx`）
     """
 
     ny, nx = int(field.shape[0]), int(field.shape[1])
+    h_count = int(ny) * (int(nx) - 1)
     cursor = 0
 
     for j in range(ny - 1):
-        y0 = float(ys[j])
-        y1 = float(ys[j + 1])
         for i in range(nx - 1):
-            x0 = float(xs[i])
-            x1 = float(xs[i + 1])
-
             v00 = float(field[j, i])
             v10 = float(field[j, i + 1])
             v11 = float(field[j + 1, i + 1])
@@ -889,43 +958,43 @@ def _fill_marching_squares_zero_segments_xy_numba(
             has1 = False
             has2 = False
             has3 = False
-            p0x = 0.0
-            p0y = 0.0
-            p1x = 0.0
-            p1y = 0.0
-            p2x = 0.0
-            p2y = 0.0
-            p3x = 0.0
-            p3y = 0.0
+            id0 = np.int32(0)
+            id1 = np.int32(0)
+            id2 = np.int32(0)
+            id3 = np.int32(0)
 
             if e0:
                 t = _interp_zero(v00, v10)
                 s = float(sdf[j, i]) + t * float(sdf[j, i + 1] - sdf[j, i])
                 if s >= lo and s <= hi:
                     has0 = True
-                    p0x = x0 + t * (x1 - x0)
-                    p0y = y0
+                    hid = j * (nx - 1) + i
+                    id0 = np.int32(hid)
+                    edge_t_h[hid] = np.float32(t)
             if e1:
                 t = _interp_zero(v10, v11)
                 s = float(sdf[j, i + 1]) + t * float(sdf[j + 1, i + 1] - sdf[j, i + 1])
                 if s >= lo and s <= hi:
                     has1 = True
-                    p1x = x1
-                    p1y = y0 + t * (y1 - y0)
+                    vid = j * nx + (i + 1)
+                    id1 = np.int32(h_count + vid)
+                    edge_t_v[vid] = np.float32(t)
             if e2:
                 t = _interp_zero(v01, v11)
                 s = float(sdf[j + 1, i]) + t * float(sdf[j + 1, i + 1] - sdf[j + 1, i])
                 if s >= lo and s <= hi:
                     has2 = True
-                    p2x = x0 + t * (x1 - x0)
-                    p2y = y1
+                    hid = (j + 1) * (nx - 1) + i
+                    id2 = np.int32(hid)
+                    edge_t_h[hid] = np.float32(t)
             if e3:
                 t = _interp_zero(v00, v01)
                 s = float(sdf[j, i]) + t * float(sdf[j + 1, i] - sdf[j, i])
                 if s >= lo and s <= hi:
                     has3 = True
-                    p3x = x0
-                    p3y = y0 + t * (y1 - y0)
+                    vid = j * nx + i
+                    id3 = np.int32(h_count + vid)
+                    edge_t_v[vid] = np.float32(t)
 
             npts = 0
             if has0:
@@ -939,37 +1008,33 @@ def _fill_marching_squares_zero_segments_xy_numba(
 
             if npts == 2:
                 # 通常ケース: 交点が 2 つならそのまま 1 本の線分で結ぶ。
-                ax = 0.0
-                ay = 0.0
-                bx = 0.0
-                by = 0.0
+                a = np.int32(0)
+                b = np.int32(0)
                 found_first = False
                 if has0:
-                    ax, ay = p0x, p0y
+                    a = id0
                     found_first = True
                 if has1:
                     if not found_first:
-                        ax, ay = p1x, p1y
+                        a = id1
                         found_first = True
                     else:
-                        bx, by = p1x, p1y
+                        b = id1
                 if has2:
                     if not found_first:
-                        ax, ay = p2x, p2y
+                        a = id2
                         found_first = True
                     else:
-                        bx, by = p2x, p2y
+                        b = id2
                 if has3:
                     if not found_first:
-                        ax, ay = p3x, p3y
+                        a = id3
                         found_first = True
                     else:
-                        bx, by = p3x, p3y
+                        b = id3
 
-                out_segments[cursor, 0] = ax
-                out_segments[cursor, 1] = ay
-                out_segments[cursor, 2] = bx
-                out_segments[cursor, 3] = by
+                out_edges_a[cursor] = a
+                out_edges_b[cursor] = b
                 cursor += 1
                 continue
 
@@ -983,62 +1048,42 @@ def _fill_marching_squares_zero_segments_xy_numba(
             center_inside = vc >= 0.0
             if idx == 5:
                 if center_inside:
-                    out_segments[cursor, 0] = p0x
-                    out_segments[cursor, 1] = p0y
-                    out_segments[cursor, 2] = p1x
-                    out_segments[cursor, 3] = p1y
+                    out_edges_a[cursor] = id0
+                    out_edges_b[cursor] = id1
                     cursor += 1
-                    out_segments[cursor, 0] = p2x
-                    out_segments[cursor, 1] = p2y
-                    out_segments[cursor, 2] = p3x
-                    out_segments[cursor, 3] = p3y
+                    out_edges_a[cursor] = id2
+                    out_edges_b[cursor] = id3
                     cursor += 1
                 else:
-                    out_segments[cursor, 0] = p0x
-                    out_segments[cursor, 1] = p0y
-                    out_segments[cursor, 2] = p3x
-                    out_segments[cursor, 3] = p3y
+                    out_edges_a[cursor] = id0
+                    out_edges_b[cursor] = id3
                     cursor += 1
-                    out_segments[cursor, 0] = p1x
-                    out_segments[cursor, 1] = p1y
-                    out_segments[cursor, 2] = p2x
-                    out_segments[cursor, 3] = p2y
+                    out_edges_a[cursor] = id1
+                    out_edges_b[cursor] = id2
                     cursor += 1
                 continue
             if idx == 10:
                 if center_inside:
-                    out_segments[cursor, 0] = p0x
-                    out_segments[cursor, 1] = p0y
-                    out_segments[cursor, 2] = p3x
-                    out_segments[cursor, 3] = p3y
+                    out_edges_a[cursor] = id0
+                    out_edges_b[cursor] = id3
                     cursor += 1
-                    out_segments[cursor, 0] = p1x
-                    out_segments[cursor, 1] = p1y
-                    out_segments[cursor, 2] = p2x
-                    out_segments[cursor, 3] = p2y
+                    out_edges_a[cursor] = id1
+                    out_edges_b[cursor] = id2
                     cursor += 1
                 else:
-                    out_segments[cursor, 0] = p0x
-                    out_segments[cursor, 1] = p0y
-                    out_segments[cursor, 2] = p1x
-                    out_segments[cursor, 3] = p1y
+                    out_edges_a[cursor] = id0
+                    out_edges_b[cursor] = id1
                     cursor += 1
-                    out_segments[cursor, 0] = p2x
-                    out_segments[cursor, 1] = p2y
-                    out_segments[cursor, 2] = p3x
-                    out_segments[cursor, 3] = p3y
+                    out_edges_a[cursor] = id2
+                    out_edges_b[cursor] = id3
                     cursor += 1
                 continue
 
-            out_segments[cursor, 0] = p0x
-            out_segments[cursor, 1] = p0y
-            out_segments[cursor, 2] = p1x
-            out_segments[cursor, 3] = p1y
+            out_edges_a[cursor] = id0
+            out_edges_b[cursor] = id1
             cursor += 1
-            out_segments[cursor, 0] = p2x
-            out_segments[cursor, 1] = p2y
-            out_segments[cursor, 2] = p3x
-            out_segments[cursor, 3] = p3y
+            out_edges_a[cursor] = id2
+            out_edges_b[cursor] = id3
             cursor += 1
 
     return int(cursor)
@@ -1192,25 +1237,40 @@ def isocontour(
         lo, hi = -max_d, max_d
 
     # 3) Marching Squares で線分を列挙し、端点の SDF が [lo, hi] に入るものだけ残す。
-    n_segments = _count_marching_squares_zero_segments_numba(field, sdf, float(lo), float(hi))
+    n_segments = _count_marching_squares_zero_segments_edge_numba(field, sdf, float(lo), float(hi))
     if n_segments <= 0:
         return _empty_geometry()
 
-    segments_xy = np.empty((int(n_segments), 4), dtype=np.float64)
-    filled = _fill_marching_squares_zero_segments_xy_numba(
+    h_count = int(ny) * (int(nx) - 1)
+    v_count = (int(ny) - 1) * int(nx)
+    edge_t_h = np.full((int(h_count),), -1.0, dtype=np.float32)
+    edge_t_v = np.full((int(v_count),), -1.0, dtype=np.float32)
+    edges_a = np.empty((int(n_segments),), dtype=np.int32)
+    edges_b = np.empty((int(n_segments),), dtype=np.int32)
+
+    filled = _fill_marching_squares_zero_segments_edge_numba(
         field,
         sdf,
-        xs,
-        ys,
         lo=float(lo),
         hi=float(hi),
-        out_segments=segments_xy,
+        out_edges_a=edges_a,
+        out_edges_b=edges_b,
+        edge_t_h=edge_t_h,
+        edge_t_v=edge_t_v,
     )
-    segments_xy = segments_xy[: int(filled)]
-
-    # 4) 補間誤差だけを吸収できる程度に極小のスナップで端点を縫合する。
-    snap = max(1e-9, pitch * 1e-6)
-    loops_xy = _stitch_segments_xy_to_loops_xy(segments_xy, snap=float(snap))
+    edges_a = edges_a[: int(filled)]
+    edges_b = edges_b[: int(filled)]
+    loops_xy = _stitch_segments_edge_to_loops_xy(
+        edges_a,
+        edges_b,
+        edge_t_h=edge_t_h,
+        edge_t_v=edge_t_v,
+        x0=float(x0),
+        y0=float(y0),
+        pitch=float(pitch),
+        nx=int(nx),
+        ny=int(ny),
+    )
 
     out_lines: list[np.ndarray] = []
     for pts_xy in loops_xy:
