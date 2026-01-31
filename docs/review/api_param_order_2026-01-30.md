@@ -6,6 +6,19 @@
 - source: registry の `param_order`（GUI/永続化の表示順）
 - excluded: `activate` / `name` / `key`
 
+## 共通パラメータ（順序ルール用）
+
+- `center`（中心座標。vec3）
+- `scale`（倍率。vec3/float）
+- `rotation` / `angle`（回転。vec3/float）
+- `delta`（平行移動 vec3） / `offset`（ずらし。平行移動とスカラー offset が混在しやすい）
+- `auto_center` / `pivot`（pivot 指定。effect で頻出）
+- `seed`（乱数シード）
+- `phase`（位相/時間。`t` を含めて寄せ先候補）
+- `mode`（動作モード/分岐）
+- `count` / `n_*` / `*_count`（個数）
+- `step`（刻み/間隔）
+
 ## 全体コメント（改善案）
 
 - 座標系の「中心」系は、可能なら `center`（vec3）に寄せる（`cx/cy` などの分割名は例外扱いにする、など方針化すると比較が速い）。
