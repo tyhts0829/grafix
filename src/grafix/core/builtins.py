@@ -50,6 +50,7 @@ _BUILTIN_EFFECT_MODULES: tuple[str, ...] = (
     "grafix.core.effects.weave",
     "grafix.core.effects.relax",
     "grafix.core.effects.reaction_diffusion",
+    "grafix.core.effects.warp",
 )
 
 _BUILTIN_PRIMITIVES_REGISTERED = False
