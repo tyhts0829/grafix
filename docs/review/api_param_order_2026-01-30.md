@@ -19,6 +19,19 @@
 - `count` / `n_*` / `*_count`（個数）
 - `step`（刻み/間隔）
 
+## 優先修正タスク（ランキング）
+
+- [ ] (P0, 破壊的) transform 系の語彙を統一: vec3 平行移動は `delta`、回転は `rotation`、倍率は `scale` に寄せる
+  - 対象例: `E.repeat offset -> delta`, `E.repeat rotation_step -> rotation`, `P.layout_* offset -> delta`
+- [ ] (P0, 破壊的) ノイズ/揺れ系の語彙を統一: `frequency` / `phase` に寄せる（`spatial_freq` / `t` を廃止）
+  - 対象例: `E.displace spatial_freq -> frequency`, `E.displace t -> phase`
+- [ ] (P1, 破壊的) 2D 中心座標の語彙を統一: `center_x` / `center_y` に寄せる（`cx/cy` を廃止）
+  - 対象例: `E.mirror cx/cy -> center_x/center_y`
+- [ ] (P1, 破壊的) `keep_*` の衝突を解消: `keep_mode` を `mode`（または `action`）へ寄せる
+  - 対象例: `E.drop keep_mode -> mode`
+- [ ] (P2, 主に表示順) 表示順ルールを決めて揃える（API を変えない範囲から始める）
+  - 例: `seed` は末尾寄せ / `show_*` は依存パラメータより前 / `*_base` → `*_slope` は隣接
+
 ## 全体コメント（改善案）
 
 - 座標系の「中心」系は、可能なら `center`（vec3）に寄せる（`cx/cy` などの分割名は例外扱いにする、など方針化すると比較が速い）。
