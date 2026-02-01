@@ -81,6 +81,6 @@ if __name__ == "__main__":
         render_scale=5,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        midi_port_name="Grid",
-        midi_mode="14bit",
+        midi_port_name="auto",
+        # midi_mode="14bit",
     )
