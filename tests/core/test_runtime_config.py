@@ -30,6 +30,8 @@ def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pyt
     assert cfg.window_pos_parameter_gui == (950, 25)
     assert cfg.parameter_gui_window_size == (800, 1000)
     assert cfg.parameter_gui_fallback_font_japanese is None
+    assert cfg.parameter_gui_font_size_base_px == 12.0
+    assert cfg.parameter_gui_table_column_weights == (0.20, 0.60, 0.15, 0.20)
     assert cfg.png_scale == 8.0
     assert cfg.midi_inputs == ()
 
@@ -78,6 +80,36 @@ def test_discovered_midi_inputs_are_loaded(tmp_path: Path, monkeypatch: pytest.M
 
     cfg = runtime_config()
     assert cfg.midi_inputs == (("Grid", "14bit"),)
+
+
+def test_parameter_gui_config_values_are_loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _isolate_config_discovery(tmp_path, monkeypatch)
+
+    discovered = tmp_path / ".grafix" / "config.yaml"
+    discovered.parent.mkdir(parents=True, exist_ok=True)
+    discovered.write_text(
+        "\n".join(
+            [
+                "paths:",
+                '  output_dir: "./out_discovered"',
+                "ui:",
+                "  window_positions:",
+                "    draw: [10, 20]",
+                "    parameter_gui: [30, 40]",
+                "  parameter_gui:",
+                "    window_size: [123, 456]",
+                "    fallback_font_japanese: null",
+                "    font_size_base_px: 15.0",
+                "    table_column_weights: [0.10, 0.20, 0.30, 0.40]",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = runtime_config()
+    assert cfg.parameter_gui_font_size_base_px == 15.0
+    assert cfg.parameter_gui_table_column_weights == (0.10, 0.20, 0.30, 0.40)
 
 
 def test_explicit_config_overrides_discovered_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
