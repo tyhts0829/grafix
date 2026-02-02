@@ -46,28 +46,28 @@
 
 > コメント: `*_min`/`*_max` のペア、`*_steps` のペアなどがまとまっていて読みやすい。今後増やすなら「ペアは隣接」のルールを維持すると良い。
 
-- `text`
-- `seed`
-- `n_nodes`
-- `candidates`
-- `stroke_min`
-- `stroke_max`
-- `walk_min_steps`
-- `walk_max_steps`
-- `stroke_style`
-- `bezier_samples`
-- `bezier_tension`
-- `text_align`
-- `glyph_advance_em`
-- `space_advance_em`
-- `letter_spacing_em`
-- `line_height`
-- `use_bounding_box`
-- `box_width`
-- `box_height`
-- `show_bounding_box`
-- `center`
-- `scale`
+- `text`: 3
+- `seed`: 4
+- `n_nodes`: 5
+- `candidates`: 6
+- `stroke_min`: 7
+- `stroke_max`: 8
+- `walk_min_steps`: 9
+- `walk_max_steps`: 10
+- `stroke_style`: 11
+- `bezier_samples`: 12
+- `bezier_tension`: 13
+- `text_align`: 14
+- `glyph_advance_em`: 15
+- `space_advance_em`: 16
+- `letter_spacing_em`: 17
+- `line_height`: 18
+- `use_bounding_box`: 19
+- `box_width`: 20
+- `box_height`: 21
+- `show_bounding_box`: 22
+- `center`: 1
+- `scale`: 2
 
 ### `G.grid`
 
@@ -78,313 +78,313 @@
 
 ### `G.line`
 
-- `center`
-- `anchor`
-- `length`
-- `angle`
+- `center`: 1
+- `anchor`: 3
+- `length`: 4
+- `angle`: 2
 
 ### `G.polygon`
 
-- `n_sides`
-- `phase`
-- `sweep`
-- `center`
-- `scale`
+- `n_sides`: 3
+- `phase`: 4
+- `sweep`: 5
+- `center`: 1
+- `scale`: 2
 
 ### `G.polyhedron`
 
-- `type_index`
-- `center`
-- `scale`
+- `type_index`: 3
+- `center`: 1
+- `scale`: 2
 
 ### `G.sphere`
 
-- `subdivisions`
-- `type_index`
-- `mode`
-- `center`
-- `scale`
+- `subdivisions`: 3
+- `type_index`: 4
+- `mode`: 5
+- `center`: 1
+- `scale`: 2
 
 ### `G.text`
 
-- `text`
-- `font`
-- `font_index`
-- `text_align`
-- `letter_spacing_em`
-- `line_height`
-- `use_bounding_box`
-- `box_width`
-- `box_height`
-- `show_bounding_box`
-- `quality`
-- `center`
-- `scale`
+- `text`: 3
+- `font`: 4
+- `font_index`: 5
+- `text_align`: 6
+- `letter_spacing_em`: 7
+- `line_height`: 8
+- `use_bounding_box`: 9
+- `box_width`: 10
+- `box_height`: 11
+- `show_bounding_box`: 12
+- `quality`: 13
+- `center`: 1
+- `scale`: 2
 
 ### `G.torus`
 
-- `major_radius`
-- `minor_radius`
-- `major_segments`
-- `minor_segments`
-- `center`
-- `scale`
+- `major_radius`: 3
+- `minor_radius`: 4
+- `major_segments`: 5
+- `minor_segments`: 6
+- `center`: 1
+- `scale`: 2
 
 ## Effects（E.\* / 30）
 
 ### `E.affine`
 
-- `auto_center`
-- `pivot`
-- `rotation`
-- `scale`
-- `delta`
+- `auto_center`: 3
+- `pivot`: 4
+- `rotation`: 2
+- `scale`: 1
+- `delta`: 5
 
 ### `E.bold`
 
-- `count`
-- `radius`
-- `seed`
+- `count`: 1
+- `radius`: 2
+- `seed`: 3
 
 ### `E.buffer`
 
-- `join`
-- `quad_segs`
-- `distance`
-- `union`
-- `keep_original`
+- `join`: 1
+- `quad_segs`: 2
+- `distance`: 3
+- `union`: 4
+- `keep_original`: 5
 
 ### `E.clip` (inputs=2)
 
-- `mode`
-- `draw_outline`
+- `mode`: 1
+- `draw_outline`: 2
 
 ### `E.collapse`
 
 > コメント: `auto_center/pivot` を持つ他の transform 系（`rotate/scale/affine/twist`）が先頭寄りなのに対し、ここでは末尾寄り。方針を揃えるなら `auto_center, pivot` を先頭（または `intensity` の直後）へ移動すると横断比較しやすい。
 
-- `intensity`
-- `subdivisions`
-- `intensity_mask_base`
-- `intensity_mask_slope`
-- `auto_center`
-- `pivot`
+- `intensity`: 1
+- `subdivisions`: 2
+- `intensity_mask_base`: 3
+- `intensity_mask_slope`: 4
+- `auto_center`: 5
+- `pivot`: 6
 
 ### `E.dash`
 
-- `dash_length`
-- `gap_length`
-- `offset`
-- `offset_jitter`
+- `dash_length`: 1
+- `gap_length`: 2
+- `offset`: 3
+- `offset_jitter`: 4
 
 ### `E.displace`
 
 > コメント: 周波数は `wobble` が `frequency` なので、`spatial_freq` も `frequency` へ寄せると揃う。時間/位相は `t` より `phase` の方が（`wobble` と）語彙が揃う。
 
-- `amplitude`
-- `spatial_freq` -> `frequency`
-- `amplitude_gradient`
-- `frequency_gradient`
-- `gradient_center_offset`
-- `gradient_profile`
-- `gradient_radius`
-- `min_gradient_factor`
-- `max_gradient_factor`
-- `t` -> `phase`
+- `amplitude`: 1
+- `spatial_freq` -> `frequency`: 2
+- `amplitude_gradient`: 3
+- `frequency_gradient`: 4
+- `gradient_center_offset`: 5
+- `gradient_profile`: 6
+- `gradient_radius`: 7
+- `min_gradient_factor`: 8
+- `max_gradient_factor`: 9
+- `t` -> `phase`: 10
 
 ### `E.drop`
 
 > コメント: `keep_original`（出力に元を混ぜる）と `keep_mode`（条件に一致したものを残す/捨てる）がどちらも「keep」なので混同しやすい。まずは `keep_mode` を `mode` 等へ寄せて衝突しない語彙にするのが分かりやすい。
 
-- `interval`
-- `index_offset`
-- `min_length`
-- `max_length`
-- `probability_base`
-- `probability_slope`
-- `by`
-- `seed`
-- `keep_mode` -> `mode`
+- `interval`: 1
+- `index_offset`: 2
+- `min_length`: 3
+- `max_length`: 4
+- `probability_base`: 5
+- `probability_slope`: 6
+- `by`: 7
+- `seed`: 8
+- `keep_mode` -> `mode`: 9
 
 ### `E.extrude`
 
-- `delta`
-- `scale`
-- `subdivisions`
-- `center_mode`
+- `delta`: 2
+- `scale`: 1
+- `subdivisions`: 3
+- `center_mode`: 4
 
 ### `E.fill`
 
-- `angle_sets`
-- `angle`
-- `density`
-- `spacing_gradient`
-- `remove_boundary`
+- `angle_sets`: 2
+- `angle`: 1
+- `density`: 3
+- `spacing_gradient`: 4
+- `remove_boundary`: 5
 
 ### `E.highpass`
 
-- `step`
-- `sigma`
-- `gain`
-- `closed`
+- `step`: 1
+- `sigma`: 2
+- `gain`: 3
+- `closed`: 4
 
 ### `E.isocontour`
 
-- `spacing`
-- `phase`
-- `max_dist`
-- `mode`
-- `grid_pitch`
-- `gamma`
-- `level_step`
-- `auto_close_threshold`
-- `keep_original`
+- `spacing`: 1
+- `phase`: 2
+- `max_dist`: 3
+- `mode`: 4
+- `grid_pitch`: 5
+- `gamma`: 6
+- `level_step`: 7
+- `auto_close_threshold`: 8
+- `keep_original`: 9
 
 ### `E.lowpass`
 
-- `step`
-- `sigma`
-- `closed`
+- `step`: 1
+- `sigma`: 2
+- `closed`: 3
 
 ### `E.metaball`
 
-- `radius`
-- `threshold`
-- `grid_pitch`
-- `auto_close_threshold`
-- `output`
-- `keep_original`
+- `radius`: 1
+- `threshold`: 2
+- `grid_pitch`: 3
+- `auto_close_threshold`: 4
+- `output`: 5
+- `keep_original`: 6
 
 ### `E.mirror`
 
 > コメント: 中心が `cx/cy` になっているが、他の多くが `center`（vec3）なので語彙が分かれている。2D を分割名で持つなら `center_x/center_y` のように揃えると一貫性が上がる。
 
-- `n_mirror`
-- `cx` -> `center_x`
-- `cy` -> `center_y`
-- `source_positive_x`
-- `source_positive_y`
-- `show_planes`
+- `n_mirror`: 1
+- `cx` -> `center_x`: 2
+- `cy` -> `center_y`: 3
+- `source_positive_x`: 4
+- `source_positive_y`: 5
+- `show_planes`: 6
 
 ### `E.mirror3d`
 
-- `mode`
-- `n_azimuth`
-- `center`
-- `axis`
-- `phi0`
-- `mirror_equator`
-- `source_side`
-- `group`
-- `use_reflection`
-- `show_planes`
+- `mode`: 2
+- `n_azimuth`: 3
+- `center`: 1
+- `axis`: 4
+- `phi0`: 5
+- `mirror_equator`: 6
+- `source_side`: 7
+- `group`: 8
+- `use_reflection`: 9
+- `show_planes`: 10
 
 ### `E.partition`
 
 > コメント: `seed` の位置が中盤にあり、他 op の「末尾寄せ」案とずれる。`mode` が先頭にあるのは良いので、揃えるなら `seed` の配置ルールだけ決めると良さそう。
 
-- `mode`
-- `site_count`
-- `seed`
-- `site_density_base`
-- `site_density_slope`
-- `auto_center`
-- `pivot`
+- `mode`: 1
+- `site_count`: 2
+- `seed`: 3
+- `site_density_base`: 4
+- `site_density_slope`: 5
+- `auto_center`: 6
+- `pivot`: 7
 
 ### `E.pixelate`
 
-- `step`
-- `corner`
+- `step`: 1
+- `corner`: 2
 
 ### `E.quantize`
 
-- `step`
+- `step`: 1
 
 ### `E.reaction_diffusion`
 
-- `grid_pitch`
-- `steps`
-- `du`
-- `dv`
-- `feed`
-- `kill`
-- `dt`
-- `seed`
-- `seed_radius`
-- `noise`
-- `level`
-- `min_points`
-- `boundary`
+- `grid_pitch`: 1
+- `steps`: 2
+- `du`: 3
+- `dv`: 4
+- `feed`: 5
+- `kill`: 6
+- `dt`: 7
+- `seed`: 8
+- `seed_radius`: 9
+- `noise`: 10
+- `level`: 11
+- `min_points`: 12
+- `boundary`: 13
 
 ### `E.relax`
 
-- `relaxation_iterations`
-- `step`
+- `relaxation_iterations`: 1
+- `step`: 2
 
 ### `E.repeat`
 
 > コメント: 平行移動は `translate/affine` が `delta` なので `offset` も `delta` に寄せると語彙が揃う。回転も `rotation` へ寄せると transform 群の見通しが良くなる。
 
-- `layout`
-- `count`
-- `radius`
-- `theta`
-- `n_theta`
-- `n_radius`
-- `cumulative_scale`
-- `cumulative_offset`
-- `cumulative_rotate`
-- `offset` -> `delta`
-- `rotation_step` -> `rotation`
-- `scale`
-- `curve`
-- `auto_center`
-- `pivot`
+- `layout`: 3
+- `count`: 4
+- `radius`: 5
+- `theta`: 6
+- `n_theta`: 7
+- `n_radius`: 8
+- `cumulative_scale`: 9
+- `cumulative_offset`: 10
+- `cumulative_rotate`: 11
+- `offset` -> `delta`: 12
+- `rotation_step` -> `rotation`: 2
+- `scale`: 1
+- `curve`: 13
+- `auto_center`: 14
+- `pivot`: 15
 
 ### `E.rotate`
 
-- `auto_center`
-- `pivot`
-- `rotation`
+- `auto_center`: 2
+- `pivot`: 3
+- `rotation`: 1
 
 ### `E.scale`
 
-- `mode`
-- `auto_center`
-- `pivot`
-- `scale`
+- `mode`: 2
+- `auto_center`: 3
+- `pivot`: 4
+- `scale`: 1
 
 ### `E.subdivide`
 
-- `subdivisions`
+- `subdivisions`: 1
 
 ### `E.translate`
 
-- `delta`
+- `delta`: 1
 
 ### `E.trim`
 
-- `start_param`
-- `end_param`
+- `start_param`: 1
+- `end_param`: 2
 
 ### `E.twist`
 
-- `auto_center`
-- `pivot`
-- `angle`
-- `axis_dir`
+- `auto_center`: 2
+- `pivot`: 3
+- `angle`: 1
+- `axis_dir`: 4
 
 ### `E.weave`
 
-- `num_candidate_lines`
-- `relaxation_iterations`
-- `step`
+- `num_candidate_lines`: 1
+- `relaxation_iterations`: 2
+- `step`: 3
 
 ### `E.wobble`
 
-- `amplitude`
-- `frequency`
-- `phase`
+- `amplitude`: 1
+- `frequency`: 2
+- `phase`: 3
 
 ## Presets（P.\* / 13）
 
@@ -392,167 +392,167 @@
 
 ### `P.axes`
 
-- `center`
-- `axis_length`
-- `axis_visible_ratio`
-- `axis_visible_anchor`
-- `tick_count_x`
-- `tick_length`
-- `tick_offset`
-- `tick_log`
+- `center`: 1
+- `axis_length`: 2
+- `axis_visible_ratio`: 3
+- `axis_visible_anchor`: 4
+- `tick_count_x`: 5
+- `tick_length`: 6
+- `tick_offset`: 7
+- `tick_log`: 8
 
 ### `P.dot_matrix`
 
-- `center`
-- `matrix_size`
-- `dot_size`
-- `fill_density_coef`
-- `repeat_count_x`
-- `repeat_count_y`
+- `center`: 1
+- `matrix_size`: 2
+- `dot_size`: 3
+- `fill_density_coef`: 4
+- `repeat_count_x`: 5
+- `repeat_count_y`: 6
 
 ### `P.flow`
 
 > コメント: `E.displace` 側を `spatial_freq -> frequency` に寄せると、preset 側の `displace_frequency` との対応が自然になる（引数名の “翻訳” が減る）。
 
-- `center`
-- `scale`
-- `fill_density_coef`
-- `fill_angle`
-- `subdivide_levels`
-- `displace_amplitude`
-- `displace_frequency`
+- `center`: 1
+- `scale`: 2
+- `fill_density_coef`: 3
+- `fill_angle`: 4
+- `subdivide_levels`: 5
+- `displace_amplitude`: 6
+- `displace_frequency`: 7
 
 ### `P.grn_a5_frame`
 
-- `show_layout`
-- `layout_color_rgb255`
-- `number_text`
-- `explanation_text`
-- `explanation_density`
-- `template_color_rgb255`
+- `show_layout`: 1
+- `layout_color_rgb255`: 2
+- `number_text`: 3
+- `explanation_text`: 4
+- `explanation_density`: 5
+- `template_color_rgb255`: 6
 
 ### `P.layout_bounds`
 
 > コメント: `show_trim` が `trim` の後にあるが、`show_trim` がトグルで `trim` が値なので、GUI 操作の自然さ重視なら `show_trim → trim` の順にする案がある（他の `show_baseline → baseline_*` と揃う）。
 
-- `canvas_w`
-- `canvas_h`
-- `axes`
-- `margin_l`
-- `margin_r`
-- `margin_t`
-- `margin_b`
-- `show_center`
-- `border`
-- `show_margin`
-- `trim`
-- `show_trim`
-- `offset`
+- `canvas_w`: 1
+- `canvas_h`: 2
+- `axes`: 3
+- `margin_l`: 4
+- `margin_r`: 5
+- `margin_t`: 6
+- `margin_b`: 7
+- `show_center`: 8
+- `border`: 9
+- `show_margin`: 10
+- `trim`: 11
+- `show_trim`: 12
+- `offset`: 13
 
 ### `P.layout_diagonals`
 
-- `canvas_w`
-- `canvas_h`
-- `axes`
-- `margin_l`
-- `margin_r`
-- `margin_t`
-- `margin_b`
-- `show_center`
-- `offset`
+- `canvas_w`: 1
+- `canvas_h`: 2
+- `axes`: 3
+- `margin_l`: 4
+- `margin_r`: 5
+- `margin_t`: 6
+- `margin_b`: 7
+- `show_center`: 8
+- `offset`: 9
 
 ### `P.layout_golden_ratio`
 
-- `canvas_w`
-- `canvas_h`
-- `axes`
-- `margin_l`
-- `margin_r`
-- `margin_t`
-- `margin_b`
-- `show_center`
-- `levels`
-- `offset`
+- `canvas_w`: 1
+- `canvas_h`: 2
+- `axes`: 3
+- `margin_l`: 4
+- `margin_r`: 5
+- `margin_t`: 6
+- `margin_b`: 7
+- `show_center`: 8
+- `levels`: 9
+- `offset`: 10
 
 ### `P.layout_grid_system`
 
-- `canvas_w`
-- `canvas_h`
-- `axes`
-- `margin_l`
-- `margin_r`
-- `margin_t`
-- `margin_b`
-- `show_center`
-- `cols`
-- `rows`
-- `gutter_x`
-- `gutter_y`
-- `show_column_centers`
-- `show_baseline`
-- `baseline_step`
-- `baseline_offset`
-- `offset`
+- `canvas_w`: 1
+- `canvas_h`: 2
+- `axes`: 3
+- `margin_l`: 4
+- `margin_r`: 5
+- `margin_t`: 6
+- `margin_b`: 7
+- `show_center`: 8
+- `cols`: 9
+- `rows`: 10
+- `gutter_x`: 11
+- `gutter_y`: 12
+- `show_column_centers`: 13
+- `show_baseline`: 14
+- `baseline_step`: 15
+- `baseline_offset`: 16
+- `offset`: 17
 
 ### `P.layout_metallic_rectangles`
 
-- `canvas_w`
-- `canvas_h`
-- `axes`
-- `margin_l`
-- `margin_r`
-- `margin_t`
-- `margin_b`
-- `show_center`
-- `metallic_n`
-- `levels`
-- `corner`
-- `clockwise`
-- `offset`
+- `canvas_w`: 1
+- `canvas_h`: 2
+- `axes`: 3
+- `margin_l`: 4
+- `margin_r`: 5
+- `margin_t`: 6
+- `margin_b`: 7
+- `show_center`: 8
+- `metallic_n`: 9
+- `levels`: 10
+- `corner`: 11
+- `clockwise`: 12
+- `offset`: 13
 
 ### `P.layout_ratio_lines`
 
-- `canvas_w`
-- `canvas_h`
-- `axes`
-- `margin_l`
-- `margin_r`
-- `margin_t`
-- `margin_b`
-- `show_center`
-- `ratio`
-- `levels`
-- `min_spacing`
-- `max_lines`
-- `offset`
+- `canvas_w`: 1
+- `canvas_h`: 2
+- `axes`: 3
+- `margin_l`: 4
+- `margin_r`: 5
+- `margin_t`: 6
+- `margin_b`: 7
+- `show_center`: 8
+- `ratio`: 9
+- `levels`: 10
+- `min_spacing`: 11
+- `max_lines`: 12
+- `offset`: 13
 
 ### `P.layout_square_grid`
 
-- `canvas_w`
-- `canvas_h`
-- `axes`
-- `margin_l`
-- `margin_r`
-- `margin_t`
-- `margin_b`
-- `show_center`
-- `cell_size`
-- `offset`
+- `canvas_w`: 1
+- `canvas_h`: 2
+- `axes`: 3
+- `margin_l`: 4
+- `margin_r`: 5
+- `margin_t`: 6
+- `margin_b`: 7
+- `show_center`: 8
+- `cell_size`: 9
+- `offset`: 10
 
 ### `P.layout_thirds`
 
-- `canvas_w`
-- `canvas_h`
-- `axes`
-- `margin_l`
-- `margin_r`
-- `margin_t`
-- `margin_b`
-- `show_center`
-- `offset`
+- `canvas_w`: 1
+- `canvas_h`: 2
+- `axes`: 3
+- `margin_l`: 4
+- `margin_r`: 5
+- `margin_t`: 6
+- `margin_b`: 7
+- `show_center`: 8
+- `offset`: 9
 
 ### `P.logo`
 
-- `center`
-- `scale`
-- `fill_density_coef`
+- `center`: 1
+- `scale`: 2
+- `fill_density_coef`: 3
