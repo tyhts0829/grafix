@@ -50,11 +50,11 @@ if __name__ == "__main__":
     <td><img src="docs/readme/grn/11.png" width="320" alt="grn 11" /></td>
     <td><img src="docs/readme/grn/12.png" width="320" alt="grn 12" /></td>
   </tr>
-  <!-- <tr>
+  <tr>
     <td><img src="docs/readme/grn/13.png" width="320" alt="grn 13" /></td>
     <td><img src="docs/readme/grn/14.png" width="320" alt="grn 14" /></td>
     <td><img src="docs/readme/grn/15.png" width="320" alt="grn 15" /></td>
-  </tr> -->
+  </tr>
 </table>
 <!-- END:README_EXAMPLES_GRN -->
 
@@ -220,6 +220,27 @@ List built-in ops:
 python -m grafix list effects
 python -m grafix list primitives
 python -m grafix list
+```
+
+Regenerate API stubs (for `P.<name>(...)` completion):
+
+```bash
+python -m grafix stub
+```
+
+Headless export (PNG):
+
+```bash
+python -m grafix export --callable your_module:draw --t 0.0
+python -m grafix export --callable your_module:draw --t 0.0 1.0 2.0 --out-dir data/output
+```
+
+Note: `--callable module:attr` follows Python import rules (make sure the module is importable from your current working directory / `PYTHONPATH`).
+
+Benchmark (effect perf + report):
+
+```bash
+python -m grafix benchmark -- --help
 ```
 
 ## Dependencies
