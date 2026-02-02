@@ -123,7 +123,7 @@ class ParameterGUI:
         cfg = runtime_config()
         self._font_size_base_px = float(cfg.parameter_gui_font_size_base_px)
         self._column_weights = (
-            tuple(float(w) for w in cfg.parameter_gui_table_column_weights)
+            cfg.parameter_gui_table_column_weights
             if column_weights is None
             else column_weights
         )

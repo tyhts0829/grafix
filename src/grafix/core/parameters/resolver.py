@@ -12,7 +12,7 @@ from .key import ParameterKey
 from .meta import ParamMeta
 from .state import ParamState
 
-DEFAULT_QUANT_STEP = 1e-3
+DEFAULT_QUANT_STEP = 1e-6
 
 
 def _quantize(value: Any, meta: ParamMeta) -> Any:

@@ -503,7 +503,7 @@ def runtime_config() -> RuntimeConfig:
         parameter_gui_window_size=parameter_gui_window_size,
         parameter_gui_fallback_font_japanese=parameter_gui_fallback_font_japanese,
         parameter_gui_font_size_base_px=float(parameter_gui_font_size_base_px),
-        parameter_gui_table_column_weights=tuple(parameter_gui_table_column_weights),
+        parameter_gui_table_column_weights=parameter_gui_table_column_weights,
         png_scale=float(png_scale),
         midi_inputs=tuple(midi_inputs),
     )
