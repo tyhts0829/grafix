@@ -1,14 +1,7 @@
-from __future__ import annotations
-
+import math
 from pathlib import Path
 
-import numpy as np
-from numba import njit
-
 from grafix import E, G, P, run
-from grafix.api import primitive
-from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
 
 # A5
 CANVAS_WIDTH = 148
@@ -16,51 +9,55 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-    g = G.polygon(
-        activate=True,
-        n_sides=128,
-        phase=89.08500000000001,
-        sweep=360.0,
-        center=(74.176, 86.413, 0.0),
-        scale=108.81400000000001,
-    )
-
-    e = E.reaction_diffusion(
-        activate=True,
-        grid_pitch=0.298,
-        steps=4500,
-        du=0.16,
-        dv=0.08,
-        feed=0.029,
-        kill=0.057,
-        dt=1.0,
-        seed=42,
-        seed_radius=10.0,
-        noise=0.02,
-        level=0.2,
-        min_points=24,
-        boundary="dirichlet",
-    ).fill(
-        activate=True,
-        angle_sets=1,
-        angle=45.0,
-        density=3000.0,
-        spacing_gradient=0.0,
-        remove_boundary=False,
-    )
-
-    g = e(g)
-
     frame = P.grn_a5_frame(
         activate=True,
         show_layout=False,
-        layout_color_rgb255=(191, 191, 191),
-        number_text=str(Path(__file__).stem),
+        number_text=Path(__file__).stem,
+        explanation_text="G.polygon()\nE.isocontour()\n.lowpass().fill()",
         explanation_density=500.0,
         template_color_rgb255=(255, 255, 255),
     )
 
-    return g, frame
+    g = G.polygon(
+        activate=True,
+        n_sides=128,
+        phase=45.0,
+        sweep=360.0,
+        center=(74.0, 87.363, 0.0),
+        scale=3.093,
+    )
+
+    e = (
+        E.isocontour(
+            activate=True,
+            spacing=0.46399999999999997,
+            phase=-8.007,
+            max_dist=55.669999999999995,
+            mode="outside",
+            grid_pitch=1.142,
+            gamma=2.8699999999999997,
+            level_step=1,
+            auto_close_threshold=0.001,
+            keep_original=True,
+        )
+        .lowpass(
+            activate=True,
+            step=2.459,
+            sigma=4.742,
+            closed="auto",
+        )
+        .fill(
+            activate=True,
+            angle_sets=1,
+            angle=45.0,
+            density=408.935,
+            spacing_gradient=0.0,
+            remove_boundary=False,
+        )
+    )
+
+    g = e(g)
+    return frame, g
 
 
 if __name__ == "__main__":
@@ -72,6 +69,7 @@ if __name__ == "__main__":
         render_scale=5,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        midi_port_name="auto",
+        midi_port_name="Grid",
         midi_mode="14bit",
+        fps=24,
     )
