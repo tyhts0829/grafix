@@ -40,9 +40,11 @@ def test_polyhedron_type_index_is_clamped() -> None:
     under = realize(Geometry.create("polyhedron", params={"type_index": -1}))
     assert under.offsets.shape == tetra.offsets.shape
 
-    icosa = realize(Geometry.create("polyhedron", params={"type_index": 4}))
+    max_idx = int(_polyhedron_module.polyhedron_meta["type_index"].ui_max)
+    last = realize(Geometry.create("polyhedron", params={"type_index": max_idx}))
     over = realize(Geometry.create("polyhedron", params={"type_index": 999}))
-    assert over.offsets.shape == icosa.offsets.shape
+    np.testing.assert_array_equal(over.offsets, last.offsets)
+    np.testing.assert_array_equal(over.coords, last.coords)
 
 
 def test_polyhedron_center_and_scale_affect_coords() -> None:
