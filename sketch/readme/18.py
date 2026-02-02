@@ -430,6 +430,6 @@ if __name__ == "__main__":
         render_scale=4,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        midi_port_name="TX-6 Bluetooth",
+        midi_port_name="auto",
         midi_mode="7bit",
     )
