@@ -46,29 +46,30 @@
 
 ### A. すぐ効く（ドキュメント/探索性の改善、コード変更なし）
 
-1. `docs/` に「開発者向け入口」1 枚を追加し、読む順番を固定する。
-   - 例: `docs/developer_guide.md`（または `docs/readme/developer.md`）
-   - 内容案:
-     - まず読む: `README.md` / `architecture.md`
-     - 入口（コード）: `src/grafix/api/*` → `src/grafix/core/pipeline.py` → `src/grafix/core/realize.py`
-     - 変更パターン別: primitive/effect/preset/Parameter GUI/Export
-     - 関連ツール: `python -m grafix list|stub|export`
-2. `core/parameters` に “1 ファイルだけ読むならこれ” を明記したミニ README を置く。
-   - 例: `src/grafix/core/parameters/README.md`
-   - 内容案: `store.snapshot -> parameter_context -> resolve_params -> frame_params -> merge` の流れと主要ファイルへのリンク。
-3. 用語集（Glossary）を追加する。
-   - `site_id`, `chain_id`, `ParamSnapshot`, `FrameParamsBuffer`, `explicit_args` 等を 1〜2 行で定義し、参照先（ファイル/関数）を併記する。
-4. `python -m grafix` のサブコマンド一覧を `README.md` に追記する。
-   - 探索/生成の導線（list/stub/export）が初見でも見つかるようにする。
+- [] `docs/` に「開発者向け入口」1 枚を追加し、読む順番を固定する。
+  - 例: `docs/developer_guide.md`（または `docs/readme/developer.md`）
+  - 内容案:
+    - まず読む: `README.md` / `architecture.md`
+    - 入口（コード）: `src/grafix/api/*` → `src/grafix/core/pipeline.py` → `src/grafix/core/realize.py`
+    - 変更パターン別: primitive/effect/preset/Parameter GUI/Export
+    - 関連ツール: `python -m grafix list|stub|export`
+
+- [] `core/parameters` に “1 ファイルだけ読むならこれ” を明記したミニ README を置く。
+  - 例: `src/grafix/core/parameters/README.md`
+  - 内容案: `store.snapshot -> parameter_context -> resolve_params -> frame_params -> merge` の流れと主要ファイルへのリンク。
+- [] 用語集（Glossary）を追加する。
+  - `site_id`, `chain_id`, `ParamSnapshot`, `FrameParamsBuffer`, `explicit_args` 等を 1〜2 行で定義し、参照先（ファイル/関数）を併記する。
+- [] `python -m grafix` のサブコマンド一覧を `README.md` に追記する。
+  - 探索/生成の導線（list/stub/export）が初見でも見つかるようにする。
 
 ### B. 中期（設計の明確化。必要なら破壊的変更もあり）
 
-1. “公開 API 境界” を宣言する。
-   - 例: `src/grafix/api/*` は public、`src/grafix/core/*` は internal（破壊変更の許容範囲も含める）。
-2. built-in 登録の入口をさらに統一する。
-   - `ensure_builtin_ops_registered()` を「常にここから呼ぶ」方針に寄せ、interactive/devtools も含めた初期化の迷いを減らす。
-3. `core/parameters` の分割を「変更単位」ベースに再編する。
-   - “読み物としての分割” になっている箇所を統合し、関連変更が 1〜2 ファイルで完結する構造へ寄せる。
+- [] “公開 API 境界” を宣言する。
+  - 例: `src/grafix/api/*` は public、`src/grafix/core/*` は internal（破壊変更の許容範囲も含める）。
+- [] built-in 登録の入口をさらに統一する。
+  - `ensure_builtin_ops_registered()` を「常にここから呼ぶ」方針に寄せ、interactive/devtools も含めた初期化の迷いを減らす。
+- [] `core/parameters` の分割を「変更単位」ベースに再編する。
+  - “読み物としての分割” になっている箇所を統合し、関連変更が 1〜2 ファイルで完結する構造へ寄せる。
 
 ## エージェント向け “読む順” 推奨（最短導線）
 
@@ -86,4 +87,3 @@
 現状でも「コア概念 + 依存境界 + 実行フロー」が文章化されており、エージェントにとって理解しやすい部類。  
 一方で、情報の分散と `core/parameters` の探索コストがスコアを押し下げている。  
 上記 A の “入口 1 枚 + parameters ミニ README + 用語集” を足すだけで、理解の立ち上がりはさらに速くなる。
-

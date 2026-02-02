@@ -8,8 +8,8 @@
 
 ## 共通パラメータ（順序ルール用）
 
-- `center`（中心座標。vec3）
 - `scale`（倍率。vec3/float）
+- `center`（中心座標。vec3）
 - `rotation` / `angle`（回転。vec3/float）
 - `delta`（平行移動 vec3） / `offset`（ずらし。平行移動とスカラー offset が混在しやすい）
 - `auto_center` / `pivot`（pivot 指定。effect で頻出）
@@ -40,7 +40,7 @@
 - 「トグル → 依存パラメータ」（例: `show_*` とその値）の順に置くと、GUI 上の操作が自然になる（トグルが先に見える）。
 - transform 系は `scale → rotation → translate(delta)` の並びに揃えると読みやすい（`affine` が基準になる）。
 
-## Primitives（G.* / 8）
+## Primitives（G.\* / 8）
 
 ### `G.asemic`
 
@@ -71,10 +71,10 @@
 
 ### `G.grid`
 
-- `nx`
-- `ny`
-- `center`
-- `scale`
+- `nx`: 3
+- `ny`: 4
+- `center`: 1
+- `scale`: 2
 
 ### `G.line`
 
@@ -130,7 +130,7 @@
 - `center`
 - `scale`
 
-## Effects（E.* / 30）
+## Effects（E.\* / 30）
 
 ### `E.affine`
 
@@ -386,7 +386,7 @@
 - `frequency`
 - `phase`
 
-## Presets（P.* / 13）
+## Presets（P.\* / 13）
 
 - `.grafix/config.yaml` の `paths.preset_module_dirs` を autoload した結果
 
