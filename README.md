@@ -18,7 +18,7 @@ from grafix import E, G, run
 
 def draw(t: float):
     poly = G.polygon()
-    effect = E.fill().displace()
+    effect = E.fill().subdivide().displace()
     return effect(poly)
 
 
@@ -72,7 +72,7 @@ if __name__ == "__main__":
 - `@effect` lets you register custom effects (they become available under `E`).
 - `@preset` lets you register reusable components (only selected params are exposed to the Parameter GUI).
 - `P` lets you call registered presets as `P.<name>(...)`.
-- `Export` provides a headless export entrypoint (SVG implemented; PNG/MP4/G-code are stubs).
+- `Export` provides a headless export entrypoint.
 - `Parameter GUI` lets you tweak parameters live while the sketch is running.
 - Keyboard shortcuts let you export output quickly:
   - `P` saves a `.png` image
