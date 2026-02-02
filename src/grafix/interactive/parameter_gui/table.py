@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
+from grafix.core.runtime_config import runtime_config
 
 from .group_blocks import GroupBlock, group_blocks_from_rows
 from .labeling import format_param_row_label
@@ -16,8 +17,6 @@ from .midi_learn import MidiLearnState
 from .rules import ui_rules_for_row
 from .snippet import snippet_for_block
 from .widgets import render_value_widget
-
-COLUMN_WEIGHTS_DEFAULT = (0.20, 0.60, 0.15, 0.20)
 
 SNIPPET_POPUP_WINDOW_SIZE_PX = (1000.0, 1000.0)
 
@@ -529,7 +528,7 @@ def render_parameter_row_4cols(
 def render_parameter_table(
     rows: list[ParameterRow],
     *,
-    column_weights: tuple[float, float, float, float] = COLUMN_WEIGHTS_DEFAULT,
+    column_weights: tuple[float, float, float, float] | None = None,
     primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
     layer_style_name_by_site_id: Mapping[str, str] | None = None,
     effect_chain_header_by_id: Mapping[str, str] | None = None,
@@ -544,6 +543,9 @@ def render_parameter_table(
     """ParameterRow の列を 4 列テーブルとして描画し、更新後の rows を返す。"""
 
     import imgui  # type: ignore[import-untyped]
+
+    if column_weights is None:
+        column_weights = runtime_config().parameter_gui_table_column_weights
 
     # 列幅は stretch 比率として使う（負/ゼロは imgui 的にも意味が無いのでエラーにする）。
     label_weight, control_weight, range_weight, meta_weight = column_weights

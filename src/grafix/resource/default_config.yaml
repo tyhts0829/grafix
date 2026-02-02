@@ -29,9 +29,14 @@ ui:
   # Parameter GUI ウィンドウサイズ（ピクセル）。
   parameter_gui:
     window_size: [800, 1000]
+    # GUI の基準フォントサイズ（px）。Retina 等では backing scale に応じて自動で倍率される。
+    font_size_base_px: 12.0
     # GUI の日本語表示用フォールバックフォント（ファイル名 / パス / 部分一致）。
     # 未指定（null/空）なら自動選択（例: Hiragino Sans GB → NotoSansJP）。
     fallback_font_japanese: null
+    # Parameter テーブルの列幅（stretch 比率）。
+    # (label, control, min-max, cc/meta)
+    table_column_weights: [0.20, 0.60, 0.15, 0.20]
 
 export:
   # PNG 変換のスケール倍率（canvas_size に対するピクセル倍率）。

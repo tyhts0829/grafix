@@ -27,7 +27,7 @@ from .labeling import (
     effect_step_ordinals_by_site,
 )
 from .midi_learn import MidiLearnState
-from .table import COLUMN_WEIGHTS_DEFAULT, render_parameter_table
+from .table import render_parameter_table
 from .visibility import active_mask_for_rows
 
 _logger = logging.getLogger(__name__)
@@ -375,7 +375,7 @@ def clear_all_midi_assignments(store: ParamStore) -> bool:
 def render_store_parameter_table(
     store: ParamStore,
     *,
-    column_weights: tuple[float, float, float, float] = COLUMN_WEIGHTS_DEFAULT,
+    column_weights: tuple[float, float, float, float] | None = None,
     show_inactive_params: bool = True,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,

@@ -2,6 +2,26 @@
 # 何を: config.yaml による実行時設定（探索・ロード・キャッシュ）を提供する。
 # なぜ: PyPI 環境でも、外部リソースや出力先をユーザーが指定できるようにするため。
 
+"""実行時設定（`config.yaml`）の探索・ロード・キャッシュを担当する。
+
+このモジュールは、以下を提供する:
+
+- `config.yaml` を「同梱デフォルト → ユーザー設定（任意）」の順に適用して `RuntimeConfig` を構築
+- 探索パス（CWD / HOME）と、明示指定（`set_config_path()`）の両方に対応
+- 1 回ロードした結果をプロセス内でキャッシュ（設定を切り替える場合は `set_config_path()` で破棄）
+
+入出力 / 副作用
+----------------
+- 入力: 同梱 `grafix/resource/default_config.yaml`、任意でユーザーの `config.yaml`
+- 出力: `RuntimeConfig`（不変データ）
+- 副作用: ファイル読み取り、YAML パース、モジュールグローバルへのキャッシュ保存
+
+実装メモ
+--------
+- ユーザー設定の適用は `dict.update()`（トップレベルの浅い上書き）で行う。
+  ネストした mapping は「部分的にマージ」されず「丸ごと置換」される。
+"""
+
 from __future__ import annotations
 
 import os
@@ -11,9 +31,51 @@ from pathlib import Path
 from typing import Any
 
 
+# parameter_gui の設定が省略された場合のフォールバック値。
+_PARAMETER_GUI_FONT_SIZE_BASE_PX_DEFAULT = 12.0
+# 重みは合計 1.0 を要求しない（ここでは正の値であることだけを検証する）。
+_PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT = (0.20, 0.60, 0.15, 0.20)
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
-    """grafix の実行時設定。"""
+    """grafix の実行時設定。
+
+    `runtime_config()` が `config.yaml` を解釈して構築する不変オブジェクト。
+    実行時に参照される「ファイルパス」「UI の配置」「書き出し設定」などを集約する。
+
+    Attributes
+    ----------
+    config_path:
+        実際に採用されたユーザー設定ファイルのパス。
+        明示指定（`set_config_path()`）または探索で見つかった 1 ファイルのどちらか。
+        ユーザー設定が無い場合は None（同梱デフォルトのみで動作）。
+    output_dir:
+        生成物（PNG 等）の出力先ディレクトリ。
+    sketch_dir:
+        スケッチ検索用のベースディレクトリ（任意）。
+    preset_module_dirs:
+        preset モジュール探索用のディレクトリ列。
+    font_dirs:
+        フォント探索用のディレクトリ列。
+    window_pos_draw:
+        描画ウィンドウの左上座標 (x, y)。
+    window_pos_parameter_gui:
+        パラメータ GUI ウィンドウの左上座標 (x, y)。
+    parameter_gui_window_size:
+        パラメータ GUI のウィンドウサイズ (w, h)。
+    parameter_gui_fallback_font_japanese:
+        日本語表示時のフォールバックフォント名（任意）。
+    parameter_gui_font_size_base_px:
+        パラメータ GUI の基準フォントサイズ（px）。
+    parameter_gui_table_column_weights:
+        パラメータ GUI テーブル列の重み (name, value, min, max)。
+        各要素は正の値である必要がある。
+    png_scale:
+        `python -m grafix export` における PNG の拡大率。
+    midi_inputs:
+        MIDI 入力の設定。各要素は (port_name, mode)。
+    """
 
     config_path: Path | None
     output_dir: Path
@@ -24,20 +86,32 @@ class RuntimeConfig:
     window_pos_parameter_gui: tuple[int, int]
     parameter_gui_window_size: tuple[int, int]
     parameter_gui_fallback_font_japanese: str | None
+    parameter_gui_font_size_base_px: float
+    parameter_gui_table_column_weights: tuple[float, float, float, float]
     png_scale: float
     midi_inputs: tuple[tuple[str, str], ...]
 
 
+# `set_config_path()` で指定される「明示 config」のパス。
+# ここが設定されている場合、探索で見つかった config よりも後に適用される。
 _EXPLICIT_CONFIG_PATH: Path | None = None
+# `runtime_config()` のプロセス内キャッシュ。設定を切り替える場合は破棄する。
 _CONFIG_CACHE: RuntimeConfig | None = None
 
 
 def set_config_path(path: str | Path | None) -> None:
     """以降の設定探索で使う明示 config パスを設定する。
 
+    Parameters
+    ----------
+    path:
+        `config.yaml` のパス。None の場合は明示指定を解除する。
+
     Notes
     -----
-    `path` を None にすると明示指定を解除し、既定の探索に戻る。
+    - `path` を None にすると明示指定を解除し、既定の探索に戻る。
+    - `path` は `~` を展開して保持する（環境変数の展開はしない）。
+    - 設定が変わるため、`runtime_config()` のキャッシュを破棄する。
     """
 
     global _EXPLICIT_CONFIG_PATH, _CONFIG_CACHE
@@ -51,6 +125,13 @@ def set_config_path(path: str | Path | None) -> None:
 
 
 def _default_config_candidates() -> tuple[Path, ...]:
+    """既定の `config.yaml` 探索候補を返す。
+
+    探索順（先勝ち）:
+    - `./.grafix/config.yaml`
+    - `~/.config/grafix/config.yaml`
+    """
+
     cwd = Path.cwd()
     home = Path.home()
     return (
@@ -60,10 +141,14 @@ def _default_config_candidates() -> tuple[Path, ...]:
 
 
 def _expand_path_text(text: str) -> str:
+    """パス文字列内の `~` と環境変数を展開して返す。"""
+
     return os.path.expandvars(os.path.expanduser(str(text)))
 
 
 def _as_optional_path(value: Any) -> Path | None:
+    """任意値を「空なら None / それ以外は Path」へ変換する。"""
+
     if value is None:
         return None
     s = str(value).strip()
@@ -73,6 +158,8 @@ def _as_optional_path(value: Any) -> Path | None:
 
 
 def _as_optional_str(value: Any) -> str | None:
+    """任意値を「空なら None / それ以外は str」へ変換する。"""
+
     if value is None:
         return None
     s = str(value).strip()
@@ -80,6 +167,13 @@ def _as_optional_str(value: Any) -> str | None:
 
 
 def _as_path_list(value: Any) -> list[Path]:
+    """任意値を Path の list に変換する。
+
+    - None → `[]`
+    - str → `os.pathsep`（macOS/Linux なら `:`）区切りで分解
+    - iterable → 各要素を `_as_optional_path()` で変換（空要素は捨てる）
+    """
+
     if value is None:
         return []
     if isinstance(value, str):
@@ -103,6 +197,8 @@ def _as_path_list(value: Any) -> list[Path]:
 
 
 def _as_mapping(value: Any, *, key: str) -> dict[str, Any]:
+    """任意値を mapping として解釈し、dict に正規化して返す。"""
+
     if value is None:
         return {}
     if isinstance(value, dict):
@@ -111,6 +207,8 @@ def _as_mapping(value: Any, *, key: str) -> dict[str, Any]:
 
 
 def _as_int_pair(value: Any, *, key: str) -> tuple[int, int] | None:
+    """任意値を (x, y) の整数ペアとして解釈して返す。"""
+
     if value is None:
         return None
     try:
@@ -128,6 +226,8 @@ def _as_int_pair(value: Any, *, key: str) -> tuple[int, int] | None:
 
 
 def _as_float(value: Any, *, key: str) -> float | None:
+    """任意値を float として解釈して返す。"""
+
     if value is None:
         return None
     try:
@@ -137,7 +237,15 @@ def _as_float(value: Any, *, key: str) -> float | None:
 
 
 def _as_midi_inputs(value: Any) -> list[tuple[str, str]]:
-    """midi.inputs を (port_name, mode) の list として解釈して返す。"""
+    """midi.inputs を (port_name, mode) の list として解釈して返す。
+
+    期待する形:
+    - `[{port_name: "...", mode: "..."}, ...]`
+
+    パース方針:
+    - 不正な要素（dict でない / key が不足 / 空文字）は無視する
+    - mode の妥当性チェックはこの層では行わない（上位層で解釈する前提）
+    """
 
     if value is None:
         return []
@@ -162,7 +270,47 @@ def _as_midi_inputs(value: Any) -> list[tuple[str, str]]:
     return out
 
 
+def _as_float_quad(
+    value: Any,
+    *,
+    key: str,
+) -> tuple[float, float, float, float] | None:
+    """任意値を 4 要素の float タプルとして解釈して返す。"""
+
+    if value is None:
+        return None
+    try:
+        seq = list(value)
+    except Exception as exc:
+        raise RuntimeError(f"{key} は [a, b, c, d] の配列である必要があります: got={value!r}") from exc
+    if len(seq) != 4:
+        raise RuntimeError(f"{key} は [a, b, c, d] の配列である必要があります: got={value!r}")
+    try:
+        a = float(seq[0])
+        b = float(seq[1])
+        c = float(seq[2])
+        d = float(seq[3])
+    except Exception as exc:
+        raise RuntimeError(f"{key} は [a, b, c, d] の数値配列である必要があります: got={value!r}") from exc
+    return (float(a), float(b), float(c), float(d))
+
+
 def _load_yaml_text(text: str, *, source: str) -> dict[str, Any]:
+    """YAML テキストを読み、トップレベル mapping を dict として返す。
+
+    Parameters
+    ----------
+    text:
+        YAML 本文。
+    source:
+        エラーメッセージ用の識別子（パス等）。
+
+    Returns
+    -------
+    dict[str, Any]
+        YAML のトップレベル mapping。空（`null`）なら `{}`。
+    """
+
     try:
         import yaml  # type: ignore[import-untyped]
     except Exception as exc:  # pragma: no cover
@@ -182,12 +330,18 @@ def _load_yaml_text(text: str, *, source: str) -> dict[str, Any]:
 
 
 def _load_yaml_config(path: Path) -> dict[str, Any]:
+    """UTF-8 の YAML ファイルを読み、dict を返す。"""
+
     text = path.read_text(encoding="utf-8")
     return _load_yaml_text(text, source=str(path))
 
 
 def _load_packaged_default_config() -> dict[str, Any]:
-    """同梱デフォルト config をロードして dict を返す。"""
+    """同梱デフォルト config をロードして dict を返す。
+
+    パッケージ配布（wheel/sdist）でも動作するように、`importlib.resources` を使って
+    `grafix/resource/default_config.yaml` を読み込む。
+    """
 
     try:
         blob = (
@@ -205,9 +359,22 @@ def _load_packaged_default_config() -> dict[str, Any]:
 
 
 def runtime_config() -> RuntimeConfig:
-    """実行時設定をロードして返す（キャッシュ）。"""
+    """実行時設定をロードして返す（キャッシュ）。
+
+    読み込み元の優先順位（後勝ち）:
+    1) 同梱 `grafix/resource/default_config.yaml`
+    2) 探索で見つかった `config.yaml`（任意）
+    3) `set_config_path()` で明示指定された `config.yaml`（任意）
+
+    Notes
+    -----
+    - 一度ロードした結果はモジュール内にキャッシュされる。
+      `set_config_path()` はキャッシュを破棄するため、次回呼び出しで再ロードされる。
+    - ユーザー設定の適用はトップレベルの浅い上書きである（ネストの部分マージはしない）。
+    """
 
     global _CONFIG_CACHE
+    # キャッシュがあれば即返す。設定の切り替えは `set_config_path()` で行う。
     if _CONFIG_CACHE is not None:
         return _CONFIG_CACHE
 
@@ -216,11 +383,14 @@ def runtime_config() -> RuntimeConfig:
         raise FileNotFoundError(f"config.yaml が見つかりません: {explicit_path}")
 
     discovered_path: Path | None = None
+    # 既定の探索は「CWD → HOME」の順。最初に見つかった 1 つのみを採用する。
     for p in _default_config_candidates():
         if p.is_file():
             discovered_path = p
             break
 
+    # 同梱デフォルトをベースにし、ユーザー設定で上書きする。
+    # `dict.update()` はトップレベルの浅い上書きなので、ネストした mapping は丸ごと置換になる。
     payload = _load_packaged_default_config()
     if discovered_path is not None:
         payload.update(_load_yaml_config(discovered_path))
@@ -284,6 +454,30 @@ def runtime_config() -> RuntimeConfig:
         parameter_gui.get("fallback_font_japanese")
     )
 
+    parameter_gui_font_size_base_px = _as_float(
+        parameter_gui.get("font_size_base_px"),
+        key="ui.parameter_gui.font_size_base_px",
+    )
+    if parameter_gui_font_size_base_px is None:
+        parameter_gui_font_size_base_px = float(_PARAMETER_GUI_FONT_SIZE_BASE_PX_DEFAULT)
+    if parameter_gui_font_size_base_px <= 0.0:
+        raise ValueError(
+            "ui.parameter_gui.font_size_base_px は正の値である必要があります"
+            f": got={parameter_gui_font_size_base_px}"
+        )
+
+    parameter_gui_table_column_weights = _as_float_quad(
+        parameter_gui.get("table_column_weights"),
+        key="ui.parameter_gui.table_column_weights",
+    )
+    if parameter_gui_table_column_weights is None:
+        parameter_gui_table_column_weights = _PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT
+    if any(float(w) <= 0.0 for w in parameter_gui_table_column_weights):
+        raise ValueError(
+            "ui.parameter_gui.table_column_weights は全要素が正である必要があります"
+            f": got={parameter_gui_table_column_weights}"
+        )
+
     export = _as_mapping(payload.get("export"), key="export")
     png = _as_mapping(export.get("png"), key="export.png")
     png_scale = _as_float(png.get("scale"), key="export.png.scale")
@@ -298,6 +492,7 @@ def runtime_config() -> RuntimeConfig:
     midi_inputs = _as_midi_inputs(midi.get("inputs"))
 
     cfg = RuntimeConfig(
+        # config_path は「ユーザー設定の出典」を記録する用途（同梱デフォルトにはパスが無い）。
         config_path=explicit_path or discovered_path,
         output_dir=output_dir,
         sketch_dir=sketch_dir,
@@ -307,6 +502,8 @@ def runtime_config() -> RuntimeConfig:
         window_pos_parameter_gui=window_pos_parameter_gui,
         parameter_gui_window_size=parameter_gui_window_size,
         parameter_gui_fallback_font_japanese=parameter_gui_fallback_font_japanese,
+        parameter_gui_font_size_base_px=float(parameter_gui_font_size_base_px),
+        parameter_gui_table_column_weights=tuple(parameter_gui_table_column_weights),
         png_scale=float(png_scale),
         midi_inputs=tuple(midi_inputs),
     )
@@ -317,10 +514,8 @@ def runtime_config() -> RuntimeConfig:
 def output_root_dir() -> Path:
     """出力ファイルを保存する既定ルートディレクトリを返す。
 
-    上書き順（後勝ち）:
-    1) 同梱 default_config.yaml
-    2) `./.grafix/config.yaml` / `~/.config/grafix/config.yaml`
-    3) `run(..., config_path=...)` の `config_path`
+    実体は `runtime_config().output_dir` の薄いショートカット。
+    探索/上書きルールは `runtime_config()` を参照。
     """
 
     cfg = runtime_config()

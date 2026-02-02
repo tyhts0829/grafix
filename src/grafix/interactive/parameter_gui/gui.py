@@ -27,7 +27,6 @@ from .pyglet_backend import (
 )
 from .range_edit import RangeEditMode, apply_range_shift
 from .store_bridge import clear_all_midi_assignments, render_store_parameter_table
-from .table import COLUMN_WEIGHTS_DEFAULT
 
 
 def _default_gui_font_path() -> Path | None:
@@ -38,7 +37,6 @@ def _default_gui_font_path() -> Path | None:
 
 
 _DEFAULT_GUI_FONT_PATH = _default_gui_font_path()
-_GUI_FONT_SIZE_BASE_PX = 12.0
 
 
 def _gui_fallback_font_path_for_japanese() -> Path | None:
@@ -92,7 +90,7 @@ class ParameterGUI:
         midi_controller: MidiController | None = None,
         monitor: Any | None = None,
         title: str = "Parameters",
-        column_weights: tuple[float, float, float, float] = COLUMN_WEIGHTS_DEFAULT,
+        column_weights: tuple[float, float, float, float] | None = None,
     ) -> None:
         """GUI の初期化（ImGui コンテキスト / renderer 作成）。"""
 
@@ -122,7 +120,13 @@ class ParameterGUI:
         self._range_edit_key_t = 0
         self._show_inactive_params = False
         self._title = str(title)
-        self._column_weights = column_weights
+        cfg = runtime_config()
+        self._font_size_base_px = float(cfg.parameter_gui_font_size_base_px)
+        self._column_weights = (
+            tuple(float(w) for w in cfg.parameter_gui_table_column_weights)
+            if column_weights is None
+            else column_weights
+        )
         self._sync_window_width_for_scale()
 
         # ImGui は「グローバルな current context」を前提にするため、自前コンテキストを作って切り替えながら使う。
@@ -313,7 +317,7 @@ class ParameterGUI:
 
         io = self._imgui.get_io()
         io.fonts.clear()
-        font_px = float(_GUI_FONT_SIZE_BASE_PX * backing_scale)
+        font_px = float(self._font_size_base_px * backing_scale)
         io.fonts.add_font_from_file_ttf(
             str(self._custom_font_path),
             float(font_px),
