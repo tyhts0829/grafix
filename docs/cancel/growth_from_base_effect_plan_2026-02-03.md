@@ -118,16 +118,16 @@ out = E.growth_from_base(
 
 ## 実装手順（チェックリスト）
 
-- [ ] `src/grafix/core/effects/growth_from_base.py` を追加（meta + effect 本体）
-- [ ] resample（open/closed）と tangent/normal 推定を実装
-- [ ] outward 判定（auto/left/right）を実装
-- [ ] 成長点生成（初期化 + iters 更新）を実装
-- [ ] `mode="fringe" | "outline"` の出力を実装
-- [ ] `keep_original` の合成を実装
-- [ ] `src/grafix/core/builtins.py` に登録
-- [ ] `tests/core/effects/test_growth_from_base.py` を追加
-- [ ] `PYTHONPATH=src python -m grafix stub`
-- [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_growth_from_base.py`
+- [x] `src/grafix/core/effects/growth_from_base.py` を追加（meta + effect 本体）
+- [x] resample（open/closed）と tangent/normal 推定を実装
+- [x] outward 判定（auto/left/right）を実装
+- [x] 成長点生成（初期化 + iters 更新）を実装
+- [x] `mode="fringe" | "outline"` の出力を実装
+- [x] `keep_original` の合成を実装
+- [x] `src/grafix/core/builtins.py` に登録
+- [x] `tests/core/effects/test_growth_from_base.py` を追加
+- [x] `PYTHONPATH=src python -m grafix stub`
+- [x] `PYTHONPATH=src pytest -q tests/core/effects/test_growth_from_base.py`
 
 ## 追加で決めること（実装前に確認）
 

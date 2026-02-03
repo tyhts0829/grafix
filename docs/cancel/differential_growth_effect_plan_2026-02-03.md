@@ -63,9 +63,9 @@ out = E.differential_growth(
 ### 入力の扱い（閉曲線）
 
 - 各ポリラインについて
-  - `pts.shape[0] < 4` は no-op（閉曲線として成立しない）
+  - 頂点数が 3 未満は no-op（リングとして成立しない）
   - `pts[0]==pts[-1]` なら末尾複製を落として “リング（重複なし）” として処理
-  - そうでない場合は **先頭を末尾に足して閉じる**（この effect は閉曲線が前提のため）
+  - そうでない場合もリングとして扱い、出力で必ず閉じる（この effect は閉曲線が前提のため）
 - 生成結果は必ず `first` を末尾へ複製して閉じる（`polygon` primitive と同じ表現）
 
 ### 平面整列
@@ -76,8 +76,7 @@ out = E.differential_growth(
 ### コアループ（簡易 differential growth）
 
 1. **点の追加（リサンプリング）**
-   - 連続点間距離が `target_spacing * k` を超えたら中点（または等間隔）を挿入
-   - `k` は固定（例: 1.5）でよい
+   - 各セグメント長 `d` に対して `m = ceil(d / target_spacing)` とし、中間点を `m-1` 個挿入して等間隔に分割する
    - 点数爆発を避けるため上限 `MAX_POINTS` を設け、超えたら挿入を停止
 2. **力の計算**
    - 近傍（前後 2 点）: 目標間隔へ寄せる “スプリング”
@@ -88,7 +87,8 @@ out = E.differential_growth(
    - `p[i] += step * force[i]`（端点無しのリングなので全点更新）
    - `noise>0` のときだけ、`seed` から生成した乱数で微小ランダムを足す
 4. **レイヤ記録（オプション）**
-   - `record_every>0` の場合、`i % record_every == 0` でスナップショットを push
+   - `record_every>0` の場合、`(iter+1)` が `record_every` の倍数でスナップショットを push
+   - `iters` が倍数で終わらない場合は最終状態も push（最後が欠けない）
 
 ### パラメータの意味（感覚）
 
@@ -124,21 +124,18 @@ out = E.differential_growth(
 
 ## 実装手順（チェックリスト）
 
-- [ ] `src/grafix/core/effects/differential_growth.py` を追加（meta + docstring）
-- [ ] 入力の閉曲線化（末尾複製の扱い）と XY 整列/復元を実装
-- [ ] 点追加（target spacing）を実装（`MAX_POINTS` 付き）
-- [ ] 力（近傍スプリング + 反発）を Numba で実装
-- [ ] `noise/seed` を実装（`noise==0` は決定論）
-- [ ] `record_every` を実装（0 は無効）
-- [ ] `src/grafix/core/builtins.py` に追加
-- [ ] `tests/core/effects/test_differential_growth.py` を追加
-- [ ] `PYTHONPATH=src python -m grafix stub`
-- [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_differential_growth.py`
+- [x] `src/grafix/core/effects/differential_growth.py` を追加（meta + docstring）
+- [x] 入力の閉曲線化（末尾複製の扱い）と XY 整列/復元を実装
+- [x] 点追加（target spacing）を実装（`MAX_POINTS` 付き）
+- [x] 力（近傍スプリング + 反発）を Numba で実装
+- [x] `noise/seed` を実装（`noise==0` は決定論）
+- [x] `record_every` を実装（0 は無効）
+- [x] `src/grafix/core/builtins.py` に追加
+- [x] `tests/core/effects/test_differential_growth.py` を追加
+- [x] `PYTHONPATH=src python -m grafix stub`
+- [x] `PYTHONPATH=src pytest -q tests/core/effects/test_differential_growth.py`
 
-## 追加で決めること（実装前に最終決定）
+## 実装前に決めたこと（確定）
 
-- 反発の “近接範囲” をどう決めるか
-  - 案: `repel_radius = target_spacing * 2.0`（固定比で十分）;こちら
-- 点追加の条件と方法
-  - 案: `d > target_spacing * 1.5` で 1 点挿入（単純）
-  - もっと均一化したいなら、`d / target_spacing` 個になるように分割（ただし実装は少し増える）; こちら
+- 反発の近接範囲: `repel_radius = target_spacing * 2.0`（固定比）
+- 点追加: `m = ceil(d / target_spacing)` で分割（等間隔）
