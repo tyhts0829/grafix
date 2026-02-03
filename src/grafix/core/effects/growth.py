@@ -35,7 +35,7 @@ _MAX_POINTS_PER_RING = 20_000
 
 _BOUNDARY_PUSH_GAIN = 0.1
 
-growth_in_mask_meta = {
+growth_meta = {
     "seed_count": ParamMeta(kind="int", ui_min=0, ui_max=64),
     "target_spacing": ParamMeta(kind="float", ui_min=0.25, ui_max=10.0),
     "boundary_avoid": ParamMeta(kind="float", ui_min=0.0, ui_max=4.0),
@@ -707,8 +707,8 @@ def _simulate_growth_in_mask_xy(
     return rings
 
 
-@effect(meta=growth_in_mask_meta, n_inputs=1)
-def growth_in_mask(
+@effect(meta=growth_meta, n_inputs=1)
+def growth(
     inputs: Sequence[RealizedGeometry],
     *,
     seed_count: int = 12,
@@ -858,5 +858,4 @@ def growth_in_mask(
     return out
 
 
-__all__ = ["growth_in_mask", "growth_in_mask_meta"]
-
+__all__ = ["growth", "growth_meta"]
