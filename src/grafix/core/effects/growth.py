@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-from numba import njit  # type: ignore[import-untyped]
+from numba import njit, prange  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
@@ -160,7 +160,111 @@ def _pack_rings(
     return ring_vertices, ring_offsets, ring_mins, ring_maxs
 
 
-@njit(cache=True)
+def _ring_total_length(vertices: np.ndarray) -> float:
+    if vertices.shape[0] < 2:
+        return 0.0
+    v = vertices.astype(np.float64, copy=False)
+    d = v[1:] - v[:-1]
+    seg = np.sqrt(d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1])
+    return float(np.sum(seg))
+
+
+def _resample_ring_closed(vertices: np.ndarray, *, step_hint: float) -> np.ndarray:
+    pts = vertices.astype(np.float64, copy=False)
+    if pts.shape[0] < 4:
+        return pts
+
+    total = _ring_total_length(pts)
+    if total <= 0.0:
+        return pts
+
+    step = float(step_hint)
+    if not np.isfinite(step) or step <= 0.0:
+        return pts
+
+    n_segments = int(math.ceil(total / step))
+    n_segments = max(8, n_segments)
+    step_exact = total / float(n_segments)
+
+    out = np.empty((n_segments + 1, 2), dtype=np.float64)
+    out[0] = pts[0]
+
+    seg_i = 0
+    dist_acc = 0.0
+    ax = float(pts[0, 0])
+    ay = float(pts[0, 1])
+    bx = float(pts[1, 0])
+    by = float(pts[1, 1])
+    dx = bx - ax
+    dy = by - ay
+    seg_len = float(math.sqrt(dx * dx + dy * dy))
+
+    for out_i in range(1, n_segments):
+        target = float(out_i) * step_exact
+        while dist_acc + seg_len < target and seg_len > 0.0:
+            dist_acc += seg_len
+            seg_i += 1
+            if seg_i >= pts.shape[0] - 1:
+                seg_i = pts.shape[0] - 2
+                break
+            ax = float(pts[seg_i, 0])
+            ay = float(pts[seg_i, 1])
+            bx = float(pts[seg_i + 1, 0])
+            by = float(pts[seg_i + 1, 1])
+            dx = bx - ax
+            dy = by - ay
+            seg_len = float(math.sqrt(dx * dx + dy * dy))
+
+        if seg_len <= 0.0:
+            out[out_i, 0] = ax
+            out[out_i, 1] = ay
+            continue
+
+        t = (target - dist_acc) / seg_len
+        out[out_i, 0] = ax + t * dx
+        out[out_i, 1] = ay + t * dy
+
+    out[-1] = out[0]
+    return out
+
+
+def _simplify_rings_for_sdf(
+    rings: list[_Ring2D],
+    *,
+    step_sdf: float,
+) -> list[_Ring2D]:
+    step = float(step_sdf)
+    if not np.isfinite(step) or step <= 0.0:
+        return rings
+
+    out: list[_Ring2D] = []
+    for ring in rings:
+        v = ring.vertices
+        n = int(v.shape[0])
+        if n < 4:
+            out.append(ring)
+            continue
+
+        total = _ring_total_length(v)
+        if total <= 0.0:
+            out.append(ring)
+            continue
+
+        desired_segments = max(8, int(math.ceil(total / step)))
+        current_segments = n - 1
+        if current_segments <= int(desired_segments * 1.25):
+            out.append(ring)
+            continue
+
+        v2 = _resample_ring_closed(v, step_hint=step)
+        mins = np.min(v2, axis=0)
+        maxs = np.max(v2, axis=0)
+        out.append(_Ring2D(vertices=v2, mins=mins, maxs=maxs))
+
+    return out
+
+
+@njit(cache=True, parallel=True, fastmath=True)
 def _evaluate_sdf_points_numba(
     points_xy: np.ndarray,
     ring_vertices: np.ndarray,
@@ -176,7 +280,7 @@ def _evaluate_sdf_points_numba(
     out_gx = np.empty((n,), dtype=np.float64)
     out_gy = np.empty((n,), dtype=np.float64)
 
-    for i in range(n):
+    for i in prange(n):
         x = float(points_xy[i, 0])
         y = float(points_xy[i, 1])
 
@@ -189,12 +293,17 @@ def _evaluate_sdf_points_numba(
             s = int(ring_offsets[ri])
             e = int(ring_offsets[ri + 1])
 
-            inside_possible = (
-                x >= float(ring_mins[ri, 0])
-                and x <= float(ring_maxs[ri, 0])
-                and y >= float(ring_mins[ri, 1])
-                and y <= float(ring_maxs[ri, 1])
-            )
+            minx = float(ring_mins[ri, 0])
+            maxx = float(ring_maxs[ri, 0])
+            miny = float(ring_mins[ri, 1])
+            maxy = float(ring_maxs[ri, 1])
+
+            inside_possible = x >= minx and x <= maxx and y >= miny and y <= maxy
+            if not inside_possible:
+                dx0 = minx - x if x < minx else (x - maxx if x > maxx else 0.0)
+                dy0 = miny - y if y < miny else (y - maxy if y > maxy else 0.0)
+                if dx0 * dx0 + dy0 * dy0 >= min_ds:
+                    continue
 
             inside = 0
             for k in range(s, e - 1):
@@ -773,6 +882,13 @@ def growth(
     if not rings:
         return _empty_geometry()
 
+    spacing = float(target_spacing)
+    if not np.isfinite(spacing) or spacing <= 0.0:
+        return _empty_geometry()
+
+    step_sdf = max(spacing, 0.5)
+    rings = _simplify_rings_for_sdf(rings, step_sdf=step_sdf)
+
     ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
 
     bbox_min = np.min(ring_mins, axis=0)
@@ -785,10 +901,6 @@ def growth(
     iters_i = int(iters)
     if iters_i < 0:
         iters_i = 0
-
-    spacing = float(target_spacing)
-    if not np.isfinite(spacing) or spacing <= 0.0:
-        return _empty_geometry()
 
     if seed_count_i == 0 or iters_i == 0:
         base = _empty_geometry()
