@@ -48,6 +48,7 @@ _BUILTIN_EFFECT_MODULES: tuple[str, ...] = (
     "grafix.core.effects.clip",
     "grafix.core.effects.twist",
     "grafix.core.effects.weave",
+    "grafix.core.effects.growth_in_mask",
     "grafix.core.effects.relax",
     "grafix.core.effects.reaction_diffusion",
     "grafix.core.effects.warp",

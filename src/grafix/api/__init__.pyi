@@ -283,6 +283,21 @@ class _EffectBuilder(Protocol):
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
         """
         ...
+    def growth_in_mask(self, *, activate: bool = ..., seed_count: int = ..., target_spacing: float = ..., boundary_avoid: float = ..., boundary_mode: str = ..., iters: int = ..., seed: int = ..., show_mask: bool = ...) -> _EffectBuilder:
+        """
+        マスク内で差分成長を行い、襞のような閉曲線群を生成する。
+
+        引数:
+            activate: bool
+            seed_count: マスク内へ配置する seed（初期ループ）数
+            target_spacing: 目標点間隔 [mm]
+            boundary_avoid: 境界近傍で内側へ押し戻す強さ（0 で無効）
+            boundary_mode: `"slide"` は境界で外向き成分を除去し、沿って流れる
+            iters: 反復回数
+            seed: 乱数 seed（seed 配置の再現性のため）
+            show_mask: True のとき、出力に入力 mask を追加で含める
+        """
+        ...
     def highpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., gain: float = ..., closed: str = ...) -> _EffectBuilder:
         """
         ポリライン列を highpass（高周波強調）する。
@@ -703,6 +718,21 @@ class _E(Protocol):
             density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
             spacing_gradient: スキャン方向に沿った線間隔勾配（シーケンス指定時はグループごとにサイクル適用）
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
+        """
+        ...
+    def growth_in_mask(self, *, activate: bool = ..., seed_count: int = ..., target_spacing: float = ..., boundary_avoid: float = ..., boundary_mode: str = ..., iters: int = ..., seed: int = ..., show_mask: bool = ...) -> _EffectBuilder:
+        """
+        マスク内で差分成長を行い、襞のような閉曲線群を生成する。
+
+        引数:
+            activate: bool
+            seed_count: マスク内へ配置する seed（初期ループ）数
+            target_spacing: 目標点間隔 [mm]
+            boundary_avoid: 境界近傍で内側へ押し戻す強さ（0 で無効）
+            boundary_mode: `"slide"` は境界で外向き成分を除去し、沿って流れる
+            iters: 反復回数
+            seed: 乱数 seed（seed 配置の再現性のため）
+            show_mask: True のとき、出力に入力 mask を追加で含める
         """
         ...
     def highpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., gain: float = ..., closed: str = ...) -> _EffectBuilder:
