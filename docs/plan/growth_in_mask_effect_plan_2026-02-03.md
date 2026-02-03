@@ -22,7 +22,7 @@
 
 - “汎用差分成長フレームワーク” の構築（この effect のための最小実装に留める）
 - 3D 非平面入力の完全対応（mask が歪んでいる場合は素直に no-op / 早期 return）
-- 高速化のための複雑なデータ構造（必要になったら次段で検討）
+- 複雑すぎる高速化（距離場のグリッド化等。必要になったら次段で検討）
 
 ## 追加/変更するもの
 
@@ -71,8 +71,7 @@ folds = E.growth_in_mask(
 ### 1) 入力の取り決め（1 input）
 
 - `inputs[0]` を `mask` として扱う（閉曲線リングが 1 本以上ある想定）
-- `mask` が空/リング抽出できない場合は **no-op（`mask` を返す or empty）**のどちらかに統一する
-  - 方針: `show_mask=False` のときは empty、`show_mask=True` のときは mask を返す（=「何も生えない」状態が見える）
+- `mask` が空/リング抽出できない場合は **empty を返す**（`show_mask` に関わらず）
 
 ### 2) 平面整列（既存 util）
 
@@ -110,7 +109,7 @@ folds = E.growth_in_mask(
    - 近傍（前後点）平均との差分で小さく移動（Laplacian smoothing 的に）
 3. **反発（self + inter-seed）**
    - 全点集合で「一定半径内の反発」をかける
-   - 最初は単純な `O(N^2)` でも良いが、重ければ “グリッド分割（binning）” を入れて `O(N)` 近くへ寄せる
+   - 最初から “グリッド分割（binning）” を入れて、近傍セルだけを見る
 4. **境界拘束（boundary_mode）**
    - まず soft:
      - `d(p)` が `>-margin`（境界に近い）なら、内向き（`-n(p)`）へ押し戻す力を加える（`boundary_avoid` 係数）
@@ -141,17 +140,17 @@ folds = E.growth_in_mask(
 
 ## 実装手順（チェックリスト）
 
-- [ ] effect の I/O と「無効入力時の返し方」を確定（empty/no-op、`seed_count=0` の扱い）
-- [ ] `src/grafix/core/effects/growth_in_mask.py` を追加（meta + ui_visible が要るなら追加）
-- [ ] 平面整列（util） + リング抽出（auto-close）
-- [ ] SDF（distance + normal）評価を実装（Numba）
-- [ ] seed の配置（rejection sampling）+ 初期ループ生成
-- [ ] 成長ループ（subdivide / smoothing / repel / boundary constraint）
-- [ ] 出力 RealizedGeometry 化 + `show_mask`
-- [ ] `src/grafix/core/builtins.py` に登録追加
-- [ ] `tests/core/effects/test_growth_in_mask.py` を追加
-- [ ] `PYTHONPATH=src python -m grafix stub`
-- [ ] `PYTHONPATH=src pytest -q tests/core/effects/test_growth_in_mask.py`
+- [x] effect の I/O と「無効入力時の返し方」を確定（n_inputs=1 / 無効入力=empty / 反発=最初からグリッド分割）
+- [x] `src/grafix/core/effects/growth_in_mask.py` を追加
+- [x] 平面整列（util） + リング抽出（auto-close）
+- [x] SDF（distance + normal）評価を実装（Numba）
+- [x] seed の配置（rejection sampling）+ 初期ループ生成
+- [x] 成長ループ（subdivide / repel / boundary constraint）
+- [x] 出力 RealizedGeometry 化 + `show_mask`
+- [x] `src/grafix/core/builtins.py` に登録追加
+- [x] `tests/core/effects/test_growth_in_mask.py` を追加
+- [x] `PYTHONPATH=src python -m grafix stub`
+- [x] `PYTHONPATH=src pytest -q tests/core/effects/test_growth_in_mask.py`
 
 ## 追加で決めること（確認したい）
 

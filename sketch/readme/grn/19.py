@@ -10,7 +10,7 @@ CANVAS_HEIGHT = 210
 def draw(t):
     frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
     t = G.polygon()
-    e = E.growth_in_mask().lowpass().fill()
+    e = E.growth().lowpass().fill()
     return e(t), frame
 
 

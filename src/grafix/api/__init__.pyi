@@ -283,7 +283,7 @@ class _EffectBuilder(Protocol):
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
         """
         ...
-    def growth_in_mask(self, *, activate: bool = ..., seed_count: int = ..., target_spacing: float = ..., boundary_avoid: float = ..., boundary_mode: str = ..., iters: int = ..., seed: int = ..., show_mask: bool = ...) -> _EffectBuilder:
+    def growth(self, *, activate: bool = ..., seed_count: int = ..., target_spacing: float = ..., boundary_avoid: float = ..., boundary_mode: str = ..., iters: int = ..., seed: int = ..., show_mask: bool = ...) -> _EffectBuilder:
         """
         マスク内で差分成長を行い、襞のような閉曲線群を生成する。
 
@@ -720,7 +720,7 @@ class _E(Protocol):
             remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
         """
         ...
-    def growth_in_mask(self, *, activate: bool = ..., seed_count: int = ..., target_spacing: float = ..., boundary_avoid: float = ..., boundary_mode: str = ..., iters: int = ..., seed: int = ..., show_mask: bool = ...) -> _EffectBuilder:
+    def growth(self, *, activate: bool = ..., seed_count: int = ..., target_spacing: float = ..., boundary_avoid: float = ..., boundary_mode: str = ..., iters: int = ..., seed: int = ..., show_mask: bool = ...) -> _EffectBuilder:
         """
         マスク内で差分成長を行い、襞のような閉曲線群を生成する。
 
