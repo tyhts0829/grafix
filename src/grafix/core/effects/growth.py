@@ -34,6 +34,7 @@ _MAX_TOTAL_POINTS = 200_000
 _MAX_POINTS_PER_RING = 20_000
 
 _BOUNDARY_PUSH_GAIN = 0.1
+_MAX_SDF_GRID_CELLS = 1_000_000
 
 growth_meta = {
     "seed_count": ParamMeta(kind="int", ui_min=0, ui_max=64),
@@ -262,6 +263,140 @@ def _simplify_rings_for_sdf(
         out.append(_Ring2D(vertices=v2, mins=mins, maxs=maxs))
 
     return out
+
+
+def _build_sdf_grid(
+    ring_vertices: np.ndarray,
+    ring_offsets: np.ndarray,
+    ring_mins: np.ndarray,
+    ring_maxs: np.ndarray,
+    *,
+    pitch_hint: float,
+    pad: float,
+    max_cells: int,
+) -> tuple[np.ndarray, float, float, float]:
+    """SDF を 2D グリッドに前計算する（以降は bilinear 参照）。"""
+    pitch0 = float(pitch_hint)
+    if not np.isfinite(pitch0) or pitch0 <= 0.0:
+        pitch0 = 1.0
+
+    pad0 = float(pad)
+    if not np.isfinite(pad0) or pad0 < 0.0:
+        pad0 = 0.0
+
+    bbox_min = np.min(ring_mins.astype(np.float64, copy=False), axis=0)
+    bbox_max = np.max(ring_maxs.astype(np.float64, copy=False), axis=0)
+
+    x0 = float(bbox_min[0]) - pad0
+    y0 = float(bbox_min[1]) - pad0
+    w = float(bbox_max[0] - bbox_min[0]) + 2.0 * pad0
+    h = float(bbox_max[1] - bbox_min[1]) + 2.0 * pad0
+
+    if not np.isfinite(w) or not np.isfinite(h) or w <= 0.0 or h <= 0.0:
+        empty = np.zeros((2, 2), dtype=np.float64)
+        return empty, 0.0, 0.0, 1.0
+
+    pitch = pitch0
+    nx = int(math.ceil(w / pitch)) + 1
+    ny = int(math.ceil(h / pitch)) + 1
+    if nx < 2:
+        nx = 2
+    if ny < 2:
+        ny = 2
+
+    cells = int(nx * ny)
+    max_cells_i = int(max_cells)
+    if max_cells_i < 16:
+        max_cells_i = 16
+    if cells > max_cells_i:
+        scale = math.sqrt(float(cells) / float(max_cells_i))
+        pitch = pitch * scale
+        nx = int(math.ceil(w / pitch)) + 1
+        ny = int(math.ceil(h / pitch)) + 1
+        if nx < 2:
+            nx = 2
+        if ny < 2:
+            ny = 2
+
+    xs = x0 + np.arange(nx, dtype=np.float64) * float(pitch)
+    ys = y0 + np.arange(ny, dtype=np.float64) * float(pitch)
+    grid_x, grid_y = np.meshgrid(xs, ys)  # (ny,nx)
+    pts = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1).astype(np.float64, copy=False)
+
+    d, _gx, _gy = _evaluate_sdf_points_numba(
+        pts, ring_vertices, ring_offsets, ring_mins, ring_maxs
+    )
+    sdf = d.reshape((ny, nx))
+    return sdf, float(x0), float(y0), float(pitch)
+
+
+@njit(cache=True, fastmath=True)
+def _sample_sdf_grid_numba(
+    points_xy: np.ndarray,
+    sdf: np.ndarray,
+    origin_x: float,
+    origin_y: float,
+    pitch: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n = int(points_xy.shape[0])
+    ny = int(sdf.shape[0])
+    nx = int(sdf.shape[1])
+    out_d = np.empty((n,), dtype=np.float64)
+    out_gx = np.empty((n,), dtype=np.float64)
+    out_gy = np.empty((n,), dtype=np.float64)
+
+    inv = 1.0 / float(pitch)
+    for i in range(n):
+        fx = (float(points_xy[i, 0]) - float(origin_x)) * inv
+        fy = (float(points_xy[i, 1]) - float(origin_y)) * inv
+
+        ix = int(math.floor(fx))
+        iy = int(math.floor(fy))
+        tx = fx - float(ix)
+        ty = fy - float(iy)
+
+        if ix < 0:
+            ix = 0
+            tx = 0.0
+        elif ix > nx - 2:
+            ix = nx - 2
+            tx = 1.0
+
+        if iy < 0:
+            iy = 0
+            ty = 0.0
+        elif iy > ny - 2:
+            iy = ny - 2
+            ty = 1.0
+
+        d00 = float(sdf[iy, ix])
+        d10 = float(sdf[iy, ix + 1])
+        d01 = float(sdf[iy + 1, ix])
+        d11 = float(sdf[iy + 1, ix + 1])
+
+        omt = 1.0 - tx
+        onu = 1.0 - ty
+        d0 = omt * d00 + tx * d10
+        d1 = omt * d01 + tx * d11
+        d = onu * d0 + ty * d1
+
+        # bilinear の勾配（セル内で線形）。signed distance の増加方向（外向き）。
+        ddx = (onu * (d10 - d00) + ty * (d11 - d01)) * inv
+        ddy = (omt * (d01 - d00) + tx * (d11 - d10)) * inv
+
+        gnorm = math.sqrt(ddx * ddx + ddy * ddy)
+        if gnorm > 1e-12:
+            gx = ddx / gnorm
+            gy = ddy / gnorm
+        else:
+            gx = 0.0
+            gy = 0.0
+
+        out_d[i] = d
+        out_gx[i] = gx
+        out_gy[i] = gy
+
+    return out_d, out_gx, out_gy
 
 
 @njit(cache=True, parallel=True, fastmath=True)
@@ -722,10 +857,10 @@ def _simulate_growth_in_mask_xy(
     boundary_avoid: float,
     boundary_mode: str,
     iters: int,
-    ring_vertices: np.ndarray,
-    ring_offsets: np.ndarray,
-    ring_mins: np.ndarray,
-    ring_maxs: np.ndarray,
+    sdf: np.ndarray,
+    sdf_origin_x: float,
+    sdf_origin_y: float,
+    sdf_pitch: float,
 ) -> list[np.ndarray]:
     spacing = float(target_spacing)
     if not np.isfinite(spacing) or spacing <= 0.0:
@@ -790,8 +925,8 @@ def _simulate_growth_in_mask_xy(
 
         disp = forces * float(step)
 
-        d, gx, gy = _evaluate_sdf_points_numba(
-            points, ring_vertices, ring_offsets, ring_mins, ring_maxs
+        d, gx, gy = _sample_sdf_grid_numba(
+            points, sdf, float(sdf_origin_x), float(sdf_origin_y), float(sdf_pitch)
         )
         points = _apply_boundary_constraints_numba(
             points,
@@ -891,6 +1026,17 @@ def growth(
 
     ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
 
+    sdf_pad = max(spacing * 6.0, 2.0)
+    sdf, sdf_origin_x, sdf_origin_y, sdf_pitch = _build_sdf_grid(
+        ring_vertices,
+        ring_offsets,
+        ring_mins,
+        ring_maxs,
+        pitch_hint=step_sdf,
+        pad=sdf_pad,
+        max_cells=_MAX_SDF_GRID_CELLS,
+    )
+
     bbox_min = np.min(ring_mins, axis=0)
     bbox_max = np.max(ring_maxs, axis=0)
 
@@ -947,10 +1093,10 @@ def growth(
         boundary_avoid=float(boundary_avoid),
         boundary_mode=str(boundary_mode),
         iters=iters_i,
-        ring_vertices=ring_vertices,
-        ring_offsets=ring_offsets,
-        ring_mins=ring_mins,
-        ring_maxs=ring_maxs,
+        sdf=sdf,
+        sdf_origin_x=sdf_origin_x,
+        sdf_origin_y=sdf_origin_y,
+        sdf_pitch=sdf_pitch,
     )
 
     lines_out: list[np.ndarray] = []

@@ -121,7 +121,7 @@ Phase 1+2 で不足なら、SDF 計算コストの形を変える。
 - [ ] Phase 0: ベンチ条件を固定（スクリプト or 手動手順を決める）
 - [x] Phase 1: `_evaluate_sdf_points_numba` を並列化し、ベンチで短縮を確認
 - [x] Phase 2: SDF 用マスクの軽量化を入れ、複雑マスクで短縮を確認
-- [ ] Phase 3: まだ必要なら、SDF 短絡案（A/B）を比較して 1 つに決めて実装
+- [x] Phase 3: オプションA（SDF グリッド→bilinear 参照）を実装
 - [ ] Phase 4: 割り当て削減（必要な場合のみ）
 - [x] `PYTHONPATH=src pytest -q tests/core/effects/test_growth.py`
 
