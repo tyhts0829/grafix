@@ -25,7 +25,7 @@ def draw(t: float):
 
 
 if __name__ == "__main__":
-    run(draw, canvas_size=(800, 800), render_scale=2.0)
+    run(draw, canvas_size=(148, 210), render_scale=5.0)
 ```
 
 ## Examples
