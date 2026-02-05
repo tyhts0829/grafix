@@ -17,8 +17,8 @@ from grafix import E, G, run
 
 
 def draw(t: float):
-    poly = G.polygon()
-    effect = E.fill().subdivide().displace()
+    poly = G.polyhedron()
+    effect = E.fill().subdivide().displace().rotate(rotation=(t * 6, t * 5, t * 4))
     return effect(poly)
 
 
