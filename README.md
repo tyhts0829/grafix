@@ -1,4 +1,4 @@
-<img src="docs/readme/readme.gif" width="1200" alt="Grafix demo" />
+<img src="docs/readme/top_movie.gif" width="1200" alt="Grafix demo" />
 
 Grafix is a Python-based creative coding framework compatible with pen plotter.
 
