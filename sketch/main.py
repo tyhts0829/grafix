@@ -11,7 +11,7 @@ CANVAS_HEIGHT = 300
 
 
 def draw(t: float):
-    g = G.polygon()
+    g = G.polygon(center=(150.0, 150.0, 0.0), scale=140.0)
     e = E.partition().drop().fill(angle=(10, 20, 30, 40, 50))
     return e(g)
 

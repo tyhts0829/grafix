@@ -1,306 +1,289 @@
-了解。あなたが言う「数値評価ではなく、画像を見た“批評”を勾配として改善を収束させる」方針で、Codexに食わせやすい skills（役割分離＋固定フォーマット＋局所パッチ制約） を設計します。ここでは、(1) Critic（アートディレクター）と (2) Artist（実装者）を分け、(3) Orchestrator が手順と成果物管理を強制する構造にします。ポイントは、Criticが“作品を作り直す”提案を出せないようにして、必ず「小さな差分」「同じ意図」「seed固定」を基本にすることです。
+目的と前提
+
+ここで作る「skill」は、Grafix（外部ライブラリ）を使ったジェネラティブ画像生成を対象に、**アイデア出し → 実装 → 画像出力 → 批評 → 改善実装 → 画像出力 → 批評…**という反復を、合計 N 回まわして最終成果を得るためのオーケストレーション一式です。Grafix の具体 API、CLI、レンダリング設定、依存関係、出力形式などは不確実なので、Grafix への依存はアダプタ層に隔離し、実装時に動作確認して確定させる方針にします。
+
+また要件として、各反復における「実装（または改善実装）→画像出力」は M 並列で別々のアーティスト（実装屋）が行い、M 個のバリエーションを生成します。批評家は 全候補を確認した上で、美的に最も優れている 1 つを選び、それだけを次ループに持ち越します。
 
 ⸻
 
-ディレクトリ構成（そのまま repo に置ける形）
+役割分担と責務境界
 
-以下を skills/grafix_art_loop/ として追加する想定です（ファイル名は好みで変えてOK）。
+この設計は「誰が何を決め、何を返すか」を厳密に固定しないと、ループが崩れます。各役割の入出力を JSON（または厳格な構造）で縛る前提で、責務を切ります。
 
-skills/
-grafix_art_loop/
-orchestrator.skill.md
-critic.skill.md
-artist.skill.md
-style_guide.md
-critique_rubric.md
-tools/
-make_contact_sheet.py
-stamp_metadata.py
-run_one_iter.py
-ART_LOOP.md # 反復ログ（人間も追える）
-runs/ # 生成物・差分の保管先（自動生成）
+オーケストレーター（統括・状態管理）
 
-「skills」は基本的に“指示書”なので、モデルが毎回迷う余地を減らすために、アウトプット形式を固定します。特に Critic は自由作文させると発散するので、JSON（またはYAML）で必ず“変更要求”を出させます。
+オーケストレーターは、N 反復の進行、並列実行、失敗時の扱い、成果物の保存、次反復への引き継ぎを担当します。具体的には、(1) アイデアマンへ要求を投げる、(2) M 人のアーティストへ同一ブリーフと各自の探索方針を渡す、(3) 返ってきた画像とメタデータを束ねて批評家に渡す、(4) 批評家の選定結果から「勝ち残り 1 つ」を次反復のベースにする、を毎回実行します。
+
+オーケストレーター自身は Grafix の詳細は知らない前提なので、画像生成は「Grafix アダプタ（後述）」経由で呼ぶだけにします。
+
+アイデアマン（アイデア出し）
+
+アイデアマンは「生成物の方向性」を定義します。ここで重要なのは、単なるテーマ案ではなく、実装に落とせるブリーフ（例えば「形状語彙」「構図制約」「反復の変数軸」「避けたい破綻」など）を返すことです。
+
+初回（反復 1）では必ずアイデアマンを呼びます。2 回目以降は、方針として二択にできます。固定で呼ぶ（毎回刷新）か、基本は批評家の改善指示に従い、停滞が検出されたときだけ呼ぶ（探索の再注入）かです。計画としては、後者が安定します（改善ループが「別作品の再発明」に逸れにくい）。
+
+アーティスト（実装屋）
+
+アーティストは、与えられたブリーフと「前回の勝ち残りコード（またはスケッチ）」と「批評家の改善指示」を入力に、実装（または改善実装）を行い、Grafix で画像を書き出して返します。M 並列では、同じ要求を投げるのではなく、各アーティストに“探索ポリシー”を変えて渡すことで、バリエーションが意味を持ちます（例：ミニマル寄り、幾何学寄り、テクスチャ寄り、構図優先、色優先、アルゴリズム優先など）。
+
+「実装 → 画像出力」までがアーティストの責務であり、オーケストレーターはアーティストから「画像ファイルパス・実行ログ・主要パラメータ・seed・要約」を受け取るだけにします。
+
+批評家（審査・選抜・改善指示）
+
+批評家は、M 個の候補を同一基準で批評して、最も美的に優れている 1 つを選びます。その際、単に褒める/貶すではなく、次反復へ渡すための「改善指示」を構造化して返す必要があります。改善指示は、勝ち残り作品の「伸ばすべき点」と「直すべき点」を明確にし、アーティストが次回の実装で実行可能な形（例：構図の変更、パラメータのレンジ調整、密度の制御、線の太さの方針、余白の扱い、反復のノイズ構造など）に落として返します。
 
 ⸻
 
-1. Critic skill（アート的評価→局所パッチ要求に落とす）
+反復ループの仕様（N 回）
 
-skills/grafix_art_loop/critic.skill.md
+反復 i（1..N）で行う処理を、状態遷移として固定します。ここでは「初回の実装」と「改善実装」は同じフェーズで扱い、入力（ベース）が違うだけ、と定義しておくのが実装が楽です。
 
-# Role: Grafix Art Critic (Art Director)
+反復 1 ではベースが空なので、アイデアマンのブリーフをベースに M 本作ります。反復 2..N では、前回勝ち残り 1 本をベースにして M 本の改善案を作ります。
 
-You are an art director for generative line-based works produced with Grafix.
-Your job is to look at the latest rendered image(s) and produce _actionable_ improvement requests.
+⸻
 
-## Non-negotiables
+データモデル（最低限これだけは持つ）
 
-- You must NOT propose a brand-new concept. Keep the same intent/motif.
-- Prefer LOCAL changes. Max 2 change requests per iteration.
-- Assume SEED is fixed by default. Do not change seed unless explicitly allowed.
-- Do not ask for numeric scoring. Use qualitative critique, but output must be structured.
+運用で破綻しやすいのは「何が次に渡るかが曖昧」なケースなので、状態を固定します。以下は JSON を想定した概念モデルで、実際は Pydantic 等で型を持たせると安全です。
 
-## Inputs you will receive (typical)
-
-- Path(s) to latest render(s): e.g., runs/2026-02-06_120000/render.png
-- (Optional) previous render(s) for comparison
-- The current sketch/script path (e.g., sketches/foo.py)
-- The current constraints + style guide (provided as text)
-- Any notes from the previous iteration in ART_LOOP.md
-
-## Critique rubric (use these headings in your reasoning)
-
-Use the rubric file: skills/grafix_art_loop/critique_rubric.md
-You must anchor every issue to at least one rubric axis.
-
-## Output format (STRICT JSON)
-
-Return ONLY JSON in the following schema. No extra text.
+CreativeBrief（アイデアマン出力）には、少なくとも作品意図と実装上の制約を入れます。Artifact（アーティスト出力）は、コードと画像と再現情報を一体化します。Critique（批評家出力）は、選抜結果と改善指示を含みます。
 
 {
-"summary": "1-2 sentences: what the piece currently is + what it should feel like after fixes",
-"strengths": [
-{"axis": "composition|rhythm|contrast|coherence|craft", "note": "..." }
-],
-"issues": [
-{"axis": "composition|rhythm|contrast|coherence|craft", "symptom": "...", "why_it_hurts": "...", "evidence": "point to region/behavior in the image"}
-],
-"change_requests": [
-{
-"id": "CR-01",
-"intent": "one sentence: what to improve (artistic goal)",
+"run_id": "YYYYMMDD-HHMMSS-xxxx",
+"N": 8,
+"M": 6,
+"iteration": 3,
+"creative_brief": {
+"title": "...",
+"intent": "...",
 "constraints": {
-"keep_seed": true,
-"max_code_delta": "small",
-"no_refactor": true,
-"keep_motif": true
+"canvas": "unknown (confirm in grafix)",
+"time_budget_sec": 30,
+"avoid": ["..."]
 },
-"actions": [
+"variation_axes": ["...", "..."],
+"aesthetic_targets": "..."
+},
+"baseline_artifact": {
+"code_ref": "path/to/baseline.py",
+"seed": 12345,
+"notes": "..."
+},
+"critic_feedback_prev": {
+"keep": "...",
+"change": "...",
+"next_actions": ["..."]
+}
+}
+
+アーティストの返却は、成功/失敗を含めて統一します。
+
 {
-"type": "parameter_adjustment|operator_adjustment|layout_adjustment",
-"target_hint": "how to locate in code (variable/function name, comment tag, or file section)",
-"suggested_edit": "plain language edit (e.g., reduce stroke density in upper-left by narrowing spawn region; increase margin; reduce jitter; add spacing rule)",
-"rationale": "why this specific edit addresses the issue"
+"artist_id": "artist-04",
+"iteration": 3,
+"variant_id": "v4",
+"status": "success",
+"code_ref": "runs/.../iter_03/v4/sketch.py",
+"image_ref": "runs/.../iter_03/v4/out.png",
+"seed": 12402,
+"params": {"...": "..."},
+"stdout_ref": "runs/.../iter_03/v4/stdout.txt",
+"stderr_ref": "runs/.../iter_03/v4/stderr.txt",
+"artist_summary": "何をどう変えたか"
 }
+
+批評家の返却は、最終的に「次へ回す 1 つ」と「改善指示」を必ず含めます。
+
+{
+"iteration": 3,
+"ranking": [
+{"variant_id": "v4", "score": 8.7, "reason": "..."},
+{"variant_id": "v1", "score": 7.9, "reason": "..."}
 ],
-"success_criteria": "what should be visibly different in the next render (qualitative, observable)"
+"winner": {
+"variant_id": "v4",
+"why_best": "...",
+"what_to_preserve": "...",
+"what_to_fix_next": "...",
+"next_iteration_directives": [
+{"priority": 1, "directive": "...", "rationale": "..."},
+{"priority": 2, "directive": "...", "rationale": "..."}
+]
 }
-],
-"stop_condition": "if already good, write: 'STOP'; else 'CONTINUE'"
 }
 
 ⸻
 
-2. Artist skill（Criticの“パッチ指示”だけ実装する）
+Grafix 依存を隠すアダプタ設計
 
-skills/grafix_art_loop/artist.skill.md
+Grafix の詳細が不明な前提なので、「アーティストが描画コードを生成して、画像を吐く」という操作だけを抽象化します。ここは最初に“動く最小”を作って API を確認し、最終的にアダプタに閉じ込めます。
 
-# Role: Grafix Art Artist (Implementer)
+設計上は GrafixAdapter（名前は任意）を置き、以下の責務に限定します。
 
-You implement change requests from the Critic in a Grafix sketch, then re-render.
+(1) 指定されたスケッチ/コードを実行して画像を生成する（実行方法は Grafix の実装で確認して決める）。
+(2) 画像が生成されたことを検証する（ファイル存在、サイズ、破損チェック程度）。
+(3) 実行ログとメタデータ（使用 seed や主要パラメータ）を返す。
 
-## Non-negotiables
-
-- Implement ONLY the Critic's change_requests.
-- NO refactors unless explicitly requested.
-- Keep seed fixed unless Critic explicitly sets keep_seed=false.
-- Keep the motif/intent. Do not invent new visual systems.
-- Prefer minimal diffs. If you need more than ~30 lines changed, stop and report why.
-
-## Process
-
-1. Read Critic JSON.
-2. Locate the exact code spots using target_hint.
-3. Apply minimal edits.
-4. Run the render command (as defined by the project) and save outputs to the given run folder.
-5. Produce a short implementation report.
-
-## Output format
-
-- A short markdown report:
-  - What you changed (map to CR-IDs)
-  - Git diff summary (files changed, approx lines)
-  - Render output paths
-  - Any risks / if you could not implement something precisely, explain.
-
-Do NOT add new commentary about aesthetics; that is Critic's job.
+このアダプタは、将来 Grafix の CLI 方式でも、Python API 方式でも差し替え可能にするため、呼び出し側（アーティスト）には「render(code_ref, output_path, seed, params)」程度の抽象 I/F だけ見せます。具体コマンドや関数名は実装確認で確定します。
 
 ⸻
 
-3. Orchestrator skill（手順・成果物・制約を“強制”する）
+M 並列の実行方式
 
-skills/grafix_art_loop/orchestrator.skill.md
+並列化は「エージェントが別々に走る」ことが本質なので、単一プロセス内で乱数だけ変えるのではなく、少なくとも論理的に分離された実行単位を作ります。実装方式は次のいずれでも成立します。
 
-# Role: Grafix Art Loop Orchestrator
+一つは、オーケストレーターが M 個のサブプロセス（またはコンテナ）を起動し、それぞれに「artist prompt + baseline + feedback」を渡して実行させる方式です。もう一つは、エージェント実行基盤があるなら、基盤の並列機構（ワーカー）に投げて結果を集約する方式です。いずれにしても重要なのは、各バリアントが同じディレクトリや同じ一時ファイルを触らないよう、runs/<run_id>/iter_XX/vY/ に完全分離した作業領域を割り当てることです。
 
-You run a single iteration of: render -> critique -> patch -> render -> log.
-
-## Non-negotiables
-
-- Always create a new run folder under runs/YYYY-MM-DD_HHMMSS/
-- Always keep seed fixed unless explicitly told otherwise.
-- Always maintain artifacts:
-  - render.png (or a set)
-  - contact_sheet.png (optional but recommended)
-  - critic.json
-  - patch.diff (git diff)
-  - notes.md (short iteration notes)
-- The Critic must output STRICT JSON only.
-- The Artist must implement ONLY Critic requests.
-
-## Steps (one iteration)
-
-1. Determine current sketch entrypoint and seed.
-2. Render current baseline into run folder.
-3. (Optional) Create a contact sheet if multiple outputs exist.
-4. Call Critic using the latest artifacts + style guide + constraints.
-5. If Critic.stop_condition == STOP: write to ART_LOOP.md and stop.
-6. Else call Artist with Critic JSON.
-7. Re-render after patch into same run folder with a postfix (e.g., render_after.png).
-8. Append an iteration record to ART_LOOP.md:
-   - run folder
-   - summary
-   - CR list
-   - what changed
-   - next action suggestion (from Critic.success_criteria)
-
-## Style & Constraints Sources
-
-- skills/grafix_art_loop/style_guide.md
-- skills/grafix_art_loop/critique_rubric.md
+また、並列実行は失敗が混じる前提で設計します。例えば M=8 のうち 2 件がレンダリング失敗しても、残り 6 件で批評→選抜が進むようにします（ただし全滅は例外処理で、同一反復をリトライするか、アイデアを簡略化して再実行する）。
 
 ⸻
 
-4. “審美”を固定するドキュメント（ここが収束の鍵）
+アーティストを「異なるエージェント」にする具体化
 
-style guide（あなたの作品の“目的関数”を文章で固定）
+「異なるエージェント」を、単に別インスタンスという意味に留めると、出力が似通いがちです。実装計画としては、各アーティストに固定の“作家性プロファイル”を持たせ、毎回同じプロファイルで改善を続ける方が探索空間が安定します。
 
-skills/grafix_art_loop/style_guide.md（例。あなたの好みに合わせて書き換える前提）
+プロファイルは、例えば「優先する美学（余白、リズム、対称性、ノイズ、タイポグラフィ的構成など）」と「変更方針（色からいじる、形からいじる、アルゴリズムを変える、パラメータレンジを詰める等）」を文章としてシステムプロンプトに固定し、反復ごとに変えるのはブリーフと批評家の指示だけにします。これで M 本の候補が役割分担的に散らばります。
 
-# Style Guide (Grafix)
-
-- Medium: monochrome / line-based; pen-plotter friendly aesthetics.
-- Core vibe: controlled system + visible rule + tasteful variation.
-- Avoid: muddy overdraw, accidental tangles, uniform noise that hides structure.
-- Prefer: clear negative space, deliberate hierarchy (primary vs secondary strokes),
-  and a readable composition even at thumbnail size.
-- Composition bias: asymmetry is fine, but must feel intentional (balanced tension).
-- Craft: avoid micro-clumps and unintended intersections that read like errors.
-
-critique rubric（Criticが毎回同じ観点で見るための軸）
-
-skills/grafix_art_loop/critique_rubric.md
-
-# Critique Rubric
-
-## composition
-
-Balance, negative space, focal hierarchy, weight distribution, margins, framing.
-
-## rhythm
-
-Repetition vs variation, flow, directional movement, visual tempo.
-
-## contrast
-
-Density contrast, scale contrast, quiet vs loud zones, figure-ground clarity.
-
-## coherence
-
-Rule legibility, consistency of the system, whether the "why" is readable.
-
-## craft
-
-Overlaps that look like mistakes, clumping, edge tangles, aliasing-like artifacts,
-plotter-unfriendly micro-noise, unintended moiré.
-
-この2つが薄いと、Criticがその場のノリで評価軸を変えてしまい、改善が収束しません。逆にここが固まると、数値なしでもちゃんと“勾配”が出ます。
+さらに、各アーティストには「前回勝ち残りを尊重する度合い」を変えて割り当てると、改善と探索が両立します。例えば、M のうち 70% は改善（exploit）として勝ち残りをベースに微調整し、30% は探索（explore）として勝ち残りから意図的に離れた案を出す、といったルールをオーケストレーターが持つ設計です。これは停滞回避に効きます。
 
 ⸻
 
-5. 最低限のツール（画像を“見やすくする”だけ。数値評価はしない）
+批評家の入力設計（M 候補を「全部見る」を担保）
 
-あなたは数値化を避けたいので、ツールは「比較しやすさ」だけに寄せます。たとえば contact sheet は強いです（Criticが“どこが変わったか”を認識しやすい）。
+批評家に M 枚の画像を渡すとき、LLM のマルチモーダル入力制約（枚数上限、サイズ上限、トークン上限）がボトルネックになりやすいので、計画段階で“必ず全部見せる”仕組みを入れておきます。
 
-tools/make_contact_sheet.py（例：複数画像を1枚にまとめる）
+現実的には、オーケストレーターが M 枚から「コンタクトシート（グリッド合成画像）」を生成し、批評家には (1) グリッド全体、(2) 上位候補の原寸（必要なら）を渡す設計が堅いです。これなら「全体比較」と「細部確認」の両方ができます。コンタクトシート生成自体は Grafix 依存ではなく、一般的な画像ライブラリで実装できます。
 
-from PIL import Image
-from pathlib import Path
-
-def make_sheet(paths, out_path, cols=2, pad=20, bg=(255,255,255)):
-imgs = [Image.open(p).convert("RGB") for p in paths]
-w = max(i.width for i in imgs)
-h = max(i.height for i in imgs)
-rows = (len(imgs) + cols - 1) // cols
-sheet = Image.new("RGB", (cols*w + (cols+1)*pad, rows*h + (rows+1)*pad), bg)
-for idx, im in enumerate(imgs):
-r, c = divmod(idx, cols)
-x = pad + c*(w+pad)
-y = pad + r*(h+pad)
-sheet.paste(im, (x, y))
-Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-sheet.save(out_path)
-
-if **name** == "**main**":
-import sys
-out = sys.argv[1]
-ins = sys.argv[2:]
-make_sheet(ins, out)
-
-tools/stamp_metadata.py（seedやcommit hashを画像ファイル名/notesに残す。画像に文字を描くのは好みで）
-
-from pathlib import Path
-import json, subprocess, datetime
-
-def git_rev():
-try:
-return subprocess.check_output(["git","rev-parse","--short","HEAD"]).decode().strip()
-except Exception:
-return "nogit"
-
-def write_meta(run_dir, meta: dict):
-Path(run_dir).mkdir(parents=True, exist_ok=True)
-meta = dict(meta)
-meta["timestamp"] = datetime.datetime.now().isoformat(timespec="seconds")
-meta["git_rev"] = git_rev()
-(Path(run_dir)/"meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-
-if **name** == "**main**":
-import sys
-run_dir = sys.argv[1]
-seed = sys.argv[2]
-sketch = sys.argv[3]
-write_meta(run_dir, {"seed": seed, "sketch": sketch})
+批評家の評価は主観でよいですが、毎回ぶれないように、評価観点を固定して文章化します。例えば「構図の安定性、視線誘導、密度と余白、色の一貫性、形状語彙の統一、偶然性の制御、破綻（潰れ・バンディング・ノイズの汚さ）回避」といった軸を、批評家プロンプトの中で“順番も含めて”固定します。こうすると iteration 間で改善方向が一貫しやすいです。
 
 ⸻
 
-6. 反復ログ（Criticの“勾配”がブレてないかを監査できる）
+反復ごとの「引き継ぎ情報」を最小化する
 
-ART_LOOP.md は人間が見て「ちゃんと局所改善してるか」「別物化してないか」を監査するためのものです。Orchestratorが毎回追記します。
+ループ運用では、コンテキスト肥大化が一番の敵です。毎回全履歴を渡すと、批評家が一貫性を失うか、アーティストが曖昧な指示で迷走します。引き継ぐのは基本的に次の 3 点だけに絞ります。
 
-テンプレだけ置いておくと良いです。
-
-# Grafix Art Loop Log
-
-## Iteration: 2026-02-06_120000
-
-- Run folder: runs/2026-02-06_120000/
-- Summary: ...
-- Change Requests: CR-01, CR-02
-- Patch: sketches/foo.py (+18/-6)
-- Outputs:
-  - render_before.png
-  - render_after.png
-  - contact_sheet.png
-- Next success criteria:
-  - ...
+第一に、勝ち残りの code_ref と image_ref。第二に、批評家が抽出した「維持すべき要素」と「次に直すべき要素」。第三に、アイデアマンのブリーフ（ただし必要最小限の要約版）です。過去の敗者の詳細は原則渡さず、必要なら批評家が一行で「避けるべき失敗例」を残す程度にします。
 
 ⸻
 
-なぜこの設計で「アート的評価ループ」が回りやすくなるか
+失敗処理と品質ゲート
 
-Criticに“自由”を与えると、審美評価はすぐに「別方向の良さ」へ逃げます。だから、(a) 評価軸を固定し、(b) 変更要求を最大2つに制限し、(c) 差分を小さく縛り、(d) seed固定で比較可能性を担保する。これで初めて「数値を使わないのに収束する」状況が作れます。Webレイアウトの強み（整列・余白・階層）を生成アートへ持ち込むには、この“比較可能性”が前提になります。
+並列実行では失敗が混じるので、オーケストレーター側で最低限の品質ゲートを設けます。ここは美的評価ではなく「評価対象として成立しているか」を機械的に弾く層です。
+
+例えば、画像ファイルが存在しない、ファイルサイズが極端に小さい、読み込み不能、レンダリングがタイムアウトした、といったケースは status=failed として批評家には渡しません（渡しても時間の無駄）。一方で「意図はわかるがノイズが汚い」といった美的欠点は批評家の仕事なので、機械ゲートでは落としません。
+
+また、失敗時に 1 回だけ自動リトライを入れるのは有効です。具体的には、アーティストに「エラー要約（stderr）だけ」を返して、最小修正で再レンダリングさせます。ただし無限再試行は全体が止まるので、各バリアントは最大 2 試行まで、といった上限を計画に明記しておきます。
 
 ⸻
 
-もし、あなたのGrafixプロジェクトの「レンダ実行コマンド（例：python sketches/foo.py –out …）」と、典型的なスケッチの構造（seedの渡し方、主要パラメータの置き場所）が分かれば、tools/run_one_iter.py まで具体的に書いて、Orchestratorが完全自動で1イテレーション回す形に落とします（あなた側の手作業は画像確認だけ、に近づけられます）。
+実装構成（skill のモジュール設計）
+
+実装計画としては、skill を「オーケストレーター本体」と「エージェント定義」と「Grafix アダプタ」と「成果物管理」に分割します。概念的なディレクトリ構成は以下のようになります（名前は任意）。
+
+skills/grafix_loop/
+orchestrator.py
+agents/
+ideaman.py
+artist.py
+critic.py
+adapters/
+grafix_adapter.py # Grafix の実装確認後に確定
+schemas.py # CreativeBrief / Artifact / Critique の型
+io/
+workspace.py # runs/ 以下の保存規約
+image_grid.py # コンタクトシート合成
+prompts/
+ideaman_system.txt
+artist_system_base.txt
+artist_profiles/
+artist_01.txt
+...
+critic_system.txt
+
+ここで agents/\*.py は「LLM への要求テンプレート」と「返却 JSON の検証・整形」を責務にし、実際のレンダリング実行は GrafixAdapter に寄せます。アーティストが「実装→画像出力」まで担う要件があるので、artist.py の中でアダプタを呼ぶ設計にします（オーケストレーターが描画する設計だと、役割分担が要件からズレます）。
+
+⸻
+
+反復の擬似コード（動作の骨格）
+
+実装の骨格は次の形になります。Grafix の呼び出し箇所はアダプタに隠蔽され、ここでは抽象的に記述します。
+
+def run_loop(N: int, M: int, config):
+state = init_run_state(N, M, config)
+
+    # 反復1のブリーフ生成
+    state.creative_brief = ideaman.generate_brief(state)
+
+    baseline = None
+    critic_feedback = None
+
+    for i in range(1, N + 1):
+        iter_ctx = make_iteration_context(state, i, baseline, critic_feedback)
+
+        # M並列：各アーティストが実装→画像出力
+        results = parallel_map(
+            lambda artist: artist.implement_and_render(iter_ctx),
+            artists[0:M]
+        )
+
+        valid = [r for r in results if r.status == "success" and validate_image(r.image_ref)]
+        if len(valid) == 0:
+            # 全滅時の方針：簡略化して同iterationを再実行 or ブリーフ再生成など
+            iter_ctx = recover_iteration(iter_ctx)
+            continue
+
+        # 批評家が全部見て1つ選ぶ
+        grid = make_contact_sheet([r.image_ref for r in valid])
+        critique = critic.rank_and_select(iter_ctx, valid, grid)
+
+        winner = find_variant(valid, critique.winner.variant_id)
+
+        # 次反復へ引き継ぎ
+        baseline = winner
+        critic_feedback = critique.winner
+
+        persist_iteration(i, iter_ctx, valid, critique)
+
+    return baseline
+
+⸻
+
+プロンプト設計の要点（曖昧さを残さない）
+
+この種のループは「自由度が高いほど失敗」します。なので、各役割のプロンプトは“創造性”より先に“出力の構造”を固定します。
+
+アイデアマンには「作品の意図」と「実装に落とす制約」を必須にします。特に、後工程が困るのは「抽象的なムード」だけが返ってくることなので、「どういう変数をどう振ると絵が変わるか（variation axes）」を必須フィールドにします。
+
+アーティストには「何を変えたか」を必須にし、勝ち残りコードがある場合は差分方針を明確化させます。さらに、Grafix の API が不確実な前提なので、アーティストに「Grafix のレンダリング手順は、プロジェクト側のテンプレ（アダプタ）に合わせる。分からない点はテンプレを参照し、必要なら実行して確認してから書く」という規約を入れます。ここで「分からないのに想像で書く」を禁止します。
+
+批評家には、ランキング理由が冗長になりすぎないように、各候補の理由は短く、勝者の理由と次アクションは厚く、という出力制御を入れます。次アクションは「優先度付き」で返し、次反復のアーティストが実装可能な粒度（変更対象、期待する効果、避けたい副作用）にします。
+
+⸻
+
+成果物と再現性（後で検証できる形で残す）
+
+美的探索は「後で戻って比較」できないと価値が落ちます。各反復で最低限残すべきは、勝者だけでなく、全候補の再現情報です。
+
+具体的には、各バリアントの (1) コード、(2) seed、(3) 主要パラメータ、(4) 出力画像、(5) 実行ログ（stdout/stderr）、(6) アーティスト要約、(7) 批評家のランキング結果、を同一ディレクトリに保存します。これで「なぜ勝ったか」「なぜ負けたか」「どの変更が効いたか」を後から追えます。
+
+⸻
+
+収束・停滞の扱い（N 回は回すが、無駄を減らす）
+
+要件上 N 回ループは固定としても、途中で“停滞”が起きるのは普通です。停滞検出は機械的にできます。例えば、批評家スコア（相対評価でもよい）が 3 反復連続で改善しない、批評家が同じ指摘を繰り返す、勝者が毎回同じアーティストから出る、などです。
+
+停滞時の介入として、オーケストレーターが次反復の M の割り当てを変えます。改善枠を減らして探索枠を増やす、アイデアマンを再呼び出しして「同じ意図のまま別アルゴリズムで」ブリーフを組み直す、などです。これは“最終的に 1 枚だけ選ぶ”設計と相性がよく、探索の失敗が成果を汚しません。
+
+⸻
+
+実装フェーズの進め方（Grafix 不確実性を潰す順序）
+
+最後に、実装計画としての手順を文章で固定します。
+
+まず最初にやるべきは、Grafix アダプタの最小実装です。ここでは「既知のテンプレスケッチ（最小の draw 相当、もしくは最小レンダリング）」を 1 回だけ動かして、画像が確実に書き出せるところまでを作ります。Grafix の API/CLI/依存が不明なので、ここは必ず実機確認して確定します。次に、アーティストが返す Artifact の保存規約（ディレクトリ、ファイル名、ログ）を確定します。これが決まると並列実行が安定します。
+
+その後で、アイデアマン→アーティスト（単体）→批評家（単体）の直列パイプラインを 1 反復だけ動かし、JSON の整合と「勝者を次へ渡す」状態遷移が成立することを確認します。最後に M 並列化を入れ、失敗混入（2 件失敗、残り成功）のケースでも反復が進むことを確認します。ここまで来れば、N 反復は単なる繰り返しで、設計上の難所は潰れています。
+
+⸻
+
+この計画は「Grafix がどういう I/F を提供していても」アダプタで吸収できる前提で組んであります。逆に言うと、Grafix の詳細が固まった後にやるべきことは、アダプタ層の具体化と、アーティスト側のテンプレ（最小スケッチ雛形、実行コマンド、出力先規約）の固定だけです。ここさえ締めれば、残りはオーケストレーションとプロンプト整形の問題になります。
