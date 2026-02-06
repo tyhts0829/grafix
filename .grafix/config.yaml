@@ -23,8 +23,8 @@ paths:
 ui:
   # ウィンドウ配置（ピクセル）。
   window_positions:
-    draw: [25, 25]
-    parameter_gui: [950, 25]
+    draw: [200, 100]
+    parameter_gui: [980, 100]
 
   # Parameter GUI ウィンドウサイズ（ピクセル）。
   parameter_gui:
