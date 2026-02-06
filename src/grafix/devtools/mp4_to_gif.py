@@ -14,8 +14,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCALE = 0.75
-FPS = 15
+SCALE = 0.5
+FPS = 50
+SPEED = 2.0  # 再生速度倍率（2.0=2倍速 / 0.5=半速）
 START_SEC: float | None = None
 DURATION_SEC: float | None = None
 LOOP = 0  # 0=無限ループ
@@ -71,6 +72,7 @@ def _select_output_gif(*, initial_dir: Path, initial_stem: str) -> Path | None:
 
 def _run_ffmpeg(*, ffmpeg: str, input_path: Path, output_path: Path) -> None:
     filter_complex = (
+        f"setpts=(PTS-STARTPTS)/{SPEED},"
         f"fps={FPS},scale=iw*{SCALE}:ih*{SCALE}:flags=lanczos,split[s0][s1];"
         "[s0]palettegen=stats_mode=diff[p];"
         "[s1][p]paletteuse=dither=bayer"
