@@ -133,6 +133,12 @@ class ParameterGUI:
         self._imgui = imgui
         self._context = imgui.create_context()
         imgui.style_colors_dark()
+        style = imgui.get_style()
+        colors = style.colors
+        COLOR = 0.12
+        colors[imgui.COLOR_WINDOW_BACKGROUND] = (COLOR, COLOR, COLOR, 1.0)
+        colors[imgui.COLOR_CHILD_BACKGROUND] = (COLOR, COLOR, COLOR, 1.0)
+        colors[imgui.COLOR_POPUP_BACKGROUND] = (COLOR, COLOR, COLOR, 1.0)
         imgui.set_current_context(self._context)
         _install_imgui_clipboard_callbacks(imgui)
 
