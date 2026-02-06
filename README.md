@@ -19,6 +19,7 @@ from grafix import E, G, run
 
 
 def draw(t: float):
+    # All arguments automatically appear in the parameter GUI
     geometry = G.polyhedron()
     effect = E.fill().subdivide().displace().rotate(rotation=(t * 6, t * 5, t * 4))
     return effect(geometry)
