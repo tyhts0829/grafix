@@ -73,6 +73,24 @@ class _G(Protocol):
             angle: 回転角 [deg]
         """
         ...
+    def lsystem(self, *, activate: bool = ..., kind: str = ..., iters: int = ..., center: Vec3 = ..., heading: float = ..., angle: float = ..., step: float = ..., jitter: float = ..., seed: int = ..., axiom: str = ..., rules: str = ...) -> Geometry:
+        """
+        L-system を展開し、枝分かれした線（開ポリライン列）を生成する。
+
+        引数:
+            activate: bool
+            kind: プリセット種別
+            iters: 展開回数（0 で axiom をそのまま解釈する）
+            center: 開始点の座標 (cx, cy, cz)
+            heading: 初期向き [deg]
+            angle: 回転角 [deg]（`+/-`）
+            step: 前進距離（`F/f`）
+            jitter: 角度/距離の相対ゆらぎ（0 以上）
+            seed: 乱数 seed（決定性）
+            axiom: 初期文字列（展開の出発点）
+            rules: 置換規則（行ごとに `A=...` 形式）
+        """
+        ...
     def polygon(self, *, activate: bool = ..., n_sides: int = ..., phase: float = ..., sweep: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         正多角形の閉ポリラインを生成する。
