@@ -1,4 +1,7 @@
-# Grafix Art Loop: GrafixAdapter 統合計画（2026-02-07）
+# (Cancelled) Grafix Art Loop: GrafixAdapter 統合計画（2026-02-07）
+
+取消日: 2026-02-07  
+理由: Option A により orchestrator の CLI scripts を廃止したため、本計画の前提（scripts 統合）が消滅した。
 
 対象:
 - `./.codex/skills/grafix-art-loop-orchestrator/scripts/`

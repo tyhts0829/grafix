@@ -2,3 +2,13 @@ STYLE: Minimal geometry
 PRIORITY: large whitespace, stable balance, low element count
 CHANGE_POLICY: tune composition and spacing first, then line weight
 BASELINE_RESPECT: high
+token_biases:
+- design_tokens.spacing.margin: 0.22-0.36
+- design_tokens.spacing.density: 0.15-0.35
+- design_tokens.stroke.widths: [0.6, 1.2]
+- design_tokens.vocabulary.motifs: [line, grid, polygon]
+anti_patterns:
+- margin under 0.12 with dense support elements
+- multiple hero silhouettes competing for focus
+- texture layer stronger than hero outline
+- noise amount above 0.25

@@ -1,4 +1,7 @@
-# Grafix Art Loop skill 発動モード変更計画（2026-02-07）
+# (Cancelled) Grafix Art Loop skill 発動モード変更計画（2026-02-07）
+
+取消日: 2026-02-07  
+理由: Option A により `run_loop.py` / `tools/*.py` を廃止し、agent-native に一本化したため（本計画の前提が変わった）。
 
 目的:
 - skill 発動時のデフォルトを「agent 直書きループ」に変更する。

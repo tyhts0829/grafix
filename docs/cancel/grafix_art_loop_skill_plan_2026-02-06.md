@@ -1,4 +1,7 @@
-# Grafix: Art Loop skills（N 反復 x M 並列）実装計画
+# (Cancelled) Grafix: Art Loop skills（N 反復 x M 並列）実装計画
+
+取消日: 2026-02-07  
+理由: 設計前提が `.codex/skills` + CLI scripts になっており、現行の `.agents/skills`（agent-native）運用と一致しないため。
 
 作成日: 2026-02-06
 
