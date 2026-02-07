@@ -33,6 +33,15 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 - Art Loop で `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
 - `python -m grafix ...` 形式の実行は、`/opt/anaconda3/envs/gl5/bin/python -m grafix ...` に統一する。
 
+## primitive/effect レジストリ参照順（CLI優先）
+
+- 第1優先: `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix list primitives` /
+  `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix list effects` の実行結果を使う。
+- フォールバック: 上記が実行不能な場合のみ
+  `.agents/skills/grafix-art-loop-orchestrator/references/primitives.txt` /
+  `.agents/skills/grafix-art-loop-orchestrator/references/effects.txt` を参照する。
+- `references/*.txt` はスナップショット扱いとし、CLI 成功時は常に CLI 結果を正とする。
+
 ## 出力境界（最重要）
 
 - 出力（画像・JSON・`sketch.py`・stdout/stderr・診断ファイル・中間ファイル）は **すべて**
@@ -83,6 +92,7 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 - `artist_context.json` を作る前に key を検証し、不一致があればその recipe を破棄して再割当する。
 - レジストリはこの `SKILL.md` 内記述で開始し、必要時に別ファイル化する。
 - 同一 run で未使用の組を優先し、重複が発生した場合は variant 生成前に再割当する。
+- CLI 取得に失敗した場合のみ `references/primitives.txt` / `references/effects.txt` で検証する。
 
 ## 停滞判定と ideaman 再注入（デフォルト閾値: 2 回連続）
 

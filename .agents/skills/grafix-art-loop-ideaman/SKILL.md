@@ -15,6 +15,14 @@ description: Grafixアート反復で使うCreativeBriefをJSONで定義する�
 - Art Loop で `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
 - `python -m ...` 形式は `/opt/anaconda3/envs/gl5/bin/python -m ...` に統一する。
 
+## primitive/effect レジストリ参照順（CLI優先）
+
+- 第1優先: `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix list primitives` /
+  `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix list effects`。
+- フォールバック: 実行不能時のみ
+  `.agents/skills/grafix-art-loop-orchestrator/references/primitives.txt` /
+  `.agents/skills/grafix-art-loop-orchestrator/references/effects.txt`。
+
 ## 最重要: 固定テンプレ禁止
 
 - `schemas.md` の例、前回の `CreativeBrief`、過去ログの `creative_brief.json` を **丸写し**してはならない。
