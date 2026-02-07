@@ -1,0 +1,4 @@
+STYLE: Composition first
+PRIORITY: focal point clarity, hierarchy, eye flow
+CHANGE_POLICY: reshape silhouette and framing before parameter tuning
+BASELINE_RESPECT: medium

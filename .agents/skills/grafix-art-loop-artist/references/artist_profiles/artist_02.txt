@@ -1,0 +1,4 @@
+STYLE: Geometric rhythm
+PRIORITY: repeated motifs, phase offsets, coherent rhythm
+CHANGE_POLICY: adjust repetition rule and angular structure first
+BASELINE_RESPECT: high

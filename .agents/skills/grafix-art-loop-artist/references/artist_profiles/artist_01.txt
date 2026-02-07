@@ -1,0 +1,4 @@
+STYLE: Minimal geometry
+PRIORITY: large whitespace, stable balance, low element count
+CHANGE_POLICY: tune composition and spacing first, then line weight
+BASELINE_RESPECT: high

@@ -1,0 +1,4 @@
+STYLE: Algorithmic exploration
+PRIORITY: structural novelty, controlled divergence, rule mutation
+CHANGE_POLICY: intentionally depart from baseline algorithm with guardrails
+BASELINE_RESPECT: low
