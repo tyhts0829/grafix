@@ -15,13 +15,21 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 - 出力は常に `sketch/agent_loop/runs/<run_id>/...` に保存する。
 - エージェント自身が反復ループを回す。
 - このモードでは計画 md の新規作成は不要とする。
+- `run_loop.py` / `run_one_iter.py` などの既存ランナー探索で実行経路を切り替えてはならない。
+- 依存可否の判断を目的とした横断調査（リポジトリ全体のランナー探索）をしてはならない。
+- skill 開始直後に `run_id` 作成 -> `iter_01` の variant 作成まで進める（不要な事前探索をしない）。
 - ideaman/artist/critic は **LLM が担う role**であり、固定 JSON を吐くだけの補助スクリプト（例: `tools/ideaman.py`）で代替してはならない。
 - ideaman/artist/critic を `cat > /tmp/*.py` などの一時 Python 生成で代替してはならない（role はセッション内で LLM が直接実行する）。
 - `artist` は variant ごとの作業ディレクトリ（`.../iter_XX/vY/`）に `sketch.py` を生成する。
-- レンダリングは `PYTHONPATH=src python -m grafix export` を使い、各 variant の `out.png` を生成する。
+- レンダリングは `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix export` を使い、各 variant の `out.png` を生成する。
 - 各反復で contact sheet を作成し、`critique.json`（winner を含む）を保存する。
 - `winner_feedback.json` は作らない（winner の正本は常に `critique.json`）。
 - M 並列は exploration / exploitation を分けて運用する（序盤は探索寄り → 終盤は収束寄り）。
+
+## Python 実行環境（固定）
+
+- Art Loop で `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
+- `python -m grafix ...` 形式の実行は、`/opt/anaconda3/envs/gl5/bin/python -m grafix ...` に統一する。
 
 ## 出力境界（最重要）
 
@@ -51,9 +59,9 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 
 ### exploration recipe レジストリ（初期版）
 
-- `primitive_key` 候補（`PYTHONPATH=src python -m grafix list primitives` に一致）:
+- `primitive_key` 候補（`PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix list primitives` に一致）:
   - `asemic` / `grid` / `line` / `lsystem` / `polygon` / `polyhedron` / `sphere` / `text` / `torus`
-- `effect_chain_key` 候補（各 effect 名は `python -m grafix list effects` に一致）:
+- `effect_chain_key` 候補（各 effect 名は `/opt/anaconda3/envs/gl5/bin/python -m grafix list effects` に一致）:
   - `subdivide_warp`: `subdivide -> warp`
   - `dash_wobble`: `dash -> wobble`
   - `partition_fill`: `partition -> fill`
@@ -86,7 +94,7 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 
 1. `run_id` を作成し、`sketch/agent_loop/runs/<run_id>/` を作る（必要なら `.tmp/` も同配下に作る）。
 2. 反復ごとに `iter_XX/vY/` を作成し、各 variant の `draw(t)` を実装する。
-3. 各 `sketch.py` を `python -m grafix export` でレンダリングし、stdout/stderr も `run_dir` 配下へ保存する。
+3. 各 `sketch.py` を `/opt/anaconda3/envs/gl5/bin/python -m grafix export` でレンダリングし、stdout/stderr も `run_dir` 配下へ保存する。
 4. 候補を比較し、`critique.json`（winner を含む）を保存する。
 5. winner 情報を次反復へ引き継ぐ。
 

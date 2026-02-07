@@ -10,6 +10,11 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 - `CreativeBrief` と前回 winner の情報を受けて、1 バリアントを実装する。
 - Grafix でレンダリングし、`Artifact` JSON を返す。
 
+## Python 実行環境（固定）
+
+- Art Loop で `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
+- `python -m ...` 形式は `/opt/anaconda3/envs/gl5/bin/python -m ...` に統一する。
+
 ## 最重要: 固定テンプレ禁止
 
 - 過去の `sketch.py` や `Artifact` を丸写ししてはならない（作品づくりの目的を壊す）。
@@ -26,7 +31,7 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 ## 実装規約
 
 - baseline がある場合は差分方針を先に定義してから実装する。
-- Grafix の不明点は推測で埋めない。必要なら実行確認する。
+- Grafix の不明点は推測で埋めない。必要なら `/opt/anaconda3/envs/gl5/bin/python` で実行確認する。
 - `references/artist_profiles/` の作家性プロファイルを尊重する。
 
 ## 設計ルール（`grafix_art_loop.md` に基づく）
