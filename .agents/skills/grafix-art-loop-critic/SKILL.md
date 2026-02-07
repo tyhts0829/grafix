@@ -10,6 +10,11 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
 - 候補全体を比較し、勝者を 1 つ選ぶ。
 - 次反復の改善指示を、実装可能な粒度で返す。
 
+## Python 実行環境（固定）
+
+- Art Loop で `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
+- `python -m ...` 形式は `/opt/anaconda3/envs/gl5/bin/python -m ...` に統一する。
+
 ## 最重要: 固定テンプレ禁止
 
 - 毎回同じ winner / 同じ指示を返す “定型批評” をしない。

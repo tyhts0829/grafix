@@ -10,6 +10,11 @@ description: Grafixアート反復で使うCreativeBriefをJSONで定義する�
 - 初回反復の `CreativeBrief` を作る。
 - 停滞時の再注入で、同一意図の別探索軸を提案する。
 
+## Python 実行環境（固定）
+
+- Art Loop で `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
+- `python -m ...` 形式は `/opt/anaconda3/envs/gl5/bin/python -m ...` に統一する。
+
 ## 最重要: 固定テンプレ禁止
 
 - `schemas.md` の例、前回の `CreativeBrief`、過去ログの `creative_brief.json` を **丸写し**してはならない。
