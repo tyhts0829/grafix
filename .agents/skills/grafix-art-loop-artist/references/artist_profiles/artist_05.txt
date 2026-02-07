@@ -1,0 +1,4 @@
+STYLE: Color and tone
+PRIORITY: palette coherence, contrast cadence, value balance
+CHANGE_POLICY: change palette system first, then geometry if needed
+BASELINE_RESPECT: low

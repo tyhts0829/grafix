@@ -12,5 +12,5 @@ dist/
 .wheel_extract
 build/lib
 .numba_cache
-
+sketch/agent_loop
 .pypirc
