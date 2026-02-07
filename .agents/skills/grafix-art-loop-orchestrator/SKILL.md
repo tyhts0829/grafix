@@ -1,6 +1,6 @@
 ---
 name: grafix-art-loop-orchestrator
-description: Grafixアート反復（N回・M並列）を、エージェント直書きで自動実行し、成果物をsketch/agent_loop配下へ保存する。
+description: Grafixアート反復（N回・M並列）を、エージェント直書きで自動実行し、成果物をsketch/agent_loop配下へ保存する。このモードでは計画 md の新規作成は不要とする。
 ---
 
 # Grafix Art Loop Orchestrator
@@ -14,10 +14,12 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 
 - 出力は常に `sketch/agent_loop/runs/<run_id>/...` に保存する。
 - エージェント自身が反復ループを回す。
-- このモードでは計画 md の新規作成は不要とする。
 - `run_loop.py` / `run_one_iter.py` などの既存ランナー探索で実行経路を切り替えてはならない。
 - 依存可否の判断を目的とした横断調査（リポジトリ全体のランナー探索）をしてはならない。
 - skill 開始直後に `run_id` 作成 -> `iter_01` の variant 作成まで進める（不要な事前探索をしない）。
+- 当該 `run_id` 以外の `sketch/agent_loop/runs/*` の中身を参照してはならない（過去 run の画像・JSON・`sketch.py`・ログの参照禁止）。
+- `shared.py` などの共通実装を run 配下に置き、同一コードを import してパラメータだけ変える量産を禁止する。
+- 各 variant は `variant_dir/sketch.py` に独立実装を書く（各ファイルでアプローチを分ける）。
 - ideaman/artist/critic は **LLM が担う role**であり、固定 JSON を吐くだけの補助スクリプト（例: `tools/ideaman.py`）で代替してはならない。
 - ideaman/artist/critic を `cat > /tmp/*.py` などの一時 Python 生成で代替してはならない（role はセッション内で LLM が直接実行する）。
 - `artist` は variant ごとの作業ディレクトリ（`.../iter_XX/vY/`）に `sketch.py` を生成する。
@@ -47,6 +49,9 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 - winner は次 iteration の exploitation にだけ引き継ぐ（exploration は baseline/feedback を原則渡さない）。
 - exploitation に渡す `critic_feedback_prev.next_iteration_directives[].token_keys` は
   `design_tokens.` から始まる leaf パスのみを使う。
+- `mode` に関係なく、全 variant で `primitive_key` と `effect_chain_key` の組を必ず割り当てる。
+- 同一 run 内で、同一の `primitive_key + effect_chain_key` の組み合わせ再利用を禁止する（iteration 横断）。
+- 収束（exploitation）でも「同一コード + 定数調整のみ」は禁止し、primitive/effect の組を変えた別実装にする。
 
 ## exploration の多様性（primitive/effect をユニーク化）
 
@@ -56,6 +61,8 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 - `primitive_key` / `effect_chain_key` は下記レジストリに存在する値だけを使う（未知キー禁止）。
 - exploration では原則 `baseline_artifact` / `critic_feedback_prev` を渡さない（ロックで即収束しないため）。
 - artist は recipe を厳守し、`Artifact.params.design_tokens_used` に `recipe_id` / `primitive_key` / `effect_chain_key` を必ず記録する。
+- exploration に限らず全 variant で `Artifact.params.design_tokens_used` へ
+  `primitive_key` / `effect_chain_key` を記録し、再利用監査を可能にする。
 
 ### exploration recipe レジストリ（初期版）
 
@@ -72,8 +79,10 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
   - `clip_lowpass`: `clip -> lowpass`
 
 運用:
+
 - `artist_context.json` を作る前に key を検証し、不一致があればその recipe を破棄して再割当する。
 - レジストリはこの `SKILL.md` 内記述で開始し、必要時に別ファイル化する。
+- 同一 run で未使用の組を優先し、重複が発生した場合は variant 生成前に再割当する。
 
 ## 停滞判定と ideaman 再注入（デフォルト閾値: 2 回連続）
 

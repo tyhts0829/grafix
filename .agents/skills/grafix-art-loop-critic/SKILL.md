@@ -20,6 +20,7 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
 - 毎回同じ winner / 同じ指示を返す “定型批評” をしない。
 - 実際の候補（画像・Artifact）を見て、差分が実装に落ちる指示だけを返す。
 - 一時 Python などで固定 Critique を生成する代替手段を使わない（critic は LLM role として比較判断する）。
+- 当該 iteration の候補以外、特に過去 run の `sketch/agent_loop/runs/*` の中身を参照してはならない。
 
 ## 必須出力
 
@@ -35,11 +36,14 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
 3. 密度と余白
 4. 色や形状語彙の一貫性
 5. 偶然性の制御と破綻回避
+6. アプローチ多様性（`primitive_key + effect_chain_key` の重複回避）
 
 ## 制約
 
 - 全候補を見たうえで判断する。
 - 各候補の理由は短く、勝者理由と次アクションは厚く書く。
+- 単一実装のパラメータ差分だけに見える候補群は減点対象にする。
+- 同一 iteration 内で `primitive_key + effect_chain_key` が重複する候補は高評価にしない。
 
 ## 指示の粒度（最重要）
 
@@ -66,3 +70,6 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
 - 多様性が不足している場合は、次の `next_iteration_directives` で
   - 「exploration では recipe を変える（primitive/effect の切替）」
   を具体的に要求する。
+- 多様性不足が見られた場合は、`next_iteration_directives` に
+  「次 iteration で未使用の `primitive_key + effect_chain_key` を割り当てる」
+  を優先度 1 で含める。

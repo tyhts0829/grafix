@@ -20,6 +20,8 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 - 過去の `sketch.py` や `Artifact` を丸写ししてはならない（作品づくりの目的を壊す）。
 - `CreativeBrief.design_tokens` / `artist_context.json`（`mode` / `exploration_recipe`）に基づいて **必ず差分を作る**。
 - 一時 Python などで固定 Artifact を生成する代替手段を使わない（artist は LLM role として実装と評価を行う）。
+- 単一テンプレート（共通 `shared.py` や同一 `sketch.py`）を使い、定数だけ変えて variant を量産してはならない。
+- 当該 `run_id` 以外の `sketch/agent_loop/runs/*` の中身（過去 run の `sketch.py` / `Artifact` / 画像 / `critique.json`）を参照してはならない。
 
 ## 必須ルール
 
@@ -27,6 +29,8 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 - 返却は必ず `Artifact` JSON 形式にする（成功/失敗の両方）。
 - `artist_summary` に「何を変えたか」を短く明記する。
 - 出力境界の詳細は `grafix-art-loop-orchestrator` に従い、`/tmp` を含む `sketch/agent_loop` 外へ書き出さない。
+- 各 variant は `variant_dir/sketch.py` に独立したアプローチ実装を持つこと（import 前提の共通実装量産を禁止）。
+- 各 iteration の各 variant は `primitive_key + effect_chain_key` の組を必ず変える。
 
 ## 実装規約
 
@@ -46,6 +50,7 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
   - `next_iteration_directives[].token_keys` は `design_tokens.` から始まる leaf パスとして扱う
   - 変更は最大 3 leaf token に絞る（`next_iteration_directives` に追従）
 - `Artifact.params.design_tokens_used` に、最終的に採用したトークン（値）を必ず入れる。
+- `Artifact.params.design_tokens_used` には `primitive_key` / `effect_chain_key` も必ず入れる。
 
 ## `mode`（exploration / exploitation）
 
@@ -53,6 +58,7 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 
 - `exploitation`: ロックを増やし、余白/密度/リズムなどの微調整中心（壊さない）
 - `exploration`: 構図テンプレや語彙の変更を許可（ただし破綻しないガードレールを置く）
+- どちらの mode でも「同一コード + パラメータ微調整のみ」は禁止し、primitive/effect の組を変えた実装を書く。
 
 ## `exploration_recipe`（探索スロット）
 
@@ -62,6 +68,11 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 - `Artifact.params.design_tokens_used` に `recipe_id` / `primitive_key` / `effect_chain_key` を **必ず**入れる。
 - recipe を守ったうえで、破綻回避の guardrails（余白/clip/過密回避）を置く。
 - `primitive_key` / `effect_chain_key` が未知値なら推測で埋めず、`status="failed"` で返す。
+
+`mode="exploitation"` の場合:
+
+- `exploration_recipe` は省略不可とし、`primitive_key` / `effect_chain_key` を必ず変えて実装する。
+- 前 iteration と同一の `primitive_key + effect_chain_key` の組を再利用してはならない。
 
 `mode="exploration"` なのに `exploration_recipe` が無い場合:
 
