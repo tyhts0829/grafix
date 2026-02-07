@@ -1,4 +1,7 @@
-# Grafix Art Loop: `tools/ideaman.py` / `tools/artist.py` / `tools/critic.py` 実装計画
+# (Cancelled) Grafix Art Loop: `tools/ideaman.py` / `tools/artist.py` / `tools/critic.py` 実装計画
+
+取消日: 2026-02-07  
+理由: Option A により CLI / `tools/*.py` を廃止したため、本計画は不要になった。
 
 作成日: 2026-02-07
 
