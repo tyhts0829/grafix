@@ -21,6 +21,7 @@
 - orchestrator が各 variant に `mode: exploration|exploitation` を付与して渡し、序盤は探索寄り・中盤以降は収束寄りに寄せられる。
 
 （任意）:
+
 - critic の判断ブレを下げるため、単一 critic 内で「構図/色/技術品質/独創性」のサブ評価→統合、もしくは複数 critic の統合ができる。
 - “破綻”を弾く軽量フィルタ（PIL だけで可能な範囲）を入れ、批評対象から雑さを先に落とせる。
 
@@ -71,7 +72,7 @@
   - 構図テンプレ（composition_template）
   - design tokens（固定/レンジ/候補）
   - layers（主役/副要素/テクスチャの役割）
-  を要求する
+    を要求する
 - [ ] `variation_axes` は「token をどう動かすと画がどう変わるか」に直接対応する文で書かせる（token 名を含める）
 - [ ] “完全自由”を避け、パレット/線/間隔/ノイズ粒度は **少数候補**から選ばせる（探索がノイズ化しない）
 
@@ -83,7 +84,7 @@
   - `Artifact.params.design_tokens_used` を必ず埋める
   - baseline + critic 指示がある場合は **ロックされた token を絶対に変えない**
   - 変更は最大 3 トークンに絞る（critic 指示に追従）
-  を明記する
+    を明記する
 - [ ] `mode: exploration|exploitation` を context で受け取った場合の方針を固定する
   - exploration: 構図テンプレ/語彙の変更を許可（ただし guardrails を置く）
   - exploitation: ロックを増やし、余白/密度/リズムなど微調整中心
@@ -95,7 +96,7 @@
   - 変更は最大 3 件
   - `locked_tokens` / `mutable_tokens` を必ず返す
   - directive は token 指定 + 理由 + 成功条件（success_criteria）で書く
-  を必須化する
+    を必須化する
 - [ ] （任意）単一 critic 内でサブ評価（構図/色/技術品質/独創性）を出してから統合し、ブレを下げる（実装は JSON を増やさない範囲で）
 
 ### 5) orchestrator 改善：探索と収束の “運用” を組み込む
@@ -120,3 +121,14 @@
 - exploration/exploitation の既定スケジュール（iteration 何回まで探索寄りにするか）
 - 破綻フィルタ/レンダ品質/選好学習は今回どこまで入れる？（全部後回しでも OK）
 
+以下の方針で
+• - design tokens（最小キーセット推奨）- 必須: composition_template / vocabulary / palette / stroke / spacing / noise / grid_unit - 併せて必須（tokensとは別フィールド扱い推奨）: layers（hero/support/texture の3階層）
+
+- exploration/exploitation（既定スケジュール推奨）
+  - explore_ratio を 0.7 → 0.2 に線形減衰（N に追従）
+  - 各 iteration の M 本を ceil(M\*explore_ratio) 本だけ exploration、残り exploitation（exploitation は最低1本）
+  - exploration は composition_template/vocabulary の変更OK、exploitation は locked_tokens 固定で spacing/noise/stroke の微調整中心
+- 今回どこまで入れる？（推奨スコープ）
+  - 今回やる: tokens+layers の明文化、criticの locked_tokens/mutable_tokens + 「最大3件の差分directive（token指定+success_criteria）」、orchestratorの mode 付与
+  - 今回は見送る: 選好学習（依存/データ方針が必要なので Ask-first）
+  - 保留（段階導入）: 破綻フィルタはまず「計測してJSONに残す」まで、レンダ品質は tokens が固まってから（必要なら render_scale 等を追加してSSAA）
