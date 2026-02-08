@@ -23,6 +23,11 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
   `.agents/skills/grafix-art-loop-orchestrator/references/primitives.txt` /
   `.agents/skills/grafix-art-loop-orchestrator/references/effects.txt`。
 
+## custom primitive/effect 評価規約
+
+- 各候補は `@primitive` / `@effect` の自前実装を使っている前提で評価する。
+- 自前 primitive/effect が未実装、または未使用の候補は減点対象にする。
+
 ## 最重要: 固定テンプレ禁止
 
 - 毎回同じ winner / 同じ指示を返す “定型批評” をしない。
@@ -45,6 +50,7 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
 4. 色や形状語彙の一貫性
 5. 偶然性の制御と破綻回避
 6. アプローチ多様性（`primitive_key + effect_chain_key` の重複回避）
+7. custom primitive/effect の有効性（`@primitive` / `@effect` 実装の画作り寄与）
 
 ## 制約
 
@@ -52,6 +58,7 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
 - 各候補の理由は短く、勝者理由と次アクションは厚く書く。
 - 単一実装のパラメータ差分だけに見える候補群は減点対象にする。
 - 同一 iteration 内で `primitive_key + effect_chain_key` が重複する候補は高評価にしない。
+- `custom_primitive_name` / `custom_effect_name` の重複が多い候補群は高評価にしない。
 
 ## 指示の粒度（最重要）
 
@@ -81,3 +88,5 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
 - 多様性不足が見られた場合は、`next_iteration_directives` に
   「次 iteration で未使用の `primitive_key + effect_chain_key` を割り当てる」
   を優先度 1 で含める。
+- custom 実装不足が見られた場合は、`next_iteration_directives` に
+  「`@primitive` / `@effect` の自前実装を追加し、実描画で使用する」を含める。

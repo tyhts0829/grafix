@@ -23,6 +23,12 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
   `.agents/skills/grafix-art-loop-orchestrator/references/primitives.txt` /
   `.agents/skills/grafix-art-loop-orchestrator/references/effects.txt`。
 
+## custom primitive/effect 実装規約
+
+- 各 variant の `sketch.py` で `@primitive` を使った自前 primitive を最低 1 つ定義する。
+- 各 variant の `sketch.py` で `@effect` を使った自前 effect を最低 1 つ定義する。
+- 定義した自前 primitive/effect は実際の描画パスに必ず使用する（未使用定義を禁止）。
+
 ## 最重要: 固定テンプレ禁止
 
 - 過去の `sketch.py` や `Artifact` を丸写ししてはならない（作品づくりの目的を壊す）。
@@ -39,6 +45,7 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 - 出力境界の詳細は `grafix-art-loop-orchestrator` に従い、`/tmp` を含む `sketch/agent_loop` 外へ書き出さない。
 - 各 variant は `variant_dir/sketch.py` に独立したアプローチ実装を持つこと（import 前提の共通実装量産を禁止）。
 - 各 iteration の各 variant は `primitive_key + effect_chain_key` の組を必ず変える。
+- 各 iteration の各 variant は `custom_primitive_name` / `custom_effect_name` も重複させない。
 
 ## 実装規約
 
@@ -59,6 +66,7 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
   - 変更は最大 3 leaf token に絞る（`next_iteration_directives` に追従）
 - `Artifact.params.design_tokens_used` に、最終的に採用したトークン（値）を必ず入れる。
 - `Artifact.params.design_tokens_used` には `primitive_key` / `effect_chain_key` も必ず入れる。
+- `Artifact.params.design_tokens_used` には `custom_primitive_name` / `custom_effect_name` も必ず入れる。
 
 ## `mode`（exploration / exploitation）
 
@@ -81,6 +89,7 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 
 - `exploration_recipe` は省略不可とし、`primitive_key` / `effect_chain_key` を必ず変えて実装する。
 - 前 iteration と同一の `primitive_key + effect_chain_key` の組を再利用してはならない。
+- 前 iteration と同一の `custom_primitive_name` / `custom_effect_name` の再利用を避ける。
 
 `mode="exploration"` なのに `exploration_recipe` が無い場合:
 

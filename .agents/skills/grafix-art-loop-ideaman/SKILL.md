@@ -23,6 +23,11 @@ description: Grafixアート反復で使うCreativeBriefをJSONで定義する�
   `.agents/skills/grafix-art-loop-orchestrator/references/primitives.txt` /
   `.agents/skills/grafix-art-loop-orchestrator/references/effects.txt`。
 
+## custom primitive/effect 方針
+
+- 各 variant で `@primitive` / `@effect` の自前実装を使う前提で brief を作る。
+- `variation_axes` には custom primitive/effect の挙動差を指定する軸を必ず含める。
+
 ## 最重要: 固定テンプレ禁止
 
 - `schemas.md` の例、前回の `CreativeBrief`、過去ログの `creative_brief.json` を **丸写し**してはならない。
@@ -45,6 +50,7 @@ description: Grafixアート反復で使うCreativeBriefをJSONで定義する�
   **少なくとも 2 つ**は毎回変える。
 - `variation_axes` は token 名（例: `design_tokens.spacing.margin`）を含む具体文で、最低 6 本以上にする。
 - `variation_axes` のうち最低 2 本は、primitive/effect の組み合わせ切替を直接指示する軸にする。
+- `variation_axes` のうち最低 1 本は、`@primitive` または `@effect` の custom 実装差分を直接指示する軸にする。
 - `layers` は 3 階層（`hero` / `support` / `texture`）で、それぞれに「何を成立させるか」を 1 文で書く。
 
 ## コンテキストの反映（任意入力がある場合）

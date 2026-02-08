@@ -83,7 +83,10 @@
   "image_ref": "<path>",
   "seed": "<int>",
   "params": {
-    "design_tokens_used": {}
+    "design_tokens_used": {
+      "custom_primitive_name": "<string>",
+      "custom_effect_name": "<string>"
+    }
   },
   "stdout_ref": "<path>",
   "stderr_ref": "<path>",
@@ -98,6 +101,7 @@
 - `mode` は `exploration` / `exploitation`。未指定でもよいが、あると差分方針が安定する。
 - `params.design_tokens_used` には実際に採用したトークン（最終値）を入れる。
   - exploration のときは `recipe_id` / `primitive_key` / `effect_chain_key` を必ず入れる。
+  - 全 mode で `custom_primitive_name` / `custom_effect_name` を必ず入れる。
 
 ## `Critique`（critic の出力）
 
@@ -136,3 +140,8 @@
   - 非許可: `spacing` / `vocabulary.motifs` / `design_tokens.spacing`
 - `next_iteration_directives` は最大 3 件程度に絞る。
 - winner の正本は `critique.json` の `winner` とし、`winner_feedback.json` は作らない。
+
+## 追加出力（orchestrator）
+
+- 各 iteration で `iter_XX/contact_sheet.png`（全 variant タイル）を保存する。
+- 最終 iteration 後に `run_summary/final_contact_sheet_8k.png`（各 iteration contact sheet を並べた高解像度タイル）を保存する。
