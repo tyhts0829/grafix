@@ -10,6 +10,12 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
 - 候補全体を比較し、勝者を 1 つ選ぶ。
 - 次反復の改善指示を、実装可能な粒度で返す。
 
+## 調査コスト削減（参照優先順）
+
+- まず `.agents/skills/grafix-art-loop-orchestrator/references/project_quick_map.md` を参照する。
+- 次に `.agents/skills/grafix-art-loop-orchestrator/references/grafix_usage_playbook.md` を参照する。
+- 上記で足りる情報は再調査しない。足りない情報だけ追加探索する。
+
 ## Python 実行環境（固定）
 
 - Art Loop で `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
@@ -40,7 +46,20 @@ description: M候補の画像を比較して1つ選抜し、次反復の改善�
 - `Critique` JSON を返す（`ranking` と `winner` を必須）。
 - `winner.locked_tokens` / `winner.mutable_tokens` で「保持/変更」を必ず明示する。
 - `winner.next_iteration_directives` は優先度付きで返す（最大 3 件）。
+- `skill_findings` は任意で返せる（推奨 0〜3 件、最大 5 件）。
 - 出力境界の詳細は `grafix-art-loop-orchestrator` に従い、`critique.json` / 補助ログは `iter_dir` 配下に保存する。
+
+## skill 改善観測（作品改善と分離）
+
+- `next_iteration_directives` は **artifact 改善**専用にする。
+- `skill_findings` は **skill 運用改善**専用にする（混ぜない）。
+- `skill_findings` の各項目は次を必須にする。
+  - `problem`: 現 run で観測した運用課題
+  - `evidence`: `Artifact` / `critique` / stdout/stderr など run 内根拠
+  - `proposed_change`: 具体的な変更案
+  - `target_files`: 変更対象（`SKILL.md` / `references/*.md`）
+- 根拠が書けない一般論（例: 「もっと情報が欲しい」）は出さない。
+- `skill_findings` は run 末尾の `SkillImprovementReport.improvements` の候補として使う。
 
 ## 評価軸（順序固定）
 

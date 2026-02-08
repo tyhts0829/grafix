@@ -10,6 +10,12 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 - `CreativeBrief` と前回 winner の情報を受けて、1 バリアントを実装する。
 - Grafix でレンダリングし、`Artifact` JSON を返す。
 
+## 調査コスト削減（参照優先順）
+
+- まず `.agents/skills/grafix-art-loop-orchestrator/references/project_quick_map.md` を参照する。
+- 次に `.agents/skills/grafix-art-loop-orchestrator/references/grafix_usage_playbook.md` を参照する。
+- 上記で足りる情報は再調査しない。足りない情報だけ追加探索する。
+
 ## Python 実行環境（固定）
 
 - Art Loop で `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
@@ -41,7 +47,10 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 
 - 出力先は `variant_dir` 配下のみを使う。
 - 返却は必ず `Artifact` JSON 形式にする（成功/失敗の両方）。
-- `artist_summary` に「何を変えたか」を短く明記する。
+- `artist_summary` に次を短く明記する。
+  - 何を変えたか
+  - 不明点に対して置いた仮定
+  - 破綻回避のための guardrail（clip / margin / density 制限など）
 - 出力境界の詳細は `grafix-art-loop-orchestrator` に従い、`/tmp` を含む `sketch/agent_loop` 外へ書き出さない。
 - 各 variant は `variant_dir/sketch.py` に独立したアプローチ実装を持つこと（import 前提の共通実装量産を禁止）。
 - 各 iteration の各 variant は `primitive_key + effect_chain_key` の組を必ず変える。
@@ -67,6 +76,8 @@ description: CreativeBrief・baseline・critic指示を受けて、実装とレ�
 - `Artifact.params.design_tokens_used` に、最終的に採用したトークン（値）を必ず入れる。
 - `Artifact.params.design_tokens_used` には `primitive_key` / `effect_chain_key` も必ず入れる。
 - `Artifact.params.design_tokens_used` には `custom_primitive_name` / `custom_effect_name` も必ず入れる。
+- critic が根拠を追えるよう、`artist_summary` / `stdout_ref` / `stderr_ref` の3点で
+  実装意図と失敗要因を追跡可能にする。
 
 ## `mode`（exploration / exploitation）
 

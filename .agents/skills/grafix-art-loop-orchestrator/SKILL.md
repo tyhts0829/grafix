@@ -7,14 +7,23 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 
 ## 目的
 
-- アイデア生成 → M並列の実装/レンダリング → 批評/選抜 を N 反復で回す。
+- アイデア生成 → サブエージェントM並列の実装/レンダリング → 批評/選抜 を N 反復で回す。
 - 生成物とログを `sketch/agent_loop` 配下に保存し、追跡可能にする。
+
+## 先に読む参照資料（調査コスト削減）
+
+- 反復開始前に、まず次を読む。
+  - `.agents/skills/grafix-art-loop-orchestrator/references/project_quick_map.md`
+  - `.agents/skills/grafix-art-loop-orchestrator/references/grafix_usage_playbook.md`
+- 上記で足りる情報について、リポジトリ全体の横断探索をしない。
+- 追加探索は「不足している具体情報」に限定し、run 末尾の
+  `skill_improvement_report.json.discovery_cost` に再発防止策を残す。
 
 ## デフォルトモード（skill発動時）
 
 - 出力は常に `sketch/agent_loop/runs/<run_id>/...` に保存する。
 - エージェント自身が反復ループを回す。
-- `run_loop.py` / `run_one_iter.py` などの既存ランナー探索で実行経路を切り替えてはならない。
+- `run_loop.py` / `run_one_iter.py` などのランナー探索で実行経路を切り替えてはならない。
 - 依存可否の判断を目的とした横断調査（リポジトリ全体のランナー探索）をしてはならない。
 - skill 開始直後に `run_id` 作成 -> `iter_01` の variant 作成まで進める（不要な事前探索をしない）。
 - 当該 `run_id` 以外の `sketch/agent_loop/runs/*` の中身を参照してはならない（過去 run の画像・JSON・`sketch.py`・ログの参照禁止）。
@@ -27,6 +36,7 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 - `artist` は variant ごとの作業ディレクトリ（`.../iter_XX/vY/`）に `sketch.py` を生成する。
 - レンダリングは `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix export` を使い、各 variant の `out.png` を生成する。
 - 各反復で contact sheet を作成し、`critique.json`（winner を含む）を保存する。
+- run 終了時に `run_summary/skill_improvement_report.json` を必ず保存する。
 - `winner_feedback.json` は作らない（winner の正本は常に `critique.json`）。
 - M 並列は exploration / exploitation を分けて運用する（序盤は探索寄り → 終盤は収束寄り）。
 
@@ -129,6 +139,21 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 6. winner 情報を次反復へ引き継ぐ。
 7. 最終 iteration 完了後、各 `iter_XX/contact_sheet.png` をさらにタイル状に並べた
    高解像度画像 `run_summary/final_contact_sheet_8k.png`（長辺 7680px 以上）を保存する。
+8. 最終 iteration 完了後、`run_summary/skill_improvement_report.json` を生成する。
+   - `SkillImprovementReport` の型は `references/schemas.md` に従う。
+   - 各 `iter_XX/critique.json` の `skill_findings` があれば集約し、重複を除いて要約する。
+   - `improvements` は推奨 3 件、最大 5 件。各項目に `evidence` を必須で入れる。
+   - `improvements` は「作品の出来」ではなく「skills 改善」に限定する。
+   - 改善提案が無い場合は、`problem="no_actionable_issue"` を 1 件入れ、理由を残す。
+   - `target_files` には具体的な `SKILL.md` / `references/*.md` を必ず指定する。
+
+## run 末尾の Skill 改善レポート
+
+- `skill_improvement_report.json` は run ごとに必須。
+- `improvements` には、実際の run 内 evidence に紐づく改善提案だけを書く。
+- `discovery_cost` には、今回追加で調べた項目と「次回はどの references に前置きすべきか」を書く。
+- `redundant_info` には、次回入力から削除/要約できる情報のみを書く。
+- `decisions_to_persist` には、次 run で固定適用する決定だけを最小表現で残す。
 
 ## 実行後チェック（再発防止）
 
@@ -136,4 +161,6 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 - 特に `/tmp` やリポジトリ直下への一時スクリプト生成が無いことを確認する。
 - 各 `iter_XX/contact_sheet.png` が存在することを確認する。
 - `run_summary/final_contact_sheet_8k.png` が存在し、長辺が 7680px 以上であることを確認する。
+- `run_summary/skill_improvement_report.json` が存在し、`improvements` の各項目に
+  `evidence` と `target_files` が入っていることを確認する。
 - 代表プロンプト（例: `N=3`, `M=12`, `canvas=1024x1024`, `explore_schedule=0.7->0.2`）で同じ境界制約が維持されることを確認する。

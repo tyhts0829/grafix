@@ -127,7 +127,16 @@
         "rationale": "<string>"
       }
     ]
-  }
+  },
+  "skill_findings": [
+    {
+      "priority": "<int>",
+      "problem": "<string>",
+      "evidence": "<string>",
+      "proposed_change": "<string>",
+      "target_files": ["<path>"]
+    }
+  ]
 }
 ```
 
@@ -140,6 +149,61 @@
   - 非許可: `spacing` / `vocabulary.motifs` / `design_tokens.spacing`
 - `next_iteration_directives` は最大 3 件程度に絞る。
 - winner の正本は `critique.json` の `winner` とし、`winner_feedback.json` は作らない。
+- `skill_findings` は任意。作品改善（`next_iteration_directives`）とは分離し、
+  skill 運用改善に限定する。
+- `skill_findings` を出す場合は推奨 3 件、最大 5 件に絞る。
+- `skill_findings[].evidence` は run 内生成物（`Artifact` / `critique` / ログ）への参照を必須にする。
+
+## `SkillImprovementReport`（run 末尾の改善レポート）
+
+```json
+{
+  "run_id": "<string>",
+  "generated_at": "<ISO8601>",
+  "improvements": [
+    {
+      "priority": "<int>",
+      "skill": "<orchestrator|critic|ideaman|artist>",
+      "problem": "<string>",
+      "evidence": "<string>",
+      "proposed_change": "<string>",
+      "target_files": ["<path>"],
+      "expected_impact": "<string>"
+    }
+  ],
+  "discovery_cost": [
+    {
+      "lookup": "<string>",
+      "why_needed": "<string>",
+      "how_to_preload": "<string>"
+    }
+  ],
+  "redundant_info": [
+    {
+      "item": "<string>",
+      "reason": "<string>",
+      "suggested_rewrite": "<string>"
+    }
+  ],
+  "decisions_to_persist": [
+    {
+      "decision": "<string>",
+      "value": "<string|number|bool|object|array>",
+      "where_to_store": "<constraints|design_tokens.*|variation_axes|references/*.md>"
+    }
+  ]
+}
+```
+
+備考:
+- 保存先は `run_summary/skill_improvement_report.json` に固定する。
+- `improvements` は最低 1 件を推奨する。根拠付きで改善提案が出せない場合は、
+  `problem` に「no_actionable_issue」と明記し、その理由を `evidence` に残す。
+- `improvements` は推奨 3 件、最大 5 件に制限する。
+- `discovery_cost` は「毎回調査している項目」を減らすための欄。
+  `how_to_preload` には、次回どの `references/*.md` へ追記するかを明記する。
+- `redundant_info` は次回入力から削除/要約すべき情報のみを挙げる。
+- `decisions_to_persist` は次回 run で固定適用する値を最小表現で残す。
 
 ## 追加出力（orchestrator）
 

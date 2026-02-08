@@ -10,6 +10,12 @@ description: Grafixアート反復で使うCreativeBriefをJSONで定義する�
 - 初回反復の `CreativeBrief` を作る。
 - 停滞時の再注入で、同一意図の別探索軸を提案する。
 
+## 調査コスト削減（参照優先順）
+
+- まず `.agents/skills/grafix-art-loop-orchestrator/references/project_quick_map.md` を参照する。
+- 次に `.agents/skills/grafix-art-loop-orchestrator/references/grafix_usage_playbook.md` を参照する。
+- 上記で足りる情報は再調査しない。足りない情報だけ追加探索する。
+
 ## Python 実行環境（固定）
 
 - Art Loop で `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
@@ -60,6 +66,10 @@ description: Grafixアート反復で使うCreativeBriefをJSONで定義する�
 - 前回 winner の `locked_tokens` / `next_iteration_directives` が与えられている場合は、それを “同一意図の別探索軸” に落とす（変えるのは最大 2〜3 レバー）。
 - 過去 iteration の `primitive_key` / `effect_chain_key` の履歴が与えられている場合は、
   未使用の組み合わせを優先する軸を明示する。
+- `skill_improvement_report.decisions_to_persist` が与えられている場合は、
+  `constraints` / `composition_template` / `design_tokens` の該当箇所へ優先反映する。
+  - 反映する変更は 2〜3 レバーまでに制限する。
+  - 矛盾がある場合は `constraints` を優先し、矛盾点を brief 内で明記する。
 
 ## 制約
 

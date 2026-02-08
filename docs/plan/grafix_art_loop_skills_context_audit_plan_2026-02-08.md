@@ -1,7 +1,7 @@
 # Grafix Art Loop: skills 改善計画（Run末尾の改善提案 + 調査コスト削減）
 
 作成日: 2026-02-08
-ステータス: 提案（未実装）
+ステータス: 実装完了（受け入れテスト未実施）
 
 ## 目的（今回の主眼）
 
@@ -42,45 +42,45 @@
 
 ### 1) スキーマ拡張（最優先）
 
-- [ ] `.agents/skills/grafix-art-loop-orchestrator/references/schemas.md` に `SkillImprovementReport` を追加する。
-- [ ] `SkillImprovementReport` の最小構造を定義する。
+- [x] `.agents/skills/grafix-art-loop-orchestrator/references/schemas.md` に `SkillImprovementReport` を追加する。
+- [x] `SkillImprovementReport` の最小構造を定義する。
   - `improvements[]`: `priority` / `skill` / `problem` / `evidence` / `proposed_change` / `target_files` / `expected_impact`
   - `discovery_cost[]`: `lookup` / `why_needed` / `how_to_preload`
   - `redundant_info[]`: `item` / `reason` / `suggested_rewrite`
   - `decisions_to_persist[]`: `decision` / `value` / `where_to_store`
-- [ ] `improvements[]` は推奨 3 件、最大 5 件に制限する。
-- [ ] `evidence` は run 内生成物（`Artifact` / `critique` / ログ）への参照必須にする。
+- [x] `improvements[]` は推奨 3 件、最大 5 件に制限する。
+- [x] `evidence` は run 内生成物（`Artifact` / `critique` / ログ）への参照必須にする。
 
 ### 2) run末尾レポートの必須化（orchestrator）
 
-- [ ] `.agents/skills/grafix-art-loop-orchestrator/SKILL.md` に、最終ステップとして `skill_improvement_report.json` 生成を追加する。
-- [ ] 保存先を `sketch/agent_loop/runs/<run_id>/run_summary/skill_improvement_report.json` に固定する。
-- [ ] 「作品批評」ではなく「skills改善提案」を最低 1 件は出す規約を追加する（該当なしなら理由を明記）。
-- [ ] 改善提案は必ず具体的な変更先ファイル（`SKILL.md`/`references/*.md`）を指す規約にする。
+- [x] `.agents/skills/grafix-art-loop-orchestrator/SKILL.md` に、最終ステップとして `skill_improvement_report.json` 生成を追加する。
+- [x] 保存先を `sketch/agent_loop/runs/<run_id>/run_summary/skill_improvement_report.json` に固定する。
+- [x] 「作品批評」ではなく「skills改善提案」を最低 1 件は出す規約を追加する（該当なしなら理由を明記）。
+- [x] 改善提案は必ず具体的な変更先ファイル（`SKILL.md`/`references/*.md`）を指す規約にする。
 
 ### 3) critic側の棚卸し強化（改善点抽出の中核）
 
-- [ ] `.agents/skills/grafix-art-loop-critic/SKILL.md` に、批評結果とは別に「skill運用上の不足/冗長」を抽出する規約を追加する。
-- [ ] `missing` 系項目に `evidence` 必須を明記し、「一般論の要求」を禁止する。
-- [ ] `next_iteration_directives` と混同しないよう、`artifact改善` と `skill改善` を明確に分離する。
+- [x] `.agents/skills/grafix-art-loop-critic/SKILL.md` に、批評結果とは別に「skill運用上の不足/冗長」を抽出する規約を追加する。
+- [x] `missing` 系項目に `evidence` 必須を明記し、「一般論の要求」を禁止する。
+- [x] `next_iteration_directives` と混同しないよう、`artifact改善` と `skill改善` を明確に分離する。
 
 ### 4) 調査コスト削減の知識パック作成（references）
 
-- [ ] `project_quick_map.md` を新規作成し、最小限のプロジェクト地図（主要ディレクトリ、触るべきファイル順）を記述する。
-- [ ] `grafix_usage_playbook.md` を新規作成し、Grafix 主要コマンド（list/export）と典型エラー対処の最小手順を記述する。
-- [ ] 2ファイルは「先に読む前提」にし、毎回の横断探索を減らす設計にする。
+- [x] `project_quick_map.md` を新規作成し、最小限のプロジェクト地図（主要ディレクトリ、触るべきファイル順）を記述する。
+- [x] `grafix_usage_playbook.md` を新規作成し、Grafix 主要コマンド（list/export）と典型エラー対処の最小手順を記述する。
+- [x] 2ファイルは「先に読む前提」にし、毎回の横断探索を減らす設計にする。
 
 ### 5) ideaman / artist の接続更新
 
-- [ ] `.agents/skills/grafix-art-loop-ideaman/SKILL.md` に、`decisions_to_persist` 反映規約を追加する。
-- [ ] `.agents/skills/grafix-art-loop-artist/SKILL.md` に、`artist_summary` へ「不明点の仮定」を短文で残す規約を追加する。
-- [ ] critic が `evidence` を取りやすいよう、参照元（`artist_summary` / `stdout_ref` / `stderr_ref`）を明記する。
+- [x] `.agents/skills/grafix-art-loop-ideaman/SKILL.md` に、`decisions_to_persist` 反映規約を追加する。
+- [x] `.agents/skills/grafix-art-loop-artist/SKILL.md` に、`artist_summary` へ「不明点の仮定」を短文で残す規約を追加する。
+- [x] critic が `evidence` を取りやすいよう、参照元（`artist_summary` / `stdout_ref` / `stderr_ref`）を明記する。
 
 ### 6) 整合確認
 
-- [ ] `SkillImprovementReport` キー名を5つの skills で統一する。
-- [ ] `design_tokens.*` leaf path ルールと競合しないことを確認する。
-- [ ] 既存の出力境界（`sketch/agent_loop/runs/<run_id>/` のみ）を維持する。
+- [x] `SkillImprovementReport` キー名を5つの skills で統一する。
+- [x] `design_tokens.*` leaf path ルールと競合しないことを確認する。
+- [x] 既存の出力境界（`sketch/agent_loop/runs/<run_id>/` のみ）を維持する。
 
 ## 受け入れテスト（運用確認）
 
@@ -91,9 +91,9 @@
 
 ## 要確認（実装前に決める項目）
 
-- [ ] `skill_improvement_report.json` を毎 run 必須にするか（推奨: 必須）。
-- [ ] `improvements[]` 件数上限を 3 にするか 5 にするか。
-- [ ] 「改善提案なし」を許可する条件（例: 根拠不足時のみ）を設けるか。
+- [x] `skill_improvement_report.json` を毎 run 必須にする（採用）。
+- [x] `improvements[]` 件数上限は「推奨 3 件、最大 5 件」にする（採用）。
+- [x] 「改善提案なし」は `problem=\"no_actionable_issue\"` と evidence 明記時のみ許可する（採用）。
 
 ## 実装順序（推奨）
 
