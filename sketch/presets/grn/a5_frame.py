@@ -31,6 +31,7 @@ GRN_A5_FRAME_UI_VISIBLE = {
     "layout_color_rgb255": lambda v: bool(v.get("show_layout")),
 }
 
+
 @preset(meta=meta, ui_visible=GRN_A5_FRAME_UI_VISIBLE)
 def grn_a5_frame(
     *,
@@ -38,7 +39,7 @@ def grn_a5_frame(
     layout_color_rgb255: tuple[int, int, int] = (191, 191, 191),
     number_text: str = "1",
     explanation_text: str = "G.polygon()\nE.repeat().displace()",
-    explanation_density: float = 500.0,
+    explanation_density: float = 450.0,
     template_color_rgb255: tuple[int, int, int] = (0, 0, 0),
 ):
     layout_geom = P.layout_grid_system(
@@ -163,7 +164,7 @@ def grn_a5_frame(
             activate=True,
             angle_sets=1,
             angle=45.0,
-            density=97.938,
+            density=80,
             spacing_gradient=0.0,
             remove_boundary=False,
         )
