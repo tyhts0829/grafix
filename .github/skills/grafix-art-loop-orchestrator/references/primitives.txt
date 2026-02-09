@@ -1,9 +1,0 @@
-asemic
-grid
-line
-lsystem
-polygon
-polyhedron
-sphere
-text
-torus
