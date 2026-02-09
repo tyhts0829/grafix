@@ -7,12 +7,12 @@ description: M個のart(画像)をそれぞれ画像レベルで確認し、M個
 
 ## 役割
 
-- M個のart(画像)をそれぞれ画像レベルで確認し、M個の異なる批評と次反復の改善指示`Critique` JSONで返す。
+- M個のart(画像)をそれぞれ画像レベルで確認し、M個の異なる批評と次反復の改善指示`Critique` JSONNで返す。
 
 ## 実行ルール
 
 - 必ず画像レベルでartを見て、批評`Critique` JSON を返す。形式は`.agents/skills/grafix-art-loop-orchestrator/references/schemas.md`参照
-- 批評の本文であるranking.reasonは20行以上とすること。
+- 批評の本文であるranking.reasonは100行以上とすること。
 - 毎回同じ winner / 同じ指示を返す “定型批評” をしない。
 - 一時 Python などで固定 Critique を生成する代替手段を使わない（critic は LLM role として比較判断する）。
 - 当該 iteration の候補以外、特に過去 run の `sketch/agent_loop/runs/*` の中身を参照してはならない。

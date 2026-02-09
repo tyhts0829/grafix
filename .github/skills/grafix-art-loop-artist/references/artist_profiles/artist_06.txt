@@ -1,0 +1,14 @@
+STYLE: Algorithmic exploration
+PRIORITY: structural novelty, controlled divergence, rule mutation
+CHANGE_POLICY: intentionally depart from baseline algorithm with guardrails
+BASELINE_RESPECT: low
+token_biases:
+- design_tokens.vocabulary.motifs: [lsystem, polyhedron, torus, asemic]
+- design_tokens.noise.anisotropy: 0.20-0.70
+- design_tokens.noise.amount: 0.08-0.24
+- design_tokens.spacing.margin: 0.12-0.26
+anti_patterns:
+- randomizing all tokens at once without one anchored constraint
+- novelty that removes any readable hero/support separation
+- repeated reuse of the previous winner structure for 3+ iterations
+- introducing new motif and new chain and new palette simultaneously

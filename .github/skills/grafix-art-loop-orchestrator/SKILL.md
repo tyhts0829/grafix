@@ -22,8 +22,6 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 ## 実行ルール
 
 - skill 開始直後に `run_id` を作成し、全出力の保存先である `sketch/agent_loop/runs/<run_id>`ディレクトリを生成。その中にiter_XXディレクトリを都度作成。
-- run ディレクトリ生成は機械処理として次を使って固定する（run_id は `run_YYYYMMDD_HHMMSS_n{n}m{m}` 形式のみ）。
-  - `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python .agents/skills/grafix-art-loop-orchestrator/scripts/init_run_dir.py --n <N> --m <M> --update-latest`
 - 生成の多様性を保つため、以下を遵守すること。
   - 各 variant ごとに作業ディレクトリ（`.../iter_XX/vY/`）を切り、`artist` は `sketch.py` を独立して実装（各ファイルでアプローチを分ける）。
   - 各 variant の `sketch.py` で、`@primitive` と `@effect` を使った自前実装を必ず定義し、実際の描画に使う。
@@ -34,11 +32,6 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 - レンダリングは `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix export` を使い、各 variant の `out.png` を生成する。
 - `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
 - `python -m grafix ...` 形式の実行は、`/opt/anaconda3/envs/gl5/bin/python -m grafix ...` に統一。
-- contact sheet 生成は創作判断ではなく機械処理として、次を使って固定する。
-  - iteration 用:
-    `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python .agents/skills/grafix-art-loop-orchestrator/scripts/make_contact_sheet.py --mode iter --iter-dir sketch/agent_loop/runs/<run_id>/iter_XX`
-  - 最終集約用:
-    `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python .agents/skills/grafix-art-loop-orchestrator/scripts/make_contact_sheet.py --mode final --run-dir sketch/agent_loop/runs/<run_id>`
 - 出力境界
   - 出力（画像・JSON・`sketch.py`・stdout/stderr・診断ファイル・中間ファイル）は **すべて** `sketch/agent_loop/runs/<run_id>/` 配下に保存する。
   - `sketch/agent_loop` 外への出力を禁止する（例: `/tmp`, リポジトリ直下, ホーム配下の任意パス）。
@@ -55,7 +48,6 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 - イテレーション開始前に、まず次を読む。
   - `.agents/skills/grafix-art-loop-orchestrator/references/project_quick_map.md`
   - `.agents/skills/grafix-art-loop-orchestrator/references/grafix_usage_playbook.md`
-  - `.agents/skills/grafix-art-loop-orchestrator/references/contact_sheet_spec.md`（contact sheet 生成時）
 - 上記で足りる情報について、リポジトリ全体の横断探索をしない。
 - 追加探索は「不足している具体情報」に限定。`skill_improvement_report.json`に再発防止策を残す。
 - primitive/effect レジストリ参照順（CLI優先）

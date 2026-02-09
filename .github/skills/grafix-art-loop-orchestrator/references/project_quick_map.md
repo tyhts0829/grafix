@@ -12,12 +12,11 @@
 
 1. `.agents/skills/grafix-art-loop-orchestrator/SKILL.md`
 2. `.agents/skills/grafix-art-loop-orchestrator/references/schemas.md`
-3. `.agents/skills/grafix-art-loop-orchestrator/references/contact_sheet_spec.md`（contact sheet 生成時）
-4. `.agents/skills/grafix-art-loop-ideaman/SKILL.md`
-5. `.agents/skills/grafix-art-loop-artist/SKILL.md`
-6. `.agents/skills/grafix-art-loop-critic/SKILL.md`
-7. `README.md`（Grafix 全体の基本）
-8. `architecture.md`（設計の背景が必要な場合のみ）
+3. `.agents/skills/grafix-art-loop-ideaman/SKILL.md`
+4. `.agents/skills/grafix-art-loop-artist/SKILL.md`
+5. `.agents/skills/grafix-art-loop-critic/SKILL.md`
+6. `README.md`（Grafix 全体の基本）
+7. `architecture.md`（設計の背景が必要な場合のみ）
 
 ## 主要ディレクトリ（最小）
 
@@ -26,4 +25,3 @@
 - `sketch/agent_loop/runs/`: Art Loop の成果物
 - `.agents/skills/grafix-art-loop-*/`: role ごとの運用ルール
 - `.agents/skills/grafix-art-loop-orchestrator/references/`: JSON 型と運用参照
-- `.agents/skills/grafix-art-loop-orchestrator/scripts/`: contact sheet などの機械処理ツール
