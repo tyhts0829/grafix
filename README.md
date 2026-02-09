@@ -6,6 +6,8 @@ Grafix is a Python-based creative coding framework compatible with pen plotter.
 
 Press `G` at any time while a sketch is running to export a G-code (.gcode) file.
 
+<img src="docs/readme/penplot1.JPG" width="800" alt="pen plotter art example" />
+
 ## Installation
 
 ```bash
