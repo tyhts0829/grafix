@@ -3,6 +3,7 @@ tools/cache_check/*.png
 tools/cache_check/*.dot
 .pytest_cache/
 *.ini
+.grafix/
 **/.DS_Store
 data
 .mypy_cache/
