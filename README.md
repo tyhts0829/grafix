@@ -119,11 +119,11 @@ from grafix import P, preset
 
 
 @preset(meta={"scale": {"kind": "float", "ui_min": 0.1, "ui_max": 10.0}})
-def logo(*, scale: float = 1.0, name=None, key=None):
+def grid_system_frame(*, n_rows: int=5, r_cols: int=8, name=None, key=None):
     ...
 
 
-P.logo(scale=2.0)
+P.grid_system_frame()
 ```
 
 For IDE completion of `P.<name>(...)`, regenerate stubs after adding/changing presets:
