@@ -46,7 +46,7 @@ def draw(t):
             activate=True,
             angle_sets=1,
             angle=45.0,
-            density=407.216,
+            density=1000,
             spacing_gradient=0.0,
             remove_boundary=False,
         )
@@ -59,7 +59,7 @@ def draw(t):
         show_layout=False,
         layout_color_rgb255=(191, 191, 191),
         number_text="14",
-        explanation_text="G.text()\nE.pixelate()\nlowpass().fill()",
+        explanation_text="G.text()\nE.pixelate()\n.lowpass().fill()",
         explanation_density=500.0,
         template_color_rgb255=(255, 255, 255),
     )
