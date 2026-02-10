@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from grafix.core.pipeline import RealizedLayer
+from grafix.core.runtime_config import runtime_config
 
 _DEFAULT_PAPER_MARGIN_MM = 2.0
 
@@ -478,7 +479,7 @@ def export_gcode(
     canvas_size : tuple[float, float]
         紙サイズ（mm）として扱うキャンバス寸法 `(width, height)`。
     params : GCodeParams or None
-        G-code 出力パラメータ。None の場合は既定値を使う。
+        G-code 出力パラメータ。None の場合は `config.yaml`（`export.gcode`）の設定値を使う。
 
     Returns
     -------
@@ -502,7 +503,26 @@ def export_gcode(
     # - bed 範囲検証は「実際に出力した座標」だけを対象にする。
 
     _path = Path(path)
-    p = params if params is not None else GCodeParams()
+    if params is not None:
+        p = params
+    else:
+        cfg = runtime_config().gcode
+        p = GCodeParams(
+            travel_feed=float(cfg.travel_feed),
+            draw_feed=float(cfg.draw_feed),
+            z_up=float(cfg.z_up),
+            z_down=float(cfg.z_down),
+            y_down=bool(cfg.y_down),
+            origin=(float(cfg.origin[0]), float(cfg.origin[1])),
+            decimals=int(cfg.decimals),
+            paper_margin_mm=float(cfg.paper_margin_mm),
+            bed_x_range=cfg.bed_x_range,
+            bed_y_range=cfg.bed_y_range,
+            bridge_draw_distance=cfg.bridge_draw_distance,
+            optimize_travel=bool(cfg.optimize_travel),
+            allow_reverse=bool(cfg.allow_reverse),
+            canvas_height_mm=cfg.canvas_height_mm,
+        )
 
     # canvas_size は「紙サイズ（mm）」として扱う。
     canvas_w, canvas_h = float(canvas_size[0]), float(canvas_size[1])

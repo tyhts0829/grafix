@@ -43,6 +43,46 @@ export:
   png:
     scale: 8.0
 
+  # G-code 出力（ペンプロッタ/3D プリンタ系）設定。
+  gcode:
+    # ペンアップ移動のフィードレート [mm/min]。
+    travel_feed: 3000.0
+    # ペンダウン描画のフィードレート [mm/min]。
+    draw_feed: 3000.0
+
+    # ペンアップ/ダウンの Z 高さ [mm]。
+    z_up: 3.0
+    z_down: -1.0
+
+    # True の場合、Y 反転を行う（canvas の感覚を左上原点の Y 下向きに寄せる）。
+    y_down: true
+
+    # 出力座標の原点オフセット [mm]（X, Y）。
+    origin: [154.019, 14.195]
+
+    # 数値出力の小数点以下の桁数。
+    decimals: 3
+
+    # 紙（canvas）の外周安全マージン [mm]。
+    paper_margin_mm: 2.0
+
+    # 3D プリンタのベッド X/Y 範囲 [mm]（範囲外の出力は例外）。
+    # null の場合は無効。
+    bed_x_range: null
+    bed_y_range: null
+
+    # ストローク間の移動距離がこの値より小さければ、ペンアップを省略して描画で繋ぐ。
+    # null の場合は無効。
+    bridge_draw_distance: 0.5
+
+    # True の場合、レイヤ内でストローク順を並び替えてペンアップ移動距離を小さくする。
+    optimize_travel: true
+    # `optimize_travel=true` の場合、ストロークの逆向き描画を許可する。
+    allow_reverse: true
+
+    # `y_down=true` 時の厳密反転に使うキャンバス高さ [mm]（未指定なら export_gcode(canvas_size=...) の高さ）。
+    canvas_height_mm: null
+
 midi:
   # `run(..., midi_port_name="auto")` のときに上から順に接続を試す。
   # port_name が利用可能ならそのポートへ接続する。

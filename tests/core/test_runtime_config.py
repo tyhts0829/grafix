@@ -33,6 +33,20 @@ def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pyt
     assert cfg.parameter_gui_font_size_base_px == 12.0
     assert cfg.parameter_gui_table_column_weights == (0.20, 0.60, 0.15, 0.20)
     assert cfg.png_scale == 8.0
+    assert cfg.gcode.travel_feed == 3000.0
+    assert cfg.gcode.draw_feed == 3000.0
+    assert cfg.gcode.z_up == 3.0
+    assert cfg.gcode.z_down == -1.0
+    assert cfg.gcode.y_down is True
+    assert cfg.gcode.origin == (154.019, 14.195)
+    assert cfg.gcode.decimals == 3
+    assert cfg.gcode.paper_margin_mm == 2.0
+    assert cfg.gcode.bed_x_range is None
+    assert cfg.gcode.bed_y_range is None
+    assert cfg.gcode.bridge_draw_distance == 0.5
+    assert cfg.gcode.optimize_travel is True
+    assert cfg.gcode.allow_reverse is True
+    assert cfg.gcode.canvas_height_mm is None
     assert cfg.midi_inputs == ()
 
 
@@ -158,3 +172,24 @@ def test_explicit_config_path_missing_raises(tmp_path: Path, monkeypatch: pytest
 
     with pytest.raises(FileNotFoundError):
         output_root_dir()
+
+
+def test_overriding_export_without_gcode_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _isolate_config_discovery(tmp_path, monkeypatch)
+
+    discovered = tmp_path / ".grafix" / "config.yaml"
+    discovered.parent.mkdir(parents=True, exist_ok=True)
+    discovered.write_text(
+        "\n".join(
+            [
+                "export:",
+                "  png:",
+                "    scale: 8.0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match=r"export\.gcode"):
+        runtime_config()

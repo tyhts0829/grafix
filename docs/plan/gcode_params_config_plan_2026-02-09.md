@@ -15,12 +15,14 @@
 
 ## 0) 事前に決める（あなたの確認が必要）
 
-- [ ] 設定キーの置き場所: `export.gcode` 配下にまとめる（提案）
+- [x] 設定キーの置き場所: `export.gcode` 配下にまとめる
   - 例: `export.png.scale` と同じ名前空間に寄せる
-- [ ] `params` の優先順位: `export_gcode(..., params=...)` を最優先し、`params=None` のときだけ config を使う（提案）
+- [x] `params` の優先順位: `export_gcode(..., params=...)` を最優先し、`params=None` のときだけ config を使う
 - [ ] `./.grafix/config.yaml` が `export:` を上書きしている場合の扱い:
   - A. 省略された `export.gcode` は **エラー**にする（設定の真実を YAML に寄せる / 実装が単純）
   - B. 省略された `export.gcode` は **コード側既定**へフォールバック（古い config でも動く）
+
+→ 採用: A（エラー）
 
 ---
 
@@ -62,47 +64,46 @@ export:
 
 ### 2.1 同梱 default_config.yaml の拡張
 
-- [ ] `src/grafix/resource/default_config.yaml` に `export.gcode` を追加（上記スキーマで全キーを明示）
+- [x] `src/grafix/resource/default_config.yaml` に `export.gcode` を追加（上記スキーマで全キーを明示）
 
 ### 2.2 プロジェクトローカル config の更新
 
-- [ ] `./.grafix/config.yaml` にも `export.gcode` を追加（浅い上書きで `export` が置換されるため）
+- [x] `./.grafix/config.yaml` にも `export.gcode` を追加（浅い上書きで `export` が置換されるため）
 
 ### 2.3 runtime_config に読み取りを追加
 
-- [ ] `src/grafix/core/runtime_config.py`:
-  - [ ] `RuntimeConfig` に G-code 設定の格納先を追加（案: `gcode: GCodeExportConfig` のような小 dataclass）
-  - [ ] `export.gcode` を読み取り、型を正規化する（`origin` や `bed_*_range` は 2 要素配列→タプル）
-  - [ ] `y_down/optimize_travel/allow_reverse` は bool として解釈する
+- [x] `src/grafix/core/runtime_config.py`:
+  - [x] `RuntimeConfig` に G-code 設定の格納先を追加（`gcode: GCodeExportConfig`）
+  - [x] `export.gcode` を読み取り、型を正規化する（`origin` や `bed_*_range` は 2 要素配列→タプル）
+  - [x] `y_down/optimize_travel/allow_reverse` は bool として解釈する
 
 ### 2.4 export_gcode の既定 params を config 由来に変更
 
-- [ ] `src/grafix/export/gcode.py`:
-  - [ ] `params is None` の場合に `runtime_config()` から値を取り、`GCodeParams(...)` を構築する
-  - [ ] `params` が明示されている場合は現状通りそれを使う
+- [x] `src/grafix/export/gcode.py`:
+  - [x] `params is None` の場合に `runtime_config()` から値を取り、`GCodeParams(...)` を構築する
+  - [x] `params` が明示されている場合は現状通りそれを使う
 
 ### 2.5 テスト
 
-- [ ] `tests/core/test_runtime_config.py`:
-  - [ ] 同梱 defaults で `export.gcode` が読み取れることを最低限確認（値の一部だけでよい）
-- [ ] `tests/export/test_gcode.py`:
-  - [ ] `set_config_path(tmp_config)` を使い、`params=None` で `export.gcode` が反映されることを 1 ケース追加
+- [x] `tests/core/test_runtime_config.py`:
+  - [x] 同梱 defaults で `export.gcode` が読み取れることを最低限確認（値の一部だけでよい）
+- [x] `tests/export/test_gcode.py`:
+  - [x] `set_config_path(tmp_config)` を使い、`params=None` で `export.gcode` が反映されることを 1 ケース追加
     - 例: `origin=[0,0]`, `y_down=false`, `decimals=3`, `paper_margin_mm=0` を設定し、出力座標が期待通りになること
 
 ### 2.6 ドキュメント
 
-- [ ] `README.md` の Configuration に `export.gcode` の例（最小）を追記
+- [x] `README.md` の Configuration に `export.gcode` の例（最小）を追記
   - 併せて「`export:` を上書きするとネストは部分マージされない」注意を短く入れる
 
 ---
 
 ## 3) 変更箇所（ファイル単位）
 
-- [ ] `src/grafix/resource/default_config.yaml`
-- [ ] `.grafix/config.yaml`
-- [ ] `src/grafix/core/runtime_config.py`
-- [ ] `src/grafix/export/gcode.py`
-- [ ] `tests/core/test_runtime_config.py`
-- [ ] `tests/export/test_gcode.py`
-- [ ] `README.md`
-
+- [x] `src/grafix/resource/default_config.yaml`
+- [x] `.grafix/config.yaml`
+- [x] `src/grafix/core/runtime_config.py`
+- [x] `src/grafix/export/gcode.py`
+- [x] `tests/core/test_runtime_config.py`
+- [x] `tests/export/test_gcode.py`
+- [x] `README.md`

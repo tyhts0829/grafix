@@ -155,12 +155,24 @@ python -c "from importlib.resources import files; print(files('grafix').joinpath
 $EDITOR .grafix/config.yaml
 ```
 
+Config overlay is a top-level shallow update (no deep merge). If you override `export:`, keep both `export.png` and `export.gcode`
+blocks from the packaged defaults.
+
 To autoload user presets from a directory:
 
 ```yaml
 paths:
   preset_module_dirs:
     - "sketch/presets"
+```
+
+To configure G-code export defaults (used when calling `export_gcode(..., params=None)`):
+
+```yaml
+export:
+  gcode:
+    origin: [0.0, 0.0]
+    y_down: false
 ```
 
 To prioritize MIDI device connections when using `midi_port_name="auto"`:

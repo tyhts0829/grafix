@@ -38,6 +38,26 @@ _PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT = (0.20, 0.60, 0.15, 0.20)
 
 
 @dataclass(frozen=True, slots=True)
+class GCodeExportConfig:
+    """G-code 出力設定（`config.yaml` の `export.gcode`）。"""
+
+    travel_feed: float
+    draw_feed: float
+    z_up: float
+    z_down: float
+    y_down: bool
+    origin: tuple[float, float]
+    decimals: int
+    paper_margin_mm: float
+    bed_x_range: tuple[float, float] | None
+    bed_y_range: tuple[float, float] | None
+    bridge_draw_distance: float | None
+    optimize_travel: bool
+    allow_reverse: bool
+    canvas_height_mm: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     """grafix の実行時設定。
 
@@ -73,6 +93,8 @@ class RuntimeConfig:
         各要素は正の値である必要がある。
     png_scale:
         `python -m grafix export` における PNG の拡大率。
+    gcode:
+        `python -m grafix export` における G-code 出力設定。
     midi_inputs:
         MIDI 入力の設定。各要素は (port_name, mode)。
     """
@@ -89,6 +111,7 @@ class RuntimeConfig:
     parameter_gui_font_size_base_px: float
     parameter_gui_table_column_weights: tuple[float, float, float, float]
     png_scale: float
+    gcode: GCodeExportConfig
     midi_inputs: tuple[tuple[str, str], ...]
 
 
@@ -223,6 +246,48 @@ def _as_int_pair(value: Any, *, key: str) -> tuple[int, int] | None:
     except Exception as exc:
         raise RuntimeError(f"{key} は [x, y] の整数配列である必要があります: got={value!r}") from exc
     return (x, y)
+
+
+def _as_float_pair(value: Any, *, key: str) -> tuple[float, float] | None:
+    """任意値を (x, y) の float ペアとして解釈して返す。"""
+
+    if value is None:
+        return None
+    try:
+        seq = list(value)
+    except Exception as exc:
+        raise RuntimeError(f"{key} は [x, y] の配列である必要があります: got={value!r}") from exc
+    if len(seq) != 2:
+        raise RuntimeError(f"{key} は [x, y] の配列である必要があります: got={value!r}")
+    try:
+        x = float(seq[0])
+        y = float(seq[1])
+    except Exception as exc:
+        raise RuntimeError(f"{key} は [x, y] の数値配列である必要があります: got={value!r}") from exc
+    return (float(x), float(y))
+
+
+def _as_int(value: Any, *, key: str) -> int | None:
+    """任意値を int として解釈して返す。"""
+
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception as exc:
+        raise RuntimeError(f"{key} は整数である必要があります: got={value!r}") from exc
+
+
+def _as_bool(value: Any, *, key: str) -> bool | None:
+    """任意値を bool として解釈して返す。"""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int) and int(value) in (0, 1):
+        return bool(int(value))
+    raise RuntimeError(f"{key} は bool である必要があります: got={value!r}")
 
 
 def _as_float(value: Any, *, key: str) -> float | None:
@@ -488,6 +553,138 @@ def runtime_config() -> RuntimeConfig:
     if png_scale <= 0:
         raise ValueError(f"export.png.scale は正の値である必要があります: got={png_scale}")
 
+    gcode = _as_mapping(export.get("gcode"), key="export.gcode")
+    required_gcode_keys = (
+        "travel_feed",
+        "draw_feed",
+        "z_up",
+        "z_down",
+        "y_down",
+        "origin",
+        "decimals",
+        "paper_margin_mm",
+        "bed_x_range",
+        "bed_y_range",
+        "bridge_draw_distance",
+        "optimize_travel",
+        "allow_reverse",
+        "canvas_height_mm",
+    )
+    missing_gcode_keys = [k for k in required_gcode_keys if k not in gcode]
+    if missing_gcode_keys:
+        raise RuntimeError(
+            "export.gcode が未設定、または必須キーが不足しています"
+            "（config.yaml はトップレベル浅い上書きのため、export: を上書きする場合は"
+            " 同梱 default_config.yaml をコピーして export.gcode も含めてください）"
+            f": missing={missing_gcode_keys}"
+        )
+
+    travel_feed = _as_float(gcode.get("travel_feed"), key="export.gcode.travel_feed")
+    if travel_feed is None:
+        raise RuntimeError(
+            "export.gcode.travel_feed が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+    draw_feed = _as_float(gcode.get("draw_feed"), key="export.gcode.draw_feed")
+    if draw_feed is None:
+        raise RuntimeError(
+            "export.gcode.draw_feed が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+
+    z_up = _as_float(gcode.get("z_up"), key="export.gcode.z_up")
+    if z_up is None:
+        raise RuntimeError(
+            "export.gcode.z_up が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+    z_down = _as_float(gcode.get("z_down"), key="export.gcode.z_down")
+    if z_down is None:
+        raise RuntimeError(
+            "export.gcode.z_down が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+
+    y_down = _as_bool(gcode.get("y_down"), key="export.gcode.y_down")
+    if y_down is None:
+        raise RuntimeError(
+            "export.gcode.y_down が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+
+    origin = _as_float_pair(gcode.get("origin"), key="export.gcode.origin")
+    if origin is None:
+        raise RuntimeError(
+            "export.gcode.origin が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+
+    decimals = _as_int(gcode.get("decimals"), key="export.gcode.decimals")
+    if decimals is None:
+        raise RuntimeError(
+            "export.gcode.decimals が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+    if int(decimals) < 0:
+        raise ValueError(f"export.gcode.decimals は 0 以上である必要があります: got={decimals}")
+
+    paper_margin_mm = _as_float(gcode.get("paper_margin_mm"), key="export.gcode.paper_margin_mm")
+    if paper_margin_mm is None:
+        raise RuntimeError(
+            "export.gcode.paper_margin_mm が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+    if float(paper_margin_mm) < 0.0:
+        raise ValueError(
+            "export.gcode.paper_margin_mm は 0 以上である必要があります"
+            f": got={paper_margin_mm}"
+        )
+
+    bed_x_range = _as_float_pair(gcode.get("bed_x_range"), key="export.gcode.bed_x_range")
+    bed_y_range = _as_float_pair(gcode.get("bed_y_range"), key="export.gcode.bed_y_range")
+
+    bridge_draw_distance = _as_float(
+        gcode.get("bridge_draw_distance"),
+        key="export.gcode.bridge_draw_distance",
+    )
+    if bridge_draw_distance is not None and float(bridge_draw_distance) < 0.0:
+        raise ValueError(
+            "export.gcode.bridge_draw_distance は 0 以上である必要があります"
+            f": got={bridge_draw_distance}"
+        )
+
+    optimize_travel = _as_bool(
+        gcode.get("optimize_travel"),
+        key="export.gcode.optimize_travel",
+    )
+    if optimize_travel is None:
+        raise RuntimeError(
+            "export.gcode.optimize_travel が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+
+    allow_reverse = _as_bool(
+        gcode.get("allow_reverse"),
+        key="export.gcode.allow_reverse",
+    )
+    if allow_reverse is None:
+        raise RuntimeError(
+            "export.gcode.allow_reverse が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+
+    canvas_height_mm = _as_float(
+        gcode.get("canvas_height_mm"),
+        key="export.gcode.canvas_height_mm",
+    )
+
+    gcode_cfg = GCodeExportConfig(
+        travel_feed=float(travel_feed),
+        draw_feed=float(draw_feed),
+        z_up=float(z_up),
+        z_down=float(z_down),
+        y_down=bool(y_down),
+        origin=(float(origin[0]), float(origin[1])),
+        decimals=int(decimals),
+        paper_margin_mm=float(paper_margin_mm),
+        bed_x_range=bed_x_range,
+        bed_y_range=bed_y_range,
+        bridge_draw_distance=bridge_draw_distance,
+        optimize_travel=bool(optimize_travel),
+        allow_reverse=bool(allow_reverse),
+        canvas_height_mm=canvas_height_mm,
+    )
+
     midi = _as_mapping(payload.get("midi"), key="midi")
     midi_inputs = _as_midi_inputs(midi.get("inputs"))
 
@@ -505,6 +702,7 @@ def runtime_config() -> RuntimeConfig:
         parameter_gui_font_size_base_px=float(parameter_gui_font_size_base_px),
         parameter_gui_table_column_weights=parameter_gui_table_column_weights,
         png_scale=float(png_scale),
+        gcode=gcode_cfg,
         midi_inputs=tuple(midi_inputs),
     )
     _CONFIG_CACHE = cfg
@@ -522,4 +720,10 @@ def output_root_dir() -> Path:
     return Path(cfg.output_dir)
 
 
-__all__ = ["RuntimeConfig", "output_root_dir", "runtime_config", "set_config_path"]
+__all__ = [
+    "GCodeExportConfig",
+    "RuntimeConfig",
+    "output_root_dir",
+    "runtime_config",
+    "set_config_path",
+]

@@ -11,7 +11,15 @@ from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.runtime_config import set_config_path
 from grafix.export.gcode import GCodeParams, export_gcode
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_config() -> None:
+    set_config_path(None)
+    yield
+    set_config_path(None)
 
 
 def _realized_layer(
@@ -321,3 +329,52 @@ def test_export_gcode_draw_bridge_disabled_uses_pen_up(tmp_path) -> None:
     assert i_end_first < i_start_second
 
     assert "G1 Z3.000" in lines[i_end_first + 1 : i_start_second]
+
+
+def test_export_gcode_uses_config_when_params_is_none(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "export:",
+                "  png:",
+                "    scale: 8.0",
+                "  gcode:",
+                "    travel_feed: 3000.0",
+                "    draw_feed: 3000.0",
+                "    z_up: 3.0",
+                "    z_down: -1.0",
+                "    y_down: false",
+                "    origin: [0.0, 0.0]",
+                "    decimals: 3",
+                "    paper_margin_mm: 0.0",
+                "    bed_x_range: null",
+                "    bed_y_range: null",
+                "    bridge_draw_distance: null",
+                "    optimize_travel: false",
+                "    allow_reverse: true",
+                "    canvas_height_mm: null",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+
+    layers = [
+        _realized_layer(
+            coords=[
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            offsets=[0, 2],
+        )
+    ]
+
+    out_path = tmp_path / "out.gcode"
+    export_gcode(layers, out_path, canvas_size=(10.0, 10.0))
+    text = out_path.read_text(encoding="utf-8")
+
+    assert "G1 X1.000 Y1.000" in text
+    assert "G1 X2.000 Y1.000" in text
+    assert "Y9.000" not in text
