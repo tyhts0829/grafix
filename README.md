@@ -73,25 +73,6 @@ When the draw window is focused:
 
 Outputs are written under `paths.output_dir` (default: `data/output`), under per-kind subdirectories (`svg/`, `png/`, `gcode/`, ...).
 
-## Headless export (PNG)
-
-```bash
-python -m grafix export --callable sketch.main:draw --t 0.0
-python -m grafix export --callable sketch.main:draw --t 0.0 1.0 2.0 --out-dir data/output
-```
-
-With an explicit config file:
-
-```bash
-python -m grafix export --config path/to/config.yaml --callable sketch.main:draw --t 0.0
-```
-
-If you want to use the API directly, `Export` lives in `grafix.api`:
-
-```python
-from grafix.api import Export
-```
-
 ## Examples
 
 <!-- BEGIN:README_EXAMPLES_GRN -->
@@ -240,6 +221,25 @@ midi:
       mode: "7bit"
     - port_name: "auto"
       mode: "7bit"
+```
+
+## Headless export (PNG)
+
+```bash
+python -m grafix export --callable sketch.main:draw --t 0.0
+python -m grafix export --callable sketch.main:draw --t 0.0 1.0 2.0 --out-dir data/output
+```
+
+With an explicit config file:
+
+```bash
+python -m grafix export --config path/to/config.yaml --callable sketch.main:draw --t 0.0
+```
+
+If you want to use the API directly, `Export` lives in `grafix.api`:
+
+```python
+from grafix.api import Export
 ```
 
 ## Troubleshooting
