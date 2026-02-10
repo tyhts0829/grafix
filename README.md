@@ -1,7 +1,11 @@
 # Grafix
 
-Grafix is a Python-based creative coding toolkit for line-based geometry: generate primitives (`G`), chain effects
-(`E`), preview in real time (`run`), and export for pen plotters (SVG / PNG / G-code).
+Grafix is a Python-based creative coding framework for line-based geometry:
+
+- Generate primitives (`G`)
+- Chain effects (`E`)
+- Real-time interactive rendering (`run`)
+- Export for plotter-ready G-code and visuals (SVG/PNG).
 
 <img src="docs/readme/top_movie.gif" width="1200" alt="Grafix demo" />
 <img src="docs/readme/penplot_movie.gif" width="1200" alt="Penplotting" />
