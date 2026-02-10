@@ -5,18 +5,24 @@ Grafix is a Python-based creative coding framework for line-based geometry:
 - Generate primitives (`G`)
 - Chain effects (`E`)
 - Real-time interactive rendering (`run`)
-- Export visuals (SVG / PNG)
 - Export plotter-ready G-code
+- Export visuals (SVG / PNG / MP4)
 
 <img src="docs/readme/top_movie.gif" width="1200" alt="Grafix demo" />
 <img src="docs/readme/penplot_movie.gif" width="1200" alt="Penplotting" />
 
 <img src="docs/readme/penplot1.JPG" width="800" alt="pen plotter art example" />
 
+## Installation
+
+```bash
+pip install grafix
+```
+
 ## Requirements
 
 - Python >= 3.11
-- macOS-first (tested on macOS / Apple Silicon). Other platforms are not officially supported yet.
+- macOS-first (tested on macOS / Apple Silicon).
 - Optional external tools:
   - `resvg` for PNG export (`P` key / headless PNG export)
   - `ffmpeg` for MP4 recording (`V` key)
@@ -25,12 +31,6 @@ macOS (Homebrew):
 
 ```bash
 brew install resvg ffmpeg
-```
-
-## Installation
-
-```bash
-pip install grafix
 ```
 
 ## Quick start
@@ -56,10 +56,10 @@ if __name__ == "__main__":
 ## Core API
 
 - `G`: primitive Geometry factories (`G.polygon(...)`, `G.grid(...)`, ...)
-- `E`: effect chain builders (`E.fill(...).rotate(...)`)
-- `L`: wrap Geometry into layers (color / thickness) for multi-pen / multi-pass workflows
+- `E`: Effect chain builders (`E.fill(...).rotate(...)`)
+- `L`: wrap Geometry into Layers (color / thickness) for multi-pen / multi-pass workflows
 - `P` / `@preset`: reusable components
-- `cc`: read-only MIDI CC snapshot view (`cc[1]` -> 0..1). Midi learn is available to control params.
+- `cc`: MIDI CC(`cc[1]` -> 0..1) to control parameters with physical controllers
 - `run(draw)`: interactive rendering + Parameter GUI
 
 ## Export & shortcuts
@@ -70,7 +70,7 @@ When the draw window is focused:
 - `P`: save PNG (requires `resvg`; also saves the underlying SVG)
 - `V`: start/stop MP4 recording (requires `ffmpeg`)
 - `G`: save G-code
-- `Shift+G`: save G-code per layer (when your sketch returns multiple layers)
+- `Shift+G`: save G-code per layer (when your sketch returns multiple Layers)
 
 Outputs are written under `paths.output_dir` (default: `data/output`), under per-kind subdirectories (`svg/`, `png/`, `gcode/`, ...).
 
@@ -106,12 +106,12 @@ Outputs are written under `paths.output_dir` (default: `data/output`), under per
 </table>
 <!-- END:README_EXAMPLES_GRN -->
 
-## Extending (custom primitives / effects)
+## Extending
 
 You can register your own primitives and effects via decorators:
 
 ```python
-from grafix.api import effect, primitive
+from grafix import effect, primitive
 
 
 @primitive
@@ -137,11 +137,14 @@ Use `@preset` to register a component, and call it via `P.<name>(...)`:
 ```python
 from grafix import P, preset
 
+meta = {
+    "n_rows": {"kind": "int", "ui_min": 1, "ui_max": 20},
+    "n_cols": {"kind": "int", "ui_min": 1, "ui_max": 20},
+}
 
-@preset(meta={"scale": {"kind": "float", "ui_min": 0.1, "ui_max": 10.0}})
+@preset(meta=meta)
 def grid_system_frame(
     *,
-    scale: float = 1.0,
     n_rows: int = 5,
     n_cols: int = 8,
     name=None,
