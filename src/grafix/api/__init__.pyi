@@ -73,6 +73,21 @@ class _G(Protocol):
             angle: 回転角 [deg]
         """
         ...
+    def lissajous(self, *, activate: bool = ..., a: float = ..., b: float = ..., phase: float = ..., samples: int = ..., turns: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+        """
+        リサージュ曲線を 1 本の開ポリラインとして生成する。
+
+        引数:
+            activate: bool
+            a: X 方向の角周波数係数
+            b: Y 方向の角周波数係数
+            phase: X 方向の位相 [deg]
+            samples: サンプリング点数
+            turns: `t` 範囲の周回数
+            center: 平行移動ベクトル (cx, cy, cz)
+            scale: 等方スケール倍率 s
+        """
+        ...
     def lsystem(self, *, activate: bool = ..., kind: str = ..., iters: int = ..., center: Vec3 = ..., heading: float = ..., angle: float = ..., step: float = ..., jitter: float = ..., seed: int = ..., axiom: str = ..., rules: str = ...) -> Geometry:
         """
         L-system を展開し、枝分かれした線（開ポリライン列）を生成する。
