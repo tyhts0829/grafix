@@ -32,7 +32,7 @@ brew install resvg ffmpeg
 pip install grafix
 ```
 
-## Quick start (interactive rendering)
+## Quick start
 
 ```python
 from grafix import E, G, run
@@ -94,9 +94,6 @@ from grafix.api import Export
 
 ## Examples
 
-<details>
-  <summary>Examples (grn)</summary>
-
 <!-- BEGIN:README_EXAMPLES_GRN -->
 <table>
   <tr>
@@ -126,8 +123,6 @@ from grafix.api import Export
   </tr>
 </table>
 <!-- END:README_EXAMPLES_GRN -->
-
-</details>
 
 ## Extending (custom primitives / effects)
 
