@@ -1,12 +1,25 @@
 # Grafix
 
-Grafix is a Python-based creative coding framework compatible with pen plotter.
+Grafix is a Python-based creative coding toolkit for line-based geometry: generate primitives (`G`), chain effects
+(`E`), preview in real time (`run`), and export for pen plotters (SVG / PNG / G-code).
 
 <img src="docs/readme/top_movie.gif" width="1200" alt="Grafix demo" />
 
-Press `G` at any time while a sketch is running to export a G-code (.gcode) file.
-
 <img src="docs/readme/penplot1.JPG" width="800" alt="pen plotter art example" />
+
+## Requirements
+
+- Python >= 3.11
+- macOS-first (tested on macOS / Apple Silicon). Other platforms are not officially supported yet.
+- Optional external tools:
+  - `resvg` for PNG export (`P` key / headless PNG export)
+  - `ffmpeg` for MP4 recording (`V` key)
+
+macOS (Homebrew):
+
+```bash
+brew install resvg ffmpeg
+```
 
 ## Installation
 
@@ -14,26 +27,70 @@ Press `G` at any time while a sketch is running to export a G-code (.gcode) file
 pip install grafix
 ```
 
-macOS-first. Tested on macOS (Apple Silicon). Other platforms are not officially supported yet.
-
-## Quick start
+## Quick start (interactive rendering)
 
 ```python
 from grafix import E, G, run
 
+CANVAS_SIZE = (148, 210)  # A5 [mm]
+
 
 def draw(t: float):
-    # All arguments automatically appear in the parameter GUI
+    # Coordinates are in canvas units: (0,0)=top-left, +x=right, +y=down.
+    # Keyword arguments are discovered at runtime and show up in the Parameter GUI.
     geometry = G.polyhedron()
     effect = E.fill().subdivide().displace().rotate(rotation=(t * 6, t * 5, t * 4))
     return effect(geometry)
 
 
 if __name__ == "__main__":
-    run(draw, canvas_size=(148, 210), render_scale=5.0)
+    run(draw, canvas_size=CANVAS_SIZE, render_scale=5.0)
+```
+
+## Core API
+
+- `G`: primitive Geometry factories (`G.polygon(...)`, `G.grid(...)`, ...)
+- `E`: effect chain builders (`E.fill(...).rotate(...)`)
+- `L`: wrap Geometry into layers (color / thickness) for multi-pen / multi-pass workflows
+- `P` / `@preset`: reusable components
+- `cc`: read-only MIDI CC snapshot view (`cc[1]` -> 0..1). Midi learn is available to control params.
+- `run(draw)`: interactive rendering + Parameter GUI
+
+## Export & shortcuts
+
+When the draw window is focused:
+
+- `S`: save SVG
+- `P`: save PNG (requires `resvg`; also saves the underlying SVG)
+- `V`: start/stop MP4 recording (requires `ffmpeg`)
+- `G`: save G-code
+- `Shift+G`: save G-code per layer (when your sketch returns multiple layers)
+
+Outputs are written under `paths.output_dir` (default: `data/output`), under per-kind subdirectories (`svg/`, `png/`, `gcode/`, ...).
+
+## Headless export (PNG)
+
+```bash
+python -m grafix export --callable sketch.main:draw --t 0.0
+python -m grafix export --callable sketch.main:draw --t 0.0 1.0 2.0 --out-dir data/output
+```
+
+With an explicit config file:
+
+```bash
+python -m grafix export --config path/to/config.yaml --callable sketch.main:draw --t 0.0
+```
+
+If you want to use the API directly, `Export` lives in `grafix.api`:
+
+```python
+from grafix.api import Export
 ```
 
 ## Examples
+
+<details>
+  <summary>Examples (grn)</summary>
 
 <!-- BEGIN:README_EXAMPLES_GRN -->
 <table>
@@ -65,27 +122,7 @@ if __name__ == "__main__":
 </table>
 <!-- END:README_EXAMPLES_GRN -->
 
-## Core API
-
-- `G` lets you generate primitives such as `sphere`, `polyhedron`, `grid`, and more.
-- `E` lets you modulate primitives such as `affine`, `fill`, `repeat`, and more.
-- `run` lets you render a user-defined `draw(t)` function on each frame.
-
-## Optional features
-
-- `L` lets you define layers (stroke color, thickness, etc.).
-- `cc` lets you map MIDI CC messages to any parameter.
-- `@primitive` lets you register custom primitives (they become available under `G`).
-- `@effect` lets you register custom effects (they become available under `E`).
-- `@preset` lets you register reusable components (only selected params are exposed to the Parameter GUI).
-- `P` lets you call registered presets as `P.<name>(...)`.
-- `Export` provides a headless export entrypoint.
-- `Parameter GUI` lets you tweak parameters live while the sketch is running.
-- Keyboard shortcuts let you export output quickly:
-  - `P` saves a `.png` image
-  - `S` saves a `.svg` file
-  - `V` records an `.mp4` video
-  - `G` saves a `.gcode` file for pen plotters
+</details>
 
 ## Extending (custom primitives / effects)
 
@@ -109,6 +146,7 @@ Notes:
 
 - Built-in primitives/effects must provide `meta=...` (enforced).
 - For user-defined ops, `meta` is optional. If omitted, parameters are not shown in the Parameter GUI.
+- User-defined modules need to be imported once to register the ops.
 
 ## Presets (reusable components)
 
@@ -119,7 +157,14 @@ from grafix import P, preset
 
 
 @preset(meta={"scale": {"kind": "float", "ui_min": 0.1, "ui_max": 10.0}})
-def grid_system_frame(*, n_rows: int=5, r_cols: int=8, name=None, key=None):
+def grid_system_frame(
+    *,
+    scale: float = 1.0,
+    n_rows: int = 5,
+    n_cols: int = 8,
+    name=None,
+    key=None,
+):
     ...
 
 
@@ -132,18 +177,27 @@ For IDE completion of `P.<name>(...)`, regenerate stubs after adding/changing pr
 python -m grafix stub
 ```
 
-## Configuration
+## Configuration (`config.yaml`)
 
 A `config.yaml` lets you locate external fonts and choose where Grafix writes runtime outputs (`.svg`, `.png`, `.mp4`, `.gcode`).
 
-Grafix starts from the packaged defaults (`grafix/resource/default_config.yaml`) and then overlays user configs.
+Grafix starts from the packaged defaults (`grafix/resource/default_config.yaml`) and then overlays user config(s).
 
-Config overlay order (later wins):
+Load order (later wins):
 
-- packaged defaults: `grafix/resource/default_config.yaml`
+1. packaged defaults
+2. discovered config (0 or 1 file; first found wins)
+3. explicit config path (if provided)
+
+Config search (first found wins):
+
 - `./.grafix/config.yaml` (project-local)
 - `~/.config/grafix/config.yaml` (per-user)
+
+You can also pass an explicit config path:
+
 - `run(..., config_path="path/to/config.yaml")`
+- `python -m grafix export --config path/to/config.yaml`
 
 Paths support `~` and environment variables like `$HOME`.
 
@@ -155,8 +209,8 @@ python -c "from importlib.resources import files; print(files('grafix').joinpath
 $EDITOR .grafix/config.yaml
 ```
 
-Config overlay is a top-level shallow update (no deep merge). If you override `export:`, keep both `export.png` and `export.gcode`
-blocks from the packaged defaults.
+Overlay is a top-level shallow update (no deep merge). If you override `export:`, keep both `export.png` and `export.gcode` blocks
+from the packaged defaults.
 
 To autoload user presets from a directory:
 
@@ -188,105 +242,21 @@ midi:
       mode: "7bit"
 ```
 
-## Not implemented yet
+## Troubleshooting
 
-- LFOs to modulate any parameters with rhythm
+- `resvg が見つかりません`: install `resvg` and ensure it is on `PATH` (macOS: `brew install resvg`)
+- `ffmpeg が見つかりません`: install `ffmpeg` (macOS: `brew install ffmpeg`)
 
 ## Development
 
-### Geometry (the core data model)
-
-Grafix is built around an immutable `Geometry` node, which represents a _recipe_ (not yet realized polylines).
-Nodes form a DAG (directed acyclic graph):
-
-- `op`: the operator name (primitive/effect/concat are stored uniformly)
-- `inputs`: child `Geometry` nodes (empty for primitives)
-- `args`: normalized `(name, value)` pairs
-- `id`: a content-based signature derived from `(op, inputs, args)`
-
-Primitives (`G.*`) create leaf `Geometry` nodes. Effects (`E.*`) take one or more input `Geometry`s and return a new `Geometry`
-that references them. Chaining operations in `draw(t)` builds the DAG.
-
-When `parameter_gui` is enabled, the GUI edits the parameters (`args`) of ops. Updating a parameter creates new `Geometry` nodes
-with new `id`s, while unchanged subgraphs keep their `id`s — which makes caching/reuse straightforward during interactive previews.
-
-### RealizedGeometry (what primitives/effects compute)
-
-Evaluating the `Geometry` DAG produces `RealizedGeometry`, a compact polyline representation:
-
-- `coords`: `np.ndarray` of `float32`, shape `(N, 3)` (x, y, z). A 2D `(N, 2)` array is also accepted (z=0 is implied).
-- `offsets`: `np.ndarray` of `int32`, shape `(M+1,)`, where polyline `i` is `coords[offsets[i]:offsets[i+1]]`.
-  `offsets[0]` is `0` and `offsets[-1]` equals `N`.
-
-Custom primitives return a `RealizedGeometry`. Custom effects take `Sequence[RealizedGeometry]` (usually 1 input) and return a new
-`RealizedGeometry`. Treat input arrays as immutable (`writeable=False`) and avoid in-place mutation.
-
-Dev tools (optional):
-
 ```bash
-pip install -e ".[dev]"
+# run without installation
+PYTHONPATH=src python sketch/main.py
+
+# tests / lint / typecheck
+PYTHONPATH=src pytest -q
+ruff check .
+mypy src/grafix
 ```
 
-Run a sketch:
-
-```bash
-python sketch/readme.py
-```
-
-List built-in ops:
-
-```bash
-python -m grafix list effects
-python -m grafix list primitives
-python -m grafix list
-```
-
-Regenerate API stubs (for `P.<name>(...)` completion):
-
-```bash
-python -m grafix stub
-```
-
-Headless export (PNG):
-
-```bash
-python -m grafix export --callable your_module:draw --t 0.0
-python -m grafix export --callable your_module:draw --t 0.0 1.0 2.0 --out-dir data/output
-```
-
-Note: `--callable module:attr` follows Python import rules (make sure the module is importable from your current working directory / `PYTHONPATH`).
-
-Benchmark (effect perf + report):
-
-```bash
-python -m grafix benchmark -- --help
-```
-
-## Dependencies
-
-Core (default):
-
-- numpy
-- numba
-- shapely
-- pyclipper
-- moderngl
-- pyglet
-- imgui
-- fontPens
-- fontTools
-- PyYAML
-- mido
-- python-rtmidi
-- psutil
-
-External:
-
-- resvg (svg to png)
-- ffmpeg (video encoding)
-
-Dev (optional):
-
-- pytest
-- ruff
-- mypy
+See: `architecture.md` and `docs/developer_guide.md`.

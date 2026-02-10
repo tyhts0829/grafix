@@ -45,7 +45,7 @@ Grafix は「線（ポリライン列）を **生成** し、effect を **チェ
   - `resolve_params`（base/GUI/CC の統合 + 量子化 + 観測レコード化）
   - `ParamStore`（状態・メタ・ラベル・表示順序の永続）
 - `src/grafix/export/`（ヘッドレス出力）
-  - SVG/画像/G-code などの “外へ出す” 変換（現状はスタブ）
+  - SVG/PNG/G-code などの “外へ出す” 変換
 - `src/grafix/interactive/`（ランタイム / ウィンドウ / GUI / GL）
   - `runtime/`：複数ウィンドウを 1 ループで回す・各サブシステムを分離
   - `parameter_gui/`：pyimgui + pyglet で `ParamStore` を編集する GUI
@@ -71,7 +71,7 @@ src/grafix/core           : Geometry / realize / registries（ドメイン核）
   v
 src/grafix/core/pipeline   : Scene 正規化 / Layer style 解決 / realize（出力・描画の共通パイプライン）
   |\
-  | \__ src/grafix/export        : RealizedLayer -> ファイル（ヘッドレス出力、現状はスタブ）
+  | \__ src/grafix/export        : RealizedLayer -> ファイル（ヘッドレス出力）
   |
   v
 src/grafix/interactive     : pyglet + ModernGL + Parameter GUI（対話プレビュー）
@@ -159,8 +159,10 @@ GUI ウィンドウは同じループで `ParameterGUIWindowSystem.draw_frame()`
 
 組み込みは **import 時の副作用** で登録される。
 
-- `src/grafix/api/primitives.py` が `grafix.core.primitives.circle/polygon/polyhedron` を import して登録させる
-- `src/grafix/api/effects.py` が `grafix.core.effects.scale/rotate/fill` を import して登録させる
+- `src/grafix/api/primitives.py` が `ensure_builtin_primitives_registered()` を呼び、
+  `src/grafix/core/builtins.py` のモジュール一覧を import して登録させる
+- `src/grafix/api/effects.py` が `ensure_builtin_effects_registered()` を呼び、
+  `src/grafix/core/builtins.py` のモジュール一覧を import して登録させる
 
 この方式により、`from grafix.api import G, E` した時点で “組み込み op が使用可能” になる。
 
@@ -169,7 +171,7 @@ GUI ウィンドウは同じループで `ParameterGUIWindowSystem.draw_frame()`
 1. `src/grafix/core/primitives/` か `src/grafix/core/effects/` に新モジュールを追加
 2. `@primitive(meta=...)` または `@effect(meta=...)` で関数を登録
 3. 起動時に import されるようにする（どちらか）
-   - `src/grafix/api/primitives.py` / `src/grafix/api/effects.py` に import を追加する（組み込みとして常時有効化）
+   - `src/grafix/core/builtins.py` のモジュール一覧へ追加する（組み込みとして常時有効化）
    - あるいはスケッチ側でそのモジュールを import する（必要時だけ有効化）
 
 ## 6. realize（評価）とキャッシュ
@@ -313,11 +315,9 @@ interactive の 1 フレーム描画は、概ね次の順で行う。
 
 ## 11. 現状の制約・未実装（ドキュメント上の注意）
 
-README には MIDI/動画/G-code/ショートカット等の構想があるが、`src/` の現状実装に存在しないものがある。
+Grafix は “core は Python だけで完結” を基本としつつ、いくつかの機能は外部コマンドに依存する。
 
-- CC 経路は `parameter_context(cc_snapshot=...)` と `resolve_params(..., source="cc")` まで用意されているが、
-  現行 `run` 経路では `cc_snapshot=None` のため、MIDI 入力の取り込みは未接続
-- ヘッドレス export の導線（`src/grafix/api/export.py:Export` と `src/grafix/export/*`）はあるが、実ファイル生成は未実装（スタブ）
+- PNG export は `resvg`、動画録画は `ffmpeg` を外部コマンドとして要求する（見つからなければ実行時に例外）
 - `RealizeCache` の eviction（容量上限/LRU）は未実装
 
 このファイルは **現状の `src/` 実装** に合わせて記述しているため、README/spec と齟齬がある場合は `src/` を正として読み替える。

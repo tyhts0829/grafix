@@ -8,6 +8,7 @@
 - `mcp_artist.md` の方針（MCP は「実行・検証・集約」を担い、role の創作判断は LLM に残す / stdio MCP / ツール契約の先行固定 / workspace 分離）を踏まえ、art loop の安定性と反復速度を上げたい。
 - 現状の `artist` は「M 体のサブエージェントで独立実装」として設計されているが、運用上は **orchestrator の会話コンテキスト肥大**と **実行手順のブレ**が起きやすい。
 - そこで、`grafix-art-loop-artist` を **MCP ツール呼び出し 1 回**に畳み、Codex CLI を別プロセスで起動して「子エージェント（artist role）」に任せる。
+- 子エージェントの起動は `codex exec`（非対話・1-shot）を採用し、PROMPT 先頭で `$grafix-art-loop-artist` を指定して skill を有効化する。
 
 ## 目的
 
@@ -50,6 +51,12 @@
 - `elapsed_ms`
 - `error_summary`（失敗時のみ、先頭数行）
 
+実行方法（決定）:
+
+- Codex CLI は次の形で 1-shot 実行する（PROMPT は stdin から渡す）。
+  - `codex -a never -s workspace-write exec -C "<variant_dir>" - --output-last-message "<variant_dir>/codex_last_message.md"`
+- stdin の PROMPT 先頭に `$grafix-art-loop-artist` を含める（普段の skill 起動記法に揃える）。
+
 ### Tool: `art_loop.read_text_tail`（任意・必要になったら）
 
 - 入力: `path`, `max_chars`
@@ -59,8 +66,8 @@
 
 ### 0) 仕様確定（先に決める）
 
-- [ ] Codex CLI の **非対話実行**の確定（skill 指定方法 / 1-shot 実行方法 / 終了条件）。
-- [ ] Codex CLI 呼び出し時の **作業ディレクトリ**（`cwd`）の確定（原則 `variant_dir`）。
+- [x] Codex CLI の **非対話・1-shot 実行**は `codex exec` + stdin PROMPT を採用する（PROMPT 先頭は `$grafix-art-loop-artist`）。
+- [ ] Codex CLI 呼び出し時の **作業ディレクトリ**は `-C <variant_dir>` を原則とする（skill 解決が崩れる場合のみ `-C <repo_root>` + prompt 内 `cd <variant_dir>` に寄せる）。
 - [ ] 子エージェントが読む入力を `artist_context.json` に一本化するか、追加の「追記指示」を tool 引数に持つか決める（推奨: まずは JSON 一本化）。
 - [ ] MCP 実装に `mcp` Python SDK を追加するか決める（依存追加は Ask-first）。
 
@@ -70,7 +77,7 @@
 - [ ] `art_loop.run_codex_artist` を実装する。
 - [ ] パス検証（`variant_dir` が `sketch/agent_loop/runs/` 配下であること、`..` 脱出禁止）。
 - [ ] `TMPDIR` を `variant_dir/.tmp`、`CODEX_HOME` を `variant_dir/.codex_home` へ固定する。
-- [ ] Codex CLI をサブプロセス実行し、`stdout.txt` / `stderr.txt` を `variant_dir` へ保存する。
+- [ ] Codex CLI をサブプロセス実行し、`stdout.txt` / `stderr.txt` / `codex_last_message.md` を `variant_dir` へ保存する（PROMPT は stdin、先頭 `$grafix-art-loop-artist`）。
 - [ ] 成功/失敗に関わらず `artifact.json` を `variant_dir` に残す（`schemas.md` の `Artifact` 準拠）。
 - [ ] MCP 返却は短い JSON のみにする（ログ全文は返さない）。
 
@@ -96,5 +103,4 @@
 
 ## 実装前に確認したい点（質問）
 
-- Codex CLI を tool から起動するコマンド形は何を採用しますか？（例: `codex run --skill grafix-art-loop-artist --message ...` のような 1-shot 起動が可能か）
-- `mcp` Python SDK の依存追加をしてよいですか？（Yes の場合、`pyproject.toml` に extras で追加する想定）；こちらで入れました。
+- `mcp` Python SDK の依存追加をしてよいですか？（Yes の場合、`pyproject.toml` に extras で追加する想定）
