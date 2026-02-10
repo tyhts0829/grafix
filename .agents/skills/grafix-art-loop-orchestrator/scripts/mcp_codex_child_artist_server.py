@@ -20,24 +20,46 @@ def _find_repo_root(start: Path) -> Path:
     return start
 
 
-def _read_lsp_message(stream: Any) -> dict[str, Any] | None:
+def _read_mcp_message(stream: Any) -> dict[str, Any] | None:
+    """
+    MCP stdio: prefer newline-delimited JSON (JSON Lines).
+    Also accept Content-Length framed JSON as a fallback (compat).
+    """
+    first = stream.readline()
+    if not first:
+        return None
+
+    line = first.strip()
+
+    # JSON Lines
+    if line.startswith(b"{"):
+        try:
+            return json.loads(line.decode("utf-8"))
+        except json.JSONDecodeError:
+            # fall through to framed mode (rare)
+            pass
+
+    # Content-Length framed mode (LSP-style)
     headers: dict[str, str] = {}
-    while True:
-        line = stream.readline()
-        if not line:
-            return None
-        if line in (b"\n", b"\r\n"):
+    pending = [first]
+    while pending:
+        raw = pending.pop(0)
+        if raw in (b"\n", b"\r\n"):
             break
         try:
-            key, value = line.decode("ascii").split(":", 1)
+            key, value = raw.decode("ascii").split(":", 1)
         except ValueError:
             continue
         headers[key.strip().lower()] = value.strip()
 
+        nxt = stream.readline()
+        if not nxt:
+            return None
+        pending.append(nxt)
+
     content_length = headers.get("content-length")
     if content_length is None:
         return None
-
     try:
         n = int(content_length)
     except ValueError:
@@ -46,14 +68,18 @@ def _read_lsp_message(stream: Any) -> dict[str, Any] | None:
     body = stream.read(n)
     if not body:
         return None
-
     return json.loads(body.decode("utf-8"))
 
 
-def _write_lsp_message(stream: Any, payload: dict[str, Any]) -> None:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    stream.write(f"Content-Length: {len(data)}\r\n\r\n".encode("ascii"))
-    stream.write(data)
+def _write_mcp_message(stream: Any, payload: dict[str, Any]) -> None:
+    """
+    Emit JSON Lines only (one JSON object per line).
+    Do NOT pretty-print (no newlines inside a message).
+    """
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    stream.write(data + b"\n")
     stream.flush()
 
 
@@ -143,7 +169,9 @@ def _write_failure_artifact(repo_root: Path, variant_dir: Path) -> None:
     )
 
 
-def _tool_run_codex_artist(repo_root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+def _tool_run_codex_artist(
+    repo_root: Path, arguments: dict[str, Any]
+) -> dict[str, Any]:
     variant_dir_arg = arguments.get("variant_dir")
     if not isinstance(variant_dir_arg, str) or not variant_dir_arg.strip():
         raise ValueError("variant_dir is required")
@@ -284,18 +312,35 @@ def _handle_request(repo_root: Path, req: dict[str, Any]) -> dict[str, Any]:
     method = req.get("method")
     params = req.get("params") or {}
     req_id = req.get("id")
-    result: dict[str, Any]
 
     try:
         if method == "initialize":
             proto = params.get("protocolVersion") or "2024-11-05"
             result = {
                 "protocolVersion": proto,
-                "capabilities": {"tools": {}},
+                "capabilities": {
+                    # tools を提供するなら listChanged を宣言（true/false どちらでもOK）
+                    "tools": {"listChanged": False},
+                    # なくても動くはずだが、クライアントが setLevel を投げるケースがあるので宣言＋実装すると安定
+                    "logging": {},
+                    # あなたは resources/list / prompts/list を実装しているので、宣言しておくと整合が取れる
+                    "resources": {"subscribe": False, "listChanged": False},
+                    "prompts": {"listChanged": False},
+                },
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             }
+
+        elif method == "ping":
+            # MCP ping: result は空オブジェクト
+            result = {}
+
+        elif method == "notifications/initialized":
+            # 通常は notification (idなし) だが、万一 request で来ても落とさない
+            result = {}
+
         elif method == "tools/list":
             result = {"tools": TOOLS}
+
         elif method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments") or {}
@@ -305,14 +350,18 @@ def _handle_request(repo_root: Path, req: dict[str, Any]) -> dict[str, Any]:
                 result = _tool_read_text_tail(repo_root, arguments=arguments)
             else:
                 raise ValueError(f"unknown tool: {name}")
+
         elif method == "resources/list":
             result = {"resources": []}
+
         elif method == "prompts/list":
             result = {"prompts": []}
+
         else:
             raise ValueError(f"unknown method: {method}")
 
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
     except Exception as e:
         return {
             "jsonrpc": "2.0",
@@ -323,20 +372,20 @@ def _handle_request(repo_root: Path, req: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> None:
     repo_root = _find_repo_root(Path.cwd()).resolve()
-
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
 
     while True:
-        msg = _read_lsp_message(stdin)
+        msg = _read_mcp_message(stdin)
         if msg is None:
             return
 
         if "method" not in msg:
             continue
 
+        # notifications は id が無いので返さない。requestだけ返す。
         if "id" in msg:
-            _write_lsp_message(stdout, _handle_request(repo_root, msg))
+            _write_mcp_message(stdout, _handle_request(repo_root, msg))
 
 
 if __name__ == "__main__":
