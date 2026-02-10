@@ -1,7 +1,7 @@
 # Grafix Art Loop runディレクトリ生成ツール実装計画（2026-02-09）
 
 作成日: 2026-02-09  
-ステータス: 提案（未実装）
+ステータス: 実装済み
 
 ## 背景
 
@@ -60,43 +60,43 @@
 - `<root>/<run_id>/.tmp/`（一時作業用。常に作る）
 - `<root>/<run_id>/run_summary/`（最終成果物置き場。常に作る）
 - `<root>/<run_id>/iter_XX/`（`XX=01..N` を作る）
-- `<root>/<run_id>/iter_XX/vYY/`（`YY=01..M` を作る。zero pad は `M` 桁数に合わせる）
+- `<root>/<run_id>/iter_XX/vYY/`（`YY=01..M` を作る。zero pad は 2 桁固定、`M>=100` の場合は桁数に合わせて増やす）
 
 ## 実装タスク（チェックリスト）
 
 ### 1) 仕様確定
 
-- [ ] run_id 生成規則を確定する（`run_YYYYMMDD_HHMMSS_n{n}m{m}` のみに固定）。
-- [ ] variant ディレクトリ名を確定する（`v1` か `v01` か。新規 run は `vYY` を推奨）。
-- [ ] `.latest_run_id` / `.last_run_id` を更新するかを決める（更新するなら opt-in を推奨）。
+- [x] run_id 生成規則を確定する（`run_YYYYMMDD_HHMMSS_n{n}m{m}` のみに固定）。
+- [x] variant ディレクトリ名を確定する（`v1` か `v01` か。新規 run は `vYY` を推奨）。
+- [x] `.latest_run_id` / `.last_run_id` を更新するかを決める（更新するなら opt-in を推奨）。
 
 ### 2) スクリプト実装
 
-- [ ] `init_run_dir.py` を追加する。
-- [ ] `--dry-run` を実装する（mkdir せず計画表示のみ）。
-- [ ] 実行結果として `run_id` と `run_dir` を 1 行で出力する（後続から拾いやすくする）。
-- [ ] 出力先が `sketch/agent_loop/runs` 配下であることを前提にし、境界逸脱を避ける（必要最小の検証に留める）。
-- [ ] `--update-latest` 指定時のみ `.latest_run_id` / `.last_run_id` を更新する。
+- [x] `init_run_dir.py` を追加する。
+- [x] `--dry-run` を実装する（mkdir せず計画表示のみ）。
+- [x] 実行結果として `run_id` と `run_dir` を 1 行で出力する（後続から拾いやすくする）。
+- [x] 出力先が `sketch/agent_loop/runs` 配下であることを前提にし、境界逸脱を避ける（必要最小の検証に留める）。
+- [x] `--update-latest` 指定時のみ `.latest_run_id` / `.last_run_id` を更新する。
 
 ### 3) skills への接続
 
-- [ ] orchestrator の `SKILL.md` に run 作成の標準コマンドを追記する。
-- [ ] 生成後の run ルート配下以外に出力しない運用（`.tmp` も run 配下）を再掲する。
+- [x] orchestrator の `SKILL.md` に run 作成の標準コマンドを追記する。
+- [x] 生成後の run ルート配下以外に出力しない運用（`.tmp` も run 配下）を再掲する。
 
 ### 4) 検証
 
-- [ ] `--dry-run` で作成予定パスが期待どおり出ること。
-- [ ] 実生成して、`iter_01..iter_N` と `vYY` が揃うこと。
-- [ ] 生成物が `sketch/agent_loop/runs/<run_id>/` 配下に限定されること。
-- [ ] `--update-latest` 指定時のみ `.latest_run_id` が更新されること。
+- [x] `--dry-run` で作成予定パスが期待どおり出ること。
+- [x] 実生成して、`iter_01..iter_N` と `vYY` が揃うこと。
+- [x] 生成物が `sketch/agent_loop/runs/<run_id>/` 配下に限定されること。
+- [x] `--update-latest` 指定時のみ `.latest_run_id` が更新されること。
 
 ## 受け入れ条件（DoD）
 
-- [ ] `init_run_dir.py` だけで run ディレクトリ骨格が生成できる。
-- [ ] run_id が一定の規則で生成され、run 間で揺れない。
-- [ ] 新規 run の variant ディレクトリ命名が固定される（推奨: `vYY`）。
-- [ ] `--dry-run` があり、危険な mkdir が先に見える。
+- [x] `init_run_dir.py` だけで run ディレクトリ骨格が生成できる。
+- [x] run_id が一定の規則で生成され、run 間で揺れない。
+- [x] 新規 run の variant ディレクトリ命名が固定される（推奨: `vYY`）。
+- [x] `--dry-run` があり、危険な mkdir が先に見える。
 
 ## 実装開始前確認
 
-- [ ] この計画で実装に進めてよいか、ユーザー承認を得る。
+- [x] この計画で実装に進めてよいか、ユーザー承認を得る。
