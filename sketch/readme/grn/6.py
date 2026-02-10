@@ -24,7 +24,7 @@ def draw(t):
         phase=45.0,
         sweep=360.0,
         center=(23.077, 22.527, 0.0),
-        scale=2.0,
+        scale=1.718,
     )
 
     e = (

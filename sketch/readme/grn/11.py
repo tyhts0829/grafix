@@ -50,7 +50,7 @@ def draw(t):
             activate=True,
             angle_sets=1,
             angle=45.0,
-            density=408.935,
+            density=500,
             spacing_gradient=0.0,
             remove_boundary=False,
         )

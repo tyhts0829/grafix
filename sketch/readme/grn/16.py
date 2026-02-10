@@ -10,46 +10,36 @@ CANVAS_HEIGHT = 210
 
 def draw(t):
     frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
-    g = G.polygon(
+    f1 = P.flow(
         activate=True,
-        n_sides=128,
-        phase=45.0,
-        sweep=360.0,
-        center=(74.0, 87.363, 0.0),
-        scale=3.093,
+        center=(24.8, 34.963, 0.0),
+        scale=(2.48, 2.48, 1.0),
+        fill_density_coef=0.811,
+        fill_angle=0.0,
+        subdivide_levels=6,
+        displace_amplitude=(5.0, 5.0, 0.0),
+        displace_frequency=(0.025, 0.025, 0.0),
     )
 
-    e = (
-        E.isocontour(
-            activate=True,
-            spacing=0.46399999999999997,
-            phase=-8.007,
-            max_dist=55.669999999999995,
-            mode="outside",
-            grid_pitch=1.142,
-            gamma=2.8699999999999997,
-            level_step=1,
-            auto_close_threshold=0.001,
-            keep_original=True,
-        )
-        .lowpass(
-            activate=True,
-            step=2.459,
-            sigma=4.742,
-            closed="auto",
-        )
-        .fill(
-            activate=True,
-            angle_sets=1,
-            angle=45.0,
-            density=408.935,
-            spacing_gradient=0.0,
-            remove_boundary=False,
-        )
+    f2 = P.flow(
+        activate=True,
+        center=(24.8, 34.963, 0.0),
+        scale=(2.48, 2.48, 1.0),
+        fill_density_coef=0.811,
+        fill_angle=139.227,
+        subdivide_levels=6,
+        displace_amplitude=(5.0, 5.0, 0.0),
+        displace_frequency=(0.025, 0.025, 0.0),
     )
 
-    g = e(g)
-    return frame, g
+    e = E.rotate(
+        activate=True,
+        auto_center=True,
+        rotation=(0.0, 0.0, 45.0),
+    )
+
+    f2 = e(f2)
+    return f1, f2, frame
 
 
 if __name__ == "__main__":
@@ -61,7 +51,7 @@ if __name__ == "__main__":
         render_scale=5,
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
-        midi_port_name="Grid",
+        midi_port_name="auto",
         midi_mode="14bit",
         fps=24,
     )
