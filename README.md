@@ -5,7 +5,7 @@ Grafix is a Python-based creative coding framework for line-based geometry:
 - Generate primitives (`G`)
 - Chain effects (`E`)
 - Real-time interactive rendering (`run`)
-- Export for plotter-ready G-code and visuals (SVG/PNG).
+- Export for plotter-ready G-code and visuals (SVG/PNG/MP4).
 
 <img src="docs/readme/top_movie.gif" width="1200" alt="Grafix demo" />
 <img src="docs/readme/penplot_movie.gif" width="1200" alt="Penplotting" />
