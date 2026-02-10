@@ -97,5 +97,4 @@
 ## 実装前に確認したい点（質問）
 
 - Codex CLI を tool から起動するコマンド形は何を採用しますか？（例: `codex run --skill grafix-art-loop-artist --message ...` のような 1-shot 起動が可能か）
-- `mcp` Python SDK の依存追加をしてよいですか？（Yes の場合、`pyproject.toml` に extras で追加する想定）
-
+- `mcp` Python SDK の依存追加をしてよいですか？（Yes の場合、`pyproject.toml` に extras で追加する想定）；こちらで入れました。
