@@ -207,9 +207,9 @@ paths:
     - "sketch/presets"
 ```
 
-## LLM generated art with closed-loop (work in progress)
+## Prompt-to-Physical art (WIP)
 
-I'm experimenting with a fully autonomous LLM loop that creates Grafix sketches end-to-end.
+I'm experimenting with a fully autonomous LLM loop that creates Grafix sketches end-to-end from a single prompt.
 
 It iterates through:
 
