@@ -5,7 +5,8 @@ Grafix is a Python-based creative coding framework for line-based geometry:
 - Generate primitives (`G`)
 - Chain effects (`E`)
 - Real-time interactive rendering (`run`)
-- Export for plotter-ready G-code and visuals (SVG/PNG/MP4).
+- Export visuals (SVG / PNG)
+- Export plotter-ready G-code
 
 <img src="docs/readme/top_movie.gif" width="1200" alt="Grafix demo" />
 <img src="docs/readme/penplot_movie.gif" width="1200" alt="Penplotting" />
@@ -223,17 +224,28 @@ midi:
       mode: "7bit"
 ```
 
-## Headless export (PNG)
+## Experiments (work in progress)
+
+We are experimenting with an LLM agent that generates Grafix sketches and iterates on the rendered output.
+The image below (`docs/readme/agent_generated_art.png`) is a contact sheet produced by this loop.
+
+<img src="docs/readme/agent_generated_art.png" width="1200" alt="LLM-generated sketches (work in progress)" />
+
+The current implementation lives under `.agents/skills/grafix-art-loop-*` and generated runs are saved under `sketch/agent_loop/runs/`.
+
+### Headless export (batch rendering)
+
+The loop uses `python -m grafix export` to render `draw(t)` without opening any window:
 
 ```bash
-python -m grafix export --callable sketch.main:draw --t 0.0
-python -m grafix export --callable sketch.main:draw --t 0.0 1.0 2.0 --out-dir data/output
+python -m grafix export --callable sketch.main:draw --t 0.0 --canvas 300 300
+python -m grafix export --callable sketch.main:draw --t 0.0 1.0 2.0 --canvas 300 300 --out-dir data/output
 ```
 
 With an explicit config file:
 
 ```bash
-python -m grafix export --config path/to/config.yaml --callable sketch.main:draw --t 0.0
+python -m grafix export --config path/to/config.yaml --callable sketch.main:draw --t 0.0 --canvas 300 300
 ```
 
 If you want to use the API directly, `Export` lives in `grafix.api`:
@@ -241,6 +253,11 @@ If you want to use the API directly, `Export` lives in `grafix.api`:
 ```python
 from grafix.api import Export
 ```
+
+Notes:
+
+- PNG export requires `resvg` on `PATH`.
+- If you're running from this repo without installing, use `PYTHONPATH=src python -m grafix export ...`.
 
 ## Troubleshooting
 
