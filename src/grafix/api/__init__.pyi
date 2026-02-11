@@ -73,7 +73,7 @@ class _G(Protocol):
             angle: 回転角 [deg]
         """
         ...
-    def lissajous(self, *, activate: bool = ..., a: float = ..., b: float = ..., phase: float = ..., samples: int = ..., turns: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
+    def lissajous(self, *, activate: bool = ..., a: int = ..., b: int = ..., phase: float = ..., samples: int = ..., turns: float = ..., center: Vec3 = ..., scale: float = ...) -> Geometry:
         """
         リサージュ曲線を 1 本の開ポリラインとして生成する。
 

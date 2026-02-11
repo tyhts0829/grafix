@@ -18,8 +18,8 @@ def test_lissajous_realize_returns_single_polyline() -> None:
 
 def test_lissajous_is_deterministic_for_same_params() -> None:
     params = dict(
-        a=3.25,
-        b=2.5,
+        a=3,
+        b=2,
         phase=45.0,
         samples=300,
         turns=1.75,
@@ -34,7 +34,7 @@ def test_lissajous_is_deterministic_for_same_params() -> None:
 
 
 def test_lissajous_applies_center_and_scale() -> None:
-    params = dict(a=3.0, b=2.0, phase=30.0, samples=240, turns=1.0)
+    params = dict(a=3, b=2, phase=30.0, samples=240, turns=1.0)
     base = realize(G.lissajous(**params, center=(0.0, 0.0, 0.0), scale=1.0))
     transformed = realize(G.lissajous(**params, center=(10.0, -5.0, 2.0), scale=3.0))
 
@@ -46,8 +46,8 @@ def test_lissajous_applies_center_and_scale() -> None:
 def test_lissajous_is_not_forced_closed() -> None:
     realized = realize(
         G.lissajous(
-            a=3.0,
-            b=2.0,
+            a=3,
+            b=2,
             phase=0.0,
             samples=128,
             turns=0.75,

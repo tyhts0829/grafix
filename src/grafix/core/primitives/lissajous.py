@@ -15,8 +15,8 @@ from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import RealizedGeometry
 
 lissajous_meta = {
-    "a": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
-    "b": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
+    "a": ParamMeta(kind="int", ui_min=0, ui_max=20),
+    "b": ParamMeta(kind="int", ui_min=0, ui_max=20),
     "phase": ParamMeta(kind="float", ui_min=0.0, ui_max=360.0),
     "samples": ParamMeta(kind="int", ui_min=2, ui_max=8000),
     "turns": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
@@ -28,8 +28,8 @@ lissajous_meta = {
 @primitive(meta=lissajous_meta)
 def lissajous(
     *,
-    a: float = 3.0,
-    b: float = 2.0,
+    a: int = 3,
+    b: int = 2,
     phase: float = 90.0,
     samples: int = 512,
     turns: float = 1.0,
@@ -40,9 +40,9 @@ def lissajous(
 
     Parameters
     ----------
-    a : float, optional
+    a : int, optional
         X 方向の角周波数係数。
-    b : float, optional
+    b : int, optional
         Y 方向の角周波数係数。
     phase : float, optional
         X 方向の位相 [deg]。
@@ -71,8 +71,8 @@ def lissajous(
             "lissajous の center は長さ 3 のシーケンスである必要がある"
         ) from exc
 
-    a_f = float(a)
-    b_f = float(b)
+    a_i = int(a)
+    b_i = int(b)
     phase_rad = math.radians(float(phase))
     turns_f = float(turns)
     s_f = float(scale)
@@ -85,8 +85,8 @@ def lissajous(
         endpoint=True,
         dtype=np.float32,
     )
-    x = np.sin(np.float32(a_f) * t + np.float32(phase_rad)) * np.float32(0.5)
-    y = np.sin(np.float32(b_f) * t) * np.float32(0.5)
+    x = np.sin(np.float32(a_i) * t + np.float32(phase_rad)) * np.float32(0.5)
+    y = np.sin(np.float32(b_i) * t) * np.float32(0.5)
     z = np.zeros_like(x, dtype=np.float32)
 
     coords = np.stack([x, y, z], axis=1).astype(np.float32, copy=False)
