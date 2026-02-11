@@ -50,6 +50,14 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
   - `redundant_info` には、次回入力から削除/要約できる情報のみを書く。
   - `decisions_to_persist` には、次 run で固定適用する決定だけを最小表現で残す。
 
+## MCP（任意）: Codex CLI 子エージェントで artist を実行
+
+- MCP サーバ `grafix-art-loop-codex-child-artist` が登録されている場合、artist は **サブエージェント直書き**ではなく tool 呼び出しで実行する。
+  - tool: `art_loop.run_codex_artist`
+  - 引数: `variant_dir`（例: `sketch/agent_loop/runs/<run_id>/iter_XX/vYY`）
+- MCP サーバ登録手順は次を参照:
+  - `.agents/skills/grafix-art-loop-orchestrator/references/mcp_codex_child_artist_setup.md`
+
 ## 参照資料
 
 - イテレーション開始前に、まず次を読む。
