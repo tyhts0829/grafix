@@ -13,7 +13,7 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
 ## 全体像
 
 1. ideaman: 初回はアートの核となるアイデア`CreativeBrief.json`をM個生成。criticの批評を受け取った際は、それを踏まえた次反復の改善指示。
-2. artist: 1を基に、M体のサブエージェントで完全に独立したM個の`sketch.py`バリアントを実装。レンダリングして画像生成。
+2. artist: 1を基に、M体のサブエージェントで完全に独立したM個の`sketch.py`バリアントを実装。レンダリングして画像生成。後述のMCPツールでartistを呼び出すこと。
 3. critic: 2の**出力画像**を認識し、アートとしてのクオリティを批評した`critique.json`を生成。
 
 - 上記を1イテレーションとする。1イテレーションごとに、生成アートをタイル状に並べたcontact_sheet.pngを出力。
@@ -26,12 +26,7 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
   - `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python .agents/skills/grafix-art-loop-orchestrator/scripts/init_run_dir.py --n <N> --m <M> --update-latest`
 - 生成の多様性を保つため、以下を遵守すること。
   - 各 variant ごとに作業ディレクトリ（`.../iter_XX/vY/`）を切り、`artist` は `sketch.py` を独立して実装（各ファイルでアプローチを分ける）。
-  - 各 variant の `sketch.py` で、`@primitive` と `@effect` を使った自前実装を必ず定義し、実際の描画に使う。
-  - 当該 `run_id` 以外の `sketch/agent_loop/runs/*` の参照禁止
-  - `run_loop.py` / `template_art.py` などのスクリプトによるアイデア・批評・作品バリエーション生成禁止
-  - 標準 primitive/effect の組み合わせだけで完結させる実装を禁止。
   - ideaman/artist/critic は **LLM が担う role**であり、その出力はLLMによって直接生成する。つまり、固定 JSON を吐くだけの補助スクリプト（例: `tools/ideaman.py`）での代替禁止。
-- レンダリングは `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix export` を使い、各 variant の `out.png` を生成する。
 - `python` 実行が必要な場合は、必ず `/opt/anaconda3/envs/gl5/bin/python` を使う。
 - `python -m grafix ...` 形式の実行は、`/opt/anaconda3/envs/gl5/bin/python -m grafix ...` に統一。
 - contact sheet 生成は創作判断ではなく機械処理として、次を使って固定する。
@@ -50,19 +45,19 @@ description: Grafixアート反復（N回・M並列）を、エージェント�
   - `redundant_info` には、次回入力から削除/要約できる情報のみを書く。
   - `decisions_to_persist` には、次 run で固定適用する決定だけを最小表現で残す。
 
-## MCP（任意）: Codex CLI 子エージェントで artist を実行
+## Artist 実行
 
-- MCP サーバ `grafix-art-loop-codex-child-artist` が登録されている場合、artist は **サブエージェント直書き**ではなく tool 呼び出しで実行する。
+- 実行系 MCP サーバ `grafix-art-loop-codex-child-artist`
   - tool: `art_loop.run_codex_artist`
   - 引数: `variant_dir`（例: `sketch/agent_loop/runs/<run_id>/iter_XX/vYY`）
-- MCP サーバ登録手順は次を参照:
-  - `.agents/skills/grafix-art-loop-orchestrator/references/mcp_codex_child_artist_setup.md`
+  - tool: `art_loop.read_text_tail`
+  - 用途: run 配下のログ末尾確認
 
 ## 参照資料
 
 - イテレーション開始前に、まず次を読む。
   - `.agents/skills/grafix-art-loop-orchestrator/references/project_quick_map.md`
-  - `.agents/skills/grafix-art-loop-orchestrator/references/grafix_usage_playbook.md`
+  - `.agents/skills/grafix-art-loop-orchestrator/references/grafix_artist_guide.md`
   - `.agents/skills/grafix-art-loop-orchestrator/references/contact_sheet_spec.md`（contact sheet 生成時）
 - 上記で足りる情報について、リポジトリ全体の横断探索をしない。
 - 追加探索は「不足している具体情報」に限定。`skill_improvement_report.json`に再発防止策を残す。

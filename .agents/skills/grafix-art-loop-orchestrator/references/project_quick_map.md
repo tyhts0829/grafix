@@ -11,13 +11,14 @@
 ## 最短参照順（Art Loop）
 
 1. `.agents/skills/grafix-art-loop-orchestrator/SKILL.md`
-2. `.agents/skills/grafix-art-loop-orchestrator/references/schemas.md`
-3. `.agents/skills/grafix-art-loop-orchestrator/references/contact_sheet_spec.md`（contact sheet 生成時）
-4. `.agents/skills/grafix-art-loop-ideaman/SKILL.md`
-5. `.agents/skills/grafix-art-loop-artist/SKILL.md`
-6. `.agents/skills/grafix-art-loop-critic/SKILL.md`
-7. `README.md`（Grafix 全体の基本）
-8. `architecture.md`（設計の背景が必要な場合のみ）
+2. `.agents/skills/grafix-art-loop-orchestrator/references/grafix_artist_guide.md`
+3. `.agents/skills/grafix-art-loop-orchestrator/references/schemas.md`
+4. `.agents/skills/grafix-art-loop-orchestrator/references/contact_sheet_spec.md`（contact sheet 生成時）
+5. `.agents/skills/grafix-art-loop-ideaman/SKILL.md`
+6. `.agents/skills/grafix-art-loop-artist/SKILL.md`
+7. `.agents/skills/grafix-art-loop-critic/SKILL.md`
+8. `README.md`（Grafix 全体の基本）
+9. `architecture.md`（設計の背景が必要な場合のみ）
 
 ## 主要ディレクトリ（最小）
 

@@ -9,6 +9,7 @@ description: CreativeBrief・critic指示を受けて、実装とレンダリン
 
 - `CreativeBrief` の情報を受けて、アート作品を1 バリアントを実装する。
 - Grafix でレンダリング(画像化)し、`Artifact`JSONを返す。形式は`.agents/skills/grafix-art-loop-orchestrator/references/schemas.md`参照
+- 実装ガイドは`.agents/skills/grafix-art-loop-orchestrator/references/grafix_artist_guide.md` 参照
 
 ## 必須ルール
 
@@ -25,19 +26,7 @@ description: CreativeBrief・critic指示を受けて、実装とレンダリン
 - 各 variant の `sketch.py` で `@primitive` を使った自前 primitive を最低 1 つ定義する。
 - 各 variant の `sketch.py` で `@effect` を使った自前 effect を最低 1 つ定義する。
 - 定義した自前 primitive/effect は実際の描画パスに必ず使用する（未使用定義を禁止）。
+- 各 variant の `sketch.py` で `from grafix.core.realized_geometry import RealizedGeometry` を import しない。
 - レンダリングの標準出力/標準エラーは、それぞれ `variant_dir/stdout.txt` / `variant_dir/stderr.txt` に保存する（長文ログを会話へ貼らない）。
+- レンダリングは `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix export` を使い、各 variant の `out.png` を生成する。
 - `references/artist_profiles/` の作家性プロファイルを尊重する。
-
-## 調査コスト削減（参照優先順）
-
-- まず `.agents/skills/grafix-art-loop-orchestrator/references/project_quick_map.md` を参照する。
-- 次に `.agents/skills/grafix-art-loop-orchestrator/references/grafix_usage_playbook.md` を参照する。
-- 上記で足りる情報は再調査しない。足りない情報だけ追加探索する。
-
-## primitive/effect レジストリ参照順（CLI優先）
-
-- 第1優先: `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix list primitives` /
-  `PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix list effects`。
-- フォールバック: 実行不能時のみ
-  `.agents/skills/grafix-art-loop-orchestrator/references/primitives.txt` /
-  `.agents/skills/grafix-art-loop-orchestrator/references/effects.txt`。

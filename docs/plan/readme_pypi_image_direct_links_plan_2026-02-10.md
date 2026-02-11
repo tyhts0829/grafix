@@ -15,18 +15,18 @@
 
 ### 1) 画像参照の洗い出し
 
-- [ ] `README.md` 内の `<img src="...">` を全件確認する
-- [ ] 相対パス参照のみを今回の変換対象に限定する
+- [x] `README.md` 内の `<img src="...">` を全件確認する
+- [x] 相対パス参照のみを今回の変換対象に限定する
 
 ### 2) 直リンク化
 
-- [ ] `docs/readme/...` の相対参照を `https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/...` へ置換する
-- [ ] 既存の `width` / `alt` など属性は維持する
+- [x] `docs/readme/...` の相対参照を `https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/...` へ置換する
+- [x] 既存の `width` / `alt` など属性は維持する
 
 ### 3) 反映確認
 
-- [ ] `README.md` を再走査し、相対画像参照が残っていないことを確認する
-- [ ] 変更差分が依頼範囲（README の画像 URL）のみに収まっていることを確認する
+- [x] `README.md` を再走査し、相対画像参照が残っていないことを確認する
+- [x] 変更差分が依頼範囲（README の画像 URL）のみに収まっていることを確認する
 
 ## 完了の定義
 
