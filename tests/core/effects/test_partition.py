@@ -8,13 +8,13 @@ import pytest
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 pytest.importorskip("shapely")
 
 
 @primitive
-def partition_test_square() -> RealizedGeometry:
+def partition_test_square() -> GeomTuple:
     """XY 平面上の矩形ループを 1 本返す。"""
     coords = np.array(
         [
@@ -26,11 +26,11 @@ def partition_test_square() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 4], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def partition_test_donut() -> RealizedGeometry:
+def partition_test_donut() -> GeomTuple:
     """XY 平面上の外周+穴（2 リング）を返す。"""
     coords = np.array(
         [
@@ -48,7 +48,7 @@ def partition_test_donut() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 4, 8], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _loop_centroid_xs(g: RealizedGeometry) -> np.ndarray:

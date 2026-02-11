@@ -16,7 +16,7 @@ from numba.typed import List  # type: ignore[attr-defined]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 from .util import transform_back, transform_to_xy_plane
 
 weave_meta = {
@@ -30,22 +30,21 @@ MAX_RELAXATION_ITERATIONS = 50
 MAX_STEP = 0.5
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
-def _iter_polylines(realized: RealizedGeometry):
-    offsets = realized.offsets
+def _iter_polylines(coords: np.ndarray, offsets: np.ndarray):
     for i in range(int(offsets.size) - 1):
         s = int(offsets[i])
         e = int(offsets[i + 1])
-        yield realized.coords[s:e]
+        yield coords[s:e]
 
 
-def _lines_to_realized(lines: Sequence[np.ndarray]) -> RealizedGeometry:
-    """ポリライン列を RealizedGeometry にまとめる。"""
+def _lines_to_realized(lines: Sequence[np.ndarray]) -> GeomTuple:
+    """ポリライン列を (coords, offsets) にまとめる。"""
     if not lines:
         return _empty_geometry()
 
@@ -62,7 +61,7 @@ def _lines_to_realized(lines: Sequence[np.ndarray]) -> RealizedGeometry:
     coords = (
         np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), dtype=np.float32)
     )
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _is_closed_polyline(vertices: np.ndarray) -> bool:
@@ -73,18 +72,18 @@ def _is_closed_polyline(vertices: np.ndarray) -> bool:
 
 @effect(meta=weave_meta)
 def weave(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     num_candidate_lines: int = 100,
     relaxation_iterations: int = 15,
     step: float = 0.125,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """入力閉曲線からウェブ状の線分ネットワークを生成する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     num_candidate_lines : int, default 100
         候補線本数（0–500 にクランプ）。
     relaxation_iterations : int, default 15
@@ -94,19 +93,16 @@ def weave(
 
     Returns
     -------
-    RealizedGeometry
-        ウェブ構造を含むポリライン集合。
+    tuple[np.ndarray, np.ndarray]
+        ウェブ構造を含むポリライン集合（coords, offsets）。
 
     Notes
     -----
     開ポリライン（始点と終点が一致しない線）は対象外とし、そのまま返す。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     num_lines = int(num_candidate_lines)
     num_lines = max(0, min(MAX_NUM_CANDIDATE_LINES, num_lines))
@@ -122,7 +118,7 @@ def weave(
 
     out_lines: list[np.ndarray] = []
     did_webify = False
-    for vertices in _iter_polylines(base):
+    for vertices in _iter_polylines(coords, offsets):
         if vertices.shape[0] < 3:
             out_lines.append(vertices)
             continue
@@ -140,7 +136,7 @@ def weave(
         )
 
     if not did_webify:
-        return base
+        return coords, offsets
     return _lines_to_realized(out_lines)
 
 

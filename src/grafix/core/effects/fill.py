@@ -13,7 +13,7 @@ import numpy as np
 from numba import njit  # type: ignore[attr-defined]
 
 from grafix.core.effect_registry import effect
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 from .util import transform_back, transform_to_xy_plane
 from grafix.core.parameters.meta import ParamMeta
 
@@ -31,12 +31,12 @@ fill_meta = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
-    # RealizedGeometry の「空」表現。
+def _empty_geometry() -> GeomTuple:
+    # (coords, offsets) の「空」表現。
     # offsets は常に先頭 0 を 1 つ持つ（ポリライン 0 本の意味）。
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _as_float_cycle(value: float | Sequence[float]) -> tuple[float, ...]:
@@ -749,12 +749,12 @@ def _generate_line_fill_evenodd_multi(
     return out_lines
 
 
-def _lines_to_realized(lines: Sequence[np.ndarray]) -> RealizedGeometry:
-    """ポリライン列を RealizedGeometry にまとめる。"""
+def _lines_to_realized(lines: Sequence[np.ndarray]) -> GeomTuple:
+    """ポリライン列を (coords, offsets) にまとめる。"""
     if not lines:
         return _empty_geometry()
 
-    # RealizedGeometry は「coords 1 本 + offsets」で複数ポリラインを表現する。
+    # Grafix のジオメトリは「coords 1 本 + offsets」で複数ポリラインを表現する。
     # ここでは lines を連結し、各線の終端 index を offsets に積む。
     coords_list: list[np.ndarray] = []
     offsets = np.zeros((len(lines) + 1,), dtype=np.int32)
@@ -766,26 +766,30 @@ def _lines_to_realized(lines: Sequence[np.ndarray]) -> RealizedGeometry:
         coords_list.append(ln.astype(np.float32, copy=False))
         acc += int(ln.shape[0])
         offsets[i + 1] = acc
-    coords = np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), dtype=np.float32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    coords = (
+        np.concatenate(coords_list, axis=0)
+        if coords_list
+        else np.zeros((0, 3), dtype=np.float32)
+    )
+    return coords, offsets
 
 
 @effect(meta=fill_meta)
 def fill(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     angle_sets: int | Sequence[int] = 1,
     angle: float | Sequence[float] = 45.0,
     density: float | Sequence[float] = 35.0,
     spacing_gradient: float | Sequence[float] = 0.0,
     remove_boundary: bool | Sequence[bool] = False,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """閉領域をハッチングで塗りつぶす。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     angle_sets : int | Sequence[int], default 1
         方向本数（シーケンス指定時はグループごとにサイクル適用）。1=単方向、2=90°クロス、3=60°間隔、...（180°を等分）。
     angle : float | Sequence[float], default 45.0
@@ -801,8 +805,8 @@ def fill(
 
     Returns
     -------
-    RealizedGeometry
-        境界線（必要なら）と塗り線を含む実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        境界線（必要なら）と塗り線を含む実体ジオメトリ（coords, offsets）。
 
     Notes
     -----
@@ -817,40 +821,37 @@ def fill(
     # 返すジオメトリの構造:
     # - remove_boundary=False: 入力境界ポリライン（そのまま）+ 生成したハッチ線分
     # - remove_boundary=True : ハッチ線分のみ
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     # ハッチ角は 180° を k 分割（π/k）する。
     # （0° と 180° は同方向扱いなので 2π ではなく π）
     # 1) 全体がほぼ平面なら、外周＋穴をグルーピングして even-odd 塗りを行う。
     # 3D -> XY 平面への整列で 2D 化し、生成した線分を元姿勢へ戻す。
-    global_threshold = _planarity_threshold(base.coords)
+    global_threshold = _planarity_threshold(coords)
     global_est = _estimate_global_xy_transform_pca(
-        base.coords,
-        base.offsets,
+        coords,
+        offsets,
         threshold=float(global_threshold),
     )
     if global_est is not None:
         coords_xy_all, rot_global, z_global = global_est
         coords2d_all = coords_xy_all[:, :2].astype(np.float32, copy=False)
-        if _is_degenerate_fill_input(coords2d_all, base.offsets):
-            return base
-        groups = _build_evenodd_groups(coords2d_all, base.offsets)
+        if _is_degenerate_fill_input(coords2d_all, offsets):
+            return coords, offsets
+        groups = _build_evenodd_groups(coords2d_all, offsets)
 
         out_lines: list[np.ndarray]
         if not groups:
             # ループが無い（またはリング条件を満たさない）場合は境界の有無だけを反映して返す。
             out_lines = []
-            for poly_i in range(int(base.offsets.size) - 1):
+            for poly_i in range(int(offsets.size) - 1):
                 if bool(remove_boundary_seq[poly_i % len(remove_boundary_seq)]):
                     continue
-                s = int(base.offsets[poly_i])
-                e = int(base.offsets[poly_i + 1])
-                out_lines.append(base.coords[s:e])
+                s = int(offsets[poly_i])
+                e = int(offsets[poly_i + 1])
+                out_lines.append(coords[s:e])
             return _lines_to_realized(out_lines)
 
         ref_height_global = float(np.max(coords2d_all[:, 1]) - np.min(coords2d_all[:, 1]))
@@ -861,9 +862,9 @@ def fill(
                 if bool(remove_boundary_seq[gi % len(remove_boundary_seq)]):
                     continue
                 for ring_i in ring_indices:
-                    s = int(base.offsets[ring_i])
-                    e = int(base.offsets[ring_i + 1])
-                    out_lines.append(base.coords[s:e])
+                    s = int(offsets[ring_i])
+                    e = int(offsets[ring_i + 1])
+                    out_lines.append(coords[s:e])
             return _lines_to_realized(out_lines)
 
         out_lines = []
@@ -880,9 +881,9 @@ def fill(
             # 境界保持（グループ単位）
             if not remove_boundary_i:
                 for ring_i in ring_indices:
-                    s = int(base.offsets[ring_i])
-                    e = int(base.offsets[ring_i + 1])
-                    out_lines.append(base.coords[s:e])
+                    s = int(offsets[ring_i])
+                    e = int(offsets[ring_i + 1])
+                    out_lines.append(coords[s:e])
 
             # density<=0 は「塗り線無し」。境界だけで終わる。
             if not np.isfinite(density_i) or density_i <= 0.0:
@@ -897,8 +898,8 @@ def fill(
             g_offsets = np.zeros((len(ring_indices) + 1,), dtype=np.int32)
             acc = 0
             for j, ring_i in enumerate(ring_indices):
-                s = int(base.offsets[ring_i])
-                e = int(base.offsets[ring_i + 1])
+                s = int(offsets[ring_i])
+                e = int(offsets[ring_i + 1])
                 poly = coords2d_all[s:e]
                 if poly.shape[0] < 2:
                     continue
@@ -930,10 +931,10 @@ def fill(
     # 2) 全体が非平面なら、各ポリラインごとに「平面なら塗り、非平面なら境界のみ」とする。
     # この経路では外環＋穴の統合は行わない（グローバルな平面が取れないため）。
     out_lines = []
-    for poly_i in range(int(base.offsets.size) - 1):
-        s = int(base.offsets[poly_i])
-        e = int(base.offsets[poly_i + 1])
-        vertices = base.coords[s:e]
+    for poly_i in range(int(offsets.size) - 1):
+        s = int(offsets[poly_i])
+        e = int(offsets[poly_i + 1])
+        vertices = coords[s:e]
 
         density_i = float(density_seq[poly_i % len(density_seq)])
         if vertices.shape[0] < 3:
@@ -967,7 +968,7 @@ def fill(
         if base_spacing <= 0.0:
             continue
 
-        offsets = np.array([0, coords2d.shape[0]], dtype=np.int32)
+        poly_offsets = np.array([0, coords2d.shape[0]], dtype=np.int32)
         k_i = int(angle_sets_seq[poly_i % len(angle_sets_seq)])
         if k_i < 1:
             k_i = 1
@@ -977,7 +978,7 @@ def fill(
             ang_i = base_angle_rad + (np.pi / k_i) * i
             segs2d = _generate_line_fill_evenodd_multi(
                 coords2d,
-                offsets,
+                poly_offsets,
                 density=density_i,
                 angle_rad=float(ang_i),
                 spacing_override=float(base_spacing),

@@ -153,7 +153,12 @@ GUI ウィンドウは同じループで `ParameterGUIWindowSystem.draw_frame()`
 - effect 関数の契約（レジストリ側）:  
   `func(inputs: Sequence[RealizedGeometry], args: tuple[tuple[str, Any], ...]) -> RealizedGeometry`
 
-`@primitive` / `@effect` デコレータは “ユーザーが書きやすい関数” を “レジストリ契約の wrapper” に変換して登録する。
+- primitive 関数の契約（デコレータで書く側）:  
+  `f(...)-> (coords, offsets)`（`coords` は shape `(N,3)` のみ）
+- effect 関数の契約（デコレータで書く側）:  
+  `f(g1, ..., gk, *, ...)-> (coords, offsets)`（`g` は `(coords, offsets)`、`k` は `n_inputs`）
+
+`@primitive` / `@effect` デコレータは “ユーザーが書く tuple I/O 関数” を “レジストリ契約の wrapper（内部は RealizedGeometry）” に変換して登録する。
 
 ### 5.2 組み込み primitive/effect の登録
 

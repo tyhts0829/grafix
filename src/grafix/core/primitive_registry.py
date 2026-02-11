@@ -8,7 +8,12 @@ import inspect
 from collections.abc import ItemsView, Mapping
 from typing import Any, Callable
 
-from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
+from grafix.core.realized_geometry import (
+    GeomTuple,
+    RealizedGeometry,
+    concat_realized_geometries,
+    realized_geometry_from_tuple,
+)
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_dict_from_user
 
@@ -121,7 +126,7 @@ primitive_registry = PrimitiveRegistry()
 
 
 def primitive(
-    func: Callable[..., RealizedGeometry] | None = None,
+    func: Callable[..., GeomTuple] | None = None,
     *,
     overwrite: bool = True,
     meta: Mapping[str, ParamMeta | Mapping[str, object]] | None = None,
@@ -133,8 +138,9 @@ def primitive(
 
     Parameters
     ----------
-    func : PrimitiveFunc or None, optional
-        デコレート対象の関数。引数なしデコレータ利用時は None。
+    func : Callable[..., GeomTuple] or None, optional
+        デコレート対象の関数。ユーザー定義関数の戻り値は `(coords, offsets)` タプル。
+        引数なしデコレータ利用時は None。
     overwrite : bool, optional
         既存エントリがある場合に上書きするかどうか。
 
@@ -143,6 +149,7 @@ def primitive(
     @primitive
     def circle(*, r=1.0, cx=0.0, cy=0.0, segments=64):
         ...
+        return coords, offsets
     """
 
     meta_norm = None if meta is None else meta_dict_from_user(meta)
@@ -150,7 +157,7 @@ def primitive(
         raise ValueError("primitive の予約引数 'activate' は meta に含められない")
 
     def _defaults_from_signature(
-        f: Callable[..., RealizedGeometry],
+        f: Callable[..., GeomTuple],
         param_meta: dict[str, ParamMeta],
     ) -> dict[str, Any]:
         sig = inspect.signature(f)
@@ -173,8 +180,8 @@ def primitive(
         return defaults
 
     def decorator(
-        f: Callable[..., RealizedGeometry],
-    ) -> Callable[..., RealizedGeometry]:
+        f: Callable[..., GeomTuple],
+    ) -> Callable[..., GeomTuple]:
         module = str(f.__module__)
         if meta_norm is None and (
             module.startswith("grafix.core.primitives.")
@@ -189,7 +196,11 @@ def primitive(
             activate = bool(params.pop("activate", True))
             if not activate:
                 return concat_realized_geometries()
-            return f(**params)
+            out = f(**params)
+            return realized_geometry_from_tuple(
+                out,
+                context=f"@primitive {f.__module__}.{f.__name__}",
+            )
 
         defaults = None
         param_order = None

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 drop_meta = {
     "interval": ParamMeta(kind="int", ui_min=0, ui_max=100),
@@ -23,10 +21,10 @@ drop_meta = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _compute_polyline_lengths(
@@ -54,7 +52,7 @@ def _compute_polyline_lengths(
 
 @effect(meta=drop_meta)
 def drop(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     interval: int = 0,
     index_offset: int = 0,
@@ -65,13 +63,13 @@ def drop(
     by: str = "line",  # "line" | "face"
     seed: int = 0,
     keep_mode: str = "drop",  # "drop" | "keep"
-) -> RealizedGeometry:
+) -> GeomTuple:
     """線や面を条件で間引く。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     interval : int, default 0
         線インデックスに対する間引きステップ。1 以上で有効、0 で無効。
     index_offset : int, default 0
@@ -105,29 +103,24 @@ def drop(
 
     Returns
     -------
-    RealizedGeometry
-        条件適用後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        条件適用後の実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    coords = base.coords
-    offsets = base.offsets
+    coords, offsets = g
     if coords.shape[0] == 0:
-        return base
+        return coords, offsets
 
     by_mode = str(by)
     if by_mode not in {"line", "face"}:
-        return base
+        return coords, offsets
 
     keep = str(keep_mode)
     if keep not in {"drop", "keep"}:
-        return base
+        return coords, offsets
 
     n_lines = int(offsets.size) - 1
     if n_lines <= 0:
-        return base
+        return coords, offsets
 
     interval_i = int(interval)
     eff_interval = interval_i if interval_i >= 1 else None
@@ -195,7 +188,7 @@ def drop(
     )
 
     if eff_interval is None and not use_min and not use_max and not prob_enabled:
-        return base
+        return coords, offsets
 
     rng = None
     if prob_enabled:
@@ -356,4 +349,4 @@ def drop(
 
     out_coords = np.concatenate(out_coords_list, axis=0)
     out_offsets = np.asarray(out_offsets_list, dtype=np.int32)
-    return RealizedGeometry(coords=out_coords, offsets=out_offsets)
+    return out_coords, out_offsets

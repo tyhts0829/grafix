@@ -7,33 +7,33 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def repeat_test_line_0_1() -> RealizedGeometry:
+def repeat_test_line_0_1() -> GeomTuple:
     """x 軸上の 2 点ポリライン（0→1）を返す。"""
     coords = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def repeat_test_line_1_2() -> RealizedGeometry:
+def repeat_test_line_1_2() -> GeomTuple:
     """x 軸上の 2 点ポリライン（1→2）を返す。"""
     coords = np.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def repeat_test_two_polylines() -> RealizedGeometry:
+def repeat_test_two_polylines() -> GeomTuple:
     """2 本のポリラインを返す。"""
     a = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
     b = np.array([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0]], dtype=np.float32)
     coords = np.concatenate([a, b], axis=0)
     offsets = np.array([0, a.shape[0], a.shape[0] + b.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_repeat_count_zero_is_noop() -> None:

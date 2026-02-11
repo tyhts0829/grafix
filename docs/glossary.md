@@ -11,6 +11,7 @@
 - `Geometry`: 配列そのものではなく「幾何のレシピ」を表す DAG ノード。`src/grafix/core/geometry.py:Geometry`
 - `GeometryId`: `(op, inputs, args)` から計算される内容署名 ID。キャッシュキーとして使う。`src/grafix/core/geometry.py:compute_geometry_id`
 - `RealizedGeometry`: `Geometry` を評価して得られる実体配列（`coords` + `offsets`）。`src/grafix/core/realized_geometry.py:RealizedGeometry`
+- `GeomTuple`: `(coords, offsets)` タプルで表す最小実体表現。`@primitive` / `@effect` のユーザー定義 I/O に使う。`src/grafix/core/realized_geometry.py:GeomTuple`
 - `realize`: `Geometry -> RealizedGeometry` を評価し、cache/inflight で重複計算を避ける。`src/grafix/core/realize.py:realize`
 - `RealizedLayer`: 描画/出力用の「Layer + realize 済みジオメトリ + style」。`src/grafix/core/pipeline.py:RealizedLayer`
 
@@ -23,7 +24,7 @@
 ## Registry / builtins（拡張ポイント）
 
 - `primitive_registry` / `effect_registry`: op 名 → 実体関数/メタ情報のレジストリ。`src/grafix/core/primitive_registry.py` / `src/grafix/core/effect_registry.py`
-- `@primitive` / `@effect`: 関数をレジストリへ登録するデコレータ。組み込み op は `meta=...` 必須。`src/grafix/core/primitive_registry.py:primitive` / `src/grafix/core/effect_registry.py:effect`
+- `@primitive` / `@effect`: `(coords, offsets)` タプル I/O の関数をレジストリへ登録するデコレータ。組み込み op は `meta=...` 必須。内部では `RealizedGeometry` に包む。`src/grafix/core/primitive_registry.py:primitive` / `src/grafix/core/effect_registry.py:effect`
 - built-in 登録: 組み込み primitive/effect を import して登録する入口。`src/grafix/core/builtins.py:ensure_builtin_ops_registered`
 
 ## parameters（GUI/CC と値解決・永続）
@@ -48,4 +49,3 @@
 - `P` / `@preset`: preset 登録と呼び出しの公開導線。`src/grafix/api/presets.py:P` / `src/grafix/api/preset.py:preset`
 - `run(draw)`: interactive ランナー。`src/grafix/api/runner.py:run`
 - `Export`: headless export の入口。`src/grafix/api/export.py:Export`
-

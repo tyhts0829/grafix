@@ -7,11 +7,11 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def weave_test_square() -> RealizedGeometry:
+def weave_test_square() -> GeomTuple:
     """一辺 10 の正方形（閉ポリライン）を返す。"""
     coords = np.array(
         [
@@ -24,25 +24,25 @@ def weave_test_square() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def weave_test_empty() -> RealizedGeometry:
+def weave_test_empty() -> GeomTuple:
     """空のジオメトリを返す。"""
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def weave_test_open_long() -> RealizedGeometry:
+def weave_test_open_long() -> GeomTuple:
     """長い開ポリラインを返す（weave は閉曲線のみ対象）。"""
     n = 50_000
     x = np.arange(n, dtype=np.float32)
     coords = np.stack([x, np.zeros_like(x), np.zeros_like(x)], axis=1)
     offsets = np.array([0, n], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_weave_empty_geometry_is_noop() -> None:

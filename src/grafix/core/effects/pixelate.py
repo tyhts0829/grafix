@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 MAX_TOTAL_VERTICES = 10_000_000
 
@@ -19,10 +17,10 @@ pixelate_meta = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _round_half_away_from_zero(values: np.ndarray) -> np.ndarray:
@@ -234,17 +232,17 @@ def _pixelate_line_into(
 
 @effect(meta=pixelate_meta)
 def pixelate(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     step: tuple[float, float, float] = (1.0, 1.0, 1.0),
     corner: str = "auto",
-) -> RealizedGeometry:
+) -> GeomTuple:
     """ポリラインをグリッド上の階段線へ変換する（XY）。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     step : tuple[float, float, float], default (1.0, 1.0, 1.0)
         各軸の格子間隔 (sx, sy, sz)。いずれかが 0 以下なら no-op。
     corner : {"auto","xy","yx"}, default "auto"
@@ -254,8 +252,8 @@ def pixelate(
 
     Returns
     -------
-    RealizedGeometry
-        pixelate 後の実体ジオメトリ（頂点数と offsets は変化する）。
+    tuple[np.ndarray, np.ndarray]
+        pixelate 後の実体ジオメトリ（coords, offsets）。頂点数と offsets は変化する。
 
     Notes
     -----
@@ -263,22 +261,17 @@ def pixelate(
     - Z は `step[2]` でスナップした後、各入力セグメントの階段ステップ数に沿って線形補間する。
     - 対角の分解順序は `corner` に従う。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    coords = base.coords
-    offsets = base.offsets
+    coords, offsets = g
     if coords.shape[0] == 0:
-        return base
+        return coords, offsets
 
     sx, sy, sz = float(step[0]), float(step[1]), float(step[2])
     if sx <= 0.0 or sy <= 0.0 or sz <= 0.0:
-        return base
+        return coords, offsets
 
     corner_s = str(corner)
     if corner_s not in {"auto", "xy", "yx"}:
-        return base
+        return coords, offsets
     corner_mode = 0 if corner_s == "auto" else 1 if corner_s == "xy" else 2
 
     step_vec = np.array([sx, sy, sz], dtype=np.float64)
@@ -293,7 +286,7 @@ def pixelate(
 
     n_lines = int(offsets.size) - 1
     if n_lines <= 0:
-        return base
+        return coords, offsets
 
     line_ranges: list[tuple[int, int]] = []
     line_lengths: list[int] = []
@@ -337,4 +330,4 @@ def pixelate(
             out_view, ix_all[s:e], iy_all[s:e], iz_all[s:e], sx, sy, sz, corner_mode
         )
         assert int(write_index) == int(out_view.shape[0])
-    return RealizedGeometry(coords=coords_out, offsets=offsets_out)
+    return coords_out, offsets_out

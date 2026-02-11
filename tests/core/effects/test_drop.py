@@ -7,12 +7,12 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.effects.drop import drop as drop_impl
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def drop_test_lines5() -> RealizedGeometry:
+def drop_test_lines5() -> GeomTuple:
     """長さ 1〜5 の 2 点ポリラインを 5 本返す。"""
     coords = np.array(
         [
@@ -30,11 +30,11 @@ def drop_test_lines5() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 2, 4, 6, 8, 10], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def drop_test_lines_and_faces() -> RealizedGeometry:
+def drop_test_lines_and_faces() -> GeomTuple:
     """line/face を混在させたポリライン列を返す。"""
     coords = np.array(
         [
@@ -58,11 +58,11 @@ def drop_test_lines_and_faces() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 2, 6, 10, 12], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def drop_test_lines_xneg_xpos() -> RealizedGeometry:
+def drop_test_lines_xneg_xpos() -> GeomTuple:
     """x=-1 と x=+1 に 2 点ポリラインを 1 本ずつ返す。"""
     coords = np.array(
         [
@@ -76,7 +76,7 @@ def drop_test_lines_xneg_xpos() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 2, 4], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_drop_interval_drop_mode_respects_index_offset() -> None:
@@ -198,21 +198,21 @@ def test_drop_probability_non_finite_is_noop_in_impl() -> None:
     g = G.drop_test_lines5()
     base = realize(g)
 
-    out_nan = drop_impl(
-        [base],
+    out_nan_coords, out_nan_offsets = drop_impl(
+        (base.coords, base.offsets),
         probability_base=(float("nan"), 0.0, 0.0),
         probability_slope=(0.0, 0.0, 0.0),
     )
-    np.testing.assert_allclose(out_nan.coords, base.coords, rtol=0.0, atol=0.0)
-    assert out_nan.offsets.tolist() == base.offsets.tolist()
+    np.testing.assert_allclose(out_nan_coords, base.coords, rtol=0.0, atol=0.0)
+    assert out_nan_offsets.tolist() == base.offsets.tolist()
 
-    out_inf = drop_impl(
-        [base],
+    out_inf_coords, out_inf_offsets = drop_impl(
+        (base.coords, base.offsets),
         probability_base=(float("inf"), 0.0, 0.0),
         probability_slope=(0.0, 0.0, 0.0),
     )
-    np.testing.assert_allclose(out_inf.coords, base.coords, rtol=0.0, atol=0.0)
-    assert out_inf.offsets.tolist() == base.offsets.tolist()
+    np.testing.assert_allclose(out_inf_coords, base.coords, rtol=0.0, atol=0.0)
+    assert out_inf_offsets.tolist() == base.offsets.tolist()
 
 
 def test_drop_unknown_keep_mode_is_noop() -> None:

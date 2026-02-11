@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Sequence, cast
+from typing import Literal, cast
 
 import numpy as np
 
 from grafix.core.effect_registry import effect
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
 
 buffer_meta = {
@@ -33,10 +33,10 @@ class _PlaneBasis:
     v: np.ndarray  # (3,)
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
@@ -222,20 +222,20 @@ def _extract_vertices_2d(buffered, *, which: str) -> list[np.ndarray]:
 
 @effect(meta=buffer_meta)
 def buffer(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     join: str = "round",  # "mitre" | "round" | "bevel"
     quad_segs: int = 12,  # Shapely の quad_segs（1/4 円あたりの分割）
     distance: float = 5.0,
     union: bool = False,
     keep_original: bool = False,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """Shapely の buffer を用いて輪郭を生成する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     join : str, default "round"
         角の処理。`"mitre" | "round" | "bevel"` を指定。
     quad_segs : int, default 12
@@ -254,8 +254,8 @@ def buffer(
 
     Returns
     -------
-    RealizedGeometry
-        buffer 後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        buffer 後の実体ジオメトリ（coords, offsets）。
 
     Notes
     -----
@@ -263,21 +263,18 @@ def buffer(
     - 端点が近い線は自動で閉じる（閾値 `1e-3`）。
     - distance==0 は no-op 扱いとする。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     d = float(distance)
     if not np.isfinite(d) or d == 0.0:
-        return base
+        return coords, offsets
     abs_d = abs(d)
 
     join_style_raw = str(join)
     if join_style_raw not in _JOIN_STYLE_SET:
-        return base
+        return coords, offsets
     join_style = cast(Literal["mitre", "round", "bevel"], join_style_raw)
 
     quad_segs_i = int(quad_segs)
@@ -288,9 +285,6 @@ def buffer(
 
     # ローカル import（effect 未使用時に shapely import を避ける）
     from shapely.geometry import LineString, MultiLineString  # type: ignore[import-not-found]
-
-    coords = base.coords
-    offsets = base.offsets
 
     out_lines: list[np.ndarray] = []
     if bool(union):
@@ -351,7 +345,7 @@ def buffer(
                 out_lines.append(original.astype(np.float32, copy=False))
 
     if not out_lines:
-        return base if d > 0.0 else _empty_geometry()
+        return (coords, offsets) if d > 0.0 else _empty_geometry()
 
     out_coords = np.concatenate(out_lines, axis=0).astype(np.float32, copy=False)
     out_offsets = np.empty((len(out_lines) + 1,), dtype=np.int32)
@@ -361,4 +355,4 @@ def buffer(
         acc += int(line.shape[0])
         out_offsets[i + 1] = acc
 
-    return RealizedGeometry(coords=out_coords, offsets=out_offsets)
+    return out_coords, out_offsets

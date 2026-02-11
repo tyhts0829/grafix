@@ -13,14 +13,12 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 MAX_DISTANCE = 200.0
 MAX_SCALE = 3.0
@@ -37,10 +35,10 @@ _CONNECT_ATOL = 1e-8
 _CONNECT_RTOL = 1e-5
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @njit(cache=True)
@@ -82,19 +80,19 @@ def _subdivide_midpoints(vertices: np.ndarray, subdivisions: int) -> np.ndarray:
 
 @effect(meta=extrude_meta)
 def extrude(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     delta: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 0.5,
     subdivisions: int = 4,
     center_mode: str = "auto",
-) -> RealizedGeometry:
+) -> GeomTuple:
     """指定方向に押し出し、複製線と側面エッジを生成する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     delta : tuple[float, float, float], default (0.0,0.0,0.0)
         押し出し量（dx, dy, dz）[mm]（長さは 0–200 にクランプ）。
     scale : float, default 0.5
@@ -106,15 +104,12 @@ def extrude(
 
     Returns
     -------
-    RealizedGeometry
-        押し出し結果（元線・複製線・側面エッジ群を含む）。
+    tuple[np.ndarray, np.ndarray]
+        押し出し結果（coords, offsets）。元線・複製線・側面エッジ群を含む。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     scale_clamped = max(0.0, min(MAX_SCALE, float(scale)))
 
@@ -138,12 +133,10 @@ def extrude(
         and dy == 0.0
         and dz == 0.0
     ):
-        return base
+        return coords, offsets
 
-    coords = base.coords
-    offsets = base.offsets
     if offsets.size < 2:
-        return base
+        return coords, offsets
 
     use_auto_center = center_mode == "auto"
     scale32 = np.float32(scale_clamped)
@@ -197,7 +190,7 @@ def extrude(
 
     n_lines = len(lines)
     if n_lines == 0:
-        return base
+        return coords, offsets
 
     total_vertices = 0
     total_edges = 0
@@ -254,4 +247,4 @@ def extrude(
         )
         oc += m
 
-    return RealizedGeometry(coords=out_coords, offsets=out_offsets)
+    return out_coords, out_offsets

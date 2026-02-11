@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 EPS = 1e-6
 INCLUDE_BOUNDARY = True
@@ -29,15 +29,15 @@ mirror_ui_visible = {
     "source_positive_y": lambda v: int(v.get("n_mirror", 1)) == 2,
 }
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @effect(meta=mirror_meta, ui_visible=mirror_ui_visible)
 def mirror(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     n_mirror: int = 1,
     cx: float = 0.0,
@@ -45,13 +45,13 @@ def mirror(
     source_positive_x: bool = True,
     source_positive_y: bool = True,
     show_planes: bool = False,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """XY 平面でのミラー複製を行う。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力の実体ジオメトリ（coords, offsets）。
     n_mirror : int, default 1
         1: x=cx による半空間ミラー。2: x=cx と y=cy による象限ミラー。
         3 以上: 中心 (cx,cy) を基準に放射状の 2n 対称（楔を回転 + 反転で複製）。
@@ -66,31 +66,26 @@ def mirror(
 
     Returns
     -------
-    RealizedGeometry
-        ミラー後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        ミラー後の実体ジオメトリ（coords, offsets）。
 
     Notes
     -----
     - クリップは線分の半空間交差で行い、重心判定はしない。
     - 境界は内側扱い（include boundary）とし、EPS=1e-6 を使用する。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base_geom = inputs[0]
-    coords = base_geom.coords
-    offsets = base_geom.offsets
+    coords, offsets = g
     if coords.shape[0] == 0:
-        return base_geom
+        return coords, offsets
 
     n = int(n_mirror)
     if n < 1:
-        return base_geom
+        return coords, offsets
 
     cx_f = float(cx)
     cy_f = float(cy)
     if not (np.isfinite(cx_f) and np.isfinite(cy_f)):
-        return base_geom
+        return coords, offsets
 
     sx = 1 if bool(source_positive_x) else -1
     sy = 1 if bool(source_positive_y) else -1
@@ -231,7 +226,7 @@ def mirror(
                 cy=cy_f,
             )
 
-        return RealizedGeometry(coords=out_coords_arr, offsets=out_offsets_arr)
+        return out_coords_arr, out_offsets_arr
 
     uniq = _dedup_lines(out_lines)
 
@@ -314,7 +309,7 @@ def mirror(
     for i, line in enumerate(uniq, start=1):
         acc += int(line.shape[0])
         new_offsets[i] = acc
-    return RealizedGeometry(coords=all_coords, offsets=new_offsets)
+    return all_coords, new_offsets
 
 
 def _is_inside(val: float, thresh: float, side: int) -> bool:

@@ -8,11 +8,11 @@ from grafix.api import E, G
 from grafix.core.effects.displace import displace as displace_impl
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def displace_test_polyline() -> RealizedGeometry:
+def displace_test_polyline() -> GeomTuple:
     """適度に非整数な 4 点ポリラインを返す。"""
     coords = np.array(
         [
@@ -24,19 +24,19 @@ def displace_test_polyline() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def displace_test_empty() -> RealizedGeometry:
+def displace_test_empty() -> GeomTuple:
     """空のジオメトリを返す。"""
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def displace_test_radial_points_xy() -> RealizedGeometry:
+def displace_test_radial_points_xy() -> GeomTuple:
     """(x,y) 方向の円形マスク検証用の点列を返す。"""
     coords = np.array(
         [
@@ -49,7 +49,7 @@ def displace_test_radial_points_xy() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_displace_amplitude_zero_is_noop() -> None:
@@ -87,8 +87,9 @@ def test_displace_deterministic_for_same_inputs() -> None:
     g = G.displace_test_polyline()
     base = realize(g)
 
-    out1 = displace_impl(
-        [base],
+    base_tuple = (base.coords, base.offsets)
+    out1_coords, out1_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         amplitude_gradient=(0.0, 0.0, 0.0),
@@ -97,8 +98,8 @@ def test_displace_deterministic_for_same_inputs() -> None:
         max_gradient_factor=2.0,
         t=0.0,
     )
-    out2 = displace_impl(
-        [base],
+    out2_coords, out2_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         amplitude_gradient=(0.0, 0.0, 0.0),
@@ -108,27 +109,28 @@ def test_displace_deterministic_for_same_inputs() -> None:
         t=0.0,
     )
 
-    np.testing.assert_allclose(out1.coords, out2.coords, rtol=0.0, atol=0.0)
-    assert out1.offsets.tolist() == out2.offsets.tolist()
+    np.testing.assert_allclose(out1_coords, out2_coords, rtol=0.0, atol=0.0)
+    assert out1_offsets.tolist() == out2_offsets.tolist()
 
 
 def test_displace_time_changes_output() -> None:
     g = G.displace_test_polyline()
     base = realize(g)
 
-    out0 = displace_impl(
-        [base],
+    base_tuple = (base.coords, base.offsets)
+    out0_coords, _out0_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         t=0.0,
     )
-    out1 = displace_impl(
-        [base],
+    out1_coords, _out1_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         t=0.25,
     )
-    assert float(np.max(np.abs(out1.coords - out0.coords))) > 1e-4
+    assert float(np.max(np.abs(out1_coords - out0_coords))) > 1e-4
 
 
 def test_displace_empty_geometry_is_noop() -> None:
@@ -144,8 +146,9 @@ def test_displace_gradient_center_offset_noop_without_gradient() -> None:
     g = G.displace_test_polyline()
     base = realize(g)
 
-    out0 = displace_impl(
-        [base],
+    base_tuple = (base.coords, base.offsets)
+    out0_coords, _out0_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         amplitude_gradient=(0.0, 0.0, 0.0),
@@ -155,8 +158,8 @@ def test_displace_gradient_center_offset_noop_without_gradient() -> None:
         max_gradient_factor=2.0,
         t=0.0,
     )
-    out1 = displace_impl(
-        [base],
+    out1_coords, _out1_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         amplitude_gradient=(0.0, 0.0, 0.0),
@@ -167,15 +170,16 @@ def test_displace_gradient_center_offset_noop_without_gradient() -> None:
         t=0.0,
     )
 
-    np.testing.assert_allclose(out1.coords, out0.coords, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(out1_coords, out0_coords, rtol=0.0, atol=0.0)
 
 
 def test_displace_gradient_center_offset_changes_output_with_gradient() -> None:
     g = G.displace_test_polyline()
     base = realize(g)
 
-    out0 = displace_impl(
-        [base],
+    base_tuple = (base.coords, base.offsets)
+    out0_coords, _out0_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         amplitude_gradient=(2.0, 0.0, 0.0),
@@ -185,8 +189,8 @@ def test_displace_gradient_center_offset_changes_output_with_gradient() -> None:
         max_gradient_factor=2.0,
         t=0.0,
     )
-    out1 = displace_impl(
-        [base],
+    out1_coords, _out1_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         amplitude_gradient=(2.0, 0.0, 0.0),
@@ -197,14 +201,15 @@ def test_displace_gradient_center_offset_changes_output_with_gradient() -> None:
         t=0.0,
     )
 
-    assert float(np.max(np.abs(out1.coords - out0.coords))) > 1e-4
+    assert float(np.max(np.abs(out1_coords - out0_coords))) > 1e-4
 
 
 def test_displace_gradient_profile_default_is_linear() -> None:
     g = G.displace_test_polyline()
     base = realize(g)
-    out0 = displace_impl(
-        [base],
+    base_tuple = (base.coords, base.offsets)
+    out0_coords, out0_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         amplitude_gradient=(2.0, 0.0, 0.0),
@@ -212,8 +217,8 @@ def test_displace_gradient_profile_default_is_linear() -> None:
         max_gradient_factor=2.0,
         t=0.0,
     )
-    out1 = displace_impl(
-        [base],
+    out1_coords, out1_offsets = displace_impl(
+        base_tuple,
         amplitude=(8.0, 8.0, 8.0),
         spatial_freq=(0.04, 0.04, 0.04),
         amplitude_gradient=(2.0, 0.0, 0.0),
@@ -222,8 +227,8 @@ def test_displace_gradient_profile_default_is_linear() -> None:
         max_gradient_factor=2.0,
         t=0.0,
     )
-    np.testing.assert_allclose(out1.coords, out0.coords, rtol=0.0, atol=0.0)
-    assert out1.offsets.tolist() == out0.offsets.tolist()
+    np.testing.assert_allclose(out1_coords, out0_coords, rtol=0.0, atol=0.0)
+    assert out1_offsets.tolist() == out0_offsets.tolist()
 
 
 def test_E_displace_gradient_center_offset_zero_equals_omitted() -> None:
@@ -254,8 +259,8 @@ def test_E_displace_gradient_center_offset_zero_equals_omitted() -> None:
 def test_displace_radial_profile_round_mask_in_xy() -> None:
     g = G.displace_test_radial_points_xy()
     base = realize(g)
-    out = displace_impl(
-        [base],
+    out_coords, _out_offsets = displace_impl(
+        (base.coords, base.offsets),
         amplitude=(50.0, 0.0, 0.0),
         spatial_freq=(0.0, 0.0, 0.0),
         amplitude_gradient=(1.0, 0.0, 0.0),
@@ -265,7 +270,7 @@ def test_displace_radial_profile_round_mask_in_xy() -> None:
         max_gradient_factor=4.0,
         t=0.123,
     )
-    dx = out.coords[:, 0] - base.coords[:, 0]
+    dx = out_coords[:, 0] - base.coords[:, 0]
     np.testing.assert_allclose(dx[[0, 1, 4]], 0.0, rtol=0.0, atol=0.0)
     assert abs(float(dx[2])) > abs(float(dx[3])) > 1e-4
 
@@ -273,8 +278,8 @@ def test_displace_radial_profile_round_mask_in_xy() -> None:
 def test_displace_radial_profile_inverts_with_negative_gradient() -> None:
     g = G.displace_test_radial_points_xy()
     base = realize(g)
-    out = displace_impl(
-        [base],
+    out_coords, _out_offsets = displace_impl(
+        (base.coords, base.offsets),
         amplitude=(50.0, 0.0, 0.0),
         spatial_freq=(0.0, 0.0, 0.0),
         amplitude_gradient=(-1.0, 0.0, 0.0),
@@ -284,5 +289,5 @@ def test_displace_radial_profile_inverts_with_negative_gradient() -> None:
         max_gradient_factor=4.0,
         t=0.123,
     )
-    dx = out.coords[:, 0] - base.coords[:, 0]
+    dx = out_coords[:, 0] - base.coords[:, 0]
     assert abs(float(dx[0])) > abs(float(dx[2])) > 1e-4

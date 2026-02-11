@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 displace_meta = {
     "amplitude": ParamMeta(kind="vec3", ui_min=0.0, ui_max=50.0),
@@ -41,10 +39,10 @@ GX = 40
 FGX = 40
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 # Perlin ノイズ用定数（Ken Perlin improved noise の標準テーブル）。
@@ -740,7 +738,7 @@ def _apply_noise_to_coords(
 
 @effect(meta=displace_meta, ui_visible=displace_ui_visible)
 def displace(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     amplitude: tuple[float, float, float] = (8.0, 8.0, 8.0),
     spatial_freq: tuple[float, float, float] = (0.04, 0.04, 0.04),
@@ -752,13 +750,13 @@ def displace(
     min_gradient_factor: float = MIN_GRADIENT_FACTOR_DEFAULT,
     max_gradient_factor: float = 2.0,
     t: float = 0.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """3D Perlin ノイズで頂点を変位する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        変位対象の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        変位対象の実体ジオメトリ（coords, offsets）。
     amplitude : tuple[float, float, float], default (8.0, 8.0, 8.0)
         変位量 [mm]（各軸別）。
     spatial_freq : tuple[float, float, float], default (0.04, 0.04, 0.04)
@@ -787,21 +785,18 @@ def displace(
 
     Returns
     -------
-    RealizedGeometry
-        変位後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        変位後の実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     ax = float(amplitude[0])
     ay = float(amplitude[1])
     az = float(amplitude[2])
     if ax == 0.0 and ay == 0.0 and az == 0.0:
-        return base
+        return coords, offsets
 
     min_factor_val = float(min_gradient_factor)
     if min_factor_val < 0.0:
@@ -820,7 +815,7 @@ def displace(
     profile_mode = 1 if str(gradient_profile) == "radial" else 0
 
     new_coords = _apply_noise_to_coords(
-        base.coords,
+        coords,
         (ax, ay, az),
         (
             float(amplitude_gradient[0]),
@@ -854,4 +849,4 @@ def displace(
         NOISE_PERMUTATION_TABLE,
         NOISE_GRADIENTS_3D,
     )
-    return RealizedGeometry(coords=new_coords, offsets=base.offsets)
+    return new_coords, offsets

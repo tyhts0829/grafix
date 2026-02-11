@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 twist_meta = {
     "auto_center": ParamMeta(kind="bool"),
@@ -23,19 +21,19 @@ twist_ui_visible = {
 
 @effect(meta=twist_meta, ui_visible=twist_ui_visible)
 def twist(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     auto_center: bool = True,
     pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
     angle: float = 60.0,
     axis_dir: tuple[float, float, float] = (0.0, 1.0, 0.0),
-) -> RealizedGeometry:
+) -> GeomTuple:
     """位置に応じて軸回りにねじる（中心付近は 0）。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     auto_center : bool, default True
         True なら平均座標を回転中心に使用。False なら `pivot` を使用。
     pivot : tuple[float, float, float], default (0.0,0.0,0.0)
@@ -47,21 +45,16 @@ def twist(
 
     Returns
     -------
-    RealizedGeometry
-        ねじり適用後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        ねじり適用後の実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        coords = np.zeros((0, 3), dtype=np.float32)
-        offsets = np.zeros((1,), dtype=np.int32)
-        return RealizedGeometry(coords=coords, offsets=offsets)
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     max_rad = float(np.deg2rad(float(angle)))
     if max_rad == 0.0:
-        return base
+        return coords, offsets
 
     axis_dir64 = np.array(
         [float(axis_dir[0]), float(axis_dir[1]), float(axis_dir[2])],
@@ -72,7 +65,6 @@ def twist(
         raise ValueError(f"axis_dir は非ゼロのベクトルである必要がある: {axis_dir!r}")
     k = axis_dir64 / axis_norm
 
-    coords = base.coords
     if auto_center:
         center = coords.astype(np.float64, copy=False).mean(axis=0)
     else:
@@ -87,7 +79,7 @@ def twist(
     hi = float(s.max())
     rng = hi - lo
     if rng <= 1e-9:
-        return base
+        return coords, offsets
 
     # 各頂点の正規化位置 t = 0..1
     t = (s - lo) / rng
@@ -107,9 +99,8 @@ def twist(
     )
     out = v_rot + center
 
-    return RealizedGeometry(
-        coords=out.astype(np.float32, copy=False), offsets=base.offsets
-    )
+    coords_out = out.astype(np.float32, copy=False)
+    return coords_out, offsets
 
 
 __all__ = ["twist"]

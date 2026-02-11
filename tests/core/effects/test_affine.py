@@ -7,39 +7,38 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
 
 
 @primitive
-def affine_test_two_points_xy() -> RealizedGeometry:
+def affine_test_two_points_xy() -> tuple[np.ndarray, np.ndarray]:
     """xy 平面上の 2 点を返す。"""
     coords = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def affine_test_line_centered_x() -> RealizedGeometry:
+def affine_test_line_centered_x() -> tuple[np.ndarray, np.ndarray]:
     """中心 (2,0,0) を持つ 2 点ポリラインを返す。"""
     coords = np.array([[1.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def affine_test_line2_x() -> RealizedGeometry:
+def affine_test_line2_x() -> tuple[np.ndarray, np.ndarray]:
     """x 軸上の 2 点ポリラインを返す。"""
     coords = np.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def affine_test_empty() -> RealizedGeometry:
+def affine_test_empty() -> tuple[np.ndarray, np.ndarray]:
     """空のジオメトリを返す。"""
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_affine_scale_rotate_translate_about_origin() -> None:
@@ -96,4 +95,3 @@ def test_affine_empty_geometry_is_noop() -> None:
 
     assert realized.coords.shape == (0, 3)
     assert realized.offsets.tolist() == [0]
-

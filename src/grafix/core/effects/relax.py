@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 relax_meta = {
     "relaxation_iterations": ParamMeta(kind="int", ui_min=0, ui_max=50),
@@ -18,12 +16,6 @@ relax_meta = {
 
 MAX_RELAXATION_ITERATIONS = 50
 MAX_STEP = 0.5
-
-
-def _empty_geometry() -> RealizedGeometry:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
 
 
 def _iter_ranges(offsets: np.ndarray):
@@ -163,11 +155,11 @@ def _elastic_relaxation_nb(positions, edges, fixed, iterations, step):
 
 @effect(meta=relax_meta)
 def relax(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     relaxation_iterations: int = 15,
     step: float = 0.125,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """線分ネットワークをグラフとして弾性緩和する。
 
     入力ポリライン群を 1 つの無向グラフとして扱い、同一点は共有ノードとして束ねる。
@@ -175,8 +167,8 @@ def relax(
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        変形対象の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        変形対象の実体ジオメトリ（coords, offsets）。
     relaxation_iterations : int, default 15
         反復回数（0–50 にクランプ）。
     step : float, default 0.125
@@ -184,15 +176,12 @@ def relax(
 
     Returns
     -------
-    RealizedGeometry
-        緩和後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        緩和後の実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     iterations = int(relaxation_iterations)
     iterations = max(0, min(MAX_RELAXATION_ITERATIONS, iterations))
@@ -204,19 +193,19 @@ def relax(
         step_size = MAX_STEP
 
     if iterations == 0 or step_size == 0.0:
-        return base
+        return coords, offsets
 
-    nodes, vertex_to_node = _build_nodes(base.coords)
-    edges = _build_edges(base.offsets, vertex_to_node)
+    nodes, vertex_to_node = _build_nodes(coords)
+    edges = _build_edges(offsets, vertex_to_node)
     if edges.shape[0] == 0 or nodes.shape[0] == 0:
-        return base
+        return coords, offsets
 
     fixed = _compute_fixed(nodes, edges)
     positions = nodes.copy()
     positions = _elastic_relaxation_nb(positions, edges, fixed, iterations, step_size)
 
     out_coords = positions[vertex_to_node].astype(np.float32, copy=False)
-    return RealizedGeometry(coords=out_coords, offsets=base.offsets)
+    return out_coords, offsets
 
 
 __all__ = ["relax", "relax_meta"]

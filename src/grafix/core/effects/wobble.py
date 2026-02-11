@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 wobble_meta = {
     "amplitude": ParamMeta(kind="vec3", ui_min=0.0, ui_max=20.0),
@@ -17,26 +15,20 @@ wobble_meta = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
-
-
 @effect(meta=wobble_meta)
 def wobble(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     amplitude: tuple[float, float, float] = (2.0, 2.0, 2.0),
     frequency: tuple[float, float, float] = (0.1, 0.1, 0.1),
     phase: float = 0.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """各頂点へサイン波由来の変位を加える。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        変形対象の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        変形対象の実体ジオメトリ（coords, offsets）。
     amplitude : tuple[float, float, float], default (2.0, 2.0, 2.0)
         変位量 [mm] 相当（各軸別）。
     frequency : tuple[float, float, float], default (0.1, 0.1, 0.1)
@@ -46,28 +38,25 @@ def wobble(
 
     Returns
     -------
-    RealizedGeometry
-        変形後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        変形後の実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     ax = float(amplitude[0])
     ay = float(amplitude[1])
     az = float(amplitude[2])
     if ax == 0.0 and ay == 0.0 and az == 0.0:
-        return base
+        return coords, offsets
 
     fx = float(frequency[0])
     fy = float(frequency[1])
     fz = float(frequency[2])
     phase_rad = float(np.deg2rad(float(phase)))
 
-    v = base.coords.astype(np.float64, copy=False)
+    v = coords.astype(np.float64, copy=False)
     out = v.copy()
 
     x = v[:, 0]
@@ -77,8 +66,8 @@ def wobble(
     out[:, 1] = y + ay * np.sin(2.0 * np.pi * fy * y + phase_rad)
     out[:, 2] = z + az * np.sin(2.0 * np.pi * fz * z + phase_rad)
 
-    coords = out.astype(np.float32, copy=False)
-    return RealizedGeometry(coords=coords, offsets=base.offsets)
+    coords_out = out.astype(np.float32, copy=False)
+    return coords_out, offsets
 
 
 __all__ = ["wobble", "wobble_meta"]

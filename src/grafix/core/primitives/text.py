@@ -16,17 +16,17 @@ import numpy as np
 from grafix.core.font_resolver import resolve_font_path
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 DEFAULT_FONT = "Helvetica.ttc"
 
 logger = logging.getLogger(__name__)
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _rotate_closed_polyline_start_for_fill(polyline: np.ndarray) -> np.ndarray:
@@ -397,8 +397,8 @@ def _polylines_to_realized(
     *,
     center: tuple[float, float, float],
     scale: float,
-) -> RealizedGeometry:
-    """ポリライン列を RealizedGeometry へ変換して返す。"""
+) -> GeomTuple:
+    """ポリライン列を (coords, offsets) へ変換して返す。"""
     filtered = [
         p.astype(np.float32, copy=False) for p in polylines if int(p.shape[0]) >= 2
     ]
@@ -429,7 +429,7 @@ def _polylines_to_realized(
         center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
         coords = coords * np.float32(s_f) + center_vec
 
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 text_meta = {
@@ -471,7 +471,7 @@ def text(
     quality: float = 0.5,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """フォントアウトラインからテキストのポリライン列を生成する。
 
     Parameters
@@ -509,8 +509,8 @@ def text(
 
     Returns
     -------
-    RealizedGeometry
-        テキスト輪郭をポリライン列として持つ実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        テキスト輪郭をポリライン列として持つ実体ジオメトリ（coords, offsets）。
 
     Raises
     ------

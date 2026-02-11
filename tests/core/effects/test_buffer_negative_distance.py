@@ -7,11 +7,10 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
 
 
 @primitive
-def buffer_negative_test_square_ring_xy() -> RealizedGeometry:
+def buffer_negative_test_square_ring_xy() -> tuple[np.ndarray, np.ndarray]:
     """XY 平面上の正方形リング（閉曲線）を 1 本返す。"""
     coords = np.array(
         [
@@ -24,15 +23,15 @@ def buffer_negative_test_square_ring_xy() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 5], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def buffer_negative_test_segment_xy() -> RealizedGeometry:
+def buffer_negative_test_segment_xy() -> tuple[np.ndarray, np.ndarray]:
     """XY 平面上の 2 点線分を返す。"""
     coords = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_buffer_negative_distance_square_yields_inner_outline() -> None:

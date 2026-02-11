@@ -12,7 +12,7 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 polygon_meta = {
     "n_sides": ParamMeta(kind="int", ui_min=3, ui_max=128),
@@ -31,7 +31,7 @@ def polygon(
     sweep: float = 360.0,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """正多角形の閉ポリラインを生成する。
 
     Parameters
@@ -51,8 +51,8 @@ def polygon(
 
     Returns
     -------
-    RealizedGeometry
-        開始点を終端に重ねた閉じたポリラインとしての正多角形。
+    tuple[np.ndarray, np.ndarray]
+        開始点を終端に重ねた閉じたポリラインとしての正多角形（coords, offsets）。
     """
     sides = int(round(float(n_sides)))
     if sides < 3:
@@ -113,4 +113,4 @@ def polygon(
     # 先頭頂点を終端に複製してポリラインを閉じる。
     coords = np.concatenate([coords, coords[:1]], axis=0)
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets

@@ -9,7 +9,7 @@ from numba import njit  # type: ignore[import-untyped, attr-defined]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 trim_meta = {
     "start_param": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
@@ -17,10 +17,10 @@ trim_meta = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _clamp01(value: float) -> float:
@@ -34,7 +34,7 @@ def _clamp01(value: float) -> float:
     return v
 
 
-def _lines_to_realized(lines: Sequence[np.ndarray]) -> RealizedGeometry:
+def _lines_to_realized(lines: Sequence[np.ndarray]) -> GeomTuple:
     if not lines:
         return _empty_geometry()
 
@@ -50,7 +50,7 @@ def _lines_to_realized(lines: Sequence[np.ndarray]) -> RealizedGeometry:
         offsets[i + 1] = cursor
 
     coords = np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), np.float32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
@@ -220,17 +220,17 @@ def _trim_polyline(vertices: np.ndarray, start_param: float, end_param: float) -
 
 @effect(meta=trim_meta)
 def trim(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     start_param: float = 0.1,
     end_param: float = 0.5,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """ポリライン列を正規化弧長の区間でトリムする。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     start_param : float, default 0.1
         開始位置（0.0–1.0）。
     end_param : float, default 0.5
@@ -238,8 +238,8 @@ def trim(
 
     Returns
     -------
-    RealizedGeometry
-        トリム後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        トリム後の実体ジオメトリ（coords, offsets）。
 
     Notes
     -----
@@ -248,19 +248,14 @@ def trim(
     - トリム後に 2 点未満になる線は捨てる。
     - ただし、全線が捨てられた場合は no-op（入力を返す）。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    coords = base.coords
-    offsets = base.offsets
+    coords, offsets = g
     if coords.shape[0] == 0:
-        return base
+        return coords, offsets
 
     sp = _clamp01(float(start_param))
     ep = _clamp01(float(end_param))
     if sp >= ep:
-        return base
+        return coords, offsets
 
     results: list[np.ndarray] = []
     n_lines = int(offsets.size) - 1
@@ -277,12 +272,12 @@ def trim(
             results.append(trimmed)
 
     if not results:
-        return base
+        return coords, offsets
 
-    out = _lines_to_realized(results)
-    if out.coords.shape[0] == 0 and base.coords.shape[0] != 0:
-        return base
-    return out
+    out_coords, out_offsets = _lines_to_realized(results)
+    if out_coords.shape[0] == 0 and coords.shape[0] != 0:
+        return coords, offsets
+    return out_coords, out_offsets
 
 
 __all__ = ["trim", "trim_meta"]

@@ -12,7 +12,7 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 torus_meta = {
     "major_radius": ParamMeta(kind="float", ui_min=-100.0, ui_max=100.0),
@@ -33,7 +33,7 @@ def torus(
     minor_segments: int = 16,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """トーラスのワイヤーフレーム（子午線+緯線）を生成する。
 
     Parameters
@@ -53,8 +53,8 @@ def torus(
 
     Returns
     -------
-    RealizedGeometry
-        子午線 `major_segments` 本と緯線 `minor_segments` 本からなる閉ポリライン列。
+    tuple[np.ndarray, np.ndarray]
+        子午線 `major_segments` 本と緯線 `minor_segments` 本からなる閉ポリライン列（coords, offsets）。
     """
     major_r = float(major_radius)
     minor_r = float(minor_radius)
@@ -140,4 +140,4 @@ def torus(
         center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
         coords = coords * np.float32(s_f) + center_vec
 
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets

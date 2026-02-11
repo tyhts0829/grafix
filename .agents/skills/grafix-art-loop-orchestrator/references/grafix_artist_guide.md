@@ -5,6 +5,7 @@
 ## ハードルール
 
 - `sketch.py` で `from grafix.core.realized_geometry import RealizedGeometry` を import しない。
+- custom `@primitive` / `@effect` のユーザー関数 I/O は `(coords, offsets)` タプルにする（`coords` は shape `(N,3)` のみ）。
 - custom `@primitive` / `@effect` は「定義だけ」ではなく、実際の描画パスで必ず使う。
 - 出力は `variant_dir` 配下のみ。`/tmp` や `sketch/agent_loop` 外へ書かない。
 - 既存 run の `sketch.py` 丸写しや、テンプレート使い回しでの量産をしない。
@@ -14,13 +15,14 @@
 ```python
 from __future__ import annotations
 
-from grafix import E, G, L, run
-from grafix.api import effect, primitive
+import numpy as np
+
+from grafix import E, G, L, effect, primitive, run
 
 CANVAS = (148, 210)
 
 @primitive
-def my_source(*, n: int = 12):
+def my_source(*, n: int = 12) -> tuple[np.ndarray, np.ndarray]:
     # 低レベル配列の手組みより、既存 primitive/effect の再利用を優先する。
     from grafix.core.primitives.grid import grid as _grid
 
@@ -28,10 +30,14 @@ def my_source(*, n: int = 12):
 
 
 @effect
-def my_transform(inputs, *, amount: float = 0.2):
+def my_transform(
+    g: tuple[np.ndarray, np.ndarray],
+    *,
+    amount: float = 0.2,
+) -> tuple[np.ndarray, np.ndarray]:
     from grafix.core.effects.rotate import rotate as _rotate
 
-    return _rotate(inputs, rotation=(0.0, 0.0, 20.0 * float(amount)))
+    return _rotate(g, rotation=(0.0, 0.0, 20.0 * float(amount)))
 
 
 def draw(t: float):
@@ -42,7 +48,7 @@ def draw(t: float):
     accent_layer = L("accent").layer(
         E.rotate(rotation=(0.0, 0.0, 10.0))(g),
         color=(0.1, 0.35, 0.8),
-        thickness=0.28,
+        thickness=0.001,
     )
     return base_layer + accent_layer
 
@@ -56,7 +62,7 @@ if __name__ == "__main__":
 - 単一レイヤ: `L("name").layer(geometry, color=(r,g,b), thickness=0.001)`
 - 複数レイヤ: 上記を複数作成して `list[Layer]` を返す
 - `color` は `0..1` の RGB タプル
-- `thickness` は正の値のみ。0.001を基本とする。
+- `thickness` は正の値のみ。0.005以下とする。
 - `color` / `thickness` を省略した場合は、`run(...)` / `export(...)` の既定値が使われる
 
 ## Built-in Primitives（1行説明）

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import math
-from typing import Sequence
 
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 from .util import transform_back, transform_to_xy_plane
 
@@ -36,13 +35,13 @@ reaction_diffusion_meta = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
-def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
+def _lines_to_realized(lines: list[np.ndarray]) -> GeomTuple:
     if not lines:
         return _empty_geometry()
     coords = np.concatenate(lines, axis=0).astype(np.float32, copy=False)
@@ -52,7 +51,7 @@ def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
     for i, ln in enumerate(lines):
         acc += int(ln.shape[0])
         offsets[i + 1] = acc
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _planarity_threshold(points: np.ndarray) -> float:
@@ -73,9 +72,9 @@ def _apply_alignment(
     return aligned
 
 
-def _pick_representative_ring(mask: RealizedGeometry) -> np.ndarray | None:
-    coords = mask.coords
-    offsets = mask.offsets
+def _pick_representative_ring(
+    coords: np.ndarray, offsets: np.ndarray
+) -> np.ndarray | None:
     for i in range(int(offsets.size) - 1):
         s = int(offsets[i])
         e = int(offsets[i + 1])
@@ -429,7 +428,7 @@ def _marching_squares_segments_masked(
 
 @effect(meta=reaction_diffusion_meta, n_inputs=1)
 def reaction_diffusion(
-    inputs: Sequence[RealizedGeometry],
+    mask: GeomTuple,
     *,
     grid_pitch: float = 0.6,
     steps: int = 4500,
@@ -444,13 +443,13 @@ def reaction_diffusion(
     level: float = 0.2,
     min_points: int = 16,
     boundary: str = "noflux",  # "noflux" | "dirichlet"
-) -> RealizedGeometry:
+) -> GeomTuple:
     """閉曲線マスク内で反応拡散を走らせ、線として出力する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        `inputs[0]` が閉曲線（複数可）からなるマスク。
+    mask : tuple[np.ndarray, np.ndarray]
+        閉曲線（複数可）からなるマスク（coords, offsets）。
     grid_pitch : float, default 0.6
         計算グリッドのピッチ（出力座標系の長さ単位）。
     steps : int, default 4500
@@ -476,31 +475,29 @@ def reaction_diffusion(
 
     Returns
     -------
-    RealizedGeometry
-        生成されたポリライン列。
+    tuple[np.ndarray, np.ndarray]
+        生成されたポリライン列（coords, offsets）。
     """
-    if not inputs:
-        return _empty_geometry()
-    mask = inputs[0]
-    if mask.coords.shape[0] == 0:
+    mask_coords, mask_offsets = mask
+    if mask_coords.shape[0] == 0:
         return _empty_geometry()
 
     pitch = float(grid_pitch)
     if pitch <= 0.0 or not math.isfinite(pitch):
         return _empty_geometry()
 
-    rep = _pick_representative_ring(mask)
+    rep = _pick_representative_ring(mask_coords, mask_offsets)
     if rep is None:
         return _empty_geometry()
 
     _rep_aligned, rotation_matrix, z_offset = transform_to_xy_plane(rep)
-    aligned_mask = _apply_alignment(mask.coords, rotation_matrix, z_offset)
+    aligned_mask = _apply_alignment(mask_coords, rotation_matrix, z_offset)
 
     threshold = _planarity_threshold(rep)
     if float(np.max(np.abs(aligned_mask[:, 2]))) > threshold:
         return _empty_geometry()
 
-    packed = _pack_mask_rings_xy(aligned_mask, mask.offsets)
+    packed = _pack_mask_rings_xy(aligned_mask, mask_offsets)
     if packed is None:
         return _empty_geometry()
     ring_vertices, ring_offsets = packed

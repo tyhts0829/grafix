@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 # `closed=auto` の近接判定しきい値（距離）。単位は入力座標系に従う（通常は mm）。
 CLOSED_DISTANCE_EPS = 0.01
@@ -26,10 +24,10 @@ highpass_meta = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _build_gaussian_kernel(sigma_in_samples: float) -> np.ndarray:
@@ -316,13 +314,13 @@ def _is_closed_auto(vertices: np.ndarray) -> bool:
 
 @effect(meta=highpass_meta)
 def highpass(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     step: float = 0.5,
     sigma: float = 1.0,
     gain: float = 1.0,
     closed: str = "auto",
-) -> RealizedGeometry:
+) -> GeomTuple:
     """ポリライン列を highpass（高周波強調）する。
 
     `lowpass` と同様に弧長で等間隔に再サンプルし、ガウス平滑を低域成分として
@@ -330,8 +328,8 @@ def highpass(
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        変形対象の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        変形対象の実体ジオメトリ（coords, offsets）。
     step : float, default 0.5
         再サンプル間隔（弧長）。
     sigma : float, default 1.0
@@ -344,25 +342,22 @@ def highpass(
 
     Returns
     -------
-    RealizedGeometry
-        highpass 適用後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        highpass 適用後の実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     step_size = float(step)
     sigma_size = float(sigma)
     gain_size = float(gain)
     if not np.isfinite(step_size) or not np.isfinite(sigma_size) or not np.isfinite(gain_size):
-        return base
+        return coords, offsets
     if step_size <= 0.0 or sigma_size <= 0.0:
-        return base
+        return coords, offsets
     if gain_size == 0.0:
-        return base
+        return coords, offsets
 
     closed_mode = str(closed)
     if closed_mode not in {"auto", "open", "closed"}:
@@ -370,15 +365,13 @@ def highpass(
 
     sigma_in_samples = sigma_size / step_size
     if not np.isfinite(sigma_in_samples) or sigma_in_samples <= 0.0:
-        return base
+        return coords, offsets
 
     kernel = _build_gaussian_kernel(float(sigma_in_samples))
 
-    coords = base.coords
-    offsets = base.offsets
     n_lines = int(offsets.size) - 1
     if n_lines <= 0:
-        return base
+        return coords, offsets
 
     out_lines: list[np.ndarray] = []
     total_vertices = 0
@@ -418,7 +411,7 @@ def highpass(
 
         total_vertices += int(out.shape[0])
         if total_vertices > MAX_TOTAL_VERTICES:
-            return base
+            return coords, offsets
         out_lines.append(out)
 
     if not out_lines:
@@ -434,7 +427,7 @@ def highpass(
         offsets_out[i + 1] = cursor
 
     coords_out = np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), np.float32)
-    return RealizedGeometry(coords=coords_out, offsets=offsets_out)
+    return coords_out, offsets_out
 
 
 __all__ = [
@@ -442,4 +435,3 @@ __all__ = [
     "highpass",
     "highpass_meta",
 ]
-

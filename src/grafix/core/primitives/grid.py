@@ -10,7 +10,7 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 grid_meta = {
     "nx": ParamMeta(kind="int", ui_min=1, ui_max=500),
@@ -27,7 +27,7 @@ def grid(
     ny: int | float = 20,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """グリッド（縦線 nx 本 + 横線 ny 本）を生成する。
 
     Parameters
@@ -43,8 +43,8 @@ def grid(
 
     Returns
     -------
-    RealizedGeometry
-        各線が 2 頂点からなるポリライン列としてのグリッド。
+    tuple[np.ndarray, np.ndarray]
+        各線が 2 頂点からなるポリライン列としてのグリッド（coords, offsets）。
     """
     nx_i = int(nx)
     ny_i = int(ny)
@@ -54,7 +54,7 @@ def grid(
     if nx_i == 0 and ny_i == 0:
         coords = np.zeros((0, 3), dtype=np.float32)
         offsets = np.zeros((1,), dtype=np.int32)
-        return RealizedGeometry(coords=coords, offsets=offsets)
+        return coords, offsets
 
     x_coords = (
         np.linspace(-0.5, 0.5, num=nx_i, dtype=np.float32)
@@ -107,4 +107,4 @@ def grid(
         center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
         coords = coords * np.float32(s_f) + center_vec
 
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets

@@ -2,8 +2,8 @@
 被切り抜きポリライン列を、閉曲線マスクの内側/外側だけにクリップする effect。
 
 入力:
-- inputs[0]: 被切り抜き（開いたポリライン列を想定）
-- inputs[1]: マスク（閉ループ列）
+- base: 被切り抜き（開いたポリライン列を想定）
+- mask: マスク（閉ループ列）
 
 処理:
 - マスクの代表リングから姿勢（平面）を推定し、両入力を XY 平面へ整列して 2D クリップする。
@@ -19,7 +19,7 @@ import pyclipper  # type: ignore[import-not-found, import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 from .util import transform_back, transform_to_xy_plane
 
@@ -32,10 +32,10 @@ _PLANAR_EPS_ABS = 1e-6
 _PLANAR_EPS_REL = 1e-5
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _planarity_threshold(points: np.ndarray) -> float:
@@ -98,7 +98,7 @@ def _to_int_path_ring(xy: np.ndarray, scale: int) -> list[tuple[int, int]] | Non
     return path if len(path) >= 3 else None
 
 
-def _lines_to_realized_geometry(lines: Sequence[np.ndarray]) -> RealizedGeometry:
+def _lines_to_realized_geometry(lines: Sequence[np.ndarray]) -> GeomTuple:
     if not lines:
         return _empty_geometry()
 
@@ -118,33 +118,36 @@ def _lines_to_realized_geometry(lines: Sequence[np.ndarray]) -> RealizedGeometry
         if coords_list
         else np.zeros((0, 3), np.float32)
     )
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
-def _pick_representative_ring(mask: RealizedGeometry) -> np.ndarray | None:
-    coords = mask.coords
-    offsets = mask.offsets
-    for i in range(int(offsets.size) - 1):
-        s = int(offsets[i])
-        e = int(offsets[i + 1])
+def _pick_representative_ring(
+    mask_coords: np.ndarray, mask_offsets: np.ndarray
+) -> np.ndarray | None:
+    for i in range(int(mask_offsets.size) - 1):
+        s = int(mask_offsets[i])
+        e = int(mask_offsets[i + 1])
         if e - s >= 3:
-            return coords[s:e]
+            return mask_coords[s:e]
     return None
 
 
 @effect(meta=clip_meta, n_inputs=2)
 def clip(
-    inputs: Sequence[RealizedGeometry],
+    base: GeomTuple,
+    mask: GeomTuple,
     *,
     mode: str = "inside",  # "inside" | "outside"
     draw_outline: bool = False,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """XY 平面へ整列した上で、閉曲線マスクで線分列をクリップする。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        `inputs[0]` が被切り抜き、`inputs[1]` が閉曲線マスク。
+    base : tuple[np.ndarray, np.ndarray]
+        被切り抜き対象（coords, offsets）。
+    mask : tuple[np.ndarray, np.ndarray]
+        閉曲線マスク（coords, offsets）。
     mode : str, default "inside"
         `"inside"` はマスク内側だけ残す。`"outside"` は外側だけ残す。
     draw_outline : bool, default False
@@ -152,60 +155,55 @@ def clip(
 
     Returns
     -------
-    RealizedGeometry
-        クリップ後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        クリップ後の実体ジオメトリ（coords, offsets）。
     """
     scale_i = 1000
     draw_outline_b = bool(draw_outline)
-    if not inputs:
-        return _empty_geometry()
-    if len(inputs) < 2:
-        return inputs[0]
+    base_coords, base_offsets = base
+    mask_coords, mask_offsets = mask
+    if base_coords.shape[0] == 0:
+        return base_coords, base_offsets
+    if mask_coords.shape[0] == 0:
+        return base_coords, base_offsets
 
-    base = inputs[0]
-    mask = inputs[1]
-    if base.coords.shape[0] == 0:
-        return base
-    if mask.coords.shape[0] == 0:
-        return base
-
-    rep = _pick_representative_ring(mask)
+    rep = _pick_representative_ring(mask_coords, mask_offsets)
     if rep is None:
-        return base
+        return base_coords, base_offsets
 
     _rep_aligned, rotation_matrix, z_offset = transform_to_xy_plane(rep)
 
-    aligned_base = _apply_alignment(base.coords, rotation_matrix, z_offset)
-    aligned_mask = _apply_alignment(mask.coords, rotation_matrix, z_offset)
+    aligned_base = _apply_alignment(base_coords, rotation_matrix, z_offset)
+    aligned_mask = _apply_alignment(mask_coords, rotation_matrix, z_offset)
 
     threshold = _planarity_threshold(rep)
     if float(np.max(np.abs(aligned_mask[:, 2]))) > threshold:
-        return base
+        return base_coords, base_offsets
     if float(np.max(np.abs(aligned_base[:, 2]))) > threshold:
-        return base
+        return base_coords, base_offsets
 
     mode_s = str(mode)
     if mode_s not in {"inside", "outside"}:
-        return base
+        return base_coords, base_offsets
 
     subject_paths: list[list[tuple[int, int]]] = []
-    for i in range(int(base.offsets.size) - 1):
-        s = int(base.offsets[i])
-        e = int(base.offsets[i + 1])
+    for i in range(int(base_offsets.size) - 1):
+        s = int(base_offsets[i])
+        e = int(base_offsets[i + 1])
         path = _to_int_path_open(aligned_base[s:e, 0:2], scale_i)
         if path is not None:
             subject_paths.append(path)
 
     clip_paths: list[list[tuple[int, int]]] = []
-    for i in range(int(mask.offsets.size) - 1):
-        s = int(mask.offsets[i])
-        e = int(mask.offsets[i + 1])
+    for i in range(int(mask_offsets.size) - 1):
+        s = int(mask_offsets[i])
+        e = int(mask_offsets[i + 1])
         path = _to_int_path_ring(aligned_mask[s:e, 0:2], scale_i)
         if path is not None:
             clip_paths.append(path)
 
     if not clip_paths:
-        return base
+        return base_coords, base_offsets
     outline_lines: list[np.ndarray] = []
     if draw_outline_b:
         for ring in clip_paths:
@@ -220,7 +218,7 @@ def clip(
     if not subject_paths:
         if outline_lines:
             return _lines_to_realized_geometry(outline_lines)
-        return base
+        return base_coords, base_offsets
 
     pc = pyclipper.Pyclipper()  # type: ignore[attr-defined]
     pc.AddPaths(subject_paths, pyclipper.PT_SUBJECT, False)  # type: ignore[attr-defined]

@@ -11,7 +11,7 @@
 4. `sin(pi*(SDF-phase)/spacing)` の 0 等値線を Marching Squares で抽出する
    - `sin()` を使うことで、`SDF = phase + k*spacing`（k は整数）の全レベルを 1 回の抽出で得る
 5. 抽出した線分群をスナップしながら縫合し、閉ループ（ポリライン）に復元する
-6. 元の 3D 座標系へ戻し、`RealizedGeometry` に詰めて返す
+6. 元の 3D 座標系へ戻し、(coords, offsets) に詰めて返す
 
 注意
 ----
@@ -23,14 +23,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 from .util import transform_back, transform_to_xy_plane
 
 MAX_GRID_POINTS = 4_000_000
@@ -69,20 +68,16 @@ class _Ring2D:
     maxs: np.ndarray  # (2,) float64
 
 
-def _empty_geometry() -> RealizedGeometry:
-    """空の `RealizedGeometry` を返す。
-
-    Grafix の `RealizedGeometry` は、ポリライン列を `(coords, offsets)` で持つ。
-    空の場合でも offsets は 1 要素（0）を持つ形に揃える。
-    """
+def _empty_geometry() -> GeomTuple:
+    """空の (coords, offsets) を返す。"""
 
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
-def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
-    """ポリライン列（座標配列のリスト）を `RealizedGeometry` に詰める。"""
+def _lines_to_realized(lines: list[np.ndarray]) -> GeomTuple:
+    """ポリライン列（座標配列のリスト）を (coords, offsets) に詰める。"""
 
     if not lines:
         return _empty_geometry()
@@ -93,7 +88,7 @@ def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
     for i, ln in enumerate(lines):
         acc += int(ln.shape[0])
         offsets[i + 1] = acc
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _planarity_threshold(points: np.ndarray) -> float:
@@ -139,15 +134,15 @@ def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
     return points
 
 
-def _pick_representative_ring(base: RealizedGeometry) -> np.ndarray | None:
+def _pick_representative_ring(
+    coords: np.ndarray, offsets: np.ndarray
+) -> np.ndarray | None:
     """平面整列の基準として使えるポリラインを 1 本選ぶ。
 
     `transform_to_xy_plane()` は「代表点群」から回転行列を求めるため、
     まず入力の中から最低限の点数（3 点以上）を持つものを探す。
     """
 
-    coords = base.coords
-    offsets = base.offsets
     for i in range(int(offsets.size) - 1):
         s = int(offsets[i])
         e = int(offsets[i + 1])
@@ -1091,7 +1086,7 @@ def _fill_marching_squares_zero_segments_edge_numba(
 
 @effect(meta=isocontour_meta, n_inputs=1)
 def isocontour(
-    inputs: Sequence[RealizedGeometry],
+    mask: GeomTuple,
     *,
     spacing: float = 2.0,
     phase: float = 0.0,
@@ -1102,13 +1097,13 @@ def isocontour(
     level_step: int = 1,
     auto_close_threshold: float = _AUTO_CLOSE_THRESHOLD_DEFAULT,
     keep_original: bool = False,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """閉曲線群から等高線（等値線）を複数レベル抽出して出力する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        `inputs[0]` が閉曲線群（外周＋穴）。開曲線は無視する。
+    mask : tuple[np.ndarray, np.ndarray]
+        閉曲線群（外周＋穴）を想定する入力（coords, offsets）。開曲線は無視する。
     spacing : float, default 2.0
         レベル間隔。
     phase : float, default 0.0
@@ -1130,13 +1125,11 @@ def isocontour(
 
     Returns
     -------
-    RealizedGeometry
-        抽出した等値線のポリライン列。
+    tuple[np.ndarray, np.ndarray]
+        抽出した等値線のポリライン列（coords, offsets）。
     """
-    if not inputs:
-        return _empty_geometry()
-    mask = inputs[0]
-    if mask.coords.shape[0] == 0:
+    mask_coords, mask_offsets = mask
+    if mask_coords.shape[0] == 0:
         return _empty_geometry()
 
     pitch = float(grid_pitch)
@@ -1169,21 +1162,21 @@ def isocontour(
     if not math.isfinite(gamma_f) or gamma_f <= 0.0:
         gamma_f = 1.0
 
-    rep = _pick_representative_ring(mask)
+    rep = _pick_representative_ring(mask_coords, mask_offsets)
     if rep is None:
         return _empty_geometry()
 
     # 入力の 3D ポリライン群を「ほぼ平面」と仮定し、代表リングの法線に合わせて XY 平面へ整列する。
     _rep_xy, rot, z_off = transform_to_xy_plane(rep)
-    coords_xy_all = _apply_alignment(mask.coords, rot, float(z_off))
+    coords_xy_all = _apply_alignment(mask_coords, rot, float(z_off))
 
     # どれだけ Z=0 から外れているかを見て、平面性が崩れている場合は空で返す。
     # （この effect は 2D 前提の SDF を作るので、歪んだ 3D 入力を無理に処理しない）
-    if float(np.max(np.abs(coords_xy_all[:, 2]))) > _planarity_threshold(mask.coords):
+    if float(np.max(np.abs(coords_xy_all[:, 2]))) > _planarity_threshold(mask_coords):
         return _empty_geometry()
 
     # 閉曲線のみを抽出（外周＋穴）。
-    rings = _extract_rings_xy(coords_xy_all, mask.offsets, auto_close_threshold=auto_close)
+    rings = _extract_rings_xy(coords_xy_all, mask_offsets, auto_close_threshold=auto_close)
     if not rings:
         return _empty_geometry()
 
@@ -1284,10 +1277,10 @@ def isocontour(
 
     if bool(keep_original):
         # 生成結果に元の入力を足すオプション（デバッグ・比較用途）。
-        for i in range(int(mask.offsets.size) - 1):
-            s = int(mask.offsets[i])
-            e = int(mask.offsets[i + 1])
-            original = mask.coords[s:e]
+        for i in range(int(mask_offsets.size) - 1):
+            s = int(mask_offsets[i])
+            e = int(mask_offsets[i + 1])
+            original = mask_coords[s:e]
             if original.shape[0] > 0:
                 out_lines.append(original.astype(np.float32, copy=False))
 

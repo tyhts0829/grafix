@@ -1,3 +1,46 @@
+## 2026-02-11: `@primitive` / `@effect` のユーザー I/O は `(coords, offsets)` タプル
+
+Grafix の拡張ポイント（`@primitive` / `@effect`）は、スケッチ作者が `RealizedGeometry` を意識しないために、**ユーザー関数の入出力を `(coords, offsets)` タプルに統一**する。
+
+- `coords`: `np.ndarray`（shape `(N,3)` のみ）
+- `offsets`: `np.ndarray`（shape `(M+1,)`）
+- primitive: `f(*, ...) -> (coords, offsets)`
+- effect:
+  - `n_inputs=1`: `f(g, *, ...) -> (coords, offsets)`
+  - `n_inputs=2`: `f(g1, g2, *, ...) -> (coords, offsets)`
+- デコレータは `from grafix import effect, primitive` で import できる（推奨）。
+
+最小例:
+
+```python
+from __future__ import annotations
+
+import numpy as np
+
+from grafix import E, G, effect, primitive, run
+
+
+@primitive(meta={"n": {"kind": "int", "ui_min": 2, "ui_max": 512}})
+def user_prim(*, n: int = 64) -> tuple[np.ndarray, np.ndarray]:
+    coords = np.zeros((n, 3), dtype=np.float32)
+    offsets = np.array([0, n], dtype=np.int32)
+    return coords, offsets
+
+
+@effect(meta={"amount": {"kind": "float", "ui_min": 0.0, "ui_max": 10.0}})
+def user_eff(
+    g: tuple[np.ndarray, np.ndarray],
+    *,
+    amount: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    coords, offsets = g
+    coords_out = coords.copy()
+    coords_out[:, 0] += np.float32(amount)
+    return coords_out, offsets
+```
+
+---
+
 結論としては「実行後に“本当に足りなかった情報”をAIに棚卸しさせる」のは有効です。ただし、やり方を間違えると逆にコンテキストが肥大化します。効くのは、AIに“欲しい情報”を自由に列挙させることではなく、「今回の出力に至る意思決定で、どこが不確かで、何が原因でブレたか」を根拠付きで回収する運用です。
 
 あなたが言う「コンテキストの無駄遣い」には大きく2種類あります。ひとつは、毎回同じ説明を長文で再投入しているタイプ（本来は固定仕様として外に出して参照すべき）。もうひとつは、必要な情報が欠けていてAIが推測で埋め、その推測が外れてやり直しになるタイプ（本来は“欠けて困った情報”だけを次回に足すべき）。実行後の棚卸しは後者に効きます。前者は棚卸しだけでは減らず、「固定仕様をどこに置くか」「どこまでを毎回入力するか」の設計で減らします。

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 rotate_meta = {
     "auto_center": ParamMeta(kind="bool"),
@@ -22,18 +20,18 @@ rotate_ui_visible = {
 
 @effect(meta=rotate_meta, ui_visible=rotate_ui_visible)
 def rotate(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     auto_center: bool = True,
     pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
     rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
-) -> RealizedGeometry:
+) -> GeomTuple:
     """回転（auto_center / pivot 対応、degree 入力）。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        回転対象の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        回転対象の実体ジオメトリ（coords, offsets）。
     auto_center : bool, default True
         True なら頂点の平均座標を中心に使用。False なら `pivot` を使用。
     pivot : tuple[float, float, float], default (0.0,0.0,0.0)
@@ -43,23 +41,18 @@ def rotate(
 
     Returns
     -------
-    RealizedGeometry
-        回転後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        回転後の実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        coords = np.zeros((0, 3), dtype=np.float32)
-        offsets = np.zeros((1,), dtype=np.int32)
-        return RealizedGeometry(coords=coords, offsets=offsets)
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     rx_deg, ry_deg, rz_deg = float(rotation[0]), float(rotation[1]), float(rotation[2])
     rx, ry, rz = np.deg2rad([rx_deg, ry_deg, rz_deg]).astype(np.float64)
 
     if auto_center:
-        center = base.coords.astype(np.float64, copy=False).mean(axis=0)
+        center = coords.astype(np.float64, copy=False).mean(axis=0)
     else:
         center = np.array(
             [float(pivot[0]), float(pivot[1]), float(pivot[2])],
@@ -85,7 +78,7 @@ def rotate(
     # 適用順序: x → y → z（row-vector のため転置で適用）
     rot = rz_mat @ ry_mat @ rx_mat
 
-    shifted = base.coords.astype(np.float64, copy=False) - center
+    shifted = coords.astype(np.float64, copy=False) - center
     rotated = shifted @ rot.T + center
-    coords = rotated.astype(np.float32, copy=False)
-    return RealizedGeometry(coords=coords, offsets=base.offsets)
+    coords_out = rotated.astype(np.float32, copy=False)
+    return coords_out, offsets

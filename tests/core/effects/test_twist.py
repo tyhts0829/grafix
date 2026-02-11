@@ -8,58 +8,58 @@ import pytest
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import RealizeError, realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def twist_test_line_y3() -> RealizedGeometry:
+def twist_test_line_y3() -> GeomTuple:
     """y=0/0.5/1 の 3 点ポリラインを返す（x=1,z=0 固定）。"""
     coords = np.array([[1.0, 0.0, 0.0], [1.0, 0.5, 0.0], [1.0, 1.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 3], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def twist_test_line_y3_x2() -> RealizedGeometry:
+def twist_test_line_y3_x2() -> GeomTuple:
     """y=0/0.5/1 の 3 点ポリラインを返す（x=2,z=0 固定）。"""
     coords = np.array([[2.0, 0.0, 0.0], [2.0, 0.5, 0.0], [2.0, 1.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 3], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def twist_test_asym_y3() -> RealizedGeometry:
+def twist_test_asym_y3() -> GeomTuple:
     """auto_center 検証用の 3 点ポリラインを返す。"""
     coords = np.array([[2.0, 0.0, 0.0], [0.0, 0.5, 0.0], [2.0, 1.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 3], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def twist_test_two_lines_y2() -> RealizedGeometry:
+def twist_test_two_lines_y2() -> GeomTuple:
     """y=0/1 の 2 点線分×2 本を返す（offsets 検証用）。"""
     coords = np.array(
         [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0]],
         dtype=np.float32,
     )
     offsets = np.array([0, 2, 4], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def twist_test_same_y() -> RealizedGeometry:
+def twist_test_same_y() -> GeomTuple:
     """y が一定の 2 点線分を返す（rng=0 no-op 用）。"""
     coords = np.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def twist_test_empty() -> RealizedGeometry:
+def twist_test_empty() -> GeomTuple:
     """空のジオメトリを返す。"""
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_twist_y_axis_90_at_ends_and_zero_in_middle() -> None:

@@ -8,11 +8,11 @@ from grafix.api import E, G
 from grafix.core.effects.fill import _build_evenodd_groups, _point_in_polygon, _polygon_area_abs
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 
 @primitive
-def fill_test_square() -> RealizedGeometry:
+def fill_test_square() -> GeomTuple:
     """一辺 10 の正方形（閉ポリライン）を返す。"""
     coords = np.array(
         [
@@ -25,11 +25,11 @@ def fill_test_square() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def fill_test_square_with_hole() -> RealizedGeometry:
+def fill_test_square_with_hole() -> GeomTuple:
     """外周+穴（2 輪郭）の正方形を返す。"""
     outer = np.array(
         [
@@ -53,15 +53,15 @@ def fill_test_square_with_hole() -> RealizedGeometry:
     )
     coords = np.concatenate([outer, hole], axis=0)
     offsets = np.array([0, outer.shape[0], outer.shape[0] + hole.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def fill_test_empty() -> RealizedGeometry:
+def fill_test_empty() -> GeomTuple:
     """空のジオメトリを返す。"""
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _square_loop(x0: float, y0: float, size: float) -> np.ndarray:
@@ -78,24 +78,24 @@ def _square_loop(x0: float, y0: float, size: float) -> np.ndarray:
 
 
 @primitive
-def fill_test_three_disjoint_squares() -> RealizedGeometry:
+def fill_test_three_disjoint_squares() -> GeomTuple:
     """離れた 3 つの正方形（閉ポリライン×3）を返す。"""
     a = _square_loop(0.0, 0.0, 10.0)
     b = _square_loop(20.0, 0.0, 10.0)
     c = _square_loop(40.0, 0.0, 10.0)
     coords = np.concatenate([a, b, c], axis=0)
     offsets = np.array([0, a.shape[0], a.shape[0] + b.shape[0], a.shape[0] + b.shape[0] + c.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def fill_test_two_disjoint_squares() -> RealizedGeometry:
+def fill_test_two_disjoint_squares() -> GeomTuple:
     """離れた 2 つの正方形（閉ポリライン×2）を返す。"""
     a = _square_loop(0.0, 0.0, 10.0)
     b = _square_loop(20.0, 0.0, 10.0)
     coords = np.concatenate([a, b], axis=0)
     offsets = np.array([0, a.shape[0], a.shape[0] + b.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _iter_polylines(realized: RealizedGeometry):

@@ -11,17 +11,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 from numba import njit, prange  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import (
-    RealizedGeometry,
-    concat_realized_geometries,
-)
+from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
 
 from .util import transform_back, transform_to_xy_plane
 
@@ -54,13 +50,13 @@ class _Ring2D:
     maxs: np.ndarray  # (2,) float64
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
-def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
+def _lines_to_realized(lines: list[np.ndarray]) -> GeomTuple:
     if not lines:
         return _empty_geometry()
     coords = np.concatenate(lines, axis=0).astype(np.float32, copy=False)
@@ -70,7 +66,7 @@ def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
     for i, ln in enumerate(lines):
         acc += int(ln.shape[0])
         offsets[i + 1] = np.int32(acc)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _planarity_threshold(points: np.ndarray) -> float:
@@ -91,9 +87,9 @@ def _apply_alignment(
     return aligned
 
 
-def _pick_representative_ring(mask: RealizedGeometry) -> np.ndarray | None:
-    coords = mask.coords
-    offsets = mask.offsets
+def _pick_representative_ring(
+    coords: np.ndarray, offsets: np.ndarray
+) -> np.ndarray | None:
     for i in range(int(offsets.size) - 1):
         s = int(offsets[i])
         e = int(offsets[i + 1])
@@ -953,7 +949,7 @@ def _simulate_growth_in_mask_xy(
 
 @effect(meta=growth_meta, n_inputs=1)
 def growth(
-    inputs: Sequence[RealizedGeometry],
+    mask: GeomTuple,
     *,
     seed_count: int = 12,
     target_spacing: float = 2.0,
@@ -962,13 +958,13 @@ def growth(
     iters: int = 250,
     seed: int = 0,
     show_mask: bool = False,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """マスク内で差分成長を行い、襞のような閉曲線群を生成する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        `inputs[0]` が閉曲線マスク（リング列）。
+    mask : tuple[np.ndarray, np.ndarray]
+        閉曲線マスク（リング列）を想定する入力（coords, offsets）。
     seed_count : int, default 12
         マスク内へ配置する seed（初期ループ）数。
     target_spacing : float, default 2.0
@@ -987,23 +983,21 @@ def growth(
 
     Returns
     -------
-    RealizedGeometry
-        生成された閉曲線群（+ `show_mask=True` の場合は mask も含む）。
+    tuple[np.ndarray, np.ndarray]
+        生成された閉曲線群（coords, offsets）。
+        `show_mask=True` の場合は mask も含む。
         入力が不正（リング抽出できない/非平面など）の場合は empty。
     """
-    if not inputs:
+    mask_coords, mask_offsets = mask
+    if mask_coords.shape[0] == 0:
         return _empty_geometry()
 
-    mask = inputs[0]
-    if mask.coords.shape[0] == 0:
-        return _empty_geometry()
-
-    rep = _pick_representative_ring(mask)
+    rep = _pick_representative_ring(mask_coords, mask_offsets)
     if rep is None:
         return _empty_geometry()
 
     _rep_aligned, rotation_matrix, z_offset = transform_to_xy_plane(rep)
-    aligned_mask = _apply_alignment(mask.coords, rotation_matrix, float(z_offset))
+    aligned_mask = _apply_alignment(mask_coords, rotation_matrix, float(z_offset))
 
     threshold = _planarity_threshold(rep)
     if float(np.max(np.abs(aligned_mask[:, 2]))) > threshold:
@@ -1011,7 +1005,7 @@ def growth(
 
     rings = _extract_rings_xy(
         aligned_mask,
-        mask.offsets,
+        mask_offsets,
         auto_close_threshold=float(_AUTO_CLOSE_THRESHOLD_DEFAULT),
     )
     if not rings:
@@ -1049,12 +1043,8 @@ def growth(
         iters_i = 0
 
     if seed_count_i == 0 or iters_i == 0:
-        base = _empty_geometry()
-        return (
-            concat_realized_geometries(base, mask)
-            if bool(show_mask)
-            else base
-        )
+        out = _empty_geometry()
+        return concat_geom_tuples(out, mask) if bool(show_mask) else out
 
     rng = np.random.default_rng(int(seed))
     centers = _sample_seed_centers_xy(
@@ -1112,7 +1102,7 @@ def growth(
 
     out = _lines_to_realized(lines_out)
     if bool(show_mask):
-        out = concat_realized_geometries(out, mask)
+        out = concat_geom_tuples(out, mask)
     return out
 
 

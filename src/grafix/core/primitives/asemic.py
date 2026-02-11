@@ -14,7 +14,7 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 asemic_meta = {
     "text": ParamMeta(kind="str"),
@@ -53,10 +53,10 @@ ASEMIC_UI_VISIBLE = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _stable_hash64(text: str) -> int:
@@ -185,7 +185,7 @@ def _polylines_to_realized(
     *,
     center: tuple[float, float, float],
     scale: float,
-) -> RealizedGeometry:
+) -> GeomTuple:
     filtered = [
         p.astype(np.float32, copy=False) for p in polylines if int(p.shape[0]) >= 2
     ]
@@ -207,7 +207,7 @@ def _polylines_to_realized(
         center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
         coords = coords * np.float32(s_f) + center_vec
 
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _sample_bezier(points: np.ndarray, *, samples_per_segment: int, tension: float) -> np.ndarray:
@@ -455,7 +455,7 @@ def asemic(
     show_bounding_box: bool = False,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """擬似文字（asemic）の文章をポリライン列として生成する。
 
     同じ文字は同じ字形になる（seed を文字で派生させる）ため、フォントのように使える。
@@ -511,8 +511,8 @@ def asemic(
 
     Returns
     -------
-    RealizedGeometry
-        文章のポリライン列。
+    tuple[np.ndarray, np.ndarray]
+        文章のポリライン列（coords, offsets）。
     """
     try:
         cx, cy, cz = center

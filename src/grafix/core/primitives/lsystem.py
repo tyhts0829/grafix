@@ -13,7 +13,7 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 _MAX_EXPANDED_CHARS = 500_000
 
@@ -56,13 +56,13 @@ LSYSTEM_UI_VISIBLE = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
-def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
+def _lines_to_realized(lines: list[np.ndarray]) -> GeomTuple:
     if not lines:
         return _empty_geometry()
     coords = np.concatenate(lines, axis=0).astype(np.float32, copy=False)
@@ -72,7 +72,7 @@ def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
     for i, ln in enumerate(lines):
         acc += int(ln.shape[0])
         offsets[i + 1] = acc
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _parse_rules_text(rules: str) -> dict[str, str]:
@@ -234,7 +234,7 @@ def lsystem(
     seed: int = 0,
     axiom: str = _DEFAULT_CUSTOM_AXIOM,
     rules: str = _DEFAULT_CUSTOM_RULES,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """L-system を展開し、枝分かれした線（開ポリライン列）を生成する。
 
     L-system は「文字列の置換規則」で形を作る手法で、
@@ -309,8 +309,8 @@ def lsystem(
 
     Returns
     -------
-    RealizedGeometry
-        生成された枝ポリライン列。
+    tuple[np.ndarray, np.ndarray]
+        生成された枝ポリライン列（coords, offsets）。
     """
     try:
         cx, cy, cz = center

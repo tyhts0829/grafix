@@ -10,48 +10,54 @@ from grafix.core.realize import realize
 
 
 def test_asemic_impl_is_deterministic() -> None:
-    a = asemic_impl(seed=0, n_nodes=28, candidates=12)
-    b = asemic_impl(seed=0, n_nodes=28, candidates=12)
+    a_coords, a_offsets = asemic_impl(seed=0, n_nodes=28, candidates=12)
+    b_coords, b_offsets = asemic_impl(seed=0, n_nodes=28, candidates=12)
 
-    assert np.array_equal(a.coords, b.coords)
-    assert np.array_equal(a.offsets, b.offsets)
+    assert np.array_equal(a_coords, b_coords)
+    assert np.array_equal(a_offsets, b_offsets)
 
 
 def test_asemic_same_char_has_same_shape_translated() -> None:
-    single = asemic_impl(text="A", seed=0, n_nodes=28, candidates=12)
-    assert single.coords.shape[0] > 0
+    single_coords, single_offsets = asemic_impl(text="A", seed=0, n_nodes=28, candidates=12)
+    assert single_coords.shape[0] > 0
 
-    double = asemic_impl(text="AA", seed=0, n_nodes=28, candidates=12)
-    n = int(single.coords.shape[0])
-    assert int(double.coords.shape[0]) == 2 * n
+    double_coords, double_offsets = asemic_impl(text="AA", seed=0, n_nodes=28, candidates=12)
+    n = int(single_coords.shape[0])
+    assert int(double_coords.shape[0]) == 2 * n
 
-    assert np.array_equal(double.coords[:n], single.coords)
+    assert np.array_equal(double_coords[:n], single_coords)
     shift = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    assert np.array_equal(double.coords[n:], single.coords + shift)
+    assert np.array_equal(double_coords[n:], single_coords + shift)
 
-    m = int(single.offsets.size)
-    assert int(double.offsets.size) == 2 * m - 1
-    assert np.array_equal(double.offsets[:m], single.offsets)
-    assert np.array_equal(double.offsets[m:], single.offsets[1:] + n)
+    m = int(single_offsets.size)
+    assert int(double_offsets.size) == 2 * m - 1
+    assert np.array_equal(double_offsets[:m], single_offsets)
+    assert np.array_equal(double_offsets[m:], single_offsets[1:] + n)
 
 
 def test_asemic_newline_advances_by_line_height() -> None:
-    single = asemic_impl(text="A", seed=0, n_nodes=28, candidates=12)
-    assert single.coords.shape[0] > 0
+    single_coords, _single_offsets = asemic_impl(text="A", seed=0, n_nodes=28, candidates=12)
+    assert single_coords.shape[0] > 0
 
     lh = 1.5
-    two_lines = asemic_impl(text="A\nA", seed=0, n_nodes=28, candidates=12, line_height=lh)
-    n = int(single.coords.shape[0])
-    assert int(two_lines.coords.shape[0]) == 2 * n
-    assert np.array_equal(two_lines.coords[:n], single.coords)
+    two_lines_coords, _two_lines_offsets = asemic_impl(
+        text="A\nA",
+        seed=0,
+        n_nodes=28,
+        candidates=12,
+        line_height=lh,
+    )
+    n = int(single_coords.shape[0])
+    assert int(two_lines_coords.shape[0]) == 2 * n
+    assert np.array_equal(two_lines_coords[:n], single_coords)
 
     shift = np.array([0.0, float(lh), 0.0], dtype=np.float32)
-    assert np.array_equal(two_lines.coords[n:], single.coords + shift)
+    assert np.array_equal(two_lines_coords[n:], single_coords + shift)
 
 
 def test_asemic_wrap_by_box_width_increases_y_extent() -> None:
-    unwrapped = asemic_impl(text="A A A", seed=0, n_nodes=28, candidates=12)
-    wrapped = asemic_impl(
+    unwrapped_coords, _unwrapped_offsets = asemic_impl(text="A A A", seed=0, n_nodes=28, candidates=12)
+    wrapped_coords, _wrapped_offsets = asemic_impl(
         text="A A A",
         seed=0,
         n_nodes=28,
@@ -61,18 +67,18 @@ def test_asemic_wrap_by_box_width_increases_y_extent() -> None:
         line_height=2.0,
     )
 
-    assert wrapped.coords.shape == unwrapped.coords.shape
-    assert float(wrapped.coords[:, 1].max()) > float(unwrapped.coords[:, 1].max()) + 1.0
+    assert wrapped_coords.shape == unwrapped_coords.shape
+    assert float(wrapped_coords[:, 1].max()) > float(unwrapped_coords[:, 1].max()) + 1.0
 
 
 def test_asemic_period_is_literal_dot() -> None:
-    dot = asemic_impl(text=".", seed=0, n_nodes=28, candidates=12)
+    dot_coords, dot_offsets = asemic_impl(text=".", seed=0, n_nodes=28, candidates=12)
 
-    assert dot.coords.shape[0] > 0
-    assert dot.offsets.tolist() == [0, int(dot.coords.shape[0])]
-    assert np.array_equal(dot.coords[0], dot.coords[-1])
+    assert dot_coords.shape[0] > 0
+    assert dot_offsets.tolist() == [0, int(dot_coords.shape[0])]
+    assert np.array_equal(dot_coords[0], dot_coords[-1])
 
-    span = dot.coords[:, :2].max(axis=0) - dot.coords[:, :2].min(axis=0)
+    span = dot_coords[:, :2].max(axis=0) - dot_coords[:, :2].min(axis=0)
     assert float(span[0]) < 0.2
     assert float(span[1]) < 0.2
 

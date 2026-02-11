@@ -7,23 +7,22 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
 
 
 @primitive
-def buffer_test_segment_xy() -> RealizedGeometry:
+def buffer_test_segment_xy() -> tuple[np.ndarray, np.ndarray]:
     """xy 平面上の 2 点線分を返す。"""
     coords = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def buffer_test_segment_xz() -> RealizedGeometry:
+def buffer_test_segment_xz() -> tuple[np.ndarray, np.ndarray]:
     """xz 平面上の 2 点線分を返す（y=0 固定）。"""
     coords = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 1.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_buffer_distance_zero_is_noop() -> None:

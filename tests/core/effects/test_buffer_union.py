@@ -7,12 +7,12 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def buffer_union_test_two_segments_xy() -> RealizedGeometry:
-    """XY 平面上の 2 本の線分（別ポリライン）を 1 つの RealizedGeometry で返す。"""
+def buffer_union_test_two_segments_xy() -> GeomTuple:
+    """XY 平面上の 2 本の線分（別ポリライン）を返す。"""
     coords = np.array(
         [
             [0.0, 0.0, 0.0],
@@ -23,7 +23,7 @@ def buffer_union_test_two_segments_xy() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 2, 4], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_buffer_union_false_keeps_two_outlines() -> None:

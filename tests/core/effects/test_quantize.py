@@ -7,11 +7,11 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def quantize_test_halves_xyz() -> RealizedGeometry:
+def quantize_test_halves_xyz() -> GeomTuple:
     """0.5 境界を含む座標を持つ 4 点ポリラインを返す。"""
     coords = np.array(
         [
@@ -23,15 +23,15 @@ def quantize_test_halves_xyz() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 4], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def quantize_test_vec_step_xyz() -> RealizedGeometry:
+def quantize_test_vec_step_xyz() -> GeomTuple:
     """軸別ステップ検証用の 2 点ポリラインを返す。"""
     coords = np.array([[2.4, 0.74, -0.6], [1.0, 0.25, 0.5]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_quantize_half_away_from_zero_xyz() -> None:
@@ -70,4 +70,3 @@ def test_quantize_step_non_positive_is_noop() -> None:
     expected = np.array([[2.4, 0.74, -0.6], [1.0, 0.25, 0.5]], dtype=np.float32)
     np.testing.assert_allclose(realized.coords, expected, rtol=0.0, atol=1e-6)
     assert realized.offsets.tolist() == [0, 2]
-

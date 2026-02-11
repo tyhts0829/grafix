@@ -12,7 +12,7 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 _RADIUS = 0.5
 _MIN_SUBDIVISIONS = 0
@@ -51,8 +51,8 @@ def _polylines_to_realized(
     *,
     center: tuple[float, float, float],
     scale: float,
-) -> RealizedGeometry:
-    """ポリライン列を RealizedGeometry に変換する。"""
+) -> GeomTuple:
+    """ポリライン列を (coords, offsets) に変換する。"""
     filtered: list[np.ndarray] = []
     lengths: list[int] = []
     for i, line in enumerate(polylines):
@@ -70,7 +70,7 @@ def _polylines_to_realized(
     if not filtered:
         coords = np.zeros((0, 3), dtype=np.float32)
         offsets = np.zeros((1,), dtype=np.int32)
-        return RealizedGeometry(coords=coords, offsets=offsets)
+        return coords, offsets
 
     coords = np.concatenate(filtered, axis=0).astype(np.float32, copy=False)
     offsets = np.zeros(len(filtered) + 1, dtype=np.int32)
@@ -83,7 +83,7 @@ def _polylines_to_realized(
     if (cx, cy, cz) != (0.0, 0.0, 0.0):
         coords += np.array([cx, cy, cz], dtype=np.float32)
 
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _sphere_latlon(subdivisions: int, mode: int) -> list[np.ndarray]:
@@ -357,7 +357,7 @@ def sphere(
     mode: int | float = 2,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """球のワイヤーフレームをポリライン列として生成する。
 
     Parameters
@@ -376,8 +376,8 @@ def sphere(
 
     Returns
     -------
-    RealizedGeometry
-        球ワイヤーフレームの実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        球ワイヤーフレームの実体ジオメトリ（coords, offsets）。
     """
     s = _clamp_int(subdivisions, _MIN_SUBDIVISIONS, _MAX_SUBDIVISIONS)
     idx = _clamp_int(type_index, 0, len(_STYLE_ORDER) - 1)

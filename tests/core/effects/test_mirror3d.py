@@ -8,31 +8,31 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 
 @primitive
-def mirror3d_test_line_in_wedge_posz() -> RealizedGeometry:
+def mirror3d_test_line_in_wedge_posz() -> GeomTuple:
     """くさび内（azimuth）にある 2 点ポリライン（z>0）。"""
     coords = np.array([[-2.0, 1.5, 5.0], [-1.5, 1.6, 6.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def mirror3d_test_line_in_wedge_negz() -> RealizedGeometry:
+def mirror3d_test_line_in_wedge_negz() -> GeomTuple:
     """くさび内（azimuth）にある 2 点ポリライン（z<0）。"""
     coords = np.array([[-2.0, 1.5, -5.0], [-1.5, 1.6, -6.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def mirror3d_test_line_pos_octant() -> RealizedGeometry:
+def mirror3d_test_line_pos_octant() -> GeomTuple:
     """正の八分体（polyhedral のソース領域）内にある 2 点ポリライン。"""
     coords = np.array([[1.1, 2.2, 3.3], [4.4, 5.5, 6.6]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _iter_polylines(realized: RealizedGeometry):

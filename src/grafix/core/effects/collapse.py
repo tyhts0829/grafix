@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import math
-from typing import Sequence
 
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
 
 EPS = 1e-12
@@ -27,15 +26,15 @@ collapse_ui_visible = {
     "pivot": lambda v: not bool(v.get("auto_center", True)),
 }
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @effect(meta=collapse_meta, ui_visible=collapse_ui_visible)
 def collapse(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     intensity: float = 5.0,
     subdivisions: int = 6,
@@ -43,13 +42,13 @@ def collapse(
     intensity_mask_slope: tuple[float, float, float] = (0.0, 0.0, 0.0),
     auto_center: bool = True,
     pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
-) -> RealizedGeometry:
+) -> GeomTuple:
     """線分を細分化してノイズで崩す（非接続）。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力の実体ジオメトリ（coords, offsets）。
     intensity : float, default 5.0
         変位量（長さ単位は座標系に従う）。0.0 で no-op。
     subdivisions : int, default 6
@@ -66,8 +65,8 @@ def collapse(
 
     Returns
     -------
-    RealizedGeometry
-        変形後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        変形後の実体ジオメトリ（coords, offsets）。
 
     Notes
     -----
@@ -77,21 +76,18 @@ def collapse(
     `intensity_eff = intensity * p_eff` として適用する。
     係数は `p_eff = 1 - (1-px)(1-py)(1-pz)`（OR 合成）で作る。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     intensity = float(intensity)
     divisions = int(subdivisions)
     if intensity == 0.0 or divisions <= 0:
-        return base
+        return coords, offsets
 
     new_coords, new_offsets = _collapse_numba(
-        base.coords,
-        base.offsets,
+        coords,
+        offsets,
         intensity,
         divisions,
         intensity_mask_base=intensity_mask_base,
@@ -99,7 +95,7 @@ def collapse(
         auto_center=bool(auto_center),
         pivot=pivot,
     )
-    return RealizedGeometry(coords=new_coords, offsets=new_offsets)
+    return new_coords, new_offsets
 
 
 def _collapse_numpy_v2(

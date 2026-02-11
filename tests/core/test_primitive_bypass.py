@@ -8,7 +8,7 @@ from grafix.api import G
 from grafix.core.geometry import Geometry
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 def test_primitive_activate_false_returns_empty_geometry() -> None:
@@ -22,10 +22,10 @@ def test_primitive_activate_false_returns_empty_geometry() -> None:
 
 def test_primitive_activate_false_works_without_meta() -> None:
     @primitive(meta=None)
-    def dummy_primitive(*, x: float = 1.0) -> RealizedGeometry:
+    def dummy_primitive(*, x: float = 1.0) -> GeomTuple:
         coords = np.asarray([[x, 0.0, 0.0]], dtype=np.float32)
         offsets = np.asarray([0, 1], dtype=np.int32)
-        return RealizedGeometry(coords=coords, offsets=offsets)
+        return coords, offsets
 
     base = realize(Geometry.create("dummy_primitive", params={"x": 2.0}))
     bypassed = realize(

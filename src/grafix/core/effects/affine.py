@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 affine_meta = {
     "auto_center": ParamMeta(kind="bool"),
@@ -27,20 +25,20 @@ affine_ui_visible = {
 
 @effect(meta=affine_meta, ui_visible=affine_ui_visible)
 def affine(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     auto_center: bool = True,
     pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
     rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
     delta: tuple[float, float, float] = (0.0, 0.0, 0.0),
-) -> RealizedGeometry:
+) -> GeomTuple:
     """スケール→回転→平行移動を適用する（合成アフィン変換）。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        変換対象の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        変換対象の実体ジオメトリ（coords, offsets）。
     auto_center : bool, default True
         True なら頂点の平均座標を中心に使用する。
     pivot : tuple[float, float, float], default (0.0,0.0,0.0)
@@ -54,21 +52,16 @@ def affine(
 
     Returns
     -------
-    RealizedGeometry
-        変換後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        変換後の実体ジオメトリ（coords, offsets）。
 
     Notes
     -----
     回転は旧仕様（Rz・Ry・Rx の合成）を踏襲する。
     """
-    if not inputs:
-        coords = np.zeros((0, 3), dtype=np.float32)
-        offsets = np.zeros((1,), dtype=np.int32)
-        return RealizedGeometry(coords=coords, offsets=offsets)
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
     rx_deg, ry_deg, rz_deg = float(rotation[0]), float(rotation[1]), float(rotation[2])
@@ -85,9 +78,9 @@ def affine(
         and dy == 0.0
         and dz == 0.0
     ):
-        return base
+        return coords, offsets
 
-    coords64 = base.coords.astype(np.float64, copy=False)
+    coords64 = coords.astype(np.float64, copy=False)
     if auto_center:
         center = coords64.mean(axis=0)
     else:
@@ -116,5 +109,5 @@ def affine(
 
     rotated = scaled @ rot.T
     transformed = rotated + center + np.array([dx, dy, dz], dtype=np.float64)
-    coords = transformed.astype(np.float32, copy=False)
-    return RealizedGeometry(coords=coords, offsets=base.offsets)
+    coords_out = transformed.astype(np.float32, copy=False)
+    return coords_out, offsets

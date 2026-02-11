@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 from .util import transform_back, transform_to_xy_plane
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
@@ -35,10 +34,10 @@ class _Ring2D:
     maxs: np.ndarray  # (2,) float64
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _planarity_threshold(points: np.ndarray) -> float:
@@ -66,9 +65,9 @@ def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
     return points
 
 
-def _pick_representative_ring(base: RealizedGeometry) -> np.ndarray | None:
-    coords = base.coords
-    offsets = base.offsets
+def _pick_representative_ring(
+    coords: np.ndarray, offsets: np.ndarray
+) -> np.ndarray | None:
     for i in range(int(offsets.size) - 1):
         s = int(offsets[i])
         e = int(offsets[i + 1])
@@ -376,7 +375,7 @@ def _marching_squares_segments(
     return segments
 
 
-def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
+def _lines_to_realized(lines: list[np.ndarray]) -> GeomTuple:
     if not lines:
         return _empty_geometry()
     coords = np.concatenate(lines, axis=0).astype(np.float32, copy=False)
@@ -386,7 +385,7 @@ def _lines_to_realized(lines: list[np.ndarray]) -> RealizedGeometry:
     for i, ln in enumerate(lines):
         acc += int(ln.shape[0])
         offsets[i + 1] = acc
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _pack_loops_xy(loops_xy: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
@@ -533,7 +532,7 @@ def _filter_exterior_loops(
 
 @effect(meta=metaball_meta)
 def metaball(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     radius: float = 3.0,
     threshold: float = 1.0,
@@ -541,7 +540,7 @@ def metaball(
     auto_close_threshold: float = _AUTO_CLOSE_THRESHOLD_DEFAULT,
     output: str = "both",  # "exterior" | "both"
     keep_original: bool = False,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """閉曲線群をメタボール的に接続し、輪郭（外周＋穴）を生成する。
 
     入力 `inputs[0]` の全ポリラインを走査し、閉曲線（端点が近ければ自動クローズ）を
@@ -549,8 +548,8 @@ def metaball(
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     radius : float, default 3.0
         接続の届く距離（falloff 半径）[mm]。大きいほど繋がりやすい。
     threshold : float, default 1.0
@@ -569,48 +568,45 @@ def metaball(
 
     Returns
     -------
-    RealizedGeometry
-        生成した輪郭（外周＋穴）を含む実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        生成した輪郭（外周＋穴）を含む実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     r = float(radius)
     if not np.isfinite(r) or r <= 0.0:
-        return base
+        return coords, offsets
 
     level = float(threshold)
     if not np.isfinite(level):
-        return base
+        return coords, offsets
 
     pitch = float(grid_pitch)
     if not np.isfinite(pitch) or pitch <= 0.0:
-        return base
+        return coords, offsets
 
     output_s = str(output)
     if output_s not in {"exterior", "both"}:
-        return base
+        return coords, offsets
 
     auto_close = float(auto_close_threshold)
     if not np.isfinite(auto_close) or auto_close < 0.0:
         auto_close = 0.0
 
-    rep = _pick_representative_ring(base)
+    rep = _pick_representative_ring(coords, offsets)
     if rep is None:
-        return base
+        return coords, offsets
 
     _rep_xy, rot, z_off = transform_to_xy_plane(rep)
-    coords_xy_all = _apply_alignment(base.coords, rot, float(z_off))
-    if float(np.max(np.abs(coords_xy_all[:, 2]))) > _planarity_threshold(base.coords):
-        return base
+    coords_xy_all = _apply_alignment(coords, rot, float(z_off))
+    if float(np.max(np.abs(coords_xy_all[:, 2]))) > _planarity_threshold(coords):
+        return coords, offsets
 
-    rings = _extract_rings_xy(coords_xy_all, base.offsets, auto_close_threshold=auto_close)
+    rings = _extract_rings_xy(coords_xy_all, offsets, auto_close_threshold=auto_close)
     if not rings:
-        return base
+        return coords, offsets
 
     mins = np.min(np.stack([r0.mins for r0 in rings], axis=0), axis=0)
     maxs = np.max(np.stack([r0.maxs for r0 in rings], axis=0), axis=0)
@@ -626,7 +622,7 @@ def metaball(
     nx = int(np.ceil(span_x / pitch)) + 1
     ny = int(np.ceil(span_y / pitch)) + 1
     if nx < 2 or ny < 2:
-        return base
+        return coords, offsets
 
     xs = x0 + pitch * np.arange(nx, dtype=np.float64)
     ys = y0 + pitch * np.arange(ny, dtype=np.float64)
@@ -679,10 +675,10 @@ def metaball(
         out_lines.append(out)
 
     if bool(keep_original):
-        for i in range(int(base.offsets.size) - 1):
-            s = int(base.offsets[i])
-            e = int(base.offsets[i + 1])
-            original = base.coords[s:e]
+        for i in range(int(offsets.size) - 1):
+            s = int(offsets[i])
+            e = int(offsets[i + 1])
+            original = coords[s:e]
             if original.shape[0] > 0:
                 out_lines.append(original.astype(np.float32, copy=False))
 

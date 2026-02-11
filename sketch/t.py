@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 
 import numpy as np
 
 from grafix import E, G, effect, primitive, run
-from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
 
 
 flower_meta = {
@@ -24,7 +22,7 @@ def flower(
     radius: float = 40.0,
     petals: int = 7,
     samples: int = 1200,
-) -> RealizedGeometry:
+) -> tuple[np.ndarray, np.ndarray]:
     """ローズ曲線（r = radius * sin(petals * θ)）の閉ポリラインを生成する。"""
 
     cx, cy, cz = center
@@ -49,7 +47,7 @@ def flower(
     coords = np.stack([x, y, z], axis=1).astype(np.float32, copy=False)
     coords = np.concatenate([coords, coords[:1]], axis=0)
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 wave_y_meta = {
@@ -60,31 +58,29 @@ wave_y_meta = {
 
 @effect(meta=wave_y_meta, overwrite=False)
 def wave_y(
-    inputs: Sequence[RealizedGeometry],
+    g: tuple[np.ndarray, np.ndarray],
     *,
     amp: float = 4.0,
     freq: float = 0.12,
     phase: float = 0.0,  # phase は UI には出さず、draw(t) から注入する用途
-) -> RealizedGeometry:
+) -> tuple[np.ndarray, np.ndarray]:
     """x に応じた sin 波で y を揺らす。"""
-
-    if not inputs:
-        return concat_realized_geometries()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     amp32 = np.float32(amp)
     if amp32 == 0.0:
-        return base
+        return coords, offsets
 
     freq32 = np.float32(freq)
     phase32 = np.float32(phase)
 
-    coords = base.coords.copy()
-    coords[:, 1] += amp32 * np.sin(coords[:, 0] * freq32 + phase32, dtype=np.float32)
-    return RealizedGeometry(coords=coords, offsets=base.offsets)
+    coords_out = coords.copy()
+    coords_out[:, 1] += amp32 * np.sin(
+        coords_out[:, 0] * freq32 + phase32, dtype=np.float32
+    )
+    return coords_out, offsets
 
 
 def draw(t: float):

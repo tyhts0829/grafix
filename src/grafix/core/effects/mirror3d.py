@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 EPS = 1e-6
 INCLUDE_BOUNDARY = True
@@ -47,15 +47,15 @@ mirror3d_ui_visible = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @effect(meta=mirror3d_meta, ui_visible=mirror3d_ui_visible)
 def mirror3d(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     mode: str = "azimuth",
     n_azimuth: int = 1,
@@ -67,13 +67,13 @@ def mirror3d(
     group: str = "T",
     use_reflection: bool = False,
     show_planes: bool = False,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """3D 放射状ミラー（azimuth / polyhedral）。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     mode : {"azimuth","polyhedral"}, default "azimuth"
         "azimuth" は回転軸を含む 2 平面でくさびを作り、回転と反射で複製する。
         "polyhedral" は多面体対称（T/O/I）の回転群で複製する。
@@ -96,27 +96,22 @@ def mirror3d(
     show_planes : bool, default False
         対称面を可視化用の十字線として出力に追加する。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    coords = base.coords
-    offsets = base.offsets
+    coords, offsets = g
     if coords.shape[0] == 0:
-        return base
+        return coords, offsets
 
     c = np.array(
         [float(center[0]), float(center[1]), float(center[2])], dtype=np.float32
     )
     if not np.all(np.isfinite(c)):
-        return base
+        return coords, offsets
 
     ax_raw = np.array(
         [float(axis[0]), float(axis[1]), float(axis[2])], dtype=np.float32
     )
     ax = _unit(ax_raw)
     if float(np.linalg.norm(ax)) <= 0.0:
-        return base
+        return coords, offsets
 
     mode_s = str(mode)
     if mode_s == "azimuth":
@@ -155,7 +150,7 @@ def mirror3d(
                 _show_planes_polyhedral(out_lines=out_lines, coords=coords, center=c)
             )
     else:
-        return base
+        return coords, offsets
 
     uniq = _dedup_lines(out_lines)
     if not uniq:
@@ -167,7 +162,7 @@ def mirror3d(
     for i, ln in enumerate(uniq, start=1):
         acc += int(ln.shape[0])
         new_offsets[i] = acc
-    return RealizedGeometry(coords=all_coords, offsets=new_offsets)
+    return all_coords, new_offsets
 
 
 def _mirror3d_azimuth(

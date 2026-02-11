@@ -8,7 +8,7 @@ from typing import Sequence
 import numpy as np
 
 from grafix.core.effect_registry import effect
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
 
 NONPLANAR_EPS_ABS = 1e-6
@@ -39,10 +39,10 @@ class _PlaneBasis:
     v: np.ndarray  # (3,)
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _fit_plane_basis(
@@ -170,7 +170,7 @@ def _ensure_closed_2d(loop: np.ndarray) -> np.ndarray:
     return np.concatenate([loop, loop[:1]], axis=0)
 
 
-def _lines_to_realized_geometry(lines: Sequence[np.ndarray]) -> RealizedGeometry:
+def _lines_to_realized_geometry(lines: Sequence[np.ndarray]) -> GeomTuple:
     if not lines:
         return _empty_geometry()
     coords_list = [np.asarray(line, dtype=np.float32) for line in lines if line.shape[0] > 0]
@@ -188,7 +188,7 @@ def _lines_to_realized_geometry(lines: Sequence[np.ndarray]) -> RealizedGeometry
         coords[cursor : cursor + n] = arr
         cursor += n
         offsets[i] = cursor
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _collect_polygon_exteriors(geom) -> list[np.ndarray]:  # type: ignore[no-untyped-def]
@@ -313,7 +313,7 @@ def _build_evenodd_groups(polys, rings_2d, Point):  # type: ignore[no-untyped-de
 
 @effect(meta=partition_meta, ui_visible=partition_ui_visible)
 def partition(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     mode: str = "merge",
     site_count: int = 12,
@@ -322,13 +322,13 @@ def partition(
     site_density_slope: tuple[float, float, float] = (0.0, 0.0, 0.0),
     auto_center: bool = True,
     pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
-) -> RealizedGeometry:
+) -> GeomTuple:
     """偶奇規則の平面領域を Voronoi 分割し、閉ループ群を返す。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力の実体ジオメトリ列。通常は 1 要素で、各ポリラインが閉ループ（リング）を表す。
+    g : tuple[np.ndarray, np.ndarray]
+        入力の実体ジオメトリ（coords, offsets）。各ポリラインが閉ループ（リング）を表す想定。
     site_count : int, default 12
         Voronoi のサイト数。1 未満は 1 扱い。
     seed : int, default 0
@@ -350,23 +350,20 @@ def partition(
 
     Returns
     -------
-    RealizedGeometry
-        分割セルの外周を並べた実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        分割セルの外周を並べた実体ジオメトリ（coords, offsets）。
 
     Notes
     -----
     入力が非共平面の場合は no-op として入力を返す。
     """
-    if not inputs:
-        return _empty_geometry()
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
-
-    planar, basis = _fit_plane_basis(base.coords)
+    planar, basis = _fit_plane_basis(coords)
     if not planar:
-        return base
+        return coords, offsets
 
     try:
         import shapely  # type: ignore
@@ -379,9 +376,7 @@ def partition(
     if mode not in ("merge", "group", "ring"):
         raise ValueError("partition の mode は 'merge'|'group'|'ring' のいずれかである必要がある")
 
-    coords_2d_all = _project_to_2d(base.coords, basis)
-
-    offsets = base.offsets
+    coords_2d_all = _project_to_2d(coords, basis)
     rings_2d: list[np.ndarray] = []
     polys = []
     for i in range(int(offsets.size) - 1):
@@ -403,7 +398,7 @@ def partition(
         polys.append(poly)
 
     if not polys:
-        return base
+        return coords, offsets
 
     site_count = max(1, int(site_count))
     rng = np.random.default_rng(int(seed))
@@ -420,7 +415,7 @@ def partition(
     else:
         region = _combine_evenodd(polys, Polygon)
         if region is None or region.is_empty:
-            return base
+            return coords, offsets
         regions = [region]
 
     try:
@@ -478,8 +473,8 @@ def partition(
     )
 
     if density_enabled:
-        mins3 = np.min(base.coords, axis=0).astype(np.float64, copy=False)
-        maxs3 = np.max(base.coords, axis=0).astype(np.float64, copy=False)
+        mins3 = np.min(coords, axis=0).astype(np.float64, copy=False)
+        maxs3 = np.max(coords, axis=0).astype(np.float64, copy=False)
         bbox_center = (mins3 + maxs3) * 0.5
         extent3 = (maxs3 - mins3) * 0.5
 
@@ -598,7 +593,7 @@ def partition(
 
     loops_2d = [loop for loop in all_loops_2d if loop.shape[0] >= 4]
     if not loops_2d:
-        return base
+        return coords, offsets
 
     def _sort_key(loop: np.ndarray) -> tuple[float, float]:
         c = loop[:-1].astype(np.float64, copy=False).mean(axis=0)

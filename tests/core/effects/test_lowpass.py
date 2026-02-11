@@ -7,22 +7,22 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def lowpass_test_zigzag() -> RealizedGeometry:
+def lowpass_test_zigzag() -> GeomTuple:
     """交互に上下するジグザグ線を返す（高周波低減の確認用）。"""
     n = 101
     x = np.arange(n, dtype=np.float32)
     y = np.where((np.arange(n) % 2) == 0, 1.0, -1.0).astype(np.float32)
     coords = np.stack([x, y, np.zeros_like(x)], axis=1).astype(np.float32, copy=False)
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def lowpass_test_almost_closed_square() -> RealizedGeometry:
+def lowpass_test_almost_closed_square() -> GeomTuple:
     """ほぼ閉じた四角形（端点が近い）を返す（auto closed の確認用）。"""
     coords = np.array(
         [
@@ -35,7 +35,7 @@ def lowpass_test_almost_closed_square() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_lowpass_reduces_zigzag_energy() -> None:
@@ -64,4 +64,3 @@ def test_lowpass_auto_closed_outputs_closed_polyline() -> None:
     assert out.offsets.tolist() == [0, out.coords.shape[0]]
     assert out.coords.shape[0] >= 4
     assert np.array_equal(out.coords[0], out.coords[out.coords.shape[0] - 1])
-

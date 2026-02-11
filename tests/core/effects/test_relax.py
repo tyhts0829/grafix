@@ -7,11 +7,11 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def relax_test_chain5() -> RealizedGeometry:
+def relax_test_chain5() -> GeomTuple:
     """固定点が存在する鎖状グラフを返す（中央点が移動可能）。"""
     coords = np.array(
         [
@@ -24,11 +24,11 @@ def relax_test_chain5() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def relax_test_shared_point() -> RealizedGeometry:
+def relax_test_shared_point() -> GeomTuple:
     """共有点を 2 回出現させたポリライン集合を返す。"""
     coords = np.array(
         [
@@ -41,7 +41,7 @@ def relax_test_shared_point() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 2, 5], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_relax_zero_iterations_is_noop() -> None:
@@ -72,4 +72,3 @@ def test_relax_keeps_shared_points_identical() -> None:
     np.testing.assert_allclose(out.coords[1], out.coords[2], rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(out.coords[1], [0.0, 0.5, 0.0], rtol=0.0, atol=1e-6)
     assert out.offsets.tolist() == [0, 2, 5]
-

@@ -12,7 +12,7 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 lissajous_meta = {
     "a": ParamMeta(kind="int", ui_min=0, ui_max=20),
@@ -35,7 +35,7 @@ def lissajous(
     turns: float = 1.0,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """リサージュ曲線を 1 本の開ポリラインとして生成する。
 
     Parameters
@@ -57,8 +57,8 @@ def lissajous(
 
     Returns
     -------
-    RealizedGeometry
-        リサージュ曲線を表す 1 本の開ポリライン。
+    tuple[np.ndarray, np.ndarray]
+        リサージュ曲線を表す 1 本の開ポリライン（coords, offsets）。
     """
     samples_i = int(samples)
     if samples_i < 2:
@@ -96,4 +96,4 @@ def lissajous(
         coords += np.array([cx_f, cy_f, cz_f], dtype=np.float32)
 
     offsets = np.array([0, int(coords.shape[0])], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets

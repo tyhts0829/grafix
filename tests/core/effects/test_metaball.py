@@ -7,7 +7,7 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 def _circle_xy(*, center: tuple[float, float], r: float, n: int = 96) -> np.ndarray:
@@ -21,25 +21,25 @@ def _circle_xy(*, center: tuple[float, float], r: float, n: int = 96) -> np.ndar
 
 
 @primitive
-def metaball_test_two_circles_near_xy() -> RealizedGeometry:
+def metaball_test_two_circles_near_xy() -> GeomTuple:
     a = _circle_xy(center=(-12.0, 0.0), r=10.0)
     b = _circle_xy(center=(12.0, 0.0), r=10.0)
     coords = np.concatenate([a, b], axis=0).astype(np.float32, copy=False)
     offsets = np.array([0, int(a.shape[0]), int(a.shape[0] + b.shape[0])], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def metaball_test_two_circles_far_xy() -> RealizedGeometry:
+def metaball_test_two_circles_far_xy() -> GeomTuple:
     a = _circle_xy(center=(-30.0, 0.0), r=10.0)
     b = _circle_xy(center=(30.0, 0.0), r=10.0)
     coords = np.concatenate([a, b], axis=0).astype(np.float32, copy=False)
     offsets = np.array([0, int(a.shape[0]), int(a.shape[0] + b.shape[0])], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def metaball_test_donut_xy() -> RealizedGeometry:
+def metaball_test_donut_xy() -> GeomTuple:
     outer = _circle_xy(center=(0.0, 0.0), r=10.0)
     inner = _circle_xy(center=(0.0, 0.0), r=5.0)
     coords = np.concatenate([outer, inner], axis=0).astype(np.float32, copy=False)
@@ -47,16 +47,16 @@ def metaball_test_donut_xy() -> RealizedGeometry:
         [0, int(outer.shape[0]), int(outer.shape[0] + inner.shape[0])],
         dtype=np.int32,
     )
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def metaball_test_nonplanar_ring() -> RealizedGeometry:
+def metaball_test_nonplanar_ring() -> GeomTuple:
     ring = _circle_xy(center=(0.0, 0.0), r=10.0, n=48).astype(np.float64, copy=True)
     ring[:, 2] = np.linspace(0.0, 1.0, int(ring.shape[0]), dtype=np.float64)
     coords = ring.astype(np.float32, copy=False)
     offsets = np.array([0, int(coords.shape[0])], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_metaball_connects_near_circles() -> None:

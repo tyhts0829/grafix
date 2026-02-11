@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 from numba import njit, prange  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
+from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
 from .util import transform_back, transform_to_xy_plane
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
@@ -75,10 +74,10 @@ class _Ring2D:
     maxs: np.ndarray  # (2,) float64
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _planarity_threshold(points: np.ndarray) -> float:
@@ -106,14 +105,14 @@ def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
     return points
 
 
-def _pick_representative_ring(mask: RealizedGeometry) -> np.ndarray | None:
-    coords = mask.coords
-    offsets = mask.offsets
-    for i in range(int(offsets.size) - 1):
-        s = int(offsets[i])
-        e = int(offsets[i + 1])
+def _pick_representative_ring(
+    mask_coords: np.ndarray, mask_offsets: np.ndarray
+) -> np.ndarray | None:
+    for i in range(int(mask_offsets.size) - 1):
+        s = int(mask_offsets[i])
+        e = int(mask_offsets[i + 1])
         if e - s >= 3:
-            return coords[s:e]
+            return mask_coords[s:e]
     return None
 
 
@@ -267,7 +266,8 @@ def _smoothstep(t: np.ndarray) -> np.ndarray:
 
 @effect(meta=warp_meta, ui_visible=warp_ui_visible, n_inputs=2)
 def warp(
-    inputs: Sequence[RealizedGeometry],
+    base: GeomTuple,
+    mask: GeomTuple,
     *,
     mode: str = "lens",  # "lens" | "attract"
     strength: float = 1.0,
@@ -289,13 +289,15 @@ def warp(
     # output
     show_mask: bool = False,
     keep_original: bool = False,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """マスク距離場で、入力線を lens/attract 変形する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        `inputs[0]` が base、`inputs[1]` が mask（閉曲線リング列を想定）。
+    base : tuple[np.ndarray, np.ndarray]
+        変形対象の入力（coords, offsets）。
+    mask : tuple[np.ndarray, np.ndarray]
+        マスク（閉曲線リング列を想定、coords, offsets）。
     mode : str, default "lens"
         `"lens"` は座標変換をブレンドして歪ませる。`"attract"` は境界へ吸着/反発する。
     strength : float, default 1.0
@@ -333,32 +335,27 @@ def warp(
 
     Returns
     -------
-    RealizedGeometry
-        変形後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        変形後の実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        return _empty_geometry()
-    if len(inputs) < 2:
-        return inputs[0]
+    base_coords, base_offsets = base
+    mask_coords, mask_offsets = mask
 
-    base = inputs[0]
-    mask = inputs[1]
-
-    def _with_extras(result: RealizedGeometry) -> RealizedGeometry:
-        out_geoms: list[RealizedGeometry] = [result]
+    def _with_extras(result: GeomTuple) -> GeomTuple:
+        out_geoms: list[GeomTuple] = [result]
         if bool(keep_original) and result is not base:
             out_geoms.append(base)
         if bool(show_mask):
             out_geoms.append(mask)
         return (
-            concat_realized_geometries(*out_geoms)
+            concat_geom_tuples(*out_geoms)
             if len(out_geoms) > 1
             else out_geoms[0]
         )
 
-    if base.coords.shape[0] == 0:
+    if base_coords.shape[0] == 0:
         return _with_extras(base)
-    if mask.coords.shape[0] == 0:
+    if mask_coords.shape[0] == 0:
         return _with_extras(base)
 
     mode_s = str(mode)
@@ -416,13 +413,13 @@ def warp(
         if falloff_f < 0.0:
             falloff_f = 0.0
 
-    rep = _pick_representative_ring(mask)
+    rep = _pick_representative_ring(mask_coords, mask_offsets)
     if rep is None:
         return _with_extras(base)
 
     _rep_aligned, rotation_matrix, z_offset = transform_to_xy_plane(rep)
-    aligned_base = _apply_alignment(base.coords, rotation_matrix, float(z_offset))
-    aligned_mask = _apply_alignment(mask.coords, rotation_matrix, float(z_offset))
+    aligned_base = _apply_alignment(base_coords, rotation_matrix, float(z_offset))
+    aligned_mask = _apply_alignment(mask_coords, rotation_matrix, float(z_offset))
 
     threshold = _planarity_threshold(rep)
     if float(np.max(np.abs(aligned_mask[:, 2]))) > threshold:
@@ -432,7 +429,7 @@ def warp(
 
     rings = _extract_rings_xy(
         aligned_mask,
-        mask.offsets,
+        mask_offsets,
         auto_close_threshold=float(_AUTO_CLOSE_THRESHOLD_DEFAULT),
     )
     if not rings:
@@ -515,7 +512,7 @@ def warp(
         restored = transform_back(out3, rotation_matrix, float(z_offset)).astype(
             np.float32, copy=False
         )
-        return _with_extras(RealizedGeometry(coords=restored, offsets=base.offsets))
+        return _with_extras((restored, base_offsets))
 
     # mode_s == "attract"
     delta = bias_f - d
@@ -535,8 +532,7 @@ def warp(
     out = transform_back(out_aligned, rotation_matrix, float(z_offset)).astype(
         np.float32, copy=False
     )
-    return _with_extras(RealizedGeometry(coords=out, offsets=base.offsets))
+    return _with_extras((out, base_offsets))
 
 
 __all__ = ["warp", "warp_meta"]
-

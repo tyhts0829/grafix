@@ -11,7 +11,7 @@ from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 repeat_meta = {
     "layout": ParamMeta(kind="choice", choices=("grid", "radial")),
@@ -65,10 +65,10 @@ repeat_ui_visible = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
@@ -283,7 +283,7 @@ def _repeat_fill_radial(
 
 @effect(meta=repeat_meta, ui_visible=repeat_ui_visible)
 def repeat(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     layout: str = "grid",
     count: int = 3,
@@ -300,13 +300,13 @@ def repeat(
     curve: float = 1.0,
     auto_center: bool = True,
     pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
-) -> RealizedGeometry:
+) -> GeomTuple:
     """入力ジオメトリを複製して、規則的な配列を作る。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力の実体ジオメトリ（coords, offsets）。
     layout : {"grid","radial"}, default "grid"
         `"grid"` は `count/offset` による直交配置（現状維持）。
         `"radial"` は `radius/theta/n_theta/n_radius` による円形（放射）配置。
@@ -344,8 +344,8 @@ def repeat(
 
     Returns
     -------
-    RealizedGeometry
-        複製後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        複製後の実体ジオメトリ（coords, offsets）。
 
     Notes
     -----
@@ -353,21 +353,18 @@ def repeat(
     回転は旧仕様（Rz・Ry・Rx の合成）を踏襲する。
     `layout="radial"` のとき、スケール/回転の補間パラメータ t は生成されるコピーの順序で 0→1 に変化する（位相でも変化する）。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     layout_s = str(layout)
     if layout_s not in {"grid", "radial"}:
-        return base
+        return coords, offsets
 
-    n_vertices = int(base.coords.shape[0])
-    n_lines = int(base.offsets.size) - 1
+    n_vertices = int(coords.shape[0])
+    n_lines = int(offsets.size) - 1
     if n_lines <= 0:
-        return base
+        return coords, offsets
 
     curve = float(curve)
     if not np.isfinite(curve):
@@ -376,7 +373,7 @@ def repeat(
         curve = 0.1
 
     if auto_center:
-        center = base.coords.astype(np.float64, copy=False).mean(axis=0)
+        center = coords.astype(np.float64, copy=False).mean(axis=0)
     else:
         center = np.array(
             [float(pivot[0]), float(pivot[1]), float(pivot[2])],
@@ -393,12 +390,12 @@ def repeat(
     )
     rotate_end = np.deg2rad(rotate_end_deg).astype(np.float32, copy=False)
 
-    base_tail = base.offsets[1:]
+    base_tail = offsets[1:]
 
     if layout_s == "grid":
         n_dups = int(count)
         if n_dups <= 0:
-            return base
+            return coords, offsets
 
         offset_end = np.array(
             [float(offset[0]), float(offset[1]), float(offset[2])], dtype=np.float32
@@ -408,7 +405,7 @@ def repeat(
         out_coords = np.empty((n_vertices * copies, 3), dtype=np.float32)
         out_offsets = np.empty((n_lines * copies + 1,), dtype=np.int32)
         _repeat_fill_all(
-            base.coords,
+            coords,
             base_tail,
             int(n_dups),
             float(curve),
@@ -422,12 +419,12 @@ def repeat(
             scale_end,
             rotate_end,
         )
-        return RealizedGeometry(coords=out_coords, offsets=out_offsets)
+        return out_coords, out_offsets
 
     n_theta_i = int(n_theta)
     n_radius_i = int(n_radius)
     if n_theta_i <= 0 or n_radius_i <= 0:
-        return base
+        return coords, offsets
 
     if n_radius_i == 1:
         copies = n_theta_i
@@ -443,7 +440,7 @@ def repeat(
     out_coords = np.empty((n_vertices * copies, 3), dtype=np.float32)
     out_offsets = np.empty((n_lines * copies + 1,), dtype=np.int32)
     _repeat_fill_radial(
-        base.coords,
+        coords,
         base_tail,
         float(curve),
         bool(cumulative_scale),
@@ -458,4 +455,4 @@ def repeat(
         scale_end,
         rotate_end,
     )
-    return RealizedGeometry(coords=out_coords, offsets=out_offsets)
+    return out_coords, out_offsets

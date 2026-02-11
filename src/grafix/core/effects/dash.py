@@ -8,7 +8,7 @@ import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
 
 dash_meta = {
@@ -17,12 +17,6 @@ dash_meta = {
     "offset": ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
     "offset_jitter": ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
 }
-
-
-def _empty_geometry() -> RealizedGeometry:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
 
 
 def _as_float_cycle(value: float | Sequence[float]) -> tuple[float, ...]:
@@ -43,19 +37,19 @@ def _as_float_cycle(value: float | Sequence[float]) -> tuple[float, ...]:
 
 @effect(meta=dash_meta)
 def dash(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     dash_length: float | Sequence[float] = 6.0,
     gap_length: float | Sequence[float] = 3.0,
     offset: float | Sequence[float] = 0.0,
     offset_jitter: float = 0.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """連続線を破線に変換する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     dash_length : float | Sequence[float], default 6.0
         ダッシュ（描画区間）の長さ [mm]。
         シーケンス指定時は 1 本のポリライン内でダッシュごとにサイクル適用する。
@@ -71,8 +65,8 @@ def dash(
 
     Returns
     -------
-    RealizedGeometry
-        破線化済み実体ジオメトリ（各ダッシュが 1 ポリラインになる）。
+    tuple[np.ndarray, np.ndarray]
+        破線化済み実体ジオメトリ（coords, offsets）。各ダッシュが 1 ポリラインになる。
 
     Notes
     -----
@@ -83,30 +77,25 @@ def dash(
     - offset_jitter は決定的な RNG（seed=0）で生成し、再現性を優先する。
     - シーケンス指定はコードからの指定を想定する（parameter_gui の編集対象にはしない）。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    coords = base.coords
-    offsets = base.offsets
+    coords, offsets = g
     if coords.shape[0] == 0:
-        return base
+        return coords, offsets
 
     dash_seq = _as_float_cycle(dash_length)
     gap_seq = _as_float_cycle(gap_length)
     dash_arr = np.asarray(dash_seq, dtype=np.float64)
     gap_arr = np.asarray(gap_seq, dtype=np.float64)
     if not np.all(np.isfinite(dash_arr)) or not np.all(np.isfinite(gap_arr)):
-        return base
+        return coords, offsets
     if np.any(dash_arr < 0.0) or np.any(gap_arr < 0.0):
-        return base
+        return coords, offsets
 
     # 単一値指定は旧仕様の no-op 判定を維持する。
     if dash_arr.size == 1 and gap_arr.size == 1:
         # dash_len が 0 でも pattern が正なら「ダッシュ無し → 原線維持」に落ちる（旧仕様）。
         pattern = float(dash_arr[0] + gap_arr[0])
         if not np.isfinite(pattern) or pattern <= 0.0:
-            return base
+            return coords, offsets
 
     # 線ごとの offset にランダム量を加える（決定的な RNG を使用、旧仕様）。
     offset_seq = _as_float_cycle(offset)
@@ -116,7 +105,7 @@ def dash(
 
     n_lines = int(offsets.size) - 1
     if n_lines <= 0:
-        return base
+        return coords, offsets
 
     line_offset_arr = np.empty(n_lines, dtype=np.float64)
     rng = np.random.default_rng(0) if jitter_scale > 0.0 else None
@@ -145,7 +134,7 @@ def dash(
         total_out_lines += int(tl)
 
     if total_out_lines == 0:
-        return base
+        return coords, offsets
 
     out_coords = np.empty((total_out_vertices, 3), dtype=np.float32)
     out_offsets = np.empty((total_out_lines + 1,), dtype=np.int32)
@@ -168,7 +157,7 @@ def dash(
 
     if oc < out_offsets.shape[0]:
         out_offsets[oc:] = vc
-    return RealizedGeometry(coords=out_coords, offsets=out_offsets)
+    return out_coords, out_offsets
 
 
 # ── Kernels（旧実装を踏襲）──────────────────────────────────────────────

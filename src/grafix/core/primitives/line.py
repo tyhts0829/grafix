@@ -12,7 +12,7 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 line_meta = {
     "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
@@ -29,7 +29,7 @@ def line(
     anchor: str = "center",
     length: float = 1.0,
     angle: float = 0.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """正規化済み引数から線分を生成する。
 
     Parameters
@@ -46,8 +46,8 @@ def line(
 
     Returns
     -------
-    RealizedGeometry
-        2 点の線分としての実体ジオメトリ（offsets=[0,2]）。
+    tuple[np.ndarray, np.ndarray]
+        2 点の線分としての実体ジオメトリ（coords, offsets）。
     """
     try:
         cx, cy, cz = center
@@ -86,4 +86,4 @@ def line(
         dtype=np.float32,
     )
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets

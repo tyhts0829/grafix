@@ -7,55 +7,55 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 
 @primitive
-def pixelate_test_diag_3_2() -> RealizedGeometry:
+def pixelate_test_diag_3_2() -> GeomTuple:
     """(0,0)->(3,2) 相当の斜め 1 セグメントを返す（Z は 0→4 にスナップされる）。"""
     coords = np.array([[0.1, 0.1, 0.4], [3.2, 2.1, 3.6]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def pixelate_test_nonuniform_step_negative() -> RealizedGeometry:
+def pixelate_test_nonuniform_step_negative() -> GeomTuple:
     """非等方 step + 負方向の斜め 1 セグメントを返す。"""
     coords = np.array([[4.1, 1.01, 0.0], [0.4, -0.6, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def pixelate_test_noop_input() -> RealizedGeometry:
+def pixelate_test_noop_input() -> GeomTuple:
     """no-op 判定用の 2 点ポリラインを返す。"""
     coords = np.array([[0.1, 0.2, 0.3], [1.1, 1.2, 1.3]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def pixelate_test_y_major_2_3() -> RealizedGeometry:
+def pixelate_test_y_major_2_3() -> GeomTuple:
     """(0,0)->(2,3) 相当の斜め 1 セグメントを返す。"""
     coords = np.array([[0.1, 0.1, 0.0], [2.1, 3.1, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def pixelate_test_empty() -> RealizedGeometry:
+def pixelate_test_empty() -> GeomTuple:
     """空ジオメトリを返す。"""
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.array([0], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def pixelate_test_single_point() -> RealizedGeometry:
+def pixelate_test_single_point() -> GeomTuple:
     """1 点ポリライン（頂点数 1）を返す。"""
     coords = np.array([[0.49, 0.51, -0.49]], dtype=np.float32)
     offsets = np.array([0, 1], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _assert_axis_aligned_xy(coords: np.ndarray, *, atol: float = 1e-6) -> None:

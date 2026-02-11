@@ -111,24 +111,31 @@ Outputs are written under `paths.output_dir` (default: `data/output`), under per
 You can register your own primitives and effects via decorators:
 
 ```python
+import numpy as np
+
 from grafix import effect, primitive
 
 prim_meta = {"r": {"kind": "float", "ui_min": 1.0, "ui_max": 100.0}}
 eff_meta = {"amount": {"kind": "float", "ui_min": 0.0, "ui_max": 2.0}}
 
 @primitive(meta=prim_meta)
-def user_prim(*, r=10.0):
-    ...
+def user_prim(*, r=10.0) -> tuple[np.ndarray, np.ndarray]:
+    coords = ...  # shape (N, 3)
+    offsets = ...  # shape (M+1,)
+    return coords, offsets
 
 
 @effect(meta=eff_meta)
-def user_eff(inputs, *, amount=1.0):
-    ...
+def user_eff(g: tuple[np.ndarray, np.ndarray], *, amount=1.0) -> tuple[np.ndarray, np.ndarray]:
+    coords, offsets = g
+    coords_out = ...
+    return coords_out, offsets
 ```
 
 Notes:
 
 - Built-in primitives/effects must provide `meta=...` (enforced).
+- User-defined primitives/effects use `(coords, offsets)` tuples (`coords` must be shape `(N,3)`).
 - For user-defined ops, `meta` is optional. If omitted, parameters are not shown in the Parameter GUI.
 - User-defined modules need to be imported once to register the ops.
 

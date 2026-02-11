@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 _CLOSED_ATOL = 1e-6
 
@@ -40,19 +38,19 @@ def _is_closed_polyline(vertices: np.ndarray) -> bool:
 
 @effect(meta=scale_meta, ui_visible=scale_ui_visible)
 def scale(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     mode: str = "all",
     auto_center: bool = True,
     pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
-) -> RealizedGeometry:
+) -> GeomTuple:
     """スケール変換を適用（auto_center 対応）。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        スケール対象の実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        スケール対象の実体ジオメトリ（coords, offsets）。
     mode : {"all","by_line","by_face"}, default "all"
         `"all"` は入力全体を 1 つの中心でスケールする。
         `"by_line"` は開ポリラインごとに中心を維持してスケールする（閉曲線は対象外）。
@@ -66,21 +64,16 @@ def scale(
 
     Returns
     -------
-    RealizedGeometry
-        スケール後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        スケール後の実体ジオメトリ（coords, offsets）。
     """
-    if not inputs:
-        coords = np.zeros((0, 3), dtype=np.float32)
-        offsets = np.zeros((1,), dtype=np.int32)
-        return RealizedGeometry(coords=coords, offsets=offsets)
-
-    base = inputs[0]
-    if base.coords.shape[0] == 0:
-        return base
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     mode_s = str(mode)
     if mode_s not in {"all", "by_line", "by_face"}:
-        return base
+        return coords, offsets
 
     sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
     factors = np.array([sx, sy, sz], dtype=np.float64)
@@ -88,20 +81,19 @@ def scale(
     if mode_s == "all":
         # 中心を決定（auto_center 優先）
         if auto_center:
-            center = base.coords.astype(np.float64, copy=False).mean(axis=0)
+            center = coords.astype(np.float64, copy=False).mean(axis=0)
         else:
             center = np.array(
                 [float(pivot[0]), float(pivot[1]), float(pivot[2])],
                 dtype=np.float64,
             )
 
-        shifted = base.coords.astype(np.float64, copy=False) - center
+        shifted = coords.astype(np.float64, copy=False) - center
         scaled = shifted * factors + center
-        coords = scaled.astype(np.float32, copy=False)
-        return RealizedGeometry(coords=coords, offsets=base.offsets)
+        coords_out = scaled.astype(np.float32, copy=False)
+        return coords_out, offsets
 
-    coords64 = base.coords.astype(np.float64, copy=True)
-    offsets = base.offsets
+    coords64 = coords.astype(np.float64, copy=True)
     for i in range(int(offsets.size) - 1):
         s = int(offsets[i])
         e = int(offsets[i + 1])
@@ -122,5 +114,5 @@ def scale(
 
         coords64[s:e] = (v - center) * factors + center
 
-    coords = coords64.astype(np.float32, copy=False)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    coords_out = coords64.astype(np.float32, copy=False)
+    return coords_out, offsets

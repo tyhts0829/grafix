@@ -7,31 +7,31 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 
 @primitive
-def mirror_test_cross_x0() -> RealizedGeometry:
+def mirror_test_cross_x0() -> GeomTuple:
     """x=0 を跨ぐ 2 点ポリラインを返す（z は非整数）。"""
     coords = np.array([[-1.0, 0.0, 1.0], [1.0, 0.0, 2.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def mirror_test_quadrant_pp() -> RealizedGeometry:
+def mirror_test_quadrant_pp() -> GeomTuple:
     """(+x,+y) 象限の 2 点ポリラインを返す。"""
     coords = np.array([[1.0, 2.0, 3.0], [4.0, 6.0, 7.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def mirror_test_wedge_n3() -> RealizedGeometry:
+def mirror_test_wedge_n3() -> GeomTuple:
     """n=3 の楔内にある短い 2 点ポリラインを返す。"""
     coords = np.array([[2.0, 0.2, 5.0], [2.0, 0.4, 6.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def _iter_polylines(realized: RealizedGeometry):
@@ -91,4 +91,3 @@ def test_mirror_n3_produces_2n_polylines() -> None:
     polylines = list(_iter_polylines(mirrored))
     assert len(polylines) == 6
     assert all(p.shape == (2, 3) for p in polylines)
-

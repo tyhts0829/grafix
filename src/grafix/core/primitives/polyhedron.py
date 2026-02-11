@@ -13,7 +13,7 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 
 # `type_index`（0..N-1）で参照する型順序を固定する。
 _TYPE_ORDER = [
@@ -82,6 +82,9 @@ def _load_face_polylines(kind: str) -> tuple[np.ndarray, ...]:
                 "polyhedron データの各ポリラインは shape (N,3) の配列である必要がある"
                 f": kind={kind!r}, index={i}, shape={arr.shape}"
             )
+        if arr.shape[1] == 2:
+            z = np.zeros((arr.shape[0], 1), dtype=np.float32)
+            arr = np.concatenate([arr, z], axis=1)
         polylines.append(arr.astype(np.float32, copy=False))
 
     cached = tuple(polylines)
@@ -94,12 +97,12 @@ def _polylines_to_realized(
     *,
     center: tuple[float, float, float],
     scale: float,
-) -> RealizedGeometry:
-    """面ポリライン列を RealizedGeometry に変換する。"""
+) -> GeomTuple:
+    """面ポリライン列を (coords, offsets) に変換する。"""
     if not polylines:
         coords = np.zeros((0, 3), dtype=np.float32)
         offsets = np.zeros((1,), dtype=np.int32)
-        return RealizedGeometry(coords=coords, offsets=offsets)
+        return coords, offsets
 
     try:
         cx, cy, cz = center
@@ -125,7 +128,7 @@ def _polylines_to_realized(
         center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
         coords = coords * np.float32(s_f) + center_vec
 
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive(meta=polyhedron_meta)
@@ -134,7 +137,7 @@ def polyhedron(
     type_index: int = 0,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """多面体を面ポリライン列として生成する。
 
     Parameters
@@ -156,8 +159,8 @@ def polyhedron(
 
     Returns
     -------
-    RealizedGeometry
-        各面が「閉ポリライン（先頭==末尾）」になっている実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        各面が「閉ポリライン（先頭==末尾）」になっている実体ジオメトリ（coords, offsets）。
 
     Raises
     ------

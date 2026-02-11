@@ -8,7 +8,12 @@ import inspect
 from collections.abc import ItemsView, Mapping
 from typing import Any, Callable, Sequence
 
-from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
+from grafix.core.realized_geometry import (
+    GeomTuple,
+    RealizedGeometry,
+    concat_realized_geometries,
+    realized_geometry_from_tuple,
+)
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_dict_from_user
 
@@ -131,7 +136,7 @@ effect_registry = EffectRegistry()
 
 
 def effect(
-    func: Callable[..., RealizedGeometry] | None = None,
+    func: Callable[..., GeomTuple] | None = None,
     *,
     overwrite: bool = True,
     n_inputs: int = 1,
@@ -144,16 +149,19 @@ def effect(
 
     Parameters
     ----------
-    func : EffectFunc or None, optional
-        デコレート対象の関数。引数なしデコレータ利用時は None。
+    func : Callable[..., GeomTuple] or None, optional
+        デコレート対象の関数。ユーザー定義関数の I/O は `(coords, offsets)` タプル。
+        引数なしデコレータ利用時は None。
     overwrite : bool, optional
         既存エントリがある場合に上書きするかどうか。
 
     Examples
     --------
     @effect
-    def scale(inputs, *, s=1.0):
+    def scale(g, *, scale=(1.0, 1.0, 1.0)):
+        coords, offsets = g
         ...
+        return coords, offsets
     """
 
     meta_norm = None if meta is None else meta_dict_from_user(meta)
@@ -165,7 +173,7 @@ def effect(
         raise ValueError("n_inputs は 1 以上である必要がある")
 
     def _defaults_from_signature(
-        f: Callable[..., RealizedGeometry],
+        f: Callable[..., GeomTuple],
         param_meta: dict[str, ParamMeta],
     ) -> dict[str, Any]:
         sig = inspect.signature(f)
@@ -188,8 +196,8 @@ def effect(
         return defaults
 
     def decorator(
-        f: Callable[..., RealizedGeometry],
-    ) -> Callable[..., RealizedGeometry]:
+        f: Callable[..., GeomTuple],
+    ) -> Callable[..., GeomTuple]:
         module = str(f.__module__)
         if meta_norm is None and (
             module.startswith("grafix.core.effects.") or module.startswith("core.effects.")
@@ -214,7 +222,23 @@ def effect(
                 if len(inputs) == 1:
                     return inputs[0]
                 return concat_realized_geometries(*inputs)
-            return f(inputs, **params)
+            if len(inputs) != n_inputs_i:
+                raise TypeError(
+                    f"effect '{f.__name__}' は入力 Geometry を {n_inputs_i} 個必要とします"
+                    f"（受け取った数: {len(inputs)}）"
+                )
+
+            inputs_as_tuples = tuple((g.coords, g.offsets) for g in inputs)
+            out = f(*inputs_as_tuples, **params)
+            if isinstance(out, tuple) and len(out) == 2:
+                out_coords, out_offsets = out
+                for g in inputs:
+                    if out_coords is g.coords and out_offsets is g.offsets:
+                        return g
+            return realized_geometry_from_tuple(
+                out,
+                context=f"@effect {f.__module__}.{f.__name__}",
+            )
 
         defaults = None
         if meta_norm is not None:

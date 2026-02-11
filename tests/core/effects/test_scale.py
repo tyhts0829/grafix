@@ -7,35 +7,34 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.realized_geometry import RealizedGeometry
 
 
 @primitive
-def scale_test_line2_xy() -> RealizedGeometry:
+def scale_test_line2_xy() -> tuple[np.ndarray, np.ndarray]:
     """xy 平面上の 2 点ポリラインを返す。"""
     coords = np.array([[1.0, 2.0, 0.0], [3.0, 4.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def scale_test_line_centered_x() -> RealizedGeometry:
+def scale_test_line_centered_x() -> tuple[np.ndarray, np.ndarray]:
     """中心 (2,0,0) を持つ 2 点ポリラインを返す。"""
     coords = np.array([[1.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=np.float32)
     offsets = np.array([0, 2], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def scale_test_empty() -> RealizedGeometry:
+def scale_test_empty() -> tuple[np.ndarray, np.ndarray]:
     """空のジオメトリを返す。"""
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @primitive
-def scale_test_mixed_open_and_closed() -> RealizedGeometry:
+def scale_test_mixed_open_and_closed() -> tuple[np.ndarray, np.ndarray]:
     """開ポリライン 1 本 + 閉曲線 1 本を返す。"""
     coords = np.array(
         [
@@ -50,7 +49,7 @@ def scale_test_mixed_open_and_closed() -> RealizedGeometry:
         dtype=np.float32,
     )
     offsets = np.array([0, 2, 7], dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 def test_scale_about_origin() -> None:

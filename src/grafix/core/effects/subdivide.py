@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
-from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
 
 # 旧仕様（from_previous_project/subdivide.py）を踏襲した停止条件/上限。
@@ -22,31 +20,31 @@ subdivide_meta = {
 }
 
 
-def _empty_geometry() -> RealizedGeometry:
+def _empty_geometry() -> GeomTuple:
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
+    return coords, offsets
 
 
 @effect(meta=subdivide_meta)
 def subdivide(
-    inputs: Sequence[RealizedGeometry],
+    g: GeomTuple,
     *,
     subdivisions: int = 0,
-) -> RealizedGeometry:
+) -> GeomTuple:
     """中点挿入で線を細分化する。
 
     Parameters
     ----------
-    inputs : Sequence[RealizedGeometry]
-        入力実体ジオメトリ列。通常は 1 要素。
+    g : tuple[np.ndarray, np.ndarray]
+        入力実体ジオメトリ（coords, offsets）。
     subdivisions : int, default 0
         細分回数。0 以下は no-op。上限は 10。
 
     Returns
     -------
-    RealizedGeometry
-        細分化後の実体ジオメトリ。
+    tuple[np.ndarray, np.ndarray]
+        細分化後の実体ジオメトリ（coords, offsets）。
 
     Notes
     -----
@@ -55,26 +53,21 @@ def subdivide(
     - 細分化の途中で最短セグメント長が `MIN_SEG_LEN` 未満になった場合、そこで反復を停止する。
     - 出力合計頂点数が `MAX_TOTAL_VERTICES` を超えないようにガードする。
     """
-    if not inputs:
-        return _empty_geometry()
-
-    base = inputs[0]
-    coords = base.coords
-    offsets = base.offsets
+    coords, offsets = g
     if coords.shape[0] == 0:
-        return base
+        return coords, offsets
 
     divisions = int(subdivisions)
     if divisions <= 0:
-        return base
+        return coords, offsets
     if divisions > MAX_SUBDIVISIONS:
         divisions = MAX_SUBDIVISIONS
     if divisions <= 0:
-        return base
+        return coords, offsets
 
     n_lines = int(offsets.size) - 1
     if n_lines <= 0:
-        return base
+        return coords, offsets
 
     out_lines: list[np.ndarray] = []
     total_vertices = 0
@@ -107,7 +100,7 @@ def subdivide(
     coords_out = (
         np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), dtype=np.float32)
     )
-    return RealizedGeometry(coords=coords_out, offsets=offsets_out)
+    return coords_out, offsets_out
 
 
 @njit(fastmath=True, cache=True)
