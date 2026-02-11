@@ -2,15 +2,3 @@ STYLE: Color and tone
 PRIORITY: palette coherence, contrast cadence, value balance
 CHANGE_POLICY: change palette system first, then geometry if needed
 BASELINE_RESPECT: low
-token_biases:
-- design_tokens.palette.name: mono|duotone|triad (choose one)
-- design_tokens.palette.colors: 1-3 pens max
-- design_tokens.stroke.widths: [0.3, 0.9] or [0.4, 1.2]
-- design_tokens.spacing.density: 0.30-0.68
-anti_patterns:
-- defining tone only by color names without line strategy
-- using more than three pen colors in one variant
-- no hatch-density ladder between hero and support
-- abrupt contrast jumps that break depth ordering
-tone_translation:
-- Build tone with multi-pen selection, line-width contrast, and hatch-density steps.
