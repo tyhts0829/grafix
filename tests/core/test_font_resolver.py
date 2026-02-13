@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from grafix.core.font_resolver import DEFAULT_FONT_FILENAME, default_font_path, list_font_choices, resolve_font_path
+import pytest
+
+from grafix.core.font_resolver import (
+    DEFAULT_FONT_FILENAME,
+    _search_dirs,
+    _system_font_dirs,
+    default_font_path,
+    list_font_choices,
+    resolve_font_path,
+)
 from grafix.core.runtime_config import set_config_path
 
 
@@ -50,6 +60,51 @@ def test_resolve_font_path_respects_priority_explicit_path_over_config(tmp_path)
         # 2) 実在パスは config より優先される
         assert resolve_font_path(str(bundled)) == bundled.resolve()
     finally:
+        set_config_path(None)
+
+
+def test_system_font_dirs_returns_platform_paths() -> None:
+    dirs = _system_font_dirs()
+    assert len(dirs) >= 2
+    if sys.platform == "darwin":
+        assert Path("/System/Library/Fonts") in dirs
+        assert Path("/Library/Fonts") in dirs
+    elif sys.platform == "win32":
+        assert any("Windows" in str(d) for d in dirs)
+
+
+def test_search_dirs_includes_system_font_dirs() -> None:
+    set_config_path(None)
+    try:
+        dirs = _search_dirs()
+        system_dirs = {d for d in _system_font_dirs() if d.is_dir()}
+        assert system_dirs.issubset(set(dirs)), (
+            f"system font dirs {system_dirs} not found in search dirs {dirs}"
+        )
+    finally:
+        set_config_path(None)
+
+
+def test_resolve_font_in_system_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A font placed in a system font dir resolves by filename."""
+    import grafix.core.font_resolver as fm
+
+    fake_sys = tmp_path / "sys_fonts"
+    fake_sys.mkdir()
+    font_file = fake_sys / "FakeSystemFont.ttf"
+    font_file.write_bytes(b"\x00" * 16)
+
+    monkeypatch.setattr(fm, "_system_font_dirs", lambda: (fake_sys,))
+    fm._FONT_FILES_CACHE.clear()
+    fm._FONT_CHOICES_CACHE.clear()
+
+    set_config_path(None)
+    try:
+        resolved = resolve_font_path("FakeSystemFont.ttf")
+        assert resolved == font_file.resolve()
+    finally:
+        fm._FONT_FILES_CACHE.clear()
+        fm._FONT_CHOICES_CACHE.clear()
         set_config_path(None)
 
 

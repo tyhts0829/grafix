@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -51,6 +52,27 @@ def _packaged_font_dir() -> Path | None:
     return _PACKAGED_FONT_DIR
 
 
+def _system_font_dirs() -> tuple[Path, ...]:
+    """Return platform-specific system font directories."""
+    if sys.platform == "darwin":
+        return (
+            Path("/System/Library/Fonts"),
+            Path("/Library/Fonts"),
+            Path.home() / "Library" / "Fonts",
+        )
+    if sys.platform == "win32":
+        windir = Path("C:/Windows/Fonts")
+        local = Path.home() / "AppData" / "Local" / "Microsoft" / "Windows" / "Fonts"
+        return (windir, local)
+    # Linux / other Unix
+    return (
+        Path("/usr/share/fonts"),
+        Path("/usr/local/share/fonts"),
+        Path.home() / ".local" / "share" / "fonts",
+        Path.home() / ".fonts",
+    )
+
+
 def _search_dirs() -> tuple[Path, ...]:
     cfg = runtime_config()
     dirs: list[Path] = []
@@ -64,6 +86,11 @@ def _search_dirs() -> tuple[Path, ...]:
     packaged = _packaged_font_dir()
     if packaged is not None:
         dirs.append(packaged)
+
+    # Include platform system font directories so GUI-selected fonts resolve.
+    for d in _system_font_dirs():
+        if d.is_dir():
+            dirs.append(d)
 
     return tuple(dirs)
 
