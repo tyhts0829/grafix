@@ -18,7 +18,7 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
 
-DEFAULT_FONT = "Helvetica.ttc"
+DEFAULT_FONT = ""
 
 logger = logging.getLogger(__name__)
 
