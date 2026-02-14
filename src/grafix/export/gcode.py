@@ -398,6 +398,49 @@ class _Stroke:
     end_q: tuple[int, int]
 
 
+def _polyline_face_block_ids(offsets: np.ndarray) -> list[int]:
+    """各 polyline が属する face block id を返す（ヒューリスティック）。
+
+    Notes
+    -----
+    目的は `effects.fill` が出力する「face（外周+穴）ごとの境界→塗り線」のまとまりを崩さずに、
+    `optimize_travel` の並び替えを block 内に閉じること。
+
+    ここでの face block は以下の規則で作る（順序依存）:
+    - polyline の頂点数が 3 以上なら ring 候補（境界）とみなす
+    - ring 候補が「non-ring を見た後」に現れたら、新しい block を開始する
+
+    つまり `ring... ring... line... line... ring... ring... line...` のような並びを
+    `faceごとのブロック` として分割する。
+
+    `fill(remove_boundary=True)` のように ring が出ないケースでは、block は 1 つになる。
+    """
+
+    n_polylines = max(0, int(offsets.size) - 1)
+    if n_polylines <= 0:
+        return []
+
+    block_ids: list[int] = [0] * n_polylines
+    block_id = 0
+    saw_non_ring = False
+
+    for poly_idx in range(n_polylines):
+        start = int(offsets[poly_idx])
+        end = int(offsets[poly_idx + 1])
+        n_verts = int(end - start)
+        is_ring = n_verts >= 3
+
+        if poly_idx > 0 and is_ring and saw_non_ring:
+            block_id += 1
+            saw_non_ring = False
+
+        block_ids[poly_idx] = int(block_id)
+        if not is_ring:
+            saw_non_ring = True
+
+    return block_ids
+
+
 def _order_strokes_in_layer(
     strokes: list[_Stroke],
     *,
@@ -618,9 +661,12 @@ def export_gcode(
 
         lines.append(f"; layer {int(layer_idx)} start")
 
+        poly_block_ids = _polyline_face_block_ids(offsets)
+        n_blocks = (max(poly_block_ids) + 1) if poly_block_ids else 0
+
         # strokes は「紙内に残る連続区間」の集合。
         # 元の polyline は紙外へ出入りしうるため、クリップ後は複数 stroke に分割される。
-        strokes: list[_Stroke] = []
+        strokes_by_block: list[list[_Stroke]] = [[] for _ in range(int(n_blocks))]
 
         for poly_idx, (start, end) in enumerate(zip(offsets[:-1], offsets[1:])):
             s = int(start)
@@ -654,7 +700,12 @@ def export_gcode(
                     int(round(float(end_xy[0]) * scale)),
                     int(round(float(end_xy[1]) * scale)),
                 )
-                strokes.append(
+
+                block_id = 0
+                if poly_block_ids:
+                    block_id = int(poly_block_ids[int(poly_idx)])
+
+                strokes_by_block[int(block_id)].append(
                     _Stroke(
                         poly_idx=int(poly_idx),
                         seg_idx=int(seg_idx),
@@ -664,76 +715,84 @@ def export_gcode(
                     )
                 )
 
-        if bool(p.optimize_travel):
-            # レイヤ内で stroke 順を並び替え、ペンアップ移動（travel）を短くする。
-            # 先頭 stroke は入力順固定にして、作者の意図（最初の一筆）を保ちやすくする。
-            ordered = _order_strokes_in_layer(
-                strokes, allow_reverse=bool(p.allow_reverse)
-            )
-        else:
-            # 並び替えしない場合でも、型を揃えるため (stroke, reversed) 形式にする。
-            ordered = [(st, False) for st in strokes]
+        ordered_by_block: list[list[tuple[_Stroke, bool]]] = []
+        for block_strokes in strokes_by_block:
+            if bool(p.optimize_travel):
+                # face block 内で stroke 順を並び替え、ペンアップ移動（travel）を短くする。
+                # 先頭 stroke は入力順固定にして、作者の意図（最初の一筆）を保ちやすくする。
+                ordered_block = _order_strokes_in_layer(
+                    block_strokes, allow_reverse=bool(p.allow_reverse)
+                )
+            else:
+                # 並び替えしない場合でも、型を揃えるため (stroke, reversed) 形式にする。
+                ordered_block = [(st, False) for st in block_strokes]
+            ordered_by_block.append(ordered_block)
 
         bridge_draw_dist = p.bridge_draw_distance
         if bridge_draw_dist is not None and float(bridge_draw_dist) < 0.0:
             raise ValueError("bridge_draw_distance は 0 以上である必要がある")
 
-        # current_end_q は「直前に描いた stroke の終点（量子化）」。
-        # レイヤ冒頭で None に戻すので、レイヤを跨いだブリッジ描画は発生しない。
-        current_end_q: tuple[int, int] | None = None
-        for stroke, reversed_ in ordered:
-            pts = stroke.points_canvas
-            if len(pts) < 2:
-                continue
+        for block_id, ordered in enumerate(ordered_by_block):
+            lines.append(f"; face_block {int(block_id)} start")
 
-            lines.append(
-                f"; stroke polyline {int(stroke.poly_idx)} seg {int(stroke.seg_idx)}"
-                f"{' reversed' if reversed_ else ''}"
-            )
+            # current_end_q は「直前に描いた stroke の終点（量子化）」。
+            # face_block 冒頭で None に戻すので、block を跨いだブリッジ描画は発生しない。
+            current_end_q: tuple[int, int] | None = None
+            for stroke, reversed_ in ordered:
+                pts = stroke.points_canvas
+                if len(pts) < 2:
+                    continue
 
-            rest: Iterable[tuple[float, float]]
-            if reversed_:
-                # 反転あり: 終点から描き始め、点列を逆順に辿る。
-                # （描画線そのものは同じだが、描画方向は変わる）
-                start_xy = pts[-1]
-                rest = reversed(pts[:-1])
-                start_q = stroke.end_q
-                end_q = stroke.start_q
-            else:
-                # 通常: 始点から描き始め、点列を前から辿る。
-                start_xy = pts[0]
-                rest = pts[1:]
-                start_q = stroke.start_q
-                end_q = stroke.end_q
+                lines.append(
+                    f"; stroke polyline {int(stroke.poly_idx)} seg {int(stroke.seg_idx)}"
+                    f"{' reversed' if reversed_ else ''}"
+                )
 
-            draw_bridge = False
-            if bridge_draw_dist is not None and current_end_q is not None:
-                # ブリッジ判定:
-                # ペンアップ travel が “十分短い” 場合に限り、ペンアップせずに直線で繋ぐ。
-                # 注意: これは「移動距離を減らす」のではなく「線を足す」トレードオフ。
-                dx = int(start_q[0]) - int(current_end_q[0])
-                dy = int(start_q[1]) - int(current_end_q[1])
-                dist2 = dx * dx + dy * dy
-                thr_q = float(bridge_draw_dist) * float(scale)
-                draw_bridge = float(dist2) < thr_q * thr_q
+                rest: Iterable[tuple[float, float]]
+                if reversed_:
+                    # 反転あり: 終点から描き始め、点列を逆順に辿る。
+                    # （描画線そのものは同じだが、描画方向は変わる）
+                    start_xy = pts[-1]
+                    rest = reversed(pts[:-1])
+                    start_q = stroke.end_q
+                    end_q = stroke.start_q
+                else:
+                    # 通常: 始点から描き始め、点列を前から辿る。
+                    start_xy = pts[0]
+                    rest = pts[1:]
+                    start_q = stroke.start_q
+                    end_q = stroke.end_q
 
-            if draw_bridge:
-                # ペンアップ移動が十分短いなら、ペンを上げずに直線で繋ぐ（最適化）。
-                # ここでの move_xy(start_xy) は “描画” なので、短い直線が追加される。
-                set_pen_down(True)
-                set_feed(draw_feed_i)
-                move_xy(start_xy)
-            else:
-                # 通常は pen up → travel → pen down の順で「移動」と「描画」を分離する。
-                set_pen_down(False)
-                set_feed(travel_feed_i)
-                move_xy(start_xy)
-                set_pen_down(True)
-                set_feed(draw_feed_i)
+                draw_bridge = False
+                if bridge_draw_dist is not None and current_end_q is not None:
+                    # ブリッジ判定:
+                    # ペンアップ travel が “十分短い” 場合に限り、ペンアップせずに直線で繋ぐ。
+                    # 注意: これは「移動距離を減らす」のではなく「線を足す」トレードオフ。
+                    dx = int(start_q[0]) - int(current_end_q[0])
+                    dy = int(start_q[1]) - int(current_end_q[1])
+                    dist2 = dx * dx + dy * dy
+                    thr_q = float(bridge_draw_dist) * float(scale)
+                    draw_bridge = float(dist2) < thr_q * thr_q
 
-            for xy in rest:
-                move_xy(xy)
-            current_end_q = end_q
+                if draw_bridge:
+                    # ペンアップ移動が十分短いなら、ペンを上げずに直線で繋ぐ（最適化）。
+                    # ここでの move_xy(start_xy) は “描画” なので、短い直線が追加される。
+                    set_pen_down(True)
+                    set_feed(draw_feed_i)
+                    move_xy(start_xy)
+                else:
+                    # 通常は pen up → travel → pen down の順で「移動」と「描画」を分離する。
+                    set_pen_down(False)
+                    set_feed(travel_feed_i)
+                    move_xy(start_xy)
+                    set_pen_down(True)
+                    set_feed(draw_feed_i)
+
+                for xy in rest:
+                    move_xy(xy)
+                current_end_q = end_q
+
+            lines.append(f"; face_block {int(block_id)} end")
 
         lines.append(f"; layer {int(layer_idx)} end")
 
