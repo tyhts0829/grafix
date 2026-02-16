@@ -24,31 +24,38 @@ class FontChoice:
     search_key: str
 
 
-_PACKAGED_FONT_DIR: Path | None = None
+_PACKAGED_FONT_DIRS: tuple[Path, ...] | None = None
 _FONT_FILES_CACHE: dict[tuple[str, ...], tuple[Path, ...]] = {}
 _FONT_CHOICES_CACHE: dict[tuple[str, ...], tuple[FontChoice, ...]] = {}
 
 
-def _packaged_font_dir() -> Path | None:
-    global _PACKAGED_FONT_DIR
-    if _PACKAGED_FONT_DIR is not None:
-        return _PACKAGED_FONT_DIR
+def _packaged_font_dirs() -> tuple[Path, ...]:
+    global _PACKAGED_FONT_DIRS
+    if _PACKAGED_FONT_DIRS is not None:
+        return _PACKAGED_FONT_DIRS
 
     try:
         base = resources.files("grafix")
     except Exception:
-        _PACKAGED_FONT_DIR = None
-        return None
+        _PACKAGED_FONT_DIRS = tuple()
+        return _PACKAGED_FONT_DIRS
 
-    candidate = base.joinpath("resource", "font", "Google_Sans", "static")
-    try:
-        path = Path(candidate)  # type: ignore[arg-type]
-    except TypeError:
-        _PACKAGED_FONT_DIR = None
-        return None
+    candidates = [
+        base.joinpath("resource", "font", "Google_Sans", "static"),
+        base.joinpath("resource", "font", "Noto_Sans_JP", "static"),
+    ]
 
-    _PACKAGED_FONT_DIR = path if path.is_dir() else None
-    return _PACKAGED_FONT_DIR
+    dirs: list[Path] = []
+    for candidate in candidates:
+        try:
+            path = Path(candidate)  # type: ignore[arg-type]
+        except TypeError:
+            continue
+        if path.is_dir():
+            dirs.append(path)
+
+    _PACKAGED_FONT_DIRS = tuple(dirs)
+    return _PACKAGED_FONT_DIRS
 
 
 def _search_dirs() -> tuple[Path, ...]:
@@ -61,9 +68,7 @@ def _search_dirs() -> tuple[Path, ...]:
             continue
         dirs.append(p)
 
-    packaged = _packaged_font_dir()
-    if packaged is not None:
-        dirs.append(packaged)
+    dirs.extend(_packaged_font_dirs())
 
     return tuple(dirs)
 
@@ -95,8 +100,8 @@ def _list_font_files(*, dirs: tuple[Path, ...]) -> tuple[Path, ...]:
 def default_font_path() -> Path:
     """既定フォントの実体パスを返す。"""
 
-    packaged = _packaged_font_dir()
-    if packaged is not None:
+    packaged_dirs = _packaged_font_dirs()
+    for packaged in packaged_dirs:
         fp = packaged / DEFAULT_FONT_FILENAME
         if fp.is_file():
             return fp.resolve()
@@ -109,7 +114,7 @@ def default_font_path() -> Path:
 
     raise FileNotFoundError(
         "既定フォントが見つかりません"
-        f": default={DEFAULT_FONT_FILENAME!r}, packaged_dir={packaged}"
+        f": default={DEFAULT_FONT_FILENAME!r}, packaged_dirs={packaged_dirs}"
     )
 
 

@@ -18,7 +18,7 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
 
-DEFAULT_FONT = "Helvetica.ttc"
+DEFAULT_FONT = "NotoSansJP-Regular.ttf"
 
 logger = logging.getLogger(__name__)
 
@@ -483,7 +483,7 @@ def text(
         解決順は以下。
         1) `font` が実在パスならそのファイル
         2) config.yaml の `font_dirs`（先頭から）
-        3) grafix 同梱フォント（Google Sans）
+        3) grafix 同梱フォント（Google Sans / Noto Sans JP）
     font_index : int | float, optional
         `.ttc` の subfont 番号（0 以上）。`.ttf/.otf` では無視される。
     text_align : str, optional
