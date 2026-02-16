@@ -331,6 +331,144 @@ def test_export_gcode_draw_bridge_disabled_uses_pen_up(tmp_path) -> None:
     assert "G1 Z3.000" in lines[i_end_first + 1 : i_start_second]
 
 
+def _stroke_poly_indices(text: str) -> list[int]:
+    out: list[int] = []
+    for line in text.splitlines():
+        if not line.startswith("; stroke polyline "):
+            continue
+        # "; stroke polyline {poly_idx} seg {seg_idx} ..."
+        toks = line.split()
+        if len(toks) < 6:
+            continue
+        out.append(int(toks[3]))
+    return out
+
+
+def test_export_gcode_optimize_travel_is_applied_per_face_block(tmp_path) -> None:
+    layers = [
+        _realized_layer(
+            coords=[
+                # face A ring (poly 0, 4 verts)
+                [0.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [10.0, 10.0, 0.0],
+                [0.0, 10.0, 0.0],
+                # face A fill segments (poly 1-2, 2 verts each)
+                [1.0, 1.0, 0.0],
+                [9.0, 1.0, 0.0],
+                [1.0, 2.0, 0.0],
+                [9.0, 2.0, 0.0],
+                # face B ring (poly 3, 4 verts)
+                [20.0, 0.0, 0.0],
+                [30.0, 0.0, 0.0],
+                [30.0, 10.0, 0.0],
+                [20.0, 10.0, 0.0],
+                # face B fill segments (poly 4-5, 2 verts each)
+                [21.0, 1.0, 0.0],
+                [29.0, 1.0, 0.0],
+                [21.0, 2.0, 0.0],
+                [29.0, 2.0, 0.0],
+            ],
+            offsets=[0, 4, 6, 8, 12, 14, 16],
+        )
+    ]
+    params = GCodeParams(
+        origin=(0.0, 0.0),
+        y_down=False,
+        paper_margin_mm=0.0,
+        decimals=3,
+        optimize_travel=True,
+        allow_reverse=True,
+        bridge_draw_distance=None,
+    )
+
+    out_path = tmp_path / "out.gcode"
+    export_gcode(layers, out_path, canvas_size=(100.0, 100.0), params=params)
+    text = out_path.read_text(encoding="utf-8")
+
+    poly_idxs = _stroke_poly_indices(text)
+    assert poly_idxs
+
+    # face A: poly 0-2, face B: poly 3-5
+    seen_b = False
+    for poly_i in poly_idxs:
+        if poly_i >= 3:
+            seen_b = True
+        if seen_b:
+            assert poly_i >= 3
+
+
+def test_export_gcode_draw_bridge_does_not_cross_face_blocks(tmp_path) -> None:
+    layers = [
+        _realized_layer(
+            coords=[
+                # face A ring (poly 0)
+                [0.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [10.0, 10.0, 0.0],
+                [0.0, 10.0, 0.0],
+                # face A fill segment (poly 1)
+                [1.0, 1.0, 0.0],
+                [9.0, 1.0, 0.0],
+                # face B ring (poly 2)
+                [20.0, 0.0, 0.0],
+                [30.0, 0.0, 0.0],
+                [30.0, 10.0, 0.0],
+                [20.0, 10.0, 0.0],
+                # face B fill segment (poly 3)
+                [21.0, 1.0, 0.0],
+                [29.0, 1.0, 0.0],
+            ],
+            offsets=[0, 4, 6, 10, 12],
+        )
+    ]
+
+    # bridge_draw_distance を極端に大きくしても、face_block 境界ではブリッジしない。
+    params = GCodeParams(
+        origin=(0.0, 0.0),
+        y_down=False,
+        paper_margin_mm=0.0,
+        decimals=3,
+        optimize_travel=True,
+        allow_reverse=True,
+        bridge_draw_distance=1e6,
+    )
+
+    out_path = tmp_path / "out.gcode"
+    export_gcode(layers, out_path, canvas_size=(100.0, 100.0), params=params)
+    lines = out_path.read_text(encoding="utf-8").splitlines()
+
+    assert "; face_block 0 start" in lines
+    assert "; face_block 1 start" in lines
+
+    pen_is_down = True
+    want_check = False
+    checked = False
+
+    for line in lines:
+        if line == "; face_block 1 start":
+            want_check = True
+            continue
+
+        if line.startswith("G1 Z"):
+            z_txt = line.split("Z", 1)[1].strip().split()[0]
+            pen_is_down = _pen_is_down_from_z(
+                float(z_txt), z_up=params.z_up, z_down=params.z_down
+            )
+            continue
+
+        xy = _parse_xy(line)
+        if xy is None:
+            continue
+
+        if want_check and not checked:
+            assert not pen_is_down
+            checked = True
+            break
+
+    assert checked
+
+
 def test_export_gcode_uses_config_when_params_is_none(tmp_path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
