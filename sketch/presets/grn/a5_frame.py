@@ -78,16 +78,16 @@ def grn_a5_frame(
 
     series_name = G.text(
         activate=True,
-        text="Grafix\nResearch\nNotes",
+        text="Grafix\nDesign\nStudies",
         font="Helvetica.ttc",
         font_index=0,
         text_align="left",
         letter_spacing_em=0.0,
-        line_height=0.966,
+        line_height=1.1,
         use_bounding_box=False,
         quality=0.5,
         center=(11.538, 178.022, 0.0),
-        scale=7.388,
+        scale=6.5,
     )
     series_name = E.fill(
         activate=True,
