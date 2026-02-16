@@ -12,8 +12,8 @@ def draw(t):
     frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
     f1 = P.flow(
         activate=True,
-        center=(24.8, 34.963, 0.0),
-        scale=(2.48, 2.48, 1.0),
+        center=(24.8, 42.308, 0.0),
+        scale=(2.033, 2.033, 1.0),
         fill_density_coef=0.811,
         fill_angle=0.0,
         subdivide_levels=6,
@@ -23,8 +23,8 @@ def draw(t):
 
     f2 = P.flow(
         activate=True,
-        center=(24.8, 34.963, 0.0),
-        scale=(2.48, 2.48, 1.0),
+        center=(23.626, 42.857, 0.0),
+        scale=(2.033, 2.033, 1.0),
         fill_density_coef=0.811,
         fill_angle=139.227,
         subdivide_levels=6,
