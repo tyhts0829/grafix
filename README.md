@@ -79,29 +79,34 @@ Outputs are written under `paths.output_dir` (default: `data/output`), under per
 <!-- BEGIN:README_EXAMPLES_GRN -->
 <table>
   <tr>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/1.png" width="320" alt="grn 1" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/2.png" width="320" alt="grn 2" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/3.png" width="320" alt="grn 3" /></td>
+    <td><img src="docs/readme/grn/1.png" width="320" alt="grn 1" /></td>
+    <td><img src="docs/readme/grn/2.png" width="320" alt="grn 2" /></td>
+    <td><img src="docs/readme/grn/3.png" width="320" alt="grn 3" /></td>
   </tr>
   <tr>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/4.png" width="320" alt="grn 4" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/5.png" width="320" alt="grn 5" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/6.png" width="320" alt="grn 6" /></td>
+    <td><img src="docs/readme/grn/4.png" width="320" alt="grn 4" /></td>
+    <td><img src="docs/readme/grn/5.png" width="320" alt="grn 5" /></td>
+    <td><img src="docs/readme/grn/6.png" width="320" alt="grn 6" /></td>
   </tr>
   <tr>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/7.png" width="320" alt="grn 7" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/8.png" width="320" alt="grn 8" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/9.png" width="320" alt="grn 9" /></td>
+    <td><img src="docs/readme/grn/7.png" width="320" alt="grn 7" /></td>
+    <td><img src="docs/readme/grn/8.png" width="320" alt="grn 8" /></td>
+    <td><img src="docs/readme/grn/9.png" width="320" alt="grn 9" /></td>
   </tr>
   <tr>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/10.png" width="320" alt="grn 10" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/11.png" width="320" alt="grn 11" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/12.png" width="320" alt="grn 12" /></td>
+    <td><img src="docs/readme/grn/10.png" width="320" alt="grn 10" /></td>
+    <td><img src="docs/readme/grn/11.png" width="320" alt="grn 11" /></td>
+    <td><img src="docs/readme/grn/12.png" width="320" alt="grn 12" /></td>
   </tr>
   <tr>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/13.png" width="320" alt="grn 13" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/14.png" width="320" alt="grn 14" /></td>
-    <td><img src="https://raw.githubusercontent.com/tyhts0829/grafix/main/docs/readme/grn/15.png" width="320" alt="grn 15" /></td>
+    <td><img src="docs/readme/grn/13.png" width="320" alt="grn 13" /></td>
+    <td><img src="docs/readme/grn/14.png" width="320" alt="grn 14" /></td>
+    <td><img src="docs/readme/grn/15.png" width="320" alt="grn 15" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/readme/grn/16.png" width="320" alt="grn 16" /></td>
+    <td><img src="docs/readme/grn/17.png" width="320" alt="grn 17" /></td>
+    <td><img src="docs/readme/grn/18.png" width="320" alt="grn 18" /></td>
   </tr>
 </table>
 <!-- END:README_EXAMPLES_GRN -->
