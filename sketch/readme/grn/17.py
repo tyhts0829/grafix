@@ -12,8 +12,8 @@ def draw(t):
     g = G.polyhedron(
         activate=True,
         type_index=1,
-        center=(76.63, 132.065, 0.0),
-        scale=82.034,
+        center=(76.63, 125.543, 0.0),
+        scale=61.695,
     )
 
     e = E.rotate(
@@ -27,7 +27,7 @@ def draw(t):
         cumulative_scale=False,
         cumulative_offset=False,
         cumulative_rotate=False,
-        offset=(0.0, -76.087, 0.0),
+        offset=(0.0, -58.696, 0.0),
         rotation_step=(-48.913000000000004, -115.435, 40.645),
         scale=(1.0, 1.0, 1.0),
         auto_center=True,
