@@ -13,6 +13,7 @@ description: CreativeBrief・critic指示を受けて、実装とレンダリン
 
 ## 必須ルール
 
+- Layerのthicknessは必ず0.005以下に設定する。
 - 過去の `sketch.py` や `Artifact` を丸写ししてはならない（作品づくりの目的を壊す）。
 - 一時 Python などで固定 `sketch.py`を生成する代替手段を使わない（artist は LLM role として実装を行う）。
 - 単一テンプレート（共通 `shared.py` や同一 `sketch.py`）を使い、定数だけ変えて variant を量産してはならない。

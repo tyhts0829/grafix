@@ -1,7 +1,7 @@
 # Grafix Art Loop: MCPサーバ並列実行（tools/call）対応計画（2026-02-11）
 
 作成日: 2026-02-11  
-ステータス: 提案（未実装）
+ステータス: 実装中（一部実施）
 
 ## 背景 / 問題
 
@@ -43,20 +43,20 @@
 
 ### 1) サーバ側: 並列実行の基盤（A案）
 
-- [ ] `.agents/skills/grafix-art-loop-orchestrator/scripts/mcp_codex_child_artist_server.py` を **リクエスト受付**と **実処理**に分離する。
-- [ ] `ThreadPoolExecutor`（または同等）を導入し、`art_loop.run_codex_artist` を executor に投げる。
-- [ ] stdout への JSON Lines 書き込みを **単一 writer** に直列化する（lock/queue どちらでもよいが、メッセージのバイト列が混ざらないこと）。
-- [ ] 例外時も JSON-RPC error を返す（既存と同等のエラーハンドリングを維持）。
+- [x] `.agents/skills/grafix-art-loop-orchestrator/scripts/mcp_codex_child_artist_server.py` を **リクエスト受付**と **実処理**に分離する。
+- [x] `ThreadPoolExecutor`（または同等）を導入し、`art_loop.run_codex_artist` を executor に投げる。
+- [x] stdout への JSON Lines 書き込みを **単一 writer** に直列化する（lock/queue どちらでもよいが、メッセージのバイト列が混ざらないこと）。
+- [x] 例外時も JSON-RPC error を返す（既存と同等のエラーハンドリングを維持）。
 
 ### 2) 資源競合の抑制
 
-- [ ] 最大並列数 `ART_LOOP_MAX_CONCURRENCY`（仮）を導入し、デフォルトを `4`（orchestrator の v01〜v04 想定）にする。
-- [ ] 受付済みの実行数が上限に達したら、`tools/call` に対して **即時エラー**（例: `server busy`）を返す。
-- [ ] `codex exec` の状態衝突を避けるため、`CODEX_HOME` を `variant_dir/.codex_home` に固定する（`TMPDIR` は既に `variant_dir/.tmp`）。
+- [x] 最大並列数 `ART_LOOP_MAX_CONCURRENCY` を導入し、デフォルトを `4`（orchestrator の v01〜v04 想定）にする。
+- [x] 受付済みの実行数が上限に達したら、`tools/call` に対して **即時エラー**（`server busy`）を返す。
+- [x] `codex exec` の状態衝突を避けるため、`CODEX_HOME` を `variant_dir/.codex_home` に固定する（`TMPDIR` は既に `variant_dir/.tmp`）。
 
 ### 3) 観測性（最小）
 
-- [ ] `run_codex_artist` の返却 JSON に `server_received_ms` / `server_started_ms` / `server_finished_ms`（仮）を追加し、待ち行列時間が見えるようにする（既存フィールドは維持）。
+- [x] `run_codex_artist` の返却 JSON に `server_queue_ms` を追加し、待ち行列時間が見えるようにする（既存フィールドは維持）。
 
 ### 4) ドキュメント更新
 

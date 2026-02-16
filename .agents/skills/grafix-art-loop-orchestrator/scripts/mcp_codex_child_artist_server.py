@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import subprocess
@@ -11,6 +13,8 @@ from typing import Any, Final
 SERVER_NAME: Final[str] = "grafix-art-loop-codex-child-artist"
 SERVER_VERSION: Final[str] = "0.1.0"
 ALLOWED_RUNS_DIR: Final[Path] = Path("sketch/agent_loop/runs")
+ENV_MAX_CONCURRENCY: Final[str] = "ART_LOOP_MAX_CONCURRENCY"
+DEFAULT_MAX_CONCURRENCY: Final[int] = 4
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -108,6 +112,45 @@ def _tail_text(path: Path, max_chars: int) -> str:
     return data[-max_chars:]
 
 
+def _find_source_auth_json() -> Path | None:
+    candidates: list[Path] = []
+    raw_codex_home = os.environ.get("CODEX_HOME")
+    if raw_codex_home:
+        candidates.append((Path(raw_codex_home).expanduser().resolve() / "auth.json"))
+    candidates.append((Path.home() / ".codex" / "auth.json").resolve())
+
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def _ensure_codex_auth(codex_home_dir: Path) -> None:
+    """
+    Codex CLI は CODEX_HOME/auth.json に認証情報を保存する。
+    CODEX_HOME を variant ごとに分離すると 401 になり得るため、
+    既存の auth.json を symlink で参照する。
+
+    Notes
+    -----
+    - symlink は「複製」ではないので、variant_dir 内に秘密情報をコピーしない。
+    - OAuth refresh による更新も単一ストアに集約できる。
+    """
+    dest = codex_home_dir / "auth.json"
+    if dest.exists():
+        return
+
+    src = _find_source_auth_json()
+    if src is None:
+        raise ValueError("codex auth not found. Run `codex login`.")
+
+    try:
+        dest.symlink_to(src)
+    except FileExistsError:
+        # Race (e.g. retry) is OK: first writer wins.
+        return
+
+
 def _build_codex_prompt(variant_dir_rel: Path) -> str:
     v = variant_dir_rel.as_posix()
     return "\n".join(
@@ -170,7 +213,10 @@ def _write_failure_artifact(repo_root: Path, variant_dir: Path) -> None:
 
 
 def _tool_run_codex_artist(
-    repo_root: Path, arguments: dict[str, Any]
+    repo_root: Path,
+    arguments: dict[str, Any],
+    *,
+    server_queue_ms: int | None = None,
 ) -> dict[str, Any]:
     variant_dir_arg = arguments.get("variant_dir")
     if not isinstance(variant_dir_arg, str) or not variant_dir_arg.strip():
@@ -189,6 +235,10 @@ def _tool_run_codex_artist(
 
     tmp_dir = variant_dir / ".tmp"
     tmp_dir.mkdir(exist_ok=True)
+
+    codex_home_dir = variant_dir / ".codex_home"
+    codex_home_dir.mkdir(exist_ok=True)
+    _ensure_codex_auth(codex_home_dir)
 
     variant_dir_rel = variant_dir.relative_to(repo_root)
     prompt = _build_codex_prompt(variant_dir_rel)
@@ -215,6 +265,7 @@ def _tool_run_codex_artist(
     env["TMPDIR"] = str(tmp_dir)
     env["TMP"] = str(tmp_dir)
     env["TEMP"] = str(tmp_dir)
+    env["CODEX_HOME"] = str(codex_home_dir)
 
     t0 = time.monotonic()
     exit_code: int | None
@@ -247,6 +298,7 @@ def _tool_run_codex_artist(
     payload = {
         "status": status,
         "elapsed_ms": elapsed_ms,
+        "server_queue_ms": server_queue_ms,
         "variant_dir": str(variant_dir_rel),
         "artifact_json_path": str(variant_dir_rel / "artifact.json"),
         "stdout_path": str(variant_dir_rel / "stdout.txt"),
@@ -308,7 +360,13 @@ TOOLS: Final[list[dict[str, Any]]] = [
 ]
 
 
-def _handle_request(repo_root: Path, req: dict[str, Any]) -> dict[str, Any]:
+def _handle_request(
+    repo_root: Path,
+    req: dict[str, Any],
+    *,
+    received_t0: float | None = None,
+    started_t0: float | None = None,
+) -> dict[str, Any]:
     method = req.get("method")
     params = req.get("params") or {}
     req_id = req.get("id")
@@ -344,8 +402,15 @@ def _handle_request(repo_root: Path, req: dict[str, Any]) -> dict[str, Any]:
         elif method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments") or {}
+            server_queue_ms = None
+            if received_t0 is not None and started_t0 is not None:
+                server_queue_ms = int((started_t0 - received_t0) * 1000)
             if name == "art_loop.run_codex_artist":
-                result = _tool_run_codex_artist(repo_root, arguments=arguments)
+                result = _tool_run_codex_artist(
+                    repo_root,
+                    arguments=arguments,
+                    server_queue_ms=server_queue_ms,
+                )
             elif name == "art_loop.read_text_tail":
                 result = _tool_read_text_tail(repo_root, arguments=arguments)
             else:
@@ -375,6 +440,37 @@ def main() -> None:
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
 
+    max_concurrency_raw = os.environ.get(ENV_MAX_CONCURRENCY)
+    max_concurrency = DEFAULT_MAX_CONCURRENCY
+    if max_concurrency_raw:
+        max_concurrency = int(max_concurrency_raw)
+    if max_concurrency <= 0:
+        raise ValueError(f"{ENV_MAX_CONCURRENCY} must be a positive integer")
+
+    run_slots = threading.Semaphore(max_concurrency)
+    stdout_lock = threading.Lock()
+    executor = ThreadPoolExecutor(max_workers=max_concurrency)
+
+    def _write_response(payload: dict[str, Any]) -> None:
+        with stdout_lock:
+            _write_mcp_message(stdout, payload)
+
+    def _handle_and_write(req: dict[str, Any], *, received_t0: float) -> None:
+        started_t0 = time.monotonic()
+        resp = _handle_request(
+            repo_root,
+            req,
+            received_t0=received_t0,
+            started_t0=started_t0,
+        )
+        _write_response(resp)
+
+    def _handle_run_and_write(req: dict[str, Any], *, received_t0: float) -> None:
+        try:
+            _handle_and_write(req, received_t0=received_t0)
+        finally:
+            run_slots.release()
+
     while True:
         msg = _read_mcp_message(stdin)
         if msg is None:
@@ -383,9 +479,35 @@ def main() -> None:
         if "method" not in msg:
             continue
 
+        received_t0 = time.monotonic()
+
         # notifications は id が無いので返さない。requestだけ返す。
         if "id" in msg:
-            _write_mcp_message(stdout, _handle_request(repo_root, msg))
+            method = msg.get("method")
+            params = msg.get("params") or {}
+            name = params.get("name")
+
+            if method == "tools/call" and name == "art_loop.run_codex_artist":
+                if not run_slots.acquire(blocking=False):
+                    _write_response(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": msg.get("id"),
+                            "error": {
+                                "code": -32000,
+                                "message": (
+                                    "server busy: "
+                                    f"max concurrency is {max_concurrency} "
+                                    f"(env: {ENV_MAX_CONCURRENCY})"
+                                ),
+                            },
+                        }
+                    )
+                    continue
+
+                executor.submit(_handle_run_and_write, msg, received_t0=received_t0)
+            else:
+                _handle_and_write(msg, received_t0=received_t0)
 
 
 if __name__ == "__main__":

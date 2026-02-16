@@ -15,5 +15,5 @@ description: Grafixアート反復で使うCreativeBriefをJSONで定義する�
 - 出力形式は`.agents/skills/grafix-art-loop-orchestrator/references/schemas.md`に従う。
 - 出力先の境界は `grafix-art-loop-orchestrator` の規約に従う。
 - アイデアは多様性を最重要視する。一時 Python などで「毎回同じ brief を返す」ことは、この loop の目的（作品づくり）を壊すので禁止。
-- intentは可能な限り具体的に記述すること。1000文字以上を目安とする。
+- intentは300文字以上を目安とする。
 - contextには、アートのカテゴリ、系譜、実在のアーティスト名といった、方向性を示すことが可能はハイコンテクストな単語を最低3つ書くこと。

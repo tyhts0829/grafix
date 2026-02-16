@@ -16,41 +16,9 @@ CANVAS_HEIGHT = 210
 
 
 def draw(t):
-    g = G.polygon(
-        activate=True,
-        n_sides=128,
-        phase=89.08500000000001,
-        sweep=360.0,
-        center=(74.176, 86.413, 0.0),
-        scale=108.81400000000001,
-    )
-
-    e = E.reaction_diffusion(
-        activate=True,
-        grid_pitch=0.298,
-        steps=4500,
-        du=0.16,
-        dv=0.08,
-        feed=0.029,
-        kill=0.057,
-        dt=1.0,
-        seed=42,
-        seed_radius=10.0,
-        noise=0.02,
-        level=0.2,
-        min_points=24,
-        boundary="dirichlet",
-    ).fill(
-        activate=True,
-        angle_sets=1,
-        angle=45.0,
-        density=3000.0,
-        spacing_gradient=0.0,
-        remove_boundary=False,
-    )
-
+    g = G.text()
+    e = E.fill()
     g = e(g)
-
     frame = P.grn_a5_frame(
         activate=True,
         show_layout=False,
