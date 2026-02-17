@@ -219,7 +219,7 @@ paths:
     - "sketch/presets"
 ```
 
-## Prompt-to-Physical art (WIP)
+## Text-to-Physical art (WIP)
 
 I'm experimenting with a fully autonomous LLM loop that creates Grafix sketches end-to-end from a single prompt.
 
