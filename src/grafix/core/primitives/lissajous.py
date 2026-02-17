@@ -47,7 +47,7 @@ def lissajous(
     phase : float, optional
         X 方向の位相 [deg]。
     samples : int, optional
-        サンプリング点数。2 未満は `ValueError`。
+        サンプリング点数。2 未満が指定された場合は 2 に丸める。
     turns : float, optional
         `t` 範囲の周回数。`t ∈ [0, 2π * turns]`。
     center : tuple[float, float, float], optional
@@ -60,9 +60,7 @@ def lissajous(
     tuple[np.ndarray, np.ndarray]
         リサージュ曲線を表す 1 本の開ポリライン（coords, offsets）。
     """
-    samples_i = int(samples)
-    if samples_i < 2:
-        raise ValueError("lissajous の samples は 2 以上である必要がある")
+    samples_i = max(2, int(samples))
 
     try:
         cx, cy, cz = center
