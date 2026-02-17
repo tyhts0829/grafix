@@ -106,6 +106,7 @@ def _collect_inputs(in_dir: Path) -> list[_InputImage]:
 
     - `*.png` のみ対象
     - ファイル名先頭に数値があるものだけ採用（例: `13_*.png`）
+    - `1` からの連番（1,2,3,...）が途切れるまでを採用（例: `1,2,3,5` なら `1,2,3` のみ）
     - 番号の昇順で返す
     - 同じ番号が 2 回以上出たらエラー（例: `1_a.png` と `1_b.png`）
 
@@ -142,7 +143,15 @@ def _collect_inputs(in_dir: Path) -> list[_InputImage]:
         raise ValueError(f"入力画像の番号が重複しています: {dupes}")
 
     items.sort(key=lambda x: x.num)
-    return items
+    consecutive: list[_InputImage] = []
+    expected = 1
+    for it in items:
+        if it.num != expected:
+            break
+        consecutive.append(it)
+        expected += 1
+
+    return consecutive
 
 
 def _select(items: list[_InputImage], *, columns: int) -> list[_InputImage]:
