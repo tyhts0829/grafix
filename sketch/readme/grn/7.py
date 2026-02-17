@@ -38,29 +38,28 @@ def draw(t):
         )
         .displace(
             activate=False,
-            amplitude=(8.0, 8.0, 8.0),
-            spatial_freq=(0.04, 0.0, 0.04),
-            amplitude_gradient=(0.0, 0.0, 0.0),
-            frequency_gradient=(0.0, 0.0, 0.0),
-            gradient_center_offset=(0.0, 0.0, 0.0),
-            min_gradient_factor=0.1,
-            max_gradient_factor=2.0,
-            t=0.0,
         )
         .mirror(
             activate=True,
             n_mirror=3,
             cx=74.0,
             cy=96.907,
-            source_positive_x=True,
-            source_positive_y=True,
             show_planes=False,
         )
         .rotate(
             activate=True,
             auto_center=True,
-            pivot=(0.0, 0.0, 0.0),
             rotation=(0.0, 0.0, 30.0),
+        )
+        .scale(
+            activate=True,
+            mode="all",
+            auto_center=True,
+            scale=(0.8, 0.8, 1.0),
+        )
+        .translate(
+            activate=True,
+            delta=(0.0, -3.297, 0.0),
         )
     )
 

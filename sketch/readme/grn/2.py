@@ -141,10 +141,9 @@ def draw(t):
     e = E(name="g_affine").affine(
         activate=True,
         auto_center=True,
-        pivot=(0.0, 0.0, 0.0),
         rotation=(0.0, 0.0, 0.0),
-        scale=(5.932, 6.0, 6.0),
-        delta=(0.0, 0.0, 0.0),
+        scale=(5.4, 5.4, 6.0),
+        delta=(-0.5, 1.0, 0.0),
     )
 
     t1 = e(t1)

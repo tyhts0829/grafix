@@ -23,7 +23,7 @@ def draw(t):
         font_index=0,
         text_align="left",
         letter_spacing_em=0.017,
-        line_height=1.412,
+        line_height=1.087,
         use_bounding_box=False,
         quality=0.5,
         center=(19.78, 59.341, 0.0),
@@ -46,9 +46,16 @@ def draw(t):
             activate=True,
             angle_sets=1,
             angle=45.0,
-            density=1000,
+            density=1000.0,
             spacing_gradient=0.0,
             remove_boundary=False,
+        )
+        .affine(
+            activate=True,
+            auto_center=True,
+            rotation=(0.0, 0.0, 0.0),
+            scale=(0.8, 0.8, 1.0),
+            delta=(3.261, 1.087, 0.0),
         )
     )
 

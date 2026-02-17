@@ -30,15 +30,15 @@ def draw(t):
     e = (
         E.isocontour(
             activate=True,
-            spacing=0.46399999999999997,
+            spacing=0.464,
             phase=-8.007,
-            max_dist=55.669999999999995,
+            max_dist=55.67,
             mode="outside",
-            grid_pitch=1.142,
-            gamma=2.8699999999999997,
+            grid_pitch=1.1420000000000001,
+            gamma=2.87,
             level_step=1,
             auto_close_threshold=0.001,
-            keep_original=True,
+            keep_original=False,
         )
         .lowpass(
             activate=True,
@@ -50,9 +50,16 @@ def draw(t):
             activate=True,
             angle_sets=1,
             angle=45.0,
-            density=500,
+            density=500.0,
             spacing_gradient=0.0,
             remove_boundary=False,
+        )
+        .affine(
+            activate=True,
+            auto_center=True,
+            rotation=(0.0, 0.0, 0.0),
+            scale=(0.8, 0.8, 1.0),
+            delta=(0.0, 5.4350000000000005, 0.0),
         )
     )
 

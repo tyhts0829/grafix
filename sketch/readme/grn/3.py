@@ -11,9 +11,8 @@ def draw(t):
         activate=True,
         subdivisions=0,
         type_index=2,
-        mode=2,
-        center=(74.0, 86.413, 0.0),
-        scale=99.661,
+        center=(74.0, 92.935, 0.0),
+        scale=86.102,
     )
 
     e = E.rotate(

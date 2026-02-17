@@ -29,6 +29,7 @@ def draw(t):
     e = (
         E.repeat(
             activate=True,
+            layout="grid",
             count=60,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -36,9 +37,7 @@ def draw(t):
             offset=(0.0, 113.915, 0.0),
             rotation_step=(0.0, 0.0, 0.0),
             scale=(1.0, 1.0, 1.0),
-            curve=1.0,
             auto_center=True,
-            pivot=(0.0, 0.0, 0.0),
         )
         .subdivide(
             activate=True,
@@ -56,6 +55,13 @@ def draw(t):
             min_gradient_factor=0.048,
             max_gradient_factor=2.062,
             t=0.447,
+        )
+        .affine(
+            activate=True,
+            auto_center=True,
+            rotation=(0.0, 0.0, 0.0),
+            scale=(0.889, 0.889, 1.0),
+            delta=(0.0, 0.0, 0.0),
         )
     )
 

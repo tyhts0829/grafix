@@ -52,6 +52,13 @@ def draw(t):
             spacing_gradient=0.0,
             remove_boundary=False,
         )
+        .affine(
+            activate=True,
+            auto_center=True,
+            rotation=(0.0, 0.0, 0.0),
+            scale=(0.7000000000000001, 0.7000000000000001, 1.0),
+            delta=(0.0, -3.297, 0.0),
+        )
     )
 
     g = e(g)

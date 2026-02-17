@@ -22,7 +22,7 @@ def draw(t):
         type_index=3,
         mode=2,
         center=(75.0, 93.0, 0.0),
-        scale=103.051,
+        scale=93.898,
     )
 
     e = E.rotate(

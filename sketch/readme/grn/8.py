@@ -15,7 +15,17 @@ def draw(t):
     e2 = E.rotate()
 
     g2 = e2(g2)
-    return frame, g1, g2
+    g = g1 + g2
+    e = E.affine(
+        activate=True,
+        auto_center=True,
+        rotation=(0.0, 0.0, 0.0),
+        scale=(0.85, 0.85, 1.0),
+        delta=(0.0, 2.5, 0.0),
+    )
+
+    g = e(g)
+    return frame, g
 
 
 if __name__ == "__main__":

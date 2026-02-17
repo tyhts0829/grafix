@@ -11,7 +11,7 @@ def draw(t):
         n_sides=565,
         phase=0.0,
         sweep=360.0,
-        center=(74, 80.769, 0.0),
+        center=(74.0, 92.935, 0.0),
         scale=111.684,
     )
 
@@ -19,6 +19,7 @@ def draw(t):
         E(name="e_circle")
         .repeat(
             activate=True,
+            layout="grid",
             count=59,
             cumulative_scale=False,
             cumulative_offset=False,
@@ -26,9 +27,7 @@ def draw(t):
             offset=(0.0, 0.0, 61.29),
             rotation_step=(0.0, 0.0, 0.0),
             scale=(1.0, 1.0, 1.0),
-            curve=0.897,
             auto_center=True,
-            pivot=(0.0, 0.0, 0.0),
         )
         .displace(
             activate=True,
@@ -37,6 +36,7 @@ def draw(t):
             amplitude_gradient=(4.0, 4.0, 0.0),
             frequency_gradient=(0.0, 0.0, 0.0),
             gradient_center_offset=(0.533, 0.0, 0.0),
+            gradient_profile="linear",
             min_gradient_factor=0.0,
             max_gradient_factor=1.549,
             t=0.617,
@@ -44,9 +44,8 @@ def draw(t):
         .affine(
             activate=True,
             auto_center=True,
-            pivot=(0.0, 0.0, 0.0),
             rotation=(0.0, 0.0, 48.387),
-            scale=(1.0, 1.0, 1.0),
+            scale=(0.8, 0.8, 1.0),
             delta=(0.0, 0.0, 0.0),
         )
     )

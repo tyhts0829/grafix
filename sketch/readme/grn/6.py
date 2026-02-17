@@ -23,36 +23,34 @@ def draw(t):
         n_sides=4,
         phase=45.0,
         sweep=360.0,
-        center=(23.077, 22.527, 0.0),
-        scale=1.718,
+        center=(38.462, 36.264, 0.0),
+        scale=2.234,
     )
 
     e = (
         E.repeat(
             activate=True,
-            count=64,
+            layout="grid",
+            count=56,
             cumulative_scale=False,
             cumulative_offset=False,
             cumulative_rotate=False,
-            offset=(102.19800000000001, 0.0, 0.0),
+            offset=(0.0, 113.736, 0.0),
             rotation_step=(0.0, 0.0, 0.0),
             scale=(1.0, 1.0, 1.0),
-            curve=1.0,
             auto_center=True,
-            pivot=(0.0, 0.0, 0.0),
         )
         .repeat(
             activate=True,
-            count=81,
+            layout="grid",
+            count=34,
             cumulative_scale=False,
             cumulative_offset=False,
             cumulative_rotate=False,
-            offset=(0.0, 141.758, 0.0),
+            offset=(71.429, 0.0, 0.0),
             rotation_step=(0.0, 0.0, 0.0),
             scale=(1.0, 1.0, 1.0),
-            curve=1.0,
             auto_center=True,
-            pivot=(0.0, 0.0, 0.0),
         )
         .drop(
             activate=True,
@@ -60,10 +58,10 @@ def draw(t):
             index_offset=0,
             min_length=-1.0,
             max_length=-1.0,
-            probability_base=(0.0, 0.225, 0.0),
-            probability_slope=(0.0, 0.495, 0.0),
+            probability_base=(0.0, 0.115, 0.0),
+            probability_slope=(0.0, 0.319, 0.0),
             by="face",
-            seed=308101184,
+            seed=614357440,
             keep_mode="drop",
         )
         .fill(
@@ -72,7 +70,7 @@ def draw(t):
             angle=45.0,
             density=1893.471,
             spacing_gradient=0.0,
-            remove_boundary=True,
+            remove_boundary=False,
         )
     )
 

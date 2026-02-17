@@ -66,6 +66,13 @@ def draw(t):
             radius=0.134,
             seed=0,
         )
+        .affine(
+            activate=True,
+            auto_center=True,
+            rotation=(0.0, 0.0, 0.0),
+            scale=(0.6, 0.6, 1.0),
+            delta=(4.396, 5.495, 0.0),
+        )
     )
 
     g = e(g)
