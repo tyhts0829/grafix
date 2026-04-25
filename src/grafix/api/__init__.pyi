@@ -61,6 +61,45 @@ class _G(Protocol):
             scale: 等方スケール倍率 s
         """
         ...
+    def laplace_field_grid(self, *, activate: bool = ..., preset: str = ..., u_min: float = ..., u_max: float = ..., v_min: float = ..., v_max: float = ..., n_u: int = ..., n_v: int = ..., samples: int = ..., center: Vec3 = ..., scale: float = ..., rotate: float = ..., clip: bool = ..., clip_xmin: float = ..., clip_xmax: float = ..., clip_ymin: float = ..., clip_ymax: float = ..., a: float = ..., U: float = ..., gap: float = ..., draw_boundary: bool = ..., boundary_samples: int = ..., alpha_re: float = ..., alpha_im: float = ..., beta_re: float = ..., beta_im: float = ..., gamma_re: float = ..., gamma_im: float = ..., delta_re: float = ..., delta_im: float = ..., k_re: float = ..., k_im: float = ...) -> Geometry:
+        """
+        共形写像ベースの直交格子（等ポテンシャル線/流線風）を生成する。
+
+        引数:
+            activate: bool
+            preset: `"cylinder_uniform" | "mobius" | "exp"`
+            u_min: float, range [-10.0, 10.0]
+            u_max: float, range [-10.0, 10.0]
+            v_min: float, range [-10.0, 10.0]
+            v_max: float, range [-10.0, 10.0]
+            n_u: int, range [0, 200]
+            n_v: int, range [0, 200]
+            samples: 1 本あたりのサンプル点数（2 以上）
+            center: 平行移動ベクトル (cx, cy, cz)
+            scale: 等方スケール倍率
+            rotate: 回転角 [deg]（XY 平面、origin 回り）
+            clip: True のとき矩形クリップ（AABB）で線を分割する
+            clip_xmin: float, range [-200.0, 200.0]
+            clip_xmax: float, range [-200.0, 200.0]
+            clip_ymin: float, range [-200.0, 200.0]
+            clip_ymax: float, range [-200.0, 200.0]
+            a: float, range [0.0, 50.0]
+            U: float, range [0.0, 5.0]
+            gap: float, range [0.0, 0.05]
+            draw_boundary: `preset="cylinder_uniform"` で境界円を追加する
+            boundary_samples: 境界円のサンプル数（3 以上）
+            alpha_re: float, range [-5.0, 5.0]
+            alpha_im: float, range [-5.0, 5.0]
+            beta_re: float, range [-5.0, 5.0]
+            beta_im: float, range [-5.0, 5.0]
+            gamma_re: float, range [-5.0, 5.0]
+            gamma_im: float, range [-5.0, 5.0]
+            delta_re: float, range [-5.0, 5.0]
+            delta_im: float, range [-5.0, 5.0]
+            k_re: float, range [-5.0, 5.0]
+            k_im: float, range [-5.0, 5.0]
+        """
+        ...
     def line(self, *, activate: bool = ..., center: Vec3 = ..., anchor: str = ..., length: float = ..., angle: float = ...) -> Geometry:
         """
         正規化済み引数から線分を生成する。

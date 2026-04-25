@@ -13,6 +13,7 @@ _BUILTIN_PRIMITIVE_MODULES: tuple[str, ...] = (
     "grafix.core.primitives.grid",
     "grafix.core.primitives.line",
     "grafix.core.primitives.lissajous",
+    "grafix.core.primitives.laplace_field_grid",
     "grafix.core.primitives.lsystem",
     "grafix.core.primitives.polygon",
     "grafix.core.primitives.polyhedron",
