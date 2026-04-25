@@ -2,8 +2,9 @@
 """Art loop の contact sheet を生成する補助 CLI。
 
 仕様:
-- `iter` モード: `iter_XX/vYY/out.png` を収集して `iter_XX/contact_sheet.png` を生成
-- `final` モード: `run_dir/iter_XX/contact_sheet.png` を収集して
+- `round` モード: `round_XX/vYY/loop_ZZ/out.png` を収集し、variant ごとに最大 loop を採用して
+  `round_XX/contact_sheet.png` を生成
+- `final` モード: `run_dir/round_XX/contact_sheet.png` を収集して
   `run_summary/final_contact_sheet_8k.png` を生成
 """
 
@@ -37,8 +38,8 @@ class TileSource:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate contact sheet images for grafix art loop.")
-    parser.add_argument("--mode", choices=("iter", "final"), required=True)
-    parser.add_argument("--iter-dir", type=Path, help="Path to iter_XX directory.")
+    parser.add_argument("--mode", choices=("round", "final"), required=True)
+    parser.add_argument("--round-dir", type=Path, help="Path to round_XX directory.")
     parser.add_argument("--run-dir", type=Path, help="Path to run_<...> directory.")
     parser.add_argument("--out", type=Path, help="Output png path. If omitted, mode-specific default is used.")
     parser.add_argument(
@@ -56,16 +57,26 @@ def _numeric_sort_key(text: str, pattern: re.Pattern[str]) -> int | None:
     return int(matched.group(1))
 
 
-def collect_iter_sources(iter_dir: Path) -> list[TileSource]:
-    if not iter_dir.is_dir():
-        raise ValueError(f"iter directory not found: {iter_dir}")
+def collect_round_sources(round_dir: Path) -> list[TileSource]:
+    if not round_dir.is_dir():
+        raise ValueError(f"round directory not found: {round_dir}")
     variant_pattern = re.compile(r"^v(\d+)$")
+    loop_pattern = re.compile(r"^loop_(\d+)$")
     collected: list[tuple[int, TileSource]] = []
-    for path in iter_dir.glob("v*/out.png"):
-        num = _numeric_sort_key(path.parent.name, variant_pattern)
+    for variant_dir in round_dir.glob("v*"):
+        num = _numeric_sort_key(variant_dir.name, variant_pattern)
         if num is None:
             continue
-        collected.append((num, TileSource(label=path.parent.name, path=path)))
+        best_loop: tuple[int, Path] | None = None
+        for path in variant_dir.glob("loop_*/out.png"):
+            loop_num = _numeric_sort_key(path.parent.name, loop_pattern)
+            if loop_num is None:
+                continue
+            if best_loop is None or loop_num > best_loop[0]:
+                best_loop = (loop_num, path)
+        if best_loop is None:
+            continue
+        collected.append((num, TileSource(label=variant_dir.name, path=best_loop[1])))
     collected.sort(key=lambda item: item[0])
     return [item[1] for item in collected]
 
@@ -73,10 +84,10 @@ def collect_iter_sources(iter_dir: Path) -> list[TileSource]:
 def collect_final_sources(run_dir: Path) -> list[TileSource]:
     if not run_dir.is_dir():
         raise ValueError(f"run directory not found: {run_dir}")
-    iter_pattern = re.compile(r"^iter_(\d+)$")
+    round_pattern = re.compile(r"^round_(\d+)$")
     collected: list[tuple[int, TileSource]] = []
-    for path in run_dir.glob("iter_*/contact_sheet.png"):
-        num = _numeric_sort_key(path.parent.name, iter_pattern)
+    for path in run_dir.glob("round_*/contact_sheet.png"):
+        num = _numeric_sort_key(path.parent.name, round_pattern)
         if num is None:
             continue
         collected.append((num, TileSource(label=path.parent.name, path=path)))
@@ -160,19 +171,19 @@ def ensure_long_edge(image: Image.Image, min_long_edge: int) -> Image.Image:
     return image.resize(new_size, Image.Resampling.LANCZOS)
 
 
-def default_output(mode: str, iter_dir: Path | None, run_dir: Path | None) -> Path:
-    if mode == "iter":
-        if iter_dir is None:
-            raise ValueError("--iter-dir is required in iter mode")
-        return iter_dir / "contact_sheet.png"
+def default_output(mode: str, round_dir: Path | None, run_dir: Path | None) -> Path:
+    if mode == "round":
+        if round_dir is None:
+            raise ValueError("--round-dir is required in round mode")
+        return round_dir / "contact_sheet.png"
     if run_dir is None:
         raise ValueError("--run-dir is required in final mode")
     return run_dir / "run_summary" / "final_contact_sheet_8k.png"
 
 
 def validate_mode_args(args: argparse.Namespace) -> None:
-    if args.mode == "iter" and args.iter_dir is None:
-        raise ValueError("--iter-dir is required for --mode iter")
+    if args.mode == "round" and args.round_dir is None:
+        raise ValueError("--round-dir is required for --mode round")
     if args.mode == "final" and args.run_dir is None:
         raise ValueError("--run-dir is required for --mode final")
 
@@ -181,15 +192,15 @@ def main() -> int:
     args = _parse_args()
     try:
         validate_mode_args(args)
-        if args.mode == "iter":
-            sources = collect_iter_sources(args.iter_dir)
+        if args.mode == "round":
+            sources = collect_round_sources(args.round_dir)
         else:
             sources = collect_final_sources(args.run_dir)
 
         if not sources:
             raise ValueError(f"no input png found for mode={args.mode}")
 
-        out_path = args.out if args.out is not None else default_output(args.mode, args.iter_dir, args.run_dir)
+        out_path = args.out if args.out is not None else default_output(args.mode, args.round_dir, args.run_dir)
         print(f"mode={args.mode} sources={len(sources)} out={out_path}")
         for idx, src in enumerate(sources, start=1):
             print(f"{idx:02d} {src.label} {src.path}")

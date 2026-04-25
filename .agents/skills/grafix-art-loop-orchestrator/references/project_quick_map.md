@@ -25,6 +25,8 @@
 - `src/grafix/`: Grafix 本体
 - `sketch/`: 実験スケッチ
 - `sketch/agent_loop/runs/`: Art Loop の成果物
+- active な run 構造は `runs/<run_id>/round_XX/vYY/loop_ZZ/`
 - `.agents/skills/grafix-art-loop-*/`: role ごとの運用ルール
+- `.agents/skills/grafix-art-loop-artist/references/artist_profiles/`: artist の作家性プロファイル
 - `.agents/skills/grafix-art-loop-orchestrator/references/`: JSON 型と運用参照
 - `.agents/skills/grafix-art-loop-orchestrator/scripts/`: contact sheet などの機械処理ツール

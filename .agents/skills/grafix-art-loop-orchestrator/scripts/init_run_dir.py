@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-RUN_ID_PATTERN = re.compile(r"^run_(\d{8})_(\d{6})_n(\d+)m(\d+)$")
+RUN_ID_PATTERN = re.compile(r"^run_(\d{8})_(\d{6})_r(\d+)v(\d+)l(\d+)$")
 DEFAULT_ROOT = Path("sketch/agent_loop/runs")
 
 
@@ -18,15 +18,21 @@ DEFAULT_ROOT = Path("sketch/agent_loop/runs")
 class RunSpec:
     run_id: str
     run_dir: Path
-    n: int
-    m: int
+    r: int
+    v: int
+    l: int
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Initialize a grafix art-loop run directory skeleton.")
-    parser.add_argument("--n", type=int, required=True, help="Number of iterations (N).")
-    parser.add_argument("--m", type=int, required=True, help="Number of variants per iteration (M).")
-    parser.add_argument("--run-id", type=str, help="Explicit run_id (must match run_YYYYMMDD_HHMMSS_n{n}m{m}).")
+    parser.add_argument("--r", type=int, required=True, help="Number of rounds.")
+    parser.add_argument("--v", type=int, required=True, help="Number of variants per round.")
+    parser.add_argument("--l", type=int, required=True, help="Number of improvement loops per variant.")
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        help="Explicit run_id (must match run_YYYYMMDD_HHMMSS_r{r}v{v}l{l}).",
+    )
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="Runs root directory.")
     parser.add_argument("--dry-run", action="store_true", help="Print planned paths without creating them.")
     parser.add_argument(
@@ -52,50 +58,59 @@ def normalize_root(root: Path) -> Path:
     return resolved
 
 
-def generate_run_id(n: int, m: int, now: datetime) -> str:
+def generate_run_id(r: int, v: int, l: int, now: datetime) -> str:
     ts = now.strftime("%Y%m%d_%H%M%S")
-    return f"run_{ts}_n{n}m{m}"
+    return f"run_{ts}_r{r}v{v}l{l}"
 
 
-def validate_run_id(run_id: str, *, n: int, m: int) -> None:
+def validate_run_id(run_id: str, *, r: int, v: int, l: int) -> None:
     matched = RUN_ID_PATTERN.match(run_id)
     if not matched:
         raise ValueError(
-            "run_id must match run_YYYYMMDD_HHMMSS_n{n}m{m} "
-            f"(got {run_id!r}, example: run_20260209_214538_n4m8)"
+            "run_id must match run_YYYYMMDD_HHMMSS_r{r}v{v}l{l} "
+            f"(got {run_id!r}, example: run_20260307_153000_r3v4l5)"
         )
-    n_in_id = int(matched.group(3))
-    m_in_id = int(matched.group(4))
-    if n_in_id != n or m_in_id != m:
-        raise ValueError(f"run_id encodes n/m that differ from args (run_id: n={n_in_id}, m={m_in_id})")
+    r_in_id = int(matched.group(3))
+    v_in_id = int(matched.group(4))
+    l_in_id = int(matched.group(5))
+    if r_in_id != r or v_in_id != v or l_in_id != l:
+        raise ValueError(
+            "run_id encodes r/v/l that differ from args "
+            f"(run_id: r={r_in_id}, v={v_in_id}, l={l_in_id})"
+        )
 
 
 def build_run_spec(args: argparse.Namespace) -> RunSpec:
-    validate_positive("n", args.n)
-    validate_positive("m", args.m)
+    validate_positive("r", args.r)
+    validate_positive("v", args.v)
+    validate_positive("l", args.l)
 
     root = normalize_root(args.root)
-    run_id = args.run_id or generate_run_id(args.n, args.m, datetime.now())
-    validate_run_id(run_id, n=args.n, m=args.m)
+    run_id = args.run_id or generate_run_id(args.r, args.v, args.l, datetime.now())
+    validate_run_id(run_id, r=args.r, v=args.v, l=args.l)
     run_dir = root / run_id
-    return RunSpec(run_id=run_id, run_dir=run_dir, n=args.n, m=args.m)
+    return RunSpec(run_id=run_id, run_dir=run_dir, r=args.r, v=args.v, l=args.l)
 
 
-def variant_width(m: int) -> int:
-    return max(2, len(str(m)))
+def _width(count: int) -> int:
+    return max(2, len(str(count)))
 
 
 def planned_dirs(spec: RunSpec) -> list[Path]:
-    width = variant_width(spec.m)
+    variant_width = _width(spec.v)
+    loop_width = _width(spec.l)
     paths: list[Path] = []
     paths.append(spec.run_dir)
     paths.append(spec.run_dir / ".tmp")
     paths.append(spec.run_dir / "run_summary")
-    for iter_idx in range(1, spec.n + 1):
-        iter_dir = spec.run_dir / f"iter_{iter_idx:02d}"
-        paths.append(iter_dir)
-        for var_idx in range(1, spec.m + 1):
-            paths.append(iter_dir / f"v{var_idx:0{width}d}")
+    for round_idx in range(1, spec.r + 1):
+        round_dir = spec.run_dir / f"round_{round_idx:02d}"
+        paths.append(round_dir)
+        for var_idx in range(1, spec.v + 1):
+            variant_dir = round_dir / f"v{var_idx:0{variant_width}d}"
+            paths.append(variant_dir)
+            for loop_idx in range(1, spec.l + 1):
+                paths.append(variant_dir / f"loop_{loop_idx:0{loop_width}d}")
     return paths
 
 
@@ -139,4 +154,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

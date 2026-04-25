@@ -1,7 +1,9 @@
 # Grafix Art Loop: MCPサーバ並列実行（tools/call）対応計画（2026-02-11）
 
 作成日: 2026-02-11  
-ステータス: 実装中（一部実施）
+ステータス: 履歴化（2026-03-07 に local artist 正準化へ移行）
+
+> 注: 本計画は child artist MCP サーバを前提としていたため、現行運用では採用しない。現行方針は [local_artist_primary_migration_plan_2026-03-07.md](local_artist_primary_migration_plan_2026-03-07.md) を参照。
 
 ## 背景 / 問題
 

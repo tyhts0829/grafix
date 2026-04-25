@@ -1,7 +1,9 @@
 # Grafix Art Loop: MCP 経由で Codex CLI 子エージェントに artist を任せる計画
 
 作成日: 2026-02-10  
-ステータス: 提案（未実装）
+ステータス: 履歴化（2026-03-07 に local artist 正準化へ移行）
+
+> 注: nested child artist 構想は廃止した。現行運用は [local_artist_primary_migration_plan_2026-03-07.md](local_artist_primary_migration_plan_2026-03-07.md) を参照。
 
 ## 背景
 

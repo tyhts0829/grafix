@@ -9,6 +9,31 @@
 - custom `@primitive` / `@effect` は「定義だけ」ではなく、実際の描画パスで必ず使う。
 - 出力は `variant_dir` 配下のみ。`/tmp` や `sketch/agent_loop` 外へ書かない。
 - 既存 run の `sketch.py` 丸写しや、テンプレート使い回しでの量産をしない。
+- `read-only` と推測で失敗判定してはいけない。`variant_dir` 配下への実書き込みが失敗したときだけ失敗として扱う。
+
+## Artist profile の参照順
+
+- `artist_context.json` に `artist_profile_ref` があれば、そのファイルを最優先で読む。
+- 無ければ `.agents/skills/grafix-art-loop-artist/references/artist_profiles/` から選ぶ。
+- profile 解決のための横断探索は最小限にとどめる。
+
+## Render command の固定形
+
+- `loop_dir = sketch/agent_loop/runs/<run_id>/round_XX/vYY/loop_ZZ` のとき、`callable_ref` は `sketch.agent_loop.runs.<run_id>.round_XX.vYY.loop_ZZ.sketch:draw` とする。
+- 実行コマンドは次の完全形を使う。
+
+```bash
+PYTHONPATH=src /opt/anaconda3/envs/gl5/bin/python -m grafix export \
+  --callable sketch.agent_loop.runs.<run_id>.round_XX.vYY.loop_ZZ.sketch:draw \
+  --canvas <creative_brief.canvas.w> <creative_brief.canvas.h> \
+  --out sketch/agent_loop/runs/<run_id>/round_XX/vYY/loop_ZZ/out.png \
+  > sketch/agent_loop/runs/<run_id>/round_XX/vYY/loop_ZZ/stdout.txt \
+  2> sketch/agent_loop/runs/<run_id>/round_XX/vYY/loop_ZZ/stderr.txt
+```
+
+- `--callable` の module path は `loop_dir` の相対パスを `.` 連結して導く。
+- `--canvas` は必ず `creative_brief.json` の `canvas.w` / `canvas.h` に合わせる。
+- `creative_brief.json` と `artist_context.json` は `variant_dir` に置き、loop ごとのレンダリング成果物は `loop_dir` に置く。
 
 ## 実装の基本形
 

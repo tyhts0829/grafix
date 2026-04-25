@@ -115,38 +115,38 @@
 
 ### 0) 仕様確定（この計画の合意）
 
-- [ ] primitive 名を `laplace_field_grid` で確定（別名希望があれば反映）
-- [ ] `mobius/exp` の複素パラメータ表現を `*_re/*_im` で行くか決める
-- [ ] `clip_rect` を Phase 1 の必須にするか（簡易/厳密）を決める
+- [x] primitive 名を `laplace_field_grid` で確定
+- [x] `mobius/exp` の複素パラメータ表現は `*_re/*_im`（float）を採用
+- [x] クリップは Phase 1 で提供（`clip` + `clip_*`）。簡易版（交点補間なし、範囲外点を落として区間分割）
 
 ### 1) primitive 追加
 
-- [ ] `src/grafix/core/primitives/laplace_field_grid.py` を追加（meta + ui_visible を含む）
-- [ ] 共通骨格（格子生成 → 写像 → mask 分割 → pack）を実装
-- [ ] `cylinder_uniform` を実装（逆写像 + 外部解選択 + gap mask + 境界円）
-- [ ] `mobius` を実装
-- [ ] `exp` を実装
-- [ ] 後段変換（rotate/scale/center）を適用
-- [ ] `src/grafix/core/builtins.py` に primitive module を登録
+- [x] `src/grafix/core/primitives/laplace_field_grid.py` を追加（meta + ui_visible を含む）
+- [x] 共通骨格（格子生成 → 写像 → mask 分割 → pack）を実装
+- [x] `cylinder_uniform` を実装（逆写像 + 外部解選択 + gap mask + 境界円）
+- [x] `mobius` を実装
+- [x] `exp` を実装
+- [x] 後段変換（rotate/scale/center）を適用
+- [x] `src/grafix/core/builtins.py` に primitive module を登録
 
 ### 2) テスト/検証
 
-- [ ] `tests/core/primitives/test_laplace_field_grid.py` を追加
-- [ ] `PYTHONPATH=src pytest -q tests/core/primitives/test_laplace_field_grid.py`
+- [x] `tests/core/primitives/test_laplace_field_grid.py` を追加
+- [x] `PYTHONPATH=src pytest -q tests/core/primitives/test_laplace_field_grid.py`
 
 ### 3) スタブ更新
 
-- [ ] `PYTHONPATH=src python -m grafix stub`（`src/grafix/api/__init__.pyi` 更新）
+- [x] `PYTHONPATH=src python -m grafix stub`（`src/grafix/api/__init__.pyi` 更新）
 
 ## 受け入れ条件（DoD）
 
-- [ ] `G.laplace_field_grid(preset="cylinder_uniform", ...)` が例外なく動く
-- [ ] 円内部に線が侵入しない（`gap` に応じた余白）
-- [ ] `preset` を `mobius/exp` に切り替えると明確に異なるパターンが得られる
-- [ ] 出力に NaN/Inf が含まれない（少なくともデフォルト範囲/密度で）
+- [x] `G.laplace_field_grid(preset="cylinder_uniform", ...)` が例外なく動く
+- [x] 円内部に線が侵入しない（`gap` に応じた余白）
+- [x] `preset` を `mobius/exp` に切り替えると明確に異なるパターンが得られる
+- [x] 出力に NaN/Inf が含まれない（少なくともデフォルト範囲/密度で）
 
-## 追加で決めること（実装前の最終確認）
+## メモ（実装後）
 
-- `rotate` を primitive 引数として持つか、effect（`E.rotate`）に寄せるか
-- 境界円を同一ジオメトリに混ぜるか（`draw_boundary`）/ 目視スケッチへ寄せるか
-- `u_min/u_max` 等の引数名を指示書寄り（`u_range`）に戻すか
+- `rotate` は primitive 引数として採用（deg）。回転は XY 平面の origin 回り。
+- 境界円は `draw_boundary=True` のとき、同一ジオメトリへ 1 本追加する。
+- 範囲は `u_min/u_max/v_min/v_max` を採用（tuple は使わない）。

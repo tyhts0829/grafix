@@ -7,24 +7,25 @@
 
 ## 生成モード
 
-### 1) `iter` モード
+### 1) `round` モード
 
-- 入力: `iter_XX/v*/out.png`
+- 入力: `round_XX/v*/loop_*/out.png`
 - 収集対象:
-  - `iter_dir.glob("v*/out.png")`
+  - `round_dir.glob("v*")` 配下を variant 単位で走査する
   - `vNN` ディレクトリのみ採用
-  - `iter_dir/contact_sheet.png` は収集対象外
+  - 各 `vNN` では `loop_NN/out.png` のうち最大 loop 番号だけを採用する
+  - `round_dir/contact_sheet.png` は収集対象外
 - 並び順: `v01`, `v02`, ... を数値昇順で固定
-- 出力既定: `iter_XX/contact_sheet.png`
+- 出力既定: `round_XX/contact_sheet.png`
 
 ### 2) `final` モード
 
-- 入力: `run_dir/iter_*/contact_sheet.png`
+- 入力: `run_dir/round_*/contact_sheet.png`
 - 収集対象:
-  - `run_dir.glob("iter_*/contact_sheet.png")`
-  - `iter_NN` ディレクトリのみ採用
+  - `run_dir.glob("round_*/contact_sheet.png")`
+  - `round_NN` ディレクトリのみ採用
   - `run_summary/*.png` は収集対象外
-- 並び順: `iter_01`, `iter_02`, ... を数値昇順で固定
+- 並び順: `round_01`, `round_02`, ... を数値昇順で固定
 - 出力既定: `run_summary/final_contact_sheet_8k.png`
 
 ## レイアウト規約
@@ -35,8 +36,8 @@
 - ラベル領域高さ: `44px`
 - ラベル色: RGB `(32, 32, 32)`
 - ラベル内容:
-  - `iter` モード: `vNN`（例: `v03`）
-  - `final` モード: `iter_NN`（例: `iter_02`）
+  - `round` モード: `vNN`（例: `v03`）
+  - `final` モード: `round_NN`（例: `round_02`）
 - セルサイズ:
   - 収集した画像の `max(width)` / `max(height)` をセルサイズとする
   - 各画像はセル内にアスペクト比維持でフィット
@@ -53,4 +54,4 @@
 ## エラー方針
 
 - 収集結果が 0 件のときは失敗する（stderr に理由を出力）。
-- 必須引数不足（例: `--mode iter` で `--iter-dir` 無し）は失敗する。
+- 必須引数不足（例: `--mode round` で `--round-dir` 無し）は失敗する。
