@@ -272,10 +272,10 @@ def draw(t: float):
     )
 
     return (
-        L(name="warm paper").layer(
-            paper, color=_rgb255((247, 243, 234)), thickness=0.004
-        )
-        + L(name="pale gray forms").layer(
+        # L(name="warm paper").layer(
+        #     paper, color=_rgb255((247, 243, 234)), thickness=0.004
+        # )
+        L(name="pale gray forms").layer(
             gray_shapes[:4],
             color=_rgb255((151, 149, 139)),
             thickness=0.00045,
@@ -290,16 +290,16 @@ def draw(t: float):
             color=_rgb255((23, 25, 23)),
             thickness=0.0010,
         )
-        + L(name="red circle").layer(
-            red_sun,
-            color=_rgb255((224, 31, 28)),
-            thickness=0.00065,
-        )
         + L(name="caption").layer(
             [caption_number, caption_rule, caption_title, caption_year],
             color=_rgb255((37, 37, 34)),
             thickness=0.00022,
-        )
+        ),
+        L(name="red circle").layer(
+            red_sun,
+            color=_rgb255((224, 31, 28)),
+            thickness=0.00065,
+        ),
     )
 
 
