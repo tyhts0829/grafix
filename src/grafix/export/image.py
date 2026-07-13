@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable, Sequence
+from math import isfinite
 from pathlib import Path
 
+from grafix.core.atomic_write import atomic_output_path
 from grafix.core.output_paths import output_path_for_draw
 from grafix.core.runtime_config import runtime_config
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.parameters.style import rgb01_to_rgb255
 from grafix.export.svg import export_svg
+
+_DEFAULT_RESVG_TIMEOUT_S = 30.0
 
 
 def export_image(
@@ -125,6 +129,7 @@ def rasterize_svg_to_png(
     *,
     output_size: tuple[int, int],
     background_color_rgb01: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    timeout_s: float = _DEFAULT_RESVG_TIMEOUT_S,
 ) -> Path:
     """SVG を PNG として保存する。
 
@@ -138,6 +143,8 @@ def rasterize_svg_to_png(
         出力 PNG の (width, height) ピクセルサイズ。
     background_color_rgb01 : tuple[float, float, float]
         背景色 RGB（0..1）。既定は白。
+    timeout_s : float
+        resvg process の最大実行秒数。
 
     Returns
     -------
@@ -148,27 +155,43 @@ def rasterize_svg_to_png(
     ------
     RuntimeError
         resvg が見つからない、またはラスタライズに失敗した場合。
+    TimeoutError
+        resvg が `timeout_s` 秒以内に終了しなかった場合。
     """
 
     _svg_path = Path(svg_path)
     _png_path = Path(png_path)
+    timeout = float(timeout_s)
+    if not isfinite(timeout) or timeout <= 0.0:
+        raise ValueError("timeout_s は正である必要がある")
     _png_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = _resvg_command(
-        input_svg=_svg_path,
-        output_png=_png_path,
-        output_size=output_size,
-        background_color_rgb01=background_color_rgb01,
-    )
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except FileNotFoundError as e:
-        raise RuntimeError(
-            "resvg が見つかりません（`resvg` をインストールして PATH を通してください）"
-        ) from e
+    with atomic_output_path(_png_path) as temp_png_path:
+        cmd = _resvg_command(
+            input_svg=_svg_path,
+            output_png=temp_png_path,
+            output_size=output_size,
+            background_color_rgb01=background_color_rgb01,
+        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                "resvg が見つかりません（`resvg` をインストールして PATH を通してください）"
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise TimeoutError(f"resvg が {timeout:g} 秒以内に終了しませんでした") from e
 
-    if proc.returncode != 0:
-        details = (proc.stderr or proc.stdout or "").strip()
-        raise RuntimeError(f"resvg が失敗しました (code={proc.returncode}). {details}".strip())
+        if proc.returncode != 0:
+            details = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(
+                f"resvg が失敗しました (code={proc.returncode}). {details}".strip()
+            )
 
     return _png_path

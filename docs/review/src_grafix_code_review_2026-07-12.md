@@ -1,5 +1,10 @@
 # `src/grafix` 全体コードレビュー（2026-07-12）
 
+> 実装追記（2026-07-13）: GFX-001〜021 の改善実装と検証を完了した。
+> 対応表、before/after、性能目標の未達値、既知の設計境界は
+> `docs/plan/src_grafix_code_review_implementation_plan_2026-07-12.md` の §17 を参照。
+> 以下は実装前の問題と判断根拠を残すため、レビュー時点の記述を維持する。
+
 ## 1. 結論
 
 Grafix の中心設計である **Geometry DAG → realize → RealizedGeometry → pipeline** は明快で、

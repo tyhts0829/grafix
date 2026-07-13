@@ -11,6 +11,7 @@ from grafix.core.runtime_config import runtime_config, set_config_path
 
 # `grafix.export.image`（SVG→PNG / resvg）をテストする。
 
+
 @pytest.fixture(autouse=True)
 def _reset_runtime_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     set_config_path(None)
@@ -47,7 +48,9 @@ def test_png_output_size_scales_canvas_by_png_scale():
     assert image.png_output_size((300, 300)) == expected
 
 
-def test_rasterize_svg_to_png_invokes_resvg_with_resized_svg(tmp_path, monkeypatch: pytest.MonkeyPatch):
+def test_rasterize_svg_to_png_invokes_resvg_with_resized_svg(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
     src_svg = tmp_path / "in.svg"
     src_svg.write_text(
         "\n".join(
@@ -64,10 +67,11 @@ def test_rasterize_svg_to_png_invokes_resvg_with_resized_svg(tmp_path, monkeypat
 
     out_png = tmp_path / "out.png"
 
-    def fake_run(cmd, *, capture_output: bool, text: bool, check: bool):
+    def fake_run(cmd, *, capture_output: bool, text: bool, check: bool, timeout: float):
         assert capture_output is True
         assert text is True
         assert check is False
+        assert timeout == 30.0
         assert cmd[0] == "resvg"
 
         assert "--width" in cmd
@@ -79,16 +83,23 @@ def test_rasterize_svg_to_png_invokes_resvg_with_resized_svg(tmp_path, monkeypat
 
         temp_svg = Path(cmd[-2])
         assert temp_svg == src_svg
-        assert Path(cmd[-1]) == out_png
+        temp_png = Path(cmd[-1])
+        assert temp_png != out_png
+        assert temp_png.parent == out_png.parent
+        assert temp_png.suffix == ".png"
+        temp_png.write_bytes(b"png")
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(image.subprocess, "run", fake_run)
 
     path = image.rasterize_svg_to_png(src_svg, out_png, output_size=(1200, 1200))
     assert path == out_png
+    assert out_png.read_bytes() == b"png"
 
 
-def test_rasterize_svg_to_png_raises_when_resvg_is_missing(tmp_path, monkeypatch: pytest.MonkeyPatch):
+def test_rasterize_svg_to_png_raises_when_resvg_is_missing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
     src_svg = tmp_path / "in.svg"
     src_svg.write_text(
         "\n".join(
@@ -111,3 +122,29 @@ def test_rasterize_svg_to_png_raises_when_resvg_is_missing(tmp_path, monkeypatch
 
     with pytest.raises(RuntimeError, match="resvg が見つかりません"):
         image.rasterize_svg_to_png(src_svg, out_png, output_size=(10, 10))
+
+
+def test_rasterize_svg_to_png_times_out_resvg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src_svg = tmp_path / "in.svg"
+    src_svg.write_text("<svg></svg>\n", encoding="utf-8")
+    out_png = tmp_path / "out.png"
+    out_png.write_bytes(b"original")
+
+    def timeout_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"partial")
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(image.subprocess, "run", timeout_run)
+
+    with pytest.raises(TimeoutError, match="0.25 秒以内"):
+        image.rasterize_svg_to_png(
+            src_svg,
+            out_png,
+            output_size=(10, 10),
+            timeout_s=0.25,
+        )
+
+    assert out_png.read_bytes() == b"original"
+    assert list(tmp_path.glob(".out.*.tmp.png")) == []

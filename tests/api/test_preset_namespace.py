@@ -6,6 +6,7 @@ import pytest
 
 from grafix import P
 from grafix.api import preset
+from grafix.core.geometry import Geometry
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.snapshot_ops import store_snapshot
@@ -36,10 +37,11 @@ def test_preset_namespace_autoload_raises_on_duplicate_name(tmp_path: Path) -> N
         "\n".join(
             [
                 "from grafix.api import preset",
+                "from grafix.core.geometry import Geometry",
                 "",
-                '@preset(meta={\"x\": {\"kind\": \"float\"}})',
-                "def dup_logo(*, x: float = 1.0, name=None, key=None):",
-                "    return float(x)",
+                '@preset(meta={"x": {"kind": "float"}})',
+                "def dup_logo(*, x: float = 1.0, name=None, key=None) -> Geometry:",
+                "    return Geometry.create(op='concat')",
                 "",
             ]
         ),
@@ -49,10 +51,11 @@ def test_preset_namespace_autoload_raises_on_duplicate_name(tmp_path: Path) -> N
         "\n".join(
             [
                 "from grafix.api import preset",
+                "from grafix.core.geometry import Geometry",
                 "",
-                '@preset(meta={\"x\": {\"kind\": \"float\"}})',
-                "def dup_logo(*, x: float = 2.0, name=None, key=None):",
-                "    return float(x)",
+                '@preset(meta={"x": {"kind": "float"}})',
+                "def dup_logo(*, x: float = 2.0, name=None, key=None) -> Geometry:",
+                "    return Geometry.create(op='concat')",
                 "",
             ]
         ),
@@ -78,10 +81,11 @@ def test_preset_namespace_autoload_makes_preset_available(tmp_path: Path) -> Non
         "\n".join(
             [
                 "from grafix.api import preset",
+                "from grafix.core.geometry import Geometry",
                 "",
-                '@preset(meta={\"x\": {\"kind\": \"float\"}})',
-                "def ok_logo(*, x: float = 1.0, name=None, key=None):",
-                "    return ('ok', float(x))",
+                '@preset(meta={"x": {"kind": "float"}})',
+                "def ok_logo(*, x: float = 1.0, name=None, key=None) -> Geometry:",
+                "    return Geometry.create(op='concat', params={'x': float(x)})",
                 "",
             ]
         ),
@@ -94,7 +98,9 @@ def test_preset_namespace_autoload_makes_preset_available(tmp_path: Path) -> Non
     set_config_path(cfg_path)
     try:
         fn = P.ok_logo
-        assert fn(x=2.0) == ("ok", 2.0)
+        out = fn(x=2.0)
+        assert isinstance(out, Geometry)
+        assert dict(out.args)["x"] == 2.0
 
         store = ParamStore()
         with parameter_context(store=store, cc_snapshot=None):
@@ -109,18 +115,21 @@ def test_preset_namespace_autoload_makes_preset_available(tmp_path: Path) -> Non
 
 def test_preset_namespace_supports_p_call_name_without_signature() -> None:
     @preset(meta={"x": {"kind": "float"}})
-    def b_only_sample(*, x: float = 1.0):
-        return ("ok", float(x))
+    def b_only_sample(*, x: float = 1.0) -> Geometry:
+        return Geometry.create(op="concat", params={"x": float(x)})
 
     store = ParamStore()
     with parameter_context(store=store, cc_snapshot=None):
         out = P(name="Custom", key=1).b_only_sample(x=3.0)
 
-    assert out == ("ok", 3.0)
+    assert isinstance(out, Geometry)
+    assert dict(out.args)["x"] == 3.0
 
     snap = store_snapshot(store)
     labels = {
-        label for k, (_meta, _state, _ordinal, label) in snap.items() if k.op == "preset.b_only_sample"
+        label
+        for k, (_meta, _state, _ordinal, label) in snap.items()
+        if k.op == "preset.b_only_sample"
     }
     assert labels == {"Custom"}
 

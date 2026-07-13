@@ -6,7 +6,7 @@ import numpy as np
 
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeSession, realize
 
 
 @primitive
@@ -76,3 +76,13 @@ def test_rotate_empty_geometry_is_noop() -> None:
 
     assert realized.coords.shape == (0, 3)
     assert realized.offsets.tolist() == [0]
+
+
+def test_rotate_identity_reuses_realized_input() -> None:
+    g = G.rotate_test_line3()
+    rotated = E.rotate(rotation=(0.0, -0.0, 0.0))(g)
+    with RealizeSession() as session:
+        base = session.realize(g)
+        realized = session.realize(rotated)
+
+    assert realized is base

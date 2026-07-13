@@ -19,3 +19,13 @@ class ParamMeta:
     ui_min: Any | None = None
     ui_max: Any | None = None
     choices: Sequence[str] | None = None
+
+    def __post_init__(self) -> None:
+        """選択肢を tuple 化し、frozen spec の可変参照を残さない。"""
+
+        if self.choices is not None:
+            object.__setattr__(
+                self,
+                "choices",
+                tuple(str(choice) for choice in self.choices),
+            )

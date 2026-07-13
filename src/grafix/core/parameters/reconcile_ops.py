@@ -53,6 +53,8 @@ def reconcile_loaded_groups_for_runtime(store: ParamStore) -> None:
             continue
         migrate_group(store, old_group, new_group)
         runtime.reconcile_applied.add(pair)
+        # migration 済みの new group を次 frame で再び fresh と判定しない。
+        runtime.loaded_groups.add(new_group)
 
 
 def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -> None:
@@ -108,6 +110,8 @@ def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -
                 ui_max=ui_max,
                 choices=new_meta.choices,
             )
+
+    store._touch()
 
 
 def _group_keys(store: ParamStore, *, op: str, site_id: str) -> list[ParameterKey]:

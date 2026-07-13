@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from grafix.api import E, G
+from grafix.core.effects.isocontour import isocontour
 from grafix.core.realize import realize
 
 
@@ -71,3 +72,23 @@ def test_isocontour_empty_mask_returns_empty() -> None:
     assert out.coords.shape == (0, 3)
     assert out.offsets.tolist() == [0]
 
+
+def test_isocontour_outer_hole_on_tilted_plane() -> None:
+    outer_xy = np.asarray([[0, 0], [12, 0], [12, 12], [0, 12], [0, 0]], dtype=np.float32)
+    hole_xy = np.asarray([[4, 4], [4, 8], [8, 8], [8, 4], [4, 4]], dtype=np.float32)
+    xy = np.concatenate([outer_xy, hole_xy], axis=0)
+    coords = np.column_stack([xy, xy[:, 0] + xy[:, 1]]).astype(np.float32)
+    offsets = np.asarray([0, outer_xy.shape[0], xy.shape[0]], dtype=np.int32)
+
+    out_coords, out_offsets = isocontour(
+        (coords, offsets),
+        grid_pitch=0.5,
+        spacing=2.0,
+        max_dist=4.0,
+        mode="inside",
+    )
+
+    assert out_offsets.size > 1
+    np.testing.assert_allclose(
+        out_coords[:, 2], out_coords[:, 0] + out_coords[:, 1], rtol=0.0, atol=2e-5
+    )

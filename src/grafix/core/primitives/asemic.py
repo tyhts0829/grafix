@@ -9,8 +9,10 @@
 from __future__ import annotations
 
 import hashlib
+from functools import lru_cache
 
 import numpy as np
+from numba import njit  # type: ignore[import-untyped]
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
@@ -99,24 +101,39 @@ def _build_rng_adjacency(points: np.ndarray) -> list[set[int]]:
     if n <= 0:
         return []
 
-    diff = points[:, None, :] - points[None, :, :]
-    dist2 = (diff * diff).sum(axis=2)
+    matrix = _build_rng_adjacency_matrix(np.asarray(points, dtype=np.float64))
+    return [set(np.flatnonzero(matrix[i]).tolist()) for i in range(n)]
 
-    adj: list[set[int]] = [set() for _ in range(n)]
+
+@njit(cache=True)
+def _build_rng_adjacency_matrix(points: np.ndarray) -> np.ndarray:
+    """一時 mask を作らず compiled loop で RNG adjacency を返す。"""
+
+    n = points.shape[0]
+    distance_sq = np.empty((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(n):
+            dx = points[i, 0] - points[j, 0]
+            dy = points[i, 1] - points[j, 1]
+            distance_sq[i, j] = dx * dx + dy * dy
+
+    adjacency = np.zeros((n, n), dtype=np.bool_)
     for i in range(n):
         for j in range(i + 1, n):
-            dij = float(dist2[i, j])
+            dij = distance_sq[i, j]
             if not np.isfinite(dij) or dij <= 0.0:
                 continue
-            mask = (dist2[i] < dij) & (dist2[j] < dij)
-            mask[i] = False
-            mask[j] = False
-            if mask.any():
-                continue
-            adj[i].add(j)
-            adj[j].add(i)
-
-    return adj
+            blocked = False
+            for k in range(n):
+                if k == i or k == j:
+                    continue
+                if distance_sq[i, k] < dij and distance_sq[j, k] < dij:
+                    blocked = True
+                    break
+            if not blocked:
+                adjacency[i, j] = True
+                adjacency[j, i] = True
+    return adjacency
 
 
 def _random_walk_strokes(
@@ -353,6 +370,7 @@ def _measure_line_width_em(
     return float(width_em)
 
 
+@lru_cache(maxsize=256)
 def _generate_asemic_glyph(
     *,
     seed: int,
@@ -365,11 +383,11 @@ def _generate_asemic_glyph(
     stroke_style: str,
     bezier_samples: int,
     bezier_tension: float,
-) -> list[np.ndarray]:
+) -> tuple[np.ndarray, ...]:
     """1 文字分のストローク（ポリライン列）を生成して返す（1em=1.0, 左上起点）。"""
     nodes = int(n_nodes)
     if nodes < 2:
-        return []
+        return ()
 
     rng = np.random.default_rng(int(seed))
 
@@ -384,7 +402,7 @@ def _generate_asemic_glyph(
         walk_max_steps=int(walk_max_steps),
     )
     if not strokes:
-        return []
+        return ()
 
     style = str(stroke_style)
     if style not in {"line", "bezier"}:
@@ -409,10 +427,13 @@ def _generate_asemic_glyph(
         arr3[:, :2] = poly32
         polylines.append(arr3)
 
-    return polylines
+    for polyline in polylines:
+        polyline.setflags(write=False)
+    return tuple(polylines)
 
 
-def _dot_polylines() -> list[np.ndarray]:
+@lru_cache(maxsize=1)
+def _dot_polylines() -> tuple[np.ndarray, ...]:
     """ピリオド `.` 用のドット（小円）を返す（1em=1.0, 左上起点）。"""
     cx = 0.5
     cy = 0.85
@@ -427,7 +448,8 @@ def _dot_polylines() -> list[np.ndarray]:
 
     arr3 = np.zeros((xy.shape[0], 3), dtype=np.float32)
     arr3[:, :2] = xy
-    return [arr3]
+    arr3.setflags(write=False)
+    return (arr3,)
 
 
 @primitive(meta=asemic_meta, ui_visible=ASEMIC_UI_VISIBLE)
@@ -555,7 +577,7 @@ def asemic(
         lines = wrapped
 
     polylines: list[np.ndarray] = []
-    glyph_cache: dict[str, list[np.ndarray]] = {}
+    glyph_cache: dict[str, tuple[np.ndarray, ...]] = {}
 
     y_em = 0.0
     for li, line_str in enumerate(lines):

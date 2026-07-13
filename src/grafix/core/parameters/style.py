@@ -18,6 +18,18 @@ STYLE_GLOBAL_THICKNESS = "global_thickness"
 STYLE_GLOBAL_LINE_COLOR = "global_line_color"
 
 
+def line_width_for_short_side(
+    thickness: float,
+    size: tuple[float, float],
+) -> float:
+    """正規化線幅を ``size`` の短辺と同じ単位へ変換する。"""
+
+    width, height = float(size[0]), float(size[1])
+    if width <= 0.0 or height <= 0.0:
+        raise ValueError("size は正の値である必要がある")
+    return float(thickness) * min(width, height) * 0.5
+
+
 def style_key(arg: str) -> ParameterKey:
     """Style 用の ParameterKey を返す。"""
 

@@ -29,6 +29,7 @@
 
 - 実装: `src/grafix/core/parameters/snapshot_ops.py`
 - 役割: `ParamStore` から「読み取り専用のスナップショット」を生成する。
+- `ParamStore.revision` が同じ間は外側の read-only mapping を再利用する。
 
 ### 2) `parameter_context(store, cc_snapshot)`（フレーム境界の固定）
 
@@ -70,7 +71,8 @@
 
 - worker（multiprocessing）では `parameter_context_from_snapshot(...)` を使う:
   - 実装: `src/grafix/core/parameters/context.py`
-  - 役割: `ParamStore` を持たずに、スナップショット + 観測だけを行う（集約はメイン側で行う）
+  - frame task は revision だけを持ち、変更時だけ bounded control queue で snapshot 本体を受け取る
+  - 役割: `ParamStore` を持たずに、適用済み revision の snapshot + 観測だけを扱う
 - `site_id` は「呼び出し箇所 ID」で、GUI 行の安定性に直結する:
   - 生成: `grafix.core.parameters.caller_site_id`（入口は `src/grafix/core/parameters/__init__.py` 側）
-
+  - G/E/L/P の `key=` で同一ファイル内の明示的な安定 ID を指定できる

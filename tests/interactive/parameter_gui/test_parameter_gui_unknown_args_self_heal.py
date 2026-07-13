@@ -1,4 +1,5 @@
 from grafix.api import preset
+from grafix.core.geometry import Geometry
 from grafix.core.parameters import ParamMeta, ParamStore, ParameterKey
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.merge_ops import merge_frame_params
@@ -9,8 +10,8 @@ from grafix.core.primitives import line as _primitive_line  # noqa: F401
 
 
 @preset(meta={"center": ParamMeta(kind="vec3")})
-def _logo_component(*, center=(0.0, 0.0, 0.0), name=None, key=None):
-    return None
+def _logo_component(*, center=(0.0, 0.0, 0.0), name=None, key=None) -> Geometry:
+    return Geometry.create(op="concat")
 
 
 def test_render_store_parameter_table_filters_unknown_arg(monkeypatch) -> None:
@@ -81,9 +82,5 @@ def test_render_store_parameter_table_filters_unknown_arg_for_component(monkeypa
 
     store_bridge.render_store_parameter_table(store)
 
-    args = [
-        r.arg
-        for r in captured_rows
-        if getattr(r, "op", None) == "preset._logo_component"
-    ]
+    args = [r.arg for r in captured_rows if getattr(r, "op", None) == "preset._logo_component"]
     assert args == ["center"]

@@ -10,6 +10,7 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
+from .util import empty_geom
 
 buffer_meta = {
     "join": ParamMeta(kind="choice", choices=("mitre", "round", "bevel")),
@@ -31,12 +32,6 @@ class _PlaneBasis:
     origin: np.ndarray  # (3,)
     u: np.ndarray  # (3,)
     v: np.ndarray  # (3,)
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
 
 
 def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
@@ -345,7 +340,7 @@ def buffer(
                 out_lines.append(original.astype(np.float32, copy=False))
 
     if not out_lines:
-        return (coords, offsets) if d > 0.0 else _empty_geometry()
+        return (coords, offsets) if d > 0.0 else empty_geom()
 
     out_coords = np.concatenate(out_lines, axis=0).astype(np.float32, copy=False)
     out_offsets = np.empty((len(out_lines) + 1,), dtype=np.int32)

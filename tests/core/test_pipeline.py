@@ -16,6 +16,7 @@ from grafix.core.parameters.layer_style import (
 )
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.pipeline import realize_scene
+from grafix.core.realize import RealizeSession
 from grafix.core.primitives import polygon as _polygon_module  # noqa: F401
 
 
@@ -35,6 +36,23 @@ def test_realize_scene_normalizes_and_realizes_layers() -> None:
     assert colors == [(0.1, 0.2, 0.3), (0.1, 0.2, 0.3)]
     assert thicknesses == [0.05, 0.05]
     assert all(isinstance(item.realized.coords, np.ndarray) for item in realized_layers)
+    assert [item.cache_key[0] for item in realized_layers] == [g1.id, g2.id]
+    assert realized_layers[0].cache_key[1] == realized_layers[1].cache_key[1]
+
+
+def test_realize_scene_reuses_explicit_session_between_frames() -> None:
+    geometry = Geometry.create("polygon", params={"n_sides": 5})
+
+    def draw(_t: float) -> Geometry:
+        return geometry
+
+    defaults = LayerStyleDefaults(color=(0.1, 0.2, 0.3), thickness=0.05)
+    with RealizeSession() as session:
+        first = realize_scene(draw, t=0.0, defaults=defaults, session=session)
+        second = realize_scene(draw, t=1.0, defaults=defaults, session=session)
+
+    assert second[0].realized is first[0].realized
+    assert second[0].cache_key == first[0].cache_key
 
 
 def test_realize_scene_observes_and_applies_layer_style_overrides() -> None:
@@ -59,13 +77,9 @@ def test_realize_scene_observes_and_applies_layer_style_overrides() -> None:
     assert meta_thickness is not None
     assert meta_color is not None
 
-    ok, err = update_state_from_ui(
-        store, key_thickness, 0.123, meta=meta_thickness, override=True
-    )
+    ok, err = update_state_from_ui(store, key_thickness, 0.123, meta=meta_thickness, override=True)
     assert ok and err is None
-    ok, err = update_state_from_ui(
-        store, key_color, (255, 0, 0), meta=meta_color, override=True
-    )
+    ok, err = update_state_from_ui(store, key_color, (255, 0, 0), meta=meta_color, override=True)
     assert ok and err is None
 
     with parameter_context(store=store, cc_snapshot=None):
@@ -89,10 +103,10 @@ def test_realize_scene_records_layer_style_without_param_store() -> None:
     assert realized_layers[0].thickness == 0.05
     assert realized_layers[0].color == (0.1, 0.2, 0.3)
 
-    assert (key_thickness := layer_style_key("layer:1", LAYER_STYLE_LINE_THICKNESS)) in {
+    assert layer_style_key("layer:1", LAYER_STYLE_LINE_THICKNESS) in {
         rec.key for rec in frame_params.records
     }
-    assert (key_color := layer_style_key("layer:1", LAYER_STYLE_LINE_COLOR)) in {
+    assert layer_style_key("layer:1", LAYER_STYLE_LINE_COLOR) in {
         rec.key for rec in frame_params.records
     }
     assert any(

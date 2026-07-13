@@ -13,13 +13,19 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from numba import njit, prange  # type: ignore[import-untyped]
+from numba import njit, prange  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
 
-from .util import transform_back, transform_to_xy_plane
+from .util import (
+    GridSpec,
+    PlanarFrame,
+    empty_geom,
+    pack_polylines,
+    signed_distance_grid_edt,
+)
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
 _PLANAR_EPS_ABS = 1e-6
@@ -50,25 +56,6 @@ class _Ring2D:
     maxs: np.ndarray  # (2,) float64
 
 
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
-def _lines_to_realized(lines: list[np.ndarray]) -> GeomTuple:
-    if not lines:
-        return _empty_geometry()
-    coords = np.concatenate(lines, axis=0).astype(np.float32, copy=False)
-    offsets = np.empty((len(lines) + 1,), dtype=np.int32)
-    offsets[0] = 0
-    acc = 0
-    for i, ln in enumerate(lines):
-        acc += int(ln.shape[0])
-        offsets[i + 1] = np.int32(acc)
-    return coords, offsets
-
-
 def _planarity_threshold(points: np.ndarray) -> float:
     if points.size == 0:
         return float(_PLANAR_EPS_ABS)
@@ -77,25 +64,6 @@ def _planarity_threshold(points: np.ndarray) -> float:
     maxs = np.max(p, axis=0)
     diag = float(np.linalg.norm(maxs - mins))
     return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
-
-
-def _apply_alignment(
-    coords: np.ndarray, rotation_matrix: np.ndarray, z_offset: float
-) -> np.ndarray:
-    aligned = coords.astype(np.float64, copy=False) @ rotation_matrix.T
-    aligned[:, 2] -= float(z_offset)
-    return aligned
-
-
-def _pick_representative_ring(
-    coords: np.ndarray, offsets: np.ndarray
-) -> np.ndarray | None:
-    for i in range(int(offsets.size) - 1):
-        s = int(offsets[i])
-        e = int(offsets[i + 1])
-        if e - s >= 3:
-            return coords[s:e]
-    return None
 
 
 def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
@@ -282,47 +250,30 @@ def _build_sdf_grid(
 
     bbox_min = np.min(ring_mins.astype(np.float64, copy=False), axis=0)
     bbox_max = np.max(ring_maxs.astype(np.float64, copy=False), axis=0)
-
-    x0 = float(bbox_min[0]) - pad0
-    y0 = float(bbox_min[1]) - pad0
-    w = float(bbox_max[0] - bbox_min[0]) + 2.0 * pad0
-    h = float(bbox_max[1] - bbox_min[1]) + 2.0 * pad0
-
-    if not np.isfinite(w) or not np.isfinite(h) or w <= 0.0 or h <= 0.0:
+    grid = GridSpec.from_bbox(
+        bbox_min,
+        bbox_max,
+        pitch=pitch0,
+        padding=pad0,
+        max_cells=max_cells,
+        overflow="coarsen",
+    )
+    if grid is None:
         empty = np.zeros((2, 2), dtype=np.float64)
         return empty, 0.0, 0.0, 1.0
-
-    pitch = pitch0
-    nx = int(math.ceil(w / pitch)) + 1
-    ny = int(math.ceil(h / pitch)) + 1
-    if nx < 2:
-        nx = 2
-    if ny < 2:
-        ny = 2
-
-    cells = int(nx * ny)
-    max_cells_i = int(max_cells)
-    if max_cells_i < 16:
-        max_cells_i = 16
-    if cells > max_cells_i:
-        scale = math.sqrt(float(cells) / float(max_cells_i))
-        pitch = pitch * scale
-        nx = int(math.ceil(w / pitch)) + 1
-        ny = int(math.ceil(h / pitch)) + 1
-        if nx < 2:
-            nx = 2
-        if ny < 2:
-            ny = 2
-
-    xs = x0 + np.arange(nx, dtype=np.float64) * float(pitch)
-    ys = y0 + np.arange(ny, dtype=np.float64) * float(pitch)
-    grid_x, grid_y = np.meshgrid(xs, ys)  # (ny,nx)
-    pts = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1).astype(np.float64, copy=False)
-
-    d, _gx, _gy = _evaluate_sdf_points_numba(
-        pts, ring_vertices, ring_offsets, ring_mins, ring_maxs
+    x0 = grid.origin_x
+    y0 = grid.origin_y
+    pitch = grid.pitch
+    xs, ys = grid.coordinates()
+    sdf = signed_distance_grid_edt(
+        xs,
+        ys,
+        ring_vertices=ring_vertices,
+        ring_offsets=ring_offsets,
+        ring_mins=ring_mins,
+        ring_maxs=ring_maxs,
+        pitch=pitch,
     )
-    sdf = d.reshape((ny, nx))
     return sdf, float(x0), float(y0), float(pitch)
 
 
@@ -990,18 +941,13 @@ def growth(
     """
     mask_coords, mask_offsets = mask
     if mask_coords.shape[0] == 0:
-        return _empty_geometry()
+        return empty_geom()
 
-    rep = _pick_representative_ring(mask_coords, mask_offsets)
-    if rep is None:
-        return _empty_geometry()
+    frame = PlanarFrame.from_points(mask_coords, mask_offsets)
+    if not frame.is_planar(_planarity_threshold(mask_coords)):
+        return empty_geom()
 
-    _rep_aligned, rotation_matrix, z_offset = transform_to_xy_plane(rep)
-    aligned_mask = _apply_alignment(mask_coords, rotation_matrix, float(z_offset))
-
-    threshold = _planarity_threshold(rep)
-    if float(np.max(np.abs(aligned_mask[:, 2]))) > threshold:
-        return _empty_geometry()
+    aligned_mask = frame.to_local(mask_coords)
 
     rings = _extract_rings_xy(
         aligned_mask,
@@ -1009,11 +955,11 @@ def growth(
         auto_close_threshold=float(_AUTO_CLOSE_THRESHOLD_DEFAULT),
     )
     if not rings:
-        return _empty_geometry()
+        return empty_geom()
 
     spacing = float(target_spacing)
     if not np.isfinite(spacing) or spacing <= 0.0:
-        return _empty_geometry()
+        return empty_geom()
 
     step_sdf = max(spacing, 0.5)
     rings = _simplify_rings_for_sdf(rings, step_sdf=step_sdf)
@@ -1043,7 +989,7 @@ def growth(
         iters_i = 0
 
     if seed_count_i == 0 or iters_i == 0:
-        out = _empty_geometry()
+        out = empty_geom()
         return concat_geom_tuples(out, mask) if bool(show_mask) else out
 
     rng = np.random.default_rng(int(seed))
@@ -1096,11 +1042,11 @@ def growth(
         pts3 = np.empty((int(ring_xy.shape[0]), 3), dtype=np.float64)
         pts3[:, 0:2] = ring_xy
         pts3[:, 2] = 0.0
-        back = transform_back(pts3, rotation_matrix, float(z_offset))
+        back = frame.to_world(pts3)
         closed = np.concatenate([back, back[:1]], axis=0)
         lines_out.append(closed.astype(np.float32, copy=False))
 
-    out = _lines_to_realized(lines_out)
+    out = pack_polylines(lines_out)
     if bool(show_mask):
         out = concat_geom_tuples(out, mask)
     return out

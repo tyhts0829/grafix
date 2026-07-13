@@ -110,7 +110,7 @@ def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
             # registry の meta は op ごとに一定なので、1 回引いたらキャッシュする。
             known_args = primitive_known_args_by_op.get(op)
             if known_args is None:
-                known_args = set(primitive_registry.get_meta(op).keys())
+                known_args = set(primitive_registry[op].meta)
                 primitive_known_args_by_op[op] = known_args
             if arg in known_args:
                 continue
@@ -119,7 +119,7 @@ def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
             # primitive と同様に、effect 側も op ごとに meta keys をキャッシュする。
             known_args = effect_known_args_by_op.get(op)
             if known_args is None:
-                known_args = set(effect_registry.get_meta(op).keys())
+                known_args = set(effect_registry[op].meta)
                 effect_known_args_by_op[op] = known_args
             if arg in known_args:
                 continue
@@ -134,6 +134,8 @@ def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
         store._meta.pop(key, None)
         store._explicit_by_key.pop(key, None)
 
+    if removed:
+        store._touch()
     return removed
 
 
@@ -201,6 +203,8 @@ def prune_groups(store: ParamStore, groups_to_remove: Iterable[GroupKey]) -> Non
     # 消えた chain に対応する collapsed 状態も取り除き、UI 側にゴミが残らないようにする。
     for removed_chain_id in chain_ids_before - chain_ids_after:
         collapsed.discard(f"effect_chain:{removed_chain_id}")
+
+    store._touch()
 
 
 __all__ = ["prune_stale_loaded_groups", "prune_unknown_args_in_known_ops", "prune_groups"]

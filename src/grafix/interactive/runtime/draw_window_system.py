@@ -20,18 +20,14 @@
 - ウィンドウ生成: `create_draw_window()`（pyglet）
 - GPU 描画: `DrawRenderer`（ModernGL）
 - ファイル書き出し: SVG / PNG / G-code / 動画
-- 別プロセス: G-code export を mp.Process + mp.Queue で非同期化
+- 別プロセス: PNG/G-code を共通の `ExportJobSystem` worker で非同期化
 - 標準出力: 保存完了などの通知を `print()` で出す（ログではなく軽い UI フィードバック）
 """
 
 from __future__ import annotations
 
 import logging
-import multiprocessing as mp
-import queue
 import time
-import traceback
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, cast
 
@@ -40,22 +36,22 @@ from pyglet.window import key
 from grafix.core.parameters import ParamStore
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.pipeline import RealizedLayer
-from grafix.core.output_paths import gcode_layer_output_path, output_path_for_draw
-from grafix.export.gcode import export_gcode
+from grafix.core.output_paths import output_path_for_draw
 from grafix.export.svg import export_svg
-from grafix.export.image import (
-    default_png_output_path,
-    png_output_size,
-    rasterize_svg_to_png,
-)
+from grafix.export.image import default_png_output_path, png_output_size
 from grafix.interactive.draw_window import create_draw_window
 from grafix.interactive.gl.draw_renderer import DrawRenderer
-from grafix.interactive.gl.index_buffer import build_line_indices_and_stats
 from grafix.interactive.render_settings import RenderSettings
 from grafix.core.scene import SceneItem
 from grafix.interactive.runtime.perf import PerfCollector
 from grafix.interactive.midi import MidiController
 from grafix.interactive.runtime.frame_clock import RealTimeClock
+from grafix.interactive.runtime.export_job_system import (
+    ExportJobStatus,
+    ExportJobSystem,
+    ExportKind,
+    FrameExportSnapshot,
+)
 from grafix.interactive.runtime.recording_system import VideoRecordingSystem
 from grafix.interactive.runtime.scene_runner import SceneRunner
 from grafix.core.parameters.style_resolver import StyleResolver
@@ -64,65 +60,7 @@ from grafix.interactive.runtime.video_recorder import default_video_output_path
 _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from multiprocessing.process import BaseProcess
-
     from grafix.interactive.runtime.monitor import RuntimeMonitor
-
-
-@dataclass(frozen=True, slots=True)
-class _GCodeExportResult:
-    """G-code export の結果（子プロセス → 親プロセス）を表すメッセージ。"""
-
-    path: str
-    error: str | None
-
-
-def _gcode_export_worker_main(
-    result_q: "mp.Queue[_GCodeExportResult]",
-    layers: list[RealizedLayer],
-    output_path: Path,
-    canvas_size: tuple[int, int],
-) -> None:
-    """子プロセス側: 全レイヤを 1 つの G-code として書き出す。
-
-    Notes
-    -----
-    - 子プロセス内での例外は親へそのまま伝搬できないため、traceback を文字列化して Queue に返す。
-    - 親側は `_poll_gcode_export_results()` で結果を回収し、print/log で通知する。
-    """
-
-    try:
-        export_gcode(layers, output_path, canvas_size=canvas_size)
-        result_q.put(_GCodeExportResult(path=str(output_path), error=None))
-    except Exception:
-        result_q.put(_GCodeExportResult(path=str(output_path), error=traceback.format_exc()))
-
-
-def _gcode_export_layers_worker_main(
-    result_q: "mp.Queue[_GCodeExportResult]",
-    layers: list[RealizedLayer],
-    base_output_path: Path,
-    canvas_size: tuple[int, int],
-    *,
-    max_layer_name_len: int = 32,
-) -> None:
-    """子プロセス側: レイヤごとに分割して G-code を書き出す。"""
-
-    for i, layer in enumerate(layers, start=1):
-        output_path = gcode_layer_output_path(
-            base_output_path,
-            layer_index=int(i),
-            n_layers=int(len(layers)),
-            layer_name=layer.layer.name,
-            max_layer_name_len=int(max_layer_name_len),
-        )
-        try:
-            export_gcode([layer], output_path, canvas_size=canvas_size)
-            result_q.put(_GCodeExportResult(path=str(output_path), error=None))
-        except Exception:
-            result_q.put(
-                _GCodeExportResult(path=str(output_path), error=traceback.format_exc())
-            )
 
 
 class DrawWindowSystem:
@@ -135,9 +73,9 @@ class DrawWindowSystem:
     --------------------------------------------------------
     - キー入力による書き出し:
       - `S`: SVG 保存（同期）
-      - `P`: PNG 保存（フレーム末尾で SVG→PNG の順に実行）
-      - `G`: G-code 保存（非同期: 別プロセス）
-      - `Shift+G`: G-code をレイヤ別に保存（非同期: 別プロセス）
+      - `P`: PNG 保存（非同期: 共通 export worker）
+      - `G`: G-code 保存（非同期: 共通 export worker）
+      - `Shift+G`: G-code をレイヤ別に保存（非同期: 共通 export worker）
       - `V`: 動画録画の開始/停止
     - MIDI: 毎フレーム CC を取り込み（未接続時は frozen snapshot を使う）
     - style: ParamStore から背景色/線幅/線色を解決して反映する
@@ -163,7 +101,7 @@ class DrawWindowSystem:
         --------------
         - pyglet window 作成 + `DrawRenderer` の初期化（GL コンテキストに紐づく）
         - export 先パスの決定（SVG/G-code/PNG/動画）
-        - 録画・G-code export 用の状態変数/Queue/Process 管理の用意
+        - 録画・PNG/G-code export subsystem の用意
         - `draw(t)` に渡す `t` の基準となる clock の開始
         """
 
@@ -201,9 +139,7 @@ class DrawWindowSystem:
         self._last_realized_layers: list[RealizedLayer] = []
         self._pending_png_save = False
         self._pending_gcode_save_mode: str | None = None
-        self._gcode_export_ctx = mp.get_context("spawn")
-        self._gcode_export_q: mp.Queue[_GCodeExportResult] = self._gcode_export_ctx.Queue()
-        self._gcode_export_proc: BaseProcess | None = None
+        self._export_jobs = ExportJobSystem()
         self.window.push_handlers(on_key_press=self._on_key_press)
 
         # draw(t) に渡す t の基準時刻。
@@ -247,118 +183,69 @@ class DrawWindowSystem:
             canvas_size=self._settings.canvas_size,
         )
 
-    def save_gcode(self) -> Path:
-        """最後に描画したフレームを G-code として保存し、保存先パスを返す。"""
-        return export_gcode(
-            self._last_realized_layers,
-            self._gcode_output_path,
-            canvas_size=self._settings.canvas_size,
+    @staticmethod
+    def _export_label(kind: ExportKind) -> str:
+        if kind is ExportKind.PNG:
+            return "PNG"
+        return "G-code"
+
+    def _poll_export_results(self) -> None:
+        """export worker の終端結果を回収して表示する。"""
+
+        for result in self._export_jobs.poll():
+            label = self._export_label(result.kind)
+            if result.status is ExportJobStatus.SUCCESS:
+                if result.kind is ExportKind.GCODE_LAYERS and not result.paths:
+                    print("No layers to export")
+                for path in result.paths:
+                    print(f"Saved {label}: {path}")
+                continue
+            if result.status is ExportJobStatus.CANCELLED:
+                print(f"Cancelled {label}: {result.output_path}")
+                continue
+            _logger.error(
+                "Failed to save %s (%s): %s",
+                label,
+                result.status.value,
+                result.output_path,
+            )
+            print(
+                f"Failed to save {label} ({result.status.value}): "
+                f"{result.output_path}\n{result.error or ''}"
+            )
+
+    def _submit_pending_exports(self, snapshot: FrameExportSnapshot) -> None:
+        """キー入力で予約された export を immutable snapshot として投入する。"""
+
+        if self._pending_png_save:
+            self._pending_png_save = False
+            self._export_jobs.submit(
+                kind=ExportKind.PNG,
+                snapshot=snapshot,
+                output_path=self._png_output_path,
+                svg_output_path=self._svg_output_path,
+                output_size=png_output_size(self._settings.canvas_size),
+            )
+            print(f"Exporting PNG: {self._png_output_path}")
+
+        pending_mode = self._pending_gcode_save_mode
+        if pending_mode is None:
+            return
+        self._pending_gcode_save_mode = None
+        kind = (
+            ExportKind.GCODE_LAYERS
+            if str(pending_mode).strip().lower() == "layers"
+            else ExportKind.GCODE
         )
-
-    def save_gcode_per_layer(self) -> list[Path]:
-        """最後に描画したフレームをレイヤ別に G-code として保存し、保存先パス列を返す。"""
-
-        layers = list(self._last_realized_layers)
-        if not layers:
-            return []
-
-        out: list[Path] = []
-        for i, layer in enumerate(layers, start=1):
-            path = gcode_layer_output_path(
-                self._gcode_output_path,
-                layer_index=int(i),
-                n_layers=int(len(layers)),
-                layer_name=layer.layer.name,
-            )
-            export_gcode([layer], path, canvas_size=self._settings.canvas_size)
-            out.append(path)
-        return out
-
-    def _poll_gcode_export_results(self) -> None:
-        """G-code export 子プロセスの結果を回収し、プロセスを reap する。"""
-
-        # Queue を空になるまで drain する。
-        # ここで詰まると「保存は終わっているが通知されない」状態が続くため、
-        # 毎フレーム冒頭で軽く回しておく。
-        while True:
-            try:
-                res = self._gcode_export_q.get_nowait()
-            except queue.Empty:
-                break
-            if res.error is None:
-                print(f"Saved G-code: {res.path}")
-            else:
-                _logger.error("Failed to save G-code: %s", res.path)
-                print(f"Failed to save G-code: {res.path}\n{res.error}")
-
-        proc = self._gcode_export_proc
-        if proc is not None and not proc.is_alive():
-            # 既に終了している場合は join しておき、参照を外す。
-            # join で例外が出ても（終了済み/終了途中など）描画ループは継続する。
-            try:
-                proc.join(timeout=0.0)
-            except Exception:
-                pass
-            self._gcode_export_proc = None
-
-    def _start_gcode_export(self, *, mode: str) -> None:
-        """最後に描画したフレームを G-code として非同期保存する。"""
-
-        # 同時に複数の export を走らせない（出力先の衝突と、プロセス増殖の回避）。
-        proc = self._gcode_export_proc
-        if proc is not None and proc.is_alive():
-            print("G-code export is already running")
-            return
-        if proc is not None:
-            try:
-                proc.join(timeout=0.0)
-            except Exception:
-                pass
-            self._gcode_export_proc = None
-
-        layers = list(self._last_realized_layers)
-        output_path = self._gcode_output_path
-        canvas_size = self._settings.canvas_size
-
-        # mode はキー入力から来るため、念のため正規化して扱う。
-        mode_norm = str(mode).strip().lower()
-        if mode_norm == "layers":
-            if layers:
-                print(f"Exporting G-code per layer: {output_path.parent}")
-            else:
-                print("No layers to export")
-                return
+        self._export_jobs.submit(
+            kind=kind,
+            snapshot=snapshot,
+            output_path=self._gcode_output_path,
+        )
+        if kind is ExportKind.GCODE_LAYERS:
+            print(f"Exporting G-code per layer: {self._gcode_output_path.parent}")
         else:
-            mode_norm = "all"
-
-        try:
-            export_proc = self._gcode_export_ctx.Process(
-                target=_gcode_export_worker_main
-                if mode_norm == "all"
-                else _gcode_export_layers_worker_main,
-                args=(self._gcode_export_q, layers, output_path, canvas_size),
-                name="grafix-export-gcode",
-            )
-            export_proc.start()
-        except Exception:
-            # mp.Process の生成/起動は OS 状態や Python の事情（終了処理中など）で失敗し得る。
-            # ここで落ちると「描画が止まる」ほうが痛いので、同期保存へフォールバックする。
-            _logger.exception("Failed to start G-code export process (fallback to sync)")
-            try:
-                if mode_norm == "all":
-                    path = self.save_gcode()
-                    print(f"Saved G-code: {path}")
-                else:
-                    for path in self.save_gcode_per_layer():
-                        print(f"Saved G-code: {path}")
-            except Exception as inner:
-                _logger.exception("Failed to save G-code")
-                print(f"Failed to save G-code: {inner}")
-            return
-
-        self._gcode_export_proc = export_proc
-        if mode_norm == "all":
-            print(f"Exporting G-code: {output_path}")
+            print(f"Exporting G-code: {self._gcode_output_path}")
 
     def start_video_recording(self) -> None:
         """動画録画を開始する。"""
@@ -391,13 +278,8 @@ class DrawWindowSystem:
         perf = self._perf
         with perf.frame():
             # --- 0) フレーム冒頭での軽い housekeeping ---
-            # - 非同期 G-code export の通知回収
-            # - 「次のフレームで保存する」系フラグの処理（キー入力 → draw_frame へ委譲）
-            self._poll_gcode_export_results()
-            pending_mode = self._pending_gcode_save_mode
-            if pending_mode is not None:
-                self._pending_gcode_save_mode = None
-                self._start_gcode_export(mode=str(pending_mode))
+            # 非同期 PNG/G-code export の通知回収だけを行う。重い backend は worker 内で走る。
+            self._poll_export_results()
 
             midi = self._midi_controller
             if midi is not None:
@@ -453,18 +335,15 @@ class DrawWindowSystem:
             frame_vertices = 0
             frame_lines = 0
             for item in realized_layers:
-                with perf.section("indices"):
-                    indices, stats = build_line_indices_and_stats(item.realized.offsets)
-                frame_vertices += int(stats.draw_vertices)
-                frame_lines += int(stats.draw_lines)
                 with perf.section("render_layer"):
-                    self._renderer.render_layer(
+                    stats = self._renderer.render_layer(
                         realized=item.realized,
-                        indices=indices,
-                        geometry_id=item.layer.geometry.id,
+                        cache_key=item.cache_key,
                         color=item.color,
                         thickness=item.thickness,
                     )
+                frame_vertices += int(stats.draw_vertices)
+                frame_lines += int(stats.draw_lines)
 
             monitor = self._monitor
             if monitor is not None:
@@ -475,22 +354,13 @@ class DrawWindowSystem:
                     # GPU からの readback が入るため、perf では明示セクションに分ける。
                     self._recording.write_frame(self._renderer.ctx.screen)
 
-            if self._pending_png_save:
-                self._pending_png_save = False
-                try:
-                    # PNG は「現在のフレーム」を保存したいので、
-                    # 描画後（realized_layers/style が揃った後）に保存を実行する。
-                    svg_path = self.save_svg()
-                    png_path = rasterize_svg_to_png(
-                        svg_path,
-                        self._png_output_path,
-                        output_size=png_output_size(self._settings.canvas_size),
-                        background_color_rgb01=style.bg_color_rgb01,
-                    )
-                    print(f"Saved PNG: {png_path}")
-                except Exception as e:
-                    _logger.exception("Failed to save PNG")
-                    print(f"Failed to save PNG: {e}")
+            if self._pending_png_save or self._pending_gcode_save_mode is not None:
+                snapshot = FrameExportSnapshot(
+                    layers=tuple(realized_layers),
+                    canvas_size=self._settings.canvas_size,
+                    background_color_rgb01=style.bg_color_rgb01,
+                )
+                self._submit_pending_exports(snapshot)
 
             if perf.enabled and perf.gpu_finish:
                 with perf.section("gpu_finish"):
@@ -499,31 +369,10 @@ class DrawWindowSystem:
     def close(self) -> None:
         """GPU / window 資源を解放する。"""
 
-        # --- G-code export ---
-        # export は別プロセスなので、close では「短時間待つ → だめなら terminate」を選ぶ。
-        self._poll_gcode_export_results()
-        proc = self._gcode_export_proc
-        if proc is not None and proc.is_alive():
-            print("Waiting for G-code export to finish...")
-            try:
-                proc.join(timeout=2.0)
-            except Exception:
-                pass
-
-        self._poll_gcode_export_results()
-        proc = self._gcode_export_proc
-        if proc is not None and proc.is_alive():
-            print("G-code export still running; terminating")
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            try:
-                proc.join(timeout=0.5)
-            except Exception:
-                pass
-
-        self._gcode_export_proc = None
+        # --- PNG/G-code export ---
+        self._poll_export_results()
+        self._export_jobs.close()
+        self._poll_export_results()
 
         # --- 録画 ---
         if self._recording.is_recording:

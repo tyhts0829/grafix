@@ -7,7 +7,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import replace
+from types import MappingProxyType
+from weakref import WeakKeyDictionary
 
+from grafix.core.builtins import (
+    ensure_builtin_effect_registered,
+    ensure_builtin_primitive_registered,
+)
 from grafix.core.effect_registry import effect_registry
 from grafix.core.primitive_registry import primitive_registry
 from grafix.core.parameters.key import ParameterKey
@@ -16,7 +22,7 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_ops import set_meta
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.style import STYLE_OP
-from grafix.core.parameters.snapshot_ops import store_snapshot, store_snapshot_for_gui
+from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.parameters.view import ParameterRow, rows_from_snapshot
 from grafix.core.preset_registry import preset_registry
@@ -28,9 +34,17 @@ from .labeling import (
 )
 from .midi_learn import MidiLearnState
 from .table import render_parameter_table
+from .table_model import (
+    ParameterTableCacheKey,
+    ParameterTableModel,
+    ParameterTableModelCache,
+    RegistryRevision,
+)
 from .visibility import active_mask_for_rows
 
 _logger = logging.getLogger(__name__)
+_TABLE_MODEL_CACHE = ParameterTableModelCache()
+_ENSURED_OPS_BY_STORE_REVISION: WeakKeyDictionary[ParamStore, int] = WeakKeyDictionary()
 
 
 def _row_identity(row: ParameterRow) -> tuple[str, int, str]:
@@ -106,14 +120,14 @@ def _order_rows_for_display(
 
     def _primitive_arg_index(op: str, arg: str) -> int:
         if op not in primitive_arg_index_by_op:
-            order = primitive_registry.get_param_order(op)
+            order = primitive_registry[op].param_order
             primitive_arg_index_by_op[op] = {a: i for i, a in enumerate(order)}
         index_by_arg = primitive_arg_index_by_op[op]
         return int(index_by_arg.get(arg, 10**9))
 
     def _effect_arg_index(op: str, arg: str) -> int:
         if op not in effect_arg_index_by_op:
-            order = effect_registry.get_param_order(op)
+            order = effect_registry[op].param_order
             effect_arg_index_by_op[op] = {a: i for i, a in enumerate(order)}
         index_by_arg = effect_arg_index_by_op[op]
         return int(index_by_arg.get(arg, 10**9))
@@ -249,6 +263,199 @@ def _order_rows_for_display(
     return style_global_rows + style_layer_rows + out_non_style
 
 
+def _registry_revision() -> RegistryRevision:
+    """テーブル構造に影響する registry revision をまとめて返す。"""
+
+    return (
+        int(primitive_registry.revision),
+        int(effect_registry.revision),
+        int(preset_registry.revision),
+    )
+
+
+def _build_parameter_table_model(
+    store: ParamStore,
+    snapshot: ParamSnapshot,
+    cache_key: ParameterTableCacheKey,
+) -> ParameterTableModel:
+    """snapshot から revision 内で不変なテーブル構造を 1 回だけ構築する。"""
+
+    raw_label_by_site: dict[tuple[str, str], str] = {}
+    for key, (_meta, _state, _ordinal, label) in snapshot.items():
+        op = str(key.op)
+        if (
+            op not in primitive_registry
+            and op not in effect_registry
+            and op not in preset_registry
+            and op != LAYER_STYLE_OP
+        ):
+            continue
+        if label is None:
+            continue
+        label_s = str(label).strip()
+        if not label_s:
+            continue
+        raw_label_by_site.setdefault((op, str(key.site_id)), label_s)
+
+    runtime = store._runtime_ref()
+    primitive_header_by_group = primitive_header_display_names_from_snapshot(
+        snapshot,
+        is_primitive_op=lambda op: op in primitive_registry or op in preset_registry,
+        display_order_by_group=runtime.display_order_by_group,
+    )
+
+    step_info_by_site = store.effect_steps()
+    effect_chain_header_by_id = effect_chain_header_display_names_from_snapshot(
+        snapshot,
+        step_info_by_site=step_info_by_site,
+        display_order_by_group=runtime.display_order_by_group,
+        is_effect_op=lambda op: op in effect_registry,
+    )
+    effect_step_ordinal_by_site = effect_step_ordinals_by_site(step_info_by_site)
+
+    primitive_known_args_by_op: dict[str, set[str]] = {}
+    preset_known_args_by_op: dict[str, set[str]] = {}
+    effect_known_args_by_op: dict[str, set[str]] = {}
+    unknown_args_new: set[tuple[str, str]] = set()
+    filtered_rows: list[ParameterRow] = []
+
+    for row in rows_from_snapshot(snapshot):
+        op = str(row.op)
+        arg = str(row.arg)
+
+        if op in primitive_registry:
+            known_args = primitive_known_args_by_op.get(op)
+            if known_args is None:
+                known_args = set(primitive_registry[op].meta)
+                primitive_known_args_by_op[op] = known_args
+            if arg not in known_args:
+                pair = (op, arg)
+                if pair not in runtime.warned_unknown_args:
+                    runtime.warned_unknown_args.add(pair)
+                    unknown_args_new.add(pair)
+                continue
+        elif op in preset_registry:
+            known_args = preset_known_args_by_op.get(op)
+            if known_args is None:
+                known_args = set(preset_registry.get_meta(op))
+                preset_known_args_by_op[op] = known_args
+            if arg not in known_args:
+                pair = (op, arg)
+                if pair not in runtime.warned_unknown_args:
+                    runtime.warned_unknown_args.add(pair)
+                    unknown_args_new.add(pair)
+                continue
+        elif op in effect_registry:
+            known_args = effect_known_args_by_op.get(op)
+            if known_args is None:
+                known_args = set(effect_registry[op].meta)
+                effect_known_args_by_op[op] = known_args
+            if arg not in known_args:
+                pair = (op, arg)
+                if pair not in runtime.warned_unknown_args:
+                    runtime.warned_unknown_args.add(pair)
+                    unknown_args_new.add(pair)
+                continue
+
+        filtered_rows.append(row)
+
+    if unknown_args_new:
+        pairs = ", ".join(f"{op}.{arg}" for op, arg in sorted(unknown_args_new))
+        _logger.warning("未登録引数を無視します（次回保存で削除）: %s", pairs)
+
+    rows = _order_rows_for_display(
+        filtered_rows,
+        step_info_by_site=step_info_by_site,
+        display_order_by_group=runtime.display_order_by_group,
+    )
+
+    layer_style_name_by_site_id: dict[str, str] = {}
+    for key, (_meta, _state, _ordinal, label) in snapshot.items():
+        if key.op != LAYER_STYLE_OP:
+            continue
+        site_id = str(key.site_id)
+        layer_style_name_by_site_id.setdefault(site_id, str(label) if label else "layer")
+
+    return ParameterTableModel(
+        cache_key=cache_key,
+        snapshot=snapshot,
+        rows=tuple(rows),
+        raw_label_by_site=MappingProxyType(raw_label_by_site),
+        primitive_header_by_group=MappingProxyType(primitive_header_by_group),
+        layer_style_name_by_site_id=MappingProxyType(layer_style_name_by_site_id),
+        effect_chain_header_by_id=MappingProxyType(effect_chain_header_by_id),
+        step_info_by_site=MappingProxyType(step_info_by_site),
+        effect_step_ordinal_by_site=MappingProxyType(effect_step_ordinal_by_site),
+    )
+
+
+def _parameter_table_model_for_store(store: ParamStore) -> ParameterTableModel:
+    revision = int(store.revision)
+    if _ENSURED_OPS_BY_STORE_REVISION.get(store) != revision:
+        # GUI に実際に現れた op だけを遅延登録する。全 built-in の eager import は
+        # optional dependency を不要に読み、起動時間も増やすため行わない。
+        ops = {str(key.op) for key in store_snapshot(store)}
+        for op in ops:
+            if op not in primitive_registry and op not in effect_registry:
+                ensure_builtin_primitive_registered(op)
+                ensure_builtin_effect_registered(op)
+        _ENSURED_OPS_BY_STORE_REVISION[store] = revision
+    return _TABLE_MODEL_CACHE.get_or_build(
+        store,
+        registry_revision=_registry_revision(),
+        builder=_build_parameter_table_model,
+    )
+
+
+def clear_parameter_table_model_cache() -> None:
+    """テスト/明示再初期化用にテーブルモデル cache を破棄する。"""
+
+    _TABLE_MODEL_CACHE.clear()
+    _ENSURED_OPS_BY_STORE_REVISION.clear()
+
+
+def parameter_table_model_build_count() -> int:
+    """テーブルモデルの累積構築回数を返す。"""
+
+    return _TABLE_MODEL_CACHE.build_count
+
+
+def _visible_mask_for_model(
+    store: ParamStore,
+    rows: list[ParameterRow],
+    *,
+    show_inactive: bool,
+) -> list[bool]:
+    """静的 rows に active/loaded などフレーム動的な可視性を合成する。"""
+
+    runtime = store._runtime_ref()
+    active_mask = active_mask_for_rows(
+        rows,
+        show_inactive=bool(show_inactive),
+        last_effective_by_key=runtime.last_effective_by_key,
+    )
+    if not runtime.loaded_groups:
+        return active_mask
+
+    loaded = {
+        (str(op), str(site_id))
+        for op, site_id in runtime.loaded_groups
+        if str(op) != STYLE_OP
+    }
+    observed = {
+        (str(op), str(site_id))
+        for op, site_id in runtime.observed_groups
+        if str(op) != STYLE_OP
+    }
+    hidden_groups = loaded - observed
+    if not hidden_groups:
+        return active_mask
+    return [
+        visible and (str(row.op), str(row.site_id)) not in hidden_groups
+        for row, visible in zip(rows, active_mask, strict=True)
+    ]
+
+
 def _apply_updated_rows_to_store(
     store: ParamStore,
     snapshot: Mapping[ParameterKey, tuple[ParamMeta, object, int, str | None]],
@@ -380,180 +587,47 @@ def render_store_parameter_table(
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
 ) -> bool:
-    """ParamStore の snapshot を 4 列テーブルとして描画し、変更を store に反映する。"""
+    """ParamStore を 4 列テーブルとして描画し、変更を store に反映する。"""
 
-    # --- 1) フレーム時点の ParamStore を “読む” ---
-    #
-    # snapshot は (key -> (meta, state, ordinal, label)) の辞書。
-    # - key: (op, site_id, arg)
-    # - ordinal: GUI 用の連番（primitive/effect どちらも op ごとの連番）
-    # - label: G(name=...) / E(name=...) / L(name=...) が付与した表示名（op, site_id 単位）
-    snapshot = store_snapshot_for_gui(store)
-
-    # snippet で `G(name=...)` / `E(name=...)` を復元できるよう、
-    # 永続化される raw label（(op, site_id) -> label）を拾っておく。
-    # 注意: GUI 表示用の dedup 名（name#1 など）とは別物なので、ここでは触れない。
-    raw_label_by_site: dict[tuple[str, str], str] = {}
-    for key, (_meta, _state, _ordinal, label) in snapshot.items():
-        op = str(key.op)
-        if (
-            op not in primitive_registry
-            and op not in effect_registry
-            and op not in preset_registry
-            and op != LAYER_STYLE_OP
-        ):
-            continue
-        if label is None:
-            continue
-        label_s = str(label).strip()
-        if not label_s:
-            continue
-        group = (op, str(key.site_id))
-        if group not in raw_label_by_site:
-            raw_label_by_site[group] = label_s
-
-    # --- 2) Primitive のヘッダ表示名（G(name=...)）を解決 ---
-    # snapshot の label を “Primitive グループ” (op, ordinal) へ対応付ける。
-    # 同名衝突は表示専用に name#1/#2 を付与して区別する（永続化ラベルは変更しない）。
-    primitive_header_by_group = primitive_header_display_names_from_snapshot(
-        snapshot,
-        is_primitive_op=lambda op: op in primitive_registry or op in preset_registry,
-        display_order_by_group=store._runtime_ref().display_order_by_group,
-    )
-
-    # --- 3) Effect のチェーン境界/順序を取得し、ヘッダ表示名（E(name=...)）を解決 ---
-    #
-    # effect は “チェーン” 単位のヘッダが欲しいので、
-    # ParamStore が保持する (op, site_id) -> (chain_id, step_index) を参照する。
-    # - chain_id: チェーン識別子（EffectBuilder 生成時の site_id）
-    # - step_index: チェーン内のステップ順序（E.scale().rotate()... の順番）
-    step_info_by_site = store.effect_steps()
-    # チェーンヘッダの表示名:
-    # - E(name=...) があればそれ
-    # - 無ければ effect#N（N は表示順=観測順）
-    # - 同名衝突は表示専用に name#1/#2
-    effect_chain_header_by_id = effect_chain_header_display_names_from_snapshot(
-        snapshot,
-        step_info_by_site=step_info_by_site,
-        display_order_by_group=store._runtime_ref().display_order_by_group,
-        is_effect_op=lambda op: op in effect_registry,
-    )
-    # “チェーン内の同一 op 連番”:
-    # E.scale().rotate().scale() なら scale#1, rotate#1, scale#2 を作るための辞書。
-    effect_step_ordinal_by_site = effect_step_ordinals_by_site(step_info_by_site)
-
-    # --- 4) snapshot -> UI 行モデルへ変換（純粋関数）---
-    # rows は元々 (op, ordinal, arg) でソートされるが、
-    # Effect については「チェーン順/ステップ順」で見せたいので、ここで並び替える。
-    rows_before_raw = rows_from_snapshot(snapshot)
-    runtime = store._runtime_ref()
-
-    primitive_known_args_by_op: dict[str, set[str]] = {}
-    preset_known_args_by_op: dict[str, set[str]] = {}
-    effect_known_args_by_op: dict[str, set[str]] = {}
-
-    unknown_args_new: set[tuple[str, str]] = set()
-    rows_before_raw_filtered: list[ParameterRow] = []
-    for row in rows_before_raw:
-        op = str(row.op)
-        arg = str(row.arg)
-
-        if op in primitive_registry:
-            known_args = primitive_known_args_by_op.get(op)
-            if known_args is None:
-                known_args = set(primitive_registry.get_meta(op).keys())
-                primitive_known_args_by_op[op] = known_args
-            if arg not in known_args:
-                pair = (op, arg)
-                if pair not in runtime.warned_unknown_args:
-                    runtime.warned_unknown_args.add(pair)
-                    unknown_args_new.add(pair)
-                continue
-
-        elif op in preset_registry:
-            known_args = preset_known_args_by_op.get(op)
-            if known_args is None:
-                known_args = set(preset_registry.get_meta(op).keys())
-                preset_known_args_by_op[op] = known_args
-            if arg not in known_args:
-                pair = (op, arg)
-                if pair not in runtime.warned_unknown_args:
-                    runtime.warned_unknown_args.add(pair)
-                    unknown_args_new.add(pair)
-                continue
-
-        elif op in effect_registry:
-            known_args = effect_known_args_by_op.get(op)
-            if known_args is None:
-                known_args = set(effect_registry.get_meta(op).keys())
-                effect_known_args_by_op[op] = known_args
-            if arg not in known_args:
-                pair = (op, arg)
-                if pair not in runtime.warned_unknown_args:
-                    runtime.warned_unknown_args.add(pair)
-                    unknown_args_new.add(pair)
-                continue
-
-        rows_before_raw_filtered.append(row)
-
-    if unknown_args_new:
-        pairs = ", ".join(f"{op}.{arg}" for op, arg in sorted(unknown_args_new))
-        _logger.warning("未登録引数を無視します（次回保存で削除）: %s", pairs)
-    rows_before_raw = rows_before_raw_filtered
-
-    # 最終的な表示順: style → preset → primitive → effect → other
-    # ※ この rows_before の順番が、そのまま GUI の並び順になる。
-    rows_before = _order_rows_for_display(
-        rows_before_raw,
-        step_info_by_site=step_info_by_site,
-        display_order_by_group=store._runtime_ref().display_order_by_group,
-    )
-
-    layer_style_name_by_site_id: dict[str, str] = {}
-    for key, (_meta, _state, _ordinal, label) in snapshot.items():
-        if key.op != LAYER_STYLE_OP:
-            continue
-        site_id = str(key.site_id)
-        if site_id in layer_style_name_by_site_id:
-            continue
-        layer_style_name_by_site_id[site_id] = str(label) if label else "layer"
-
-    # --- 6) 描画（imgui）→ UI 入力を反映した更新 rows を受け取る ---
-    # render_parameter_table は
-    # - (グループ境界でヘッダ行を描画)
-    # - 各行の UI を描画し、更新後の ParameterRow を返す
-    # という純粋 “ビュー” 相当の関数。
-    visible_mask = active_mask_for_rows(
+    # 行・ヘッダ・順序は (store revision, registry revision) 内で不変。
+    # effective/MIDI/active/loaded はモデル外に置き、描画直前にだけ合成する。
+    model = _parameter_table_model_for_store(store)
+    rows_before = list(model.rows)
+    visible_mask = _visible_mask_for_model(
+        store,
         rows_before,
         show_inactive=bool(show_inactive_params),
-        last_effective_by_key=store._runtime_ref().last_effective_by_key,
     )
-    view_rows: list[ParameterRow] = [
+    view_rows = [
         row for row, visible in zip(rows_before, visible_mask, strict=True) if visible
     ]
 
+    runtime = store._runtime_ref()
     changed, view_rows_after = render_parameter_table(
         view_rows,
         column_weights=column_weights,
-        primitive_header_by_group=primitive_header_by_group,
-        layer_style_name_by_site_id=layer_style_name_by_site_id,
-        effect_chain_header_by_id=effect_chain_header_by_id,
-        step_info_by_site=step_info_by_site,
-        effect_step_ordinal_by_site=effect_step_ordinal_by_site,
-        last_effective_by_key=store._runtime_ref().last_effective_by_key,
-        raw_label_by_site=raw_label_by_site,
+        primitive_header_by_group=model.primitive_header_by_group,
+        layer_style_name_by_site_id=model.layer_style_name_by_site_id,
+        effect_chain_header_by_id=model.effect_chain_header_by_id,
+        step_info_by_site=model.step_info_by_site,
+        effect_step_ordinal_by_site=model.effect_step_ordinal_by_site,
+        last_effective_by_key=runtime.last_effective_by_key,
+        raw_label_by_site=model.raw_label_by_site,
         midi_learn_state=midi_learn_state,
         midi_last_cc_change=midi_last_cc_change,
         collapsed_headers=store._collapsed_headers_ref(),
     )
     view_iter = iter(view_rows_after)
-    rows_after: list[ParameterRow] = [
-        (next(view_iter) if visible else row)
+    rows_after = [
+        next(view_iter) if visible else row
         for row, visible in zip(rows_before, visible_mask, strict=True)
     ]
 
-    # --- 7) 変更があった場合だけ store へ反映 ---
-    # rows_before/rows_after は 1:1 対応している前提（render_parameter_table が維持する）。
     if changed:
-        _apply_updated_rows_to_store(store, snapshot, rows_before, rows_after)
+        _apply_updated_rows_to_store(
+            store,
+            model.snapshot,
+            rows_before,
+            rows_after,
+        )
     return changed

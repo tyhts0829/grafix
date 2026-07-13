@@ -9,10 +9,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from math import hypot
+from math import isqrt
 from pathlib import Path
+from typing import TextIO
 
 import numpy as np
 
+from grafix.core.atomic_write import atomic_text_writer
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.runtime_config import runtime_config
 
@@ -464,44 +467,404 @@ def _order_strokes_in_layer(
 
     ordered: list[tuple[_Stroke, bool]] = [(strokes[0], False)]
     current_end_q = strokes[0].end_q
+    endpoints = _StrokeEndpointGrid(strokes, allow_reverse=allow_reverse)
+    endpoints.remove(0)
 
-    # 以降は「今いる点」から最も近い stroke を貪欲に選ぶ。
-    # O(N^2) だが、TSP 厳密解より実装が単純で十分効果がある。
-    remaining = list(strokes[1:])
-    while remaining:
-        best_i = 0
-        best_rev = False
-        best_key: tuple[int, tuple[int, int], int] | None = None
-
-        for i, st in enumerate(remaining):
-            # 距離は平方距離で比較する（sqrt を避け、同時に誤差源を減らす）。
-            dx = int(st.start_q[0]) - int(current_end_q[0])
-            dy = int(st.start_q[1]) - int(current_end_q[1])
-            dist2 = dx * dx + dy * dy
-            # key の最後の 0/1 は「同距離なら反転しない向きを優先」するためのタイブレーク。
-            key = (int(dist2), (int(st.poly_idx), int(st.seg_idx)), 0)
-            if best_key is None or key < best_key:
-                best_key = key
-                best_i = int(i)
-                best_rev = False
-
-            if not allow_reverse:
-                continue
-
-            dx_r = int(st.end_q[0]) - int(current_end_q[0])
-            dy_r = int(st.end_q[1]) - int(current_end_q[1])
-            dist2_r = dx_r * dx_r + dy_r * dy_r
-            key_r = (int(dist2_r), (int(st.poly_idx), int(st.seg_idx)), 1)
-            if best_key is None or key_r < best_key:
-                best_key = key_r
-                best_i = int(i)
-                best_rev = True
-
-        chosen = remaining.pop(best_i)
-        ordered.append((chosen, bool(best_rev)))
-        current_end_q = chosen.start_q if best_rev else chosen.end_q
+    while len(ordered) < len(strokes):
+        stroke_index, reverse = endpoints.nearest(current_end_q)
+        endpoints.remove(stroke_index)
+        chosen = strokes[stroke_index]
+        ordered.append((chosen, reverse))
+        current_end_q = chosen.start_q if reverse else chosen.end_q
 
     return ordered
+
+
+class _StrokeEndpointGrid:
+    """削除可能な stroke endpoint に対する正確な最近傍 index。"""
+
+    def __init__(self, strokes: Sequence[_Stroke], *, allow_reverse: bool) -> None:
+        self._strokes = strokes
+        self._allow_reverse = bool(allow_reverse)
+        points = [stroke.start_q for stroke in strokes]
+        if self._allow_reverse:
+            points.extend(stroke.end_q for stroke in strokes)
+
+        xs = [int(point[0]) for point in points]
+        ys = [int(point[1]) for point in points]
+        self._origin_x = min(xs)
+        self._origin_y = min(ys)
+        max_span = max(max(xs) - self._origin_x + 1, max(ys) - self._origin_y + 1)
+        target_cells_per_axis = isqrt(max(0, len(points) - 1)) + 1
+        self._cell_size = max(
+            1,
+            (max_span + target_cells_per_axis - 1) // target_cells_per_axis,
+        )
+
+        self._cells: dict[tuple[int, int], set[int]] = {}
+        self._point_cells: dict[int, tuple[int, int]] = {}
+        for stroke_index, stroke in enumerate(strokes):
+            self._add_endpoint(stroke_index, False, stroke.start_q)
+            if self._allow_reverse:
+                self._add_endpoint(stroke_index, True, stroke.end_q)
+
+        cell_keys = tuple(self._cells)
+        self._min_cell_x = min(cell[0] for cell in cell_keys)
+        self._max_cell_x = max(cell[0] for cell in cell_keys)
+        self._min_cell_y = min(cell[1] for cell in cell_keys)
+        self._max_cell_y = max(cell[1] for cell in cell_keys)
+
+    def _cell_for(self, point: tuple[int, int]) -> tuple[int, int]:
+        return (
+            (int(point[0]) - self._origin_x) // self._cell_size,
+            (int(point[1]) - self._origin_y) // self._cell_size,
+        )
+
+    def _add_endpoint(
+        self,
+        stroke_index: int,
+        reverse: bool,
+        point: tuple[int, int],
+    ) -> None:
+        endpoint_id = 2 * int(stroke_index) + int(reverse)
+        cell = self._cell_for(point)
+        self._cells.setdefault(cell, set()).add(endpoint_id)
+        self._point_cells[endpoint_id] = cell
+
+    def remove(self, stroke_index: int) -> None:
+        """stroke の両 endpoint を index から削除する。"""
+
+        endpoint_ids = [2 * int(stroke_index)]
+        if self._allow_reverse:
+            endpoint_ids.append(2 * int(stroke_index) + 1)
+        for endpoint_id in endpoint_ids:
+            cell = self._point_cells.pop(endpoint_id)
+            endpoints = self._cells[cell]
+            endpoints.remove(endpoint_id)
+            if not endpoints:
+                del self._cells[cell]
+
+    def nearest(self, point: tuple[int, int]) -> tuple[int, bool]:
+        """距離と既存 tie-break が最小の active endpoint を返す。"""
+
+        query_cell_x, query_cell_y = self._cell_for(point)
+        max_radius = max(
+            abs(query_cell_x - self._min_cell_x),
+            abs(query_cell_x - self._max_cell_x),
+            abs(query_cell_y - self._min_cell_y),
+            abs(query_cell_y - self._max_cell_y),
+        )
+        best_key: tuple[int, int, int, int, int] | None = None
+        best_result: tuple[int, bool] | None = None
+
+        for radius in range(max_radius + 1):
+            for cell in _iter_cell_ring(query_cell_x, query_cell_y, radius):
+                for endpoint_id in self._cells.get(cell, ()):
+                    stroke_index, reverse_i = divmod(endpoint_id, 2)
+                    stroke = self._strokes[stroke_index]
+                    endpoint = stroke.end_q if reverse_i else stroke.start_q
+                    dx = int(endpoint[0]) - int(point[0])
+                    dy = int(endpoint[1]) - int(point[1])
+                    key = (
+                        dx * dx + dy * dy,
+                        int(stroke.poly_idx),
+                        int(stroke.seg_idx),
+                        int(reverse_i),
+                        int(stroke_index),
+                    )
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best_result = (stroke_index, bool(reverse_i))
+
+            if best_key is not None:
+                outside_distance = self._distance_to_unsearched_cells(
+                    point=point,
+                    query_cell=(query_cell_x, query_cell_y),
+                    radius=radius,
+                )
+                if outside_distance is None or outside_distance * outside_distance > best_key[0]:
+                    assert best_result is not None
+                    return best_result
+
+        assert best_result is not None
+        return best_result
+
+    def _distance_to_unsearched_cells(
+        self,
+        *,
+        point: tuple[int, int],
+        query_cell: tuple[int, int],
+        radius: int,
+    ) -> int | None:
+        """未探索領域までの距離の下界を返す。全 cell 探索済みなら None。"""
+
+        qx, qy = query_cell
+        x, y = int(point[0]), int(point[1])
+        distances: list[int] = []
+        if qx - radius > self._min_cell_x:
+            left = self._origin_x + (qx - radius) * self._cell_size
+            distances.append(x - left)
+        if qx + radius < self._max_cell_x:
+            right = self._origin_x + (qx + radius + 1) * self._cell_size
+            distances.append(right - x)
+        if qy - radius > self._min_cell_y:
+            bottom = self._origin_y + (qy - radius) * self._cell_size
+            distances.append(y - bottom)
+        if qy + radius < self._max_cell_y:
+            top = self._origin_y + (qy + radius + 1) * self._cell_size
+            distances.append(top - y)
+        return min(distances) if distances else None
+
+
+def _iter_cell_ring(
+    center_x: int,
+    center_y: int,
+    radius: int,
+) -> Iterable[tuple[int, int]]:
+    """Chebyshev 距離 ``radius`` の cell だけを重複なく列挙する。"""
+
+    if radius == 0:
+        yield center_x, center_y
+        return
+
+    low_x = center_x - radius
+    high_x = center_x + radius
+    low_y = center_y - radius
+    high_y = center_y + radius
+    for x in range(low_x, high_x + 1):
+        yield x, low_y
+        yield x, high_y
+    for y in range(low_y + 1, high_y):
+        yield low_x, y
+        yield high_x, y
+
+
+_GCODE_HEADER = (
+    "; ====== Header ======",
+    "G21 ; Set units to millimeters",
+    "G90 ; Absolute positioning",
+    "G28 ; Home all axes",
+    "M107 ; Turn off fan",
+    "M420 S1 Z10; Enable bed leveling matrix",
+    "; ====== Body ======",
+)
+
+
+def _params_from_config() -> GCodeParams:
+    """runtime config から G-code parameter を構築する。"""
+
+    cfg = runtime_config().gcode
+    return GCodeParams(
+        travel_feed=float(cfg.travel_feed),
+        draw_feed=float(cfg.draw_feed),
+        z_up=float(cfg.z_up),
+        z_down=float(cfg.z_down),
+        y_down=bool(cfg.y_down),
+        origin=(float(cfg.origin[0]), float(cfg.origin[1])),
+        decimals=int(cfg.decimals),
+        paper_margin_mm=float(cfg.paper_margin_mm),
+        bed_x_range=cfg.bed_x_range,
+        bed_y_range=cfg.bed_y_range,
+        bridge_draw_distance=cfg.bridge_draw_distance,
+        optimize_travel=bool(cfg.optimize_travel),
+        allow_reverse=bool(cfg.allow_reverse),
+        canvas_height_mm=cfg.canvas_height_mm,
+    )
+
+
+def _validated_canvas(canvas_size: tuple[float, float]) -> tuple[float, float]:
+    """正の有限 canvas size を float tuple として返す。"""
+
+    canvas = (float(canvas_size[0]), float(canvas_size[1]))
+    if not np.isfinite(canvas).all() or canvas[0] <= 0.0 or canvas[1] <= 0.0:
+        raise ValueError("canvas_size は正の有限な (width, height) である必要がある")
+    return canvas
+
+
+def _collect_layer_strokes(
+    layer: RealizedLayer,
+    *,
+    safe_rect: tuple[float, float, float, float],
+    scale: int,
+) -> list[list[_Stroke]]:
+    """1 layer を clip し、face block ごとの stroke 列へ変換する。"""
+
+    coords = np.asarray(layer.realized.coords, dtype=np.float64)
+    offsets = np.asarray(layer.realized.offsets, dtype=np.int32)
+    block_ids = _polyline_face_block_ids(offsets)
+    block_count = max(block_ids) + 1 if block_ids else 0
+    strokes_by_block: list[list[_Stroke]] = [[] for _ in range(block_count)]
+
+    for poly_idx, (start, end) in enumerate(zip(offsets[:-1], offsets[1:])):
+        start_i, end_i = int(start), int(end)
+        if end_i - start_i < 2:
+            continue
+        polyline = np.ascontiguousarray(coords[start_i:end_i, :2], dtype=np.float64)
+        for seg_idx, points in enumerate(_clip_polyline_to_rect(polyline, safe_rect)):
+            if len(points) < 2:
+                continue
+            start_xy, end_xy = points[0], points[-1]
+            block_id = int(block_ids[poly_idx]) if block_ids else 0
+            strokes_by_block[block_id].append(
+                _Stroke(
+                    poly_idx=poly_idx,
+                    seg_idx=seg_idx,
+                    points_canvas=points,
+                    start_q=(
+                        int(round(float(start_xy[0]) * scale)),
+                        int(round(float(start_xy[1]) * scale)),
+                    ),
+                    end_q=(
+                        int(round(float(end_xy[0]) * scale)),
+                        int(round(float(end_xy[1]) * scale)),
+                    ),
+                )
+            )
+    return strokes_by_block
+
+
+def _order_stroke_blocks(
+    strokes_by_block: Sequence[list[_Stroke]],
+    *,
+    optimize_travel: bool,
+    allow_reverse: bool,
+) -> list[list[tuple[_Stroke, bool]]]:
+    """face block 境界を維持したまま各 block の描画順を決める。"""
+
+    if not optimize_travel:
+        return [[(stroke, False) for stroke in block] for block in strokes_by_block]
+    return [
+        _order_strokes_in_layer(block, allow_reverse=allow_reverse)
+        for block in strokes_by_block
+    ]
+
+
+class _GCodeEmitter:
+    """座標検証と冗長命令抑制を所有する G-code dialect emitter。"""
+
+    def __init__(
+        self,
+        *,
+        stream: TextIO,
+        params: GCodeParams,
+        canvas: tuple[float, float],
+    ) -> None:
+        self._stream = stream
+        self.params = params
+        self.canvas = canvas
+        self.decimals = int(params.decimals)
+        self._pen_is_down = True
+        self._current_feed: int | None = None
+        self._current_xy: tuple[float, float] | None = None
+        for line in _GCODE_HEADER:
+            self.write_line(line)
+
+    def write_line(self, line: str) -> None:
+        """G-code/comment 1行を逐次出力する。"""
+
+        self._stream.write(line)
+        self._stream.write("\n")
+
+    def set_pen_down(self, down: bool) -> None:
+        """必要な場合だけ pen Z command を追加する。"""
+
+        if bool(down) == self._pen_is_down:
+            return
+        self._pen_is_down = bool(down)
+        z = float(self.params.z_down if down else self.params.z_up)
+        self.write_line(
+            f"G1 Z{_fmt_float(round(z, self.decimals), decimals=self.decimals)}"
+        )
+
+    def set_feed(self, feed: int) -> None:
+        """必要な場合だけ feed command を追加する。"""
+
+        if self._current_feed == int(feed):
+            return
+        self._current_feed = int(feed)
+        self.write_line(f"G1 F{int(feed)}")
+
+    def move_xy(self, point: tuple[float, float]) -> None:
+        """canvas point を安全検証し、重複しない XY command として追加する。"""
+
+        machine = _canvas_to_machine_xy(
+            point,
+            params=self.params,
+            canvas_size=self.canvas,
+        )
+        quantized = _quantize_xy(machine, decimals=self.decimals)
+        _validate_bed_xy(
+            quantized,
+            bed_x_range=self.params.bed_x_range,
+            bed_y_range=self.params.bed_y_range,
+        )
+        if self._current_xy is not None and hypot(
+            quantized[0] - self._current_xy[0],
+            quantized[1] - self._current_xy[1],
+        ) < 1e-12:
+            return
+        self._current_xy = quantized
+        x_text = _fmt_float(quantized[0], decimals=self.decimals)
+        y_text = _fmt_float(quantized[1], decimals=self.decimals)
+        self.write_line(f"G1 X{x_text} Y{y_text}")
+
+    def finish(self) -> None:
+        """安全な最終 Z command を追加する。"""
+
+        final_z = round(float(self.params.z_up + 20), self.decimals)
+        self.write_line("; ====== Footer ======")
+        self.write_line(f"G1 Z{_fmt_float(final_z, decimals=self.decimals)}")
+
+
+def _emit_stroke_block(
+    emitter: _GCodeEmitter,
+    ordered: Sequence[tuple[_Stroke, bool]],
+    *,
+    bridge_draw_distance: float | None,
+    scale: int,
+    travel_feed: int,
+    draw_feed: int,
+) -> None:
+    """順序確定済みの1 face block を emitter へ送る。"""
+
+    current_end_q: tuple[int, int] | None = None
+    for stroke, reversed_ in ordered:
+        points = stroke.points_canvas
+        if len(points) < 2:
+            continue
+        emitter.write_line(
+            f"; stroke polyline {stroke.poly_idx} seg {stroke.seg_idx}"
+            f"{' reversed' if reversed_ else ''}"
+        )
+        if reversed_:
+            start_xy = points[-1]
+            rest: Iterable[tuple[float, float]] = reversed(points[:-1])
+            start_q, end_q = stroke.end_q, stroke.start_q
+        else:
+            start_xy = points[0]
+            rest = points[1:]
+            start_q, end_q = stroke.start_q, stroke.end_q
+
+        draw_bridge = False
+        if bridge_draw_distance is not None and current_end_q is not None:
+            dx = int(start_q[0]) - int(current_end_q[0])
+            dy = int(start_q[1]) - int(current_end_q[1])
+            threshold = float(bridge_draw_distance) * float(scale)
+            draw_bridge = float(dx * dx + dy * dy) < threshold * threshold
+
+        if draw_bridge:
+            emitter.set_pen_down(True)
+            emitter.set_feed(draw_feed)
+        else:
+            emitter.set_pen_down(False)
+            emitter.set_feed(travel_feed)
+            emitter.move_xy(start_xy)
+            emitter.set_pen_down(True)
+            emitter.set_feed(draw_feed)
+        emitter.move_xy(start_xy)
+        for point in rest:
+            emitter.move_xy(point)
+        current_end_q = end_q
 
 
 def export_gcode(
@@ -511,7 +874,7 @@ def export_gcode(
     canvas_size: tuple[float, float],
     params: GCodeParams | None = None,
 ) -> Path:
-    """Layer 列を G-code として保存する。
+    """Layer 列を決定的な G-code として保存する。
 
     Parameters
     ----------
@@ -520,296 +883,60 @@ def export_gcode(
     path : str or Path
         出力先パス。
     canvas_size : tuple[float, float]
-        紙サイズ（mm）として扱うキャンバス寸法 `(width, height)`。
+        紙サイズ（mm）として扱うキャンバス寸法 ``(width, height)``。
     params : GCodeParams or None
-        G-code 出力パラメータ。None の場合は `config.yaml`（`export.gcode`）の設定値を使う。
+        出力パラメータ。None の場合は runtime config を使う。
 
     Returns
     -------
     Path
-        保存先パス（正規化済み）。
-
-    Raises
-    ------
-    ValueError
-        `canvas_size` が不正、または bed 範囲検証に失敗した場合。
+        保存先パス。
     """
 
-    # --- パイプライン（処理順）---
-    # 1) canvas_size から紙の安全領域（safe_rect）を決める（紙めくれ防止）。
-    # 2) realized の polyline を safe_rect にクリップして「紙内区間」だけに分割する。
-    # 3) 各レイヤ内でストローク順を最適化し（任意）、その順に travel/draw を出力する。
-    # 4) move ごとに (canvas -> machine) 変換し、丸め、bed 範囲を検証し、G1 X/Y を出力する。
-    #
-    # 方針の要点:
-    # - travel 最適化はペンアップ移動のみを対象とし、描画ジオメトリ（点列）は変えない。
-    # - bed 範囲検証は「実際に出力した座標」だけを対象にする。
-
-    _path = Path(path)
-    if params is not None:
-        p = params
-    else:
-        cfg = runtime_config().gcode
-        p = GCodeParams(
-            travel_feed=float(cfg.travel_feed),
-            draw_feed=float(cfg.draw_feed),
-            z_up=float(cfg.z_up),
-            z_down=float(cfg.z_down),
-            y_down=bool(cfg.y_down),
-            origin=(float(cfg.origin[0]), float(cfg.origin[1])),
-            decimals=int(cfg.decimals),
-            paper_margin_mm=float(cfg.paper_margin_mm),
-            bed_x_range=cfg.bed_x_range,
-            bed_y_range=cfg.bed_y_range,
-            bridge_draw_distance=cfg.bridge_draw_distance,
-            optimize_travel=bool(cfg.optimize_travel),
-            allow_reverse=bool(cfg.allow_reverse),
-            canvas_height_mm=cfg.canvas_height_mm,
-        )
-
-    # canvas_size は「紙サイズ（mm）」として扱う。
-    canvas_w, canvas_h = float(canvas_size[0]), float(canvas_size[1])
-    if canvas_w <= 0 or canvas_h <= 0:
-        raise ValueError("canvas_size は正の (width, height) である必要がある")
-    canvas = (canvas_w, canvas_h)
-
-    # 紙の外周へ安全マージンを入れた「描画してよい矩形」。
-    safe_rect = _paper_safe_rect(canvas, paper_margin_mm=float(p.paper_margin_mm))
-
-    # 出力の決定性を優先し、整数化できるものは先に正規化しておく。
-    decimals = int(p.decimals)
-    travel_feed_i = int(round(float(p.travel_feed)))
-    draw_feed_i = int(round(float(p.draw_feed)))
-
-    lines: list[str] = []
-    lines.extend(
-        [
-            "; ====== Header ======",
-            "G21 ; Set units to millimeters",
-            "G90 ; Absolute positioning",
-            "G28 ; Home all axes",
-            "M107 ; Turn off fan",
-            "M420 S1 Z10; Enable bed leveling matrix",
-            "; ====== Body ======",
-        ]
+    destination = Path(path)
+    resolved = params if params is not None else _params_from_config()
+    canvas = _validated_canvas(canvas_size)
+    safe_rect = _paper_safe_rect(
+        canvas,
+        paper_margin_mm=float(resolved.paper_margin_mm),
     )
+    bridge_distance = resolved.bridge_draw_distance
+    if bridge_distance is not None and float(bridge_distance) < 0.0:
+        raise ValueError("bridge_draw_distance は 0 以上である必要がある")
 
-    # ここでは「一般的な 3D プリンタ系 G-code」のヘッダをそのまま流用している。
-    # プロッタ専用の最適化（例: モータ無効化、加速度の抑制）は行っていない。
-    # 重要なのは X/Y の直線移動（G1）と Z の上下（pen up/down 相当）が出ること。
+    scale = 10 ** int(resolved.decimals)
+    travel_feed = int(round(float(resolved.travel_feed)))
+    draw_feed = int(round(float(resolved.draw_feed)))
+    with atomic_text_writer(destination, newline="\n") as stream:
+        emitter = _GCodeEmitter(stream=stream, params=resolved, canvas=canvas)
 
-    # set_pen_down()/set_feed()/move_xy() は「同じ命令の連続」を避けるために状態を持つ。
-    # - pen_is_down: 現在の Z 状態（ペンが下がっているか）
-    # - current_feed: 最後に出力した F 値
-    # - current_xy: 最後に出力した XY（丸め後）
-    #
-    # 初期値に True を置くのは「最初の set_pen_down(False) で必ず Z_up を出す」ため。
-    # （ヘッダで Z を明示しない前提なので、travel の前に必ずペンアップしたい）
-    pen_is_down = True
-    current_feed: int | None = None
-    current_xy: tuple[float, float] | None = None
-
-    def set_pen_down(down: bool) -> None:
-        nonlocal pen_is_down
-        # Z の上げ下げは同じ値を連続で出すと冗長なので、状態で省略する。
-        if bool(down) == pen_is_down:
-            return
-        pen_is_down = bool(down)
-        # down=True で z_down、down=False で z_up を出す（どちらも params 由来）。
-        # 注意: ここでは Z の移動自体も `G1` にしている（機械側の解釈に依存しにくい）。
-        z = float(p.z_down) if pen_is_down else float(p.z_up)
-        lines.append(f"G1 Z{_fmt_float(round(z, decimals), decimals=decimals)}")
-
-    def set_feed(feed: int) -> None:
-        nonlocal current_feed
-        # フィードレートも同値の連続出力を避け、必要なタイミングでだけ切り替える。
-        if current_feed == int(feed):
-            return
-        current_feed = int(feed)
-        lines.append(f"G1 F{int(feed)}")
-
-    def move_xy(xy_canvas: tuple[float, float]) -> None:
-        nonlocal current_xy
-        # move の都度、座標変換→丸め→bed 検証→G1 生成を行う。
-        #
-        # - 変換: canvas（紙）座標はユーザーの描画座標なので、機械座標へ写像する必要がある
-        # - 丸め: “出力値” を正として扱い、以降の重複判定や bed 検証も丸め後で統一する
-        # - bed 検証: 実際に出力する X/Y が安全領域内かだけを見る
-        # - 重複抑制: 同一点への移動は G-code を読みづらくするので省略する
-        xy_machine = _canvas_to_machine_xy(xy_canvas, params=p, canvas_size=canvas)
-        xy_q = _quantize_xy(xy_machine, decimals=decimals)
-        _validate_bed_xy(xy_q, bed_x_range=p.bed_x_range, bed_y_range=p.bed_y_range)
-        if (
-            current_xy is not None
-            and hypot(xy_q[0] - current_xy[0], xy_q[1] - current_xy[1]) < 1e-12
-        ):
-            return
-        current_xy = xy_q
-        x_txt = _fmt_float(xy_q[0], decimals=decimals)
-        y_txt = _fmt_float(xy_q[1], decimals=decimals)
-        lines.append(f"G1 X{x_txt} Y{y_txt}")
-
-    # ストロークの距離比較は「量子化した整数」で行う。
-    # `decimals` と同じ分解能で整数化することで、出力丸めと整合し、タイブレークも安定する。
-    scale = 10 ** int(decimals)
-
-    # レイヤは順に処理し、1 レイヤを書き切ってから次のレイヤへ進む。
-    # つまり travel 最適化もブリッジ判定も「レイヤ内だけ」で完結する（レイヤ跨ぎはしない）。
-    for layer_idx, layer in enumerate(layers):
-        coords = np.asarray(layer.realized.coords, dtype=np.float64)
-        offsets = np.asarray(layer.realized.offsets, dtype=np.int32)
-
-        lines.append(f"; layer {int(layer_idx)} start")
-
-        poly_block_ids = _polyline_face_block_ids(offsets)
-        n_blocks = (max(poly_block_ids) + 1) if poly_block_ids else 0
-
-        # strokes は「紙内に残る連続区間」の集合。
-        # 元の polyline は紙外へ出入りしうるため、クリップ後は複数 stroke に分割される。
-        strokes_by_block: list[list[_Stroke]] = [[] for _ in range(int(n_blocks))]
-
-        for poly_idx, (start, end) in enumerate(zip(offsets[:-1], offsets[1:])):
-            s = int(start)
-            e = int(end)
-            if e - s < 2:
-                continue
-
-            # realized.coords は (x, y, ...) を含みうるが、ここでは XY のみを使う。
-            # 1 polyline は offsets の区間 [s:e] で表される。
-            polyline = np.ascontiguousarray(coords[s:e, :2], dtype=np.float64)
-
-            # 紙安全化: polyline を安全領域へクリップし、紙内の連続区間に分割する。
-            # `clipped` は list[polyline] であり、複数要素になる場合がある（紙外を跨いだ）。
-            clipped = _clip_polyline_to_rect(polyline, safe_rect)
-            if not clipped:
-                continue
-
-            for seg_idx, seg in enumerate(clipped):
-                if len(seg) < 2:
-                    continue
-
-                start_xy = seg[0]
-                end_xy = seg[-1]
-                # start_q/end_q は「距離比較用」の量子化点。
-                # 距離評価は canvas 座標系で行う（Y 反転や origin 平行移動は距離を変えないため）。
-                start_q = (
-                    int(round(float(start_xy[0]) * scale)),
-                    int(round(float(start_xy[1]) * scale)),
+        for layer_index, layer in enumerate(layers):
+            emitter.write_line(f"; layer {layer_index} start")
+            strokes_by_block = _collect_layer_strokes(
+                layer,
+                safe_rect=safe_rect,
+                scale=scale,
+            )
+            ordered_blocks = _order_stroke_blocks(
+                strokes_by_block,
+                optimize_travel=bool(resolved.optimize_travel),
+                allow_reverse=bool(resolved.allow_reverse),
+            )
+            for block_index, ordered in enumerate(ordered_blocks):
+                emitter.write_line(f"; face_block {block_index} start")
+                _emit_stroke_block(
+                    emitter,
+                    ordered,
+                    bridge_draw_distance=bridge_distance,
+                    scale=scale,
+                    travel_feed=travel_feed,
+                    draw_feed=draw_feed,
                 )
-                end_q = (
-                    int(round(float(end_xy[0]) * scale)),
-                    int(round(float(end_xy[1]) * scale)),
-                )
+                emitter.write_line(f"; face_block {block_index} end")
+            emitter.write_line(f"; layer {layer_index} end")
 
-                block_id = 0
-                if poly_block_ids:
-                    block_id = int(poly_block_ids[int(poly_idx)])
-
-                strokes_by_block[int(block_id)].append(
-                    _Stroke(
-                        poly_idx=int(poly_idx),
-                        seg_idx=int(seg_idx),
-                        points_canvas=list(seg),
-                        start_q=start_q,
-                        end_q=end_q,
-                    )
-                )
-
-        ordered_by_block: list[list[tuple[_Stroke, bool]]] = []
-        for block_strokes in strokes_by_block:
-            if bool(p.optimize_travel):
-                # face block 内で stroke 順を並び替え、ペンアップ移動（travel）を短くする。
-                # 先頭 stroke は入力順固定にして、作者の意図（最初の一筆）を保ちやすくする。
-                ordered_block = _order_strokes_in_layer(
-                    block_strokes, allow_reverse=bool(p.allow_reverse)
-                )
-            else:
-                # 並び替えしない場合でも、型を揃えるため (stroke, reversed) 形式にする。
-                ordered_block = [(st, False) for st in block_strokes]
-            ordered_by_block.append(ordered_block)
-
-        bridge_draw_dist = p.bridge_draw_distance
-        if bridge_draw_dist is not None and float(bridge_draw_dist) < 0.0:
-            raise ValueError("bridge_draw_distance は 0 以上である必要がある")
-
-        for block_id, ordered in enumerate(ordered_by_block):
-            lines.append(f"; face_block {int(block_id)} start")
-
-            # current_end_q は「直前に描いた stroke の終点（量子化）」。
-            # face_block 冒頭で None に戻すので、block を跨いだブリッジ描画は発生しない。
-            current_end_q: tuple[int, int] | None = None
-            for stroke, reversed_ in ordered:
-                pts = stroke.points_canvas
-                if len(pts) < 2:
-                    continue
-
-                lines.append(
-                    f"; stroke polyline {int(stroke.poly_idx)} seg {int(stroke.seg_idx)}"
-                    f"{' reversed' if reversed_ else ''}"
-                )
-
-                rest: Iterable[tuple[float, float]]
-                if reversed_:
-                    # 反転あり: 終点から描き始め、点列を逆順に辿る。
-                    # （描画線そのものは同じだが、描画方向は変わる）
-                    start_xy = pts[-1]
-                    rest = reversed(pts[:-1])
-                    start_q = stroke.end_q
-                    end_q = stroke.start_q
-                else:
-                    # 通常: 始点から描き始め、点列を前から辿る。
-                    start_xy = pts[0]
-                    rest = pts[1:]
-                    start_q = stroke.start_q
-                    end_q = stroke.end_q
-
-                draw_bridge = False
-                if bridge_draw_dist is not None and current_end_q is not None:
-                    # ブリッジ判定:
-                    # ペンアップ travel が “十分短い” 場合に限り、ペンアップせずに直線で繋ぐ。
-                    # 注意: これは「移動距離を減らす」のではなく「線を足す」トレードオフ。
-                    dx = int(start_q[0]) - int(current_end_q[0])
-                    dy = int(start_q[1]) - int(current_end_q[1])
-                    dist2 = dx * dx + dy * dy
-                    thr_q = float(bridge_draw_dist) * float(scale)
-                    draw_bridge = float(dist2) < thr_q * thr_q
-
-                if draw_bridge:
-                    # ペンアップ移動が十分短いなら、ペンを上げずに直線で繋ぐ（最適化）。
-                    # ここでの move_xy(start_xy) は “描画” なので、短い直線が追加される。
-                    set_pen_down(True)
-                    set_feed(draw_feed_i)
-                    move_xy(start_xy)
-                else:
-                    # 通常は pen up → travel → pen down の順で「移動」と「描画」を分離する。
-                    set_pen_down(False)
-                    set_feed(travel_feed_i)
-                    move_xy(start_xy)
-                    set_pen_down(True)
-                    set_feed(draw_feed_i)
-
-                for xy in rest:
-                    move_xy(xy)
-                current_end_q = end_q
-
-            lines.append(f"; face_block {int(block_id)} end")
-
-        lines.append(f"; layer {int(layer_idx)} end")
-
-    # 最後は安全側に倒してペンアップで終わる。
-    # 現状は `z_up` そのままではなく、さらに +20mm 持ち上げた高さを出力する（既存仕様）。
-    lines.extend(
-        [
-            "; ====== Footer ======",
-            f"G1 Z{_fmt_float(round(float(p.z_up+20), decimals), decimals=decimals)}",
-        ]
-    )
-
-    # 末尾の改行は環境差を減らすために常に付ける（POSIX 的なテキストファイルの慣習）。
-    _path.parent.mkdir(parents=True, exist_ok=True)
-    with _path.open("w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
-    return _path
+        emitter.finish()
+    return destination
 
 
 __all__ = ["GCodeParams", "export_gcode"]

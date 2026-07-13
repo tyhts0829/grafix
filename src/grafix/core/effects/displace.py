@@ -39,12 +39,6 @@ GX = 40
 FGX = 40
 
 
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
 # Perlin ノイズ用定数（Ken Perlin improved noise の標準テーブル）。
 _PERM_256 = [
     151,

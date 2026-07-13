@@ -6,7 +6,7 @@ import numpy as np
 
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeSession, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -64,8 +64,10 @@ def test_weave_zero_candidates_is_near_noop() -> None:
 
 def test_weave_open_polyline_is_noop() -> None:
     g = G.weave_test_open_long()
-    base = realize(g)
-    out = realize(E.weave(num_candidate_lines=10, relaxation_iterations=10, step=0.1)(g))
+    woven = E.weave(num_candidate_lines=10, relaxation_iterations=10, step=0.1)(g)
+    with RealizeSession() as session:
+        base = session.realize(g)
+        out = session.realize(woven)
 
     assert out is base
 

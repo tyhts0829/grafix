@@ -49,6 +49,9 @@ def rotate(
         return coords, offsets
 
     rx_deg, ry_deg, rz_deg = float(rotation[0]), float(rotation[1]), float(rotation[2])
+    if rx_deg == 0.0 and ry_deg == 0.0 and rz_deg == 0.0:
+        return coords, offsets
+
     rx, ry, rz = np.deg2rad([rx_deg, ry_deg, rz_deg]).astype(np.float64)
 
     if auto_center:

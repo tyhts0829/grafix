@@ -1,144 +1,38 @@
 # src/core/effect_registry.py
-# Geometry の effect ノードに対応する実体変換関数レジストリ。
-# op 名から RealizedGeometry 変換関数を引けるようにする。
+# Geometry の effect ノードに対応する operation spec を登録する。
 
 from __future__ import annotations
 
-import inspect
-from collections.abc import ItemsView, Mapping
+from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
+from grafix.core.op_registry import (
+    OpRegistry,
+    OpSpec,
+    UiVisiblePred,
+    op_defaults_and_order,
+)
+from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.meta_spec import meta_dict_from_user
 from grafix.core.realized_geometry import (
     GeomTuple,
     RealizedGeometry,
     concat_realized_geometries,
     realized_geometry_from_tuple,
 )
-from grafix.core.parameters.meta import ParamMeta
-from grafix.core.parameters.meta_spec import meta_dict_from_user
 
 EffectFunc = Callable[
     [Sequence[RealizedGeometry], tuple[tuple[str, Any], ...]],
     RealizedGeometry,
 ]
-UiVisiblePred = Callable[[Mapping[str, Any]], bool]
-
-
-class EffectRegistry:
-    """effect Geometry のレシピ名と適用関数を対応付けるレジストリ。
-
-    Notes
-    -----
-    登録された関数のシグネチャは
-    ``func(inputs: Sequence[RealizedGeometry], args: tuple[tuple[str, Any], ...]) -> RealizedGeometry``
-    を想定する。inputs は通常 1 要素だが、将来の複合 effect に備えて列として扱う。
-    """
-
-    def __init__(self) -> None:
-        """空のレジストリを初期化する。"""
-        self._items: dict[str, EffectFunc] = {}
-        self._meta: dict[str, dict[str, ParamMeta]] = {}
-        self._defaults: dict[str, dict[str, Any]] = {}
-        self._n_inputs: dict[str, int] = {}
-        self._param_order: dict[str, tuple[str, ...]] = {}
-        self._ui_visible: dict[str, dict[str, UiVisiblePred]] = {}
-
-    def _register(
-        self,
-        name: str,
-        func: EffectFunc,
-        *,
-        overwrite: bool = True,
-        n_inputs: int = 1,
-        param_order: Sequence[str] | None = None,
-        meta: dict[str, ParamMeta] | None = None,
-        defaults: dict[str, Any] | None = None,
-        ui_visible: Mapping[str, UiVisiblePred] | None = None,
-    ) -> None:
-        """effect を登録する（内部用）。
-
-        Notes
-        -----
-        登録は `@effect` デコレータ経由に統一する。
-        このメソッドはデコレータ実装の内部からのみ呼ぶ。
-        """
-        if not overwrite and name in self._items:
-            raise ValueError(f"effect '{name}' は既に登録されている")
-        self._items[name] = func
-        self._n_inputs[name] = int(n_inputs)
-        self._param_order[name] = (
-            tuple(str(a) for a in param_order) if param_order is not None else ()
-        )
-        if meta is not None:
-            self._meta[name] = meta
-        if defaults is not None:
-            self._defaults[name] = defaults
-        if ui_visible is not None:
-            self._ui_visible[name] = dict(ui_visible)
-
-    def get(self, name: str) -> EffectFunc:
-        """op 名に対応する effect を取得する。
-
-        Parameters
-        ----------
-        name : str
-            op 名。
-
-        Returns
-        -------
-        EffectFunc
-            対応する適用関数。
-
-        Raises
-        ------
-        KeyError
-            未登録の op 名が指定された場合。
-        """
-        return self._items[name]
-
-    def __contains__(self, name: object) -> bool:
-        """指定された名前が登録済みかどうかを返す。"""
-        return name in self._items
-
-    def __getitem__(self, name: str) -> EffectFunc:
-        """辞書風に effect を取得するショートカット。"""
-        return self.get(name)
-
-    def items(self) -> ItemsView[str, EffectFunc]:
-        """登録済みエントリの (name, func) ビューを返す。"""
-        return self._items.items()
-
-    def get_meta(self, name: str) -> dict[str, ParamMeta]:
-        """op 名に対応する ParamMeta 辞書を取得する。"""
-        return dict(self._meta.get(name, {}))
-
-    def get_defaults(self, name: str) -> dict[str, Any]:
-        """op 名に対応するデフォルト引数辞書を取得する。"""
-        return dict(self._defaults.get(name, {}))
-
-    def get_param_order(self, name: str) -> tuple[str, ...]:
-        """op 名に対応する GUI 用の引数順序を返す。"""
-
-        return tuple(self._param_order.get(name, ()))
-
-    def get_ui_visible(self, name: str) -> dict[str, UiVisiblePred]:
-        """op 名に対応する可視性ルール辞書（arg -> predicate）を返す。"""
-
-        return dict(self._ui_visible.get(name, {}))
-
-    def get_n_inputs(self, name: str) -> int:
-        """op 名に対応する入力 Geometry 数（arity）を返す。"""
-        return int(self._n_inputs.get(name, 1))
-
-
-effect_registry = EffectRegistry()
+effect_registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
 """グローバルな effect レジストリインスタンス。"""
 
 
 def effect(
     func: Callable[..., GeomTuple] | None = None,
     *,
-    overwrite: bool = True,
+    overwrite: bool = False,
     n_inputs: int = 1,
     meta: Mapping[str, ParamMeta | Mapping[str, object]] | None = None,
     ui_visible: Mapping[str, UiVisiblePred] | None = None,
@@ -165,35 +59,15 @@ def effect(
     """
 
     meta_norm = None if meta is None else meta_dict_from_user(meta)
-    if meta_norm is not None and "activate" in meta_norm:
-        raise ValueError("effect の予約引数 'activate' は meta に含められない")
+    if meta_norm is not None:
+        reserved = {"activate", "key"} & set(meta_norm)
+        if reserved:
+            names = ", ".join(sorted(reserved))
+            raise ValueError(f"effect の予約引数は meta に含められない: {names}")
 
     n_inputs_i = int(n_inputs)
     if n_inputs_i < 1:
         raise ValueError("n_inputs は 1 以上である必要がある")
-
-    def _defaults_from_signature(
-        f: Callable[..., GeomTuple],
-        param_meta: dict[str, ParamMeta],
-    ) -> dict[str, Any]:
-        sig = inspect.signature(f)
-        defaults: dict[str, Any] = {}
-        for arg in param_meta.keys():
-            param = sig.parameters.get(arg)
-            if param is None:
-                raise ValueError(
-                    f"effect '{f.__name__}' の meta 引数がシグネチャに存在しない: {arg!r}"
-                )
-            if param.default is inspect._empty:
-                raise ValueError(
-                    f"effect '{f.__name__}' の meta 引数は default 必須: {arg!r}"
-                )
-            if param.default is None:
-                raise ValueError(
-                    f"effect '{f.__name__}' の meta 引数 default に None は使えない: {arg!r}"
-                )
-            defaults[arg] = param.default
-        return defaults
 
     def decorator(
         f: Callable[..., GeomTuple],
@@ -205,9 +79,7 @@ def effect(
             raise ValueError(f"組み込み effect は meta 必須: {f.__module__}.{f.__name__}")
 
         meta_with_activate = (
-            {"activate": ParamMeta(kind="bool"), **meta_norm}
-            if meta_norm is not None
-            else None
+            {"activate": ParamMeta(kind="bool"), **meta_norm} if meta_norm is not None else None
         )
 
         def wrapper(
@@ -240,28 +112,36 @@ def effect(
                 context=f"@effect {f.__module__}.{f.__name__}",
             )
 
-        defaults = None
+        defaults: dict[str, Any] = {}
+        param_order: tuple[str, ...] = ()
         if meta_norm is not None:
-            defaults = _defaults_from_signature(f, meta_norm)
-            defaults = {"activate": True, **defaults}
-            sig = inspect.signature(f)
-            meta_keys = set(meta_norm.keys())
-            sig_order = [name for name in sig.parameters if name in meta_keys]
-            param_order = ("activate", *sig_order)
-        else:
-            param_order = None
-        effect_registry._register(
-            f.__name__,
-            wrapper,
-            overwrite=overwrite,
-            n_inputs=n_inputs_i,
-            param_order=param_order,
-            meta=meta_with_activate,
+            user_defaults, user_order = op_defaults_and_order(
+                kind="effect",
+                func=f,
+                meta=meta_norm,
+            )
+            defaults = {"activate": True, **user_defaults}
+            param_order = ("activate", *user_order)
+
+        spec: OpSpec[EffectFunc] = OpSpec(
+            evaluator=wrapper,
+            meta={} if meta_with_activate is None else meta_with_activate,
             defaults=defaults,
-            ui_visible=ui_visible,
+            param_order=param_order,
+            ui_visible={} if ui_visible is None else ui_visible,
+            n_inputs=n_inputs_i,
+            kind="effect",
+        )
+        effect_registry.register(
+            f.__name__,
+            spec,
+            replace=overwrite,
         )
         return f
 
     if func is None:
         return decorator
     return decorator(func)
+
+
+__all__ = ["EffectFunc", "effect", "effect_registry"]

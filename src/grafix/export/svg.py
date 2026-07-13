@@ -8,14 +8,17 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import TextIO
 
 import numpy as np
 
-from grafix.core.parameters.style import rgb01_to_rgb255
+from grafix.core.atomic_write import atomic_text_writer
+from grafix.core.parameters.style import line_width_for_short_side, rgb01_to_rgb255
 from grafix.core.pipeline import RealizedLayer
 
 _SVG_NS = "http://www.w3.org/2000/svg"
 _FLOAT_DECIMALS = 3
+_PATH_POINT_CHUNK_SIZE = 1024
 
 
 def _fmt(value: float, *, decimals: int = _FLOAT_DECIMALS) -> str:
@@ -42,14 +45,26 @@ def _iter_polylines(*, coords: np.ndarray, offsets: np.ndarray) -> Iterator[np.n
         yield coords[start_i:end_i, :2]
 
 
-def _polyline_to_d(polyline_xy: np.ndarray) -> str:
-    """polyline（shape (N,2)）を SVG path の d 属性へ変換して返す。"""
-    x0 = _fmt(polyline_xy[0, 0])
-    y0 = _fmt(polyline_xy[0, 1])
-    parts = [f"M {x0} {y0}"]
-    for xy in polyline_xy[1:]:
-        parts.append(f"L {_fmt(xy[0])} {_fmt(xy[1])}")
-    return " ".join(parts)
+def _write_polyline_path(
+    stream: TextIO,
+    polyline_xy: np.ndarray,
+    *,
+    stroke: str,
+    stroke_width: str,
+) -> None:
+    """1 polyline を固定サイズ chunk で SVG path として書く。"""
+
+    stream.write(f'  <path d="M {_fmt(polyline_xy[0, 0])} {_fmt(polyline_xy[0, 1])}')
+    for start in range(1, int(polyline_xy.shape[0]), _PATH_POINT_CHUNK_SIZE):
+        chunk = polyline_xy[start : start + _PATH_POINT_CHUNK_SIZE]
+        stream.write(
+            "".join(f" L {_fmt(xy[0])} {_fmt(xy[1])}" for xy in chunk)
+        )
+    stream.write(
+        f'" fill="none" stroke="{stroke}" '
+        f'stroke-width="{stroke_width}" stroke-linecap="round" '
+        'stroke-linejoin="round" />\n'
+    )
 
 
 def export_svg(
@@ -87,38 +102,31 @@ def export_svg(
     if canvas_w <= 0 or canvas_h <= 0:
         raise ValueError("canvas_size は正の値である必要がある")
 
-    # interactive の shader は clip 空間で線幅を扱うため、SVG では viewBox 単位へスケールする。
-    stroke_scale = float(min(canvas_w, canvas_h)) / 2.0
-
-    lines: list[str] = []
-    lines.append('<?xml version="1.0" encoding="UTF-8"?>')
-    lines.append(
-        (
+    with atomic_text_writer(_path, newline="\n") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        f.write(
             f'<svg xmlns="{_SVG_NS}" viewBox="0 0 {int(canvas_w)} {int(canvas_h)}" '
-            f'width="{int(canvas_w)}" height="{int(canvas_h)}">'
+            f'width="{int(canvas_w)}" height="{int(canvas_h)}">\n'
         )
-    )
 
-    for layer in layers:
-        stroke = _rgb01_to_hex(layer.color)
-        stroke_width = _fmt(float(layer.thickness) * stroke_scale)
-        coords = np.asarray(layer.realized.coords, dtype=np.float32)
-        offsets = np.asarray(layer.realized.offsets, dtype=np.int32)
-
-        for polyline_xy in _iter_polylines(coords=coords, offsets=offsets):
-            d = _polyline_to_d(polyline_xy)
-            lines.append(
-                (
-                    f'  <path d="{d}" fill="none" stroke="{stroke}" '
-                    f'stroke-width="{stroke_width}" stroke-linecap="round" '
-                    f'stroke-linejoin="round" />'
+        for layer in layers:
+            stroke = _rgb01_to_hex(layer.color)
+            stroke_width = _fmt(
+                line_width_for_short_side(
+                    layer.thickness,
+                    (float(canvas_w), float(canvas_h)),
                 )
             )
+            coords = np.asarray(layer.realized.coords, dtype=np.float32)
+            offsets = np.asarray(layer.realized.offsets, dtype=np.int32)
 
-    lines.append("</svg>")
-
-    _path.parent.mkdir(parents=True, exist_ok=True)
-    with _path.open("w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
+            for polyline_xy in _iter_polylines(coords=coords, offsets=offsets):
+                _write_polyline_path(
+                    f,
+                    polyline_xy,
+                    stroke=stroke,
+                    stroke_width=stroke_width,
+                )
+        f.write("</svg>\n")
 
     return _path

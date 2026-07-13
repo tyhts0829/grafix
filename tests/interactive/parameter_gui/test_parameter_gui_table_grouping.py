@@ -1,14 +1,15 @@
 from grafix.api import preset
-from grafix.interactive.parameter_gui.grouping import group_info_for_row
+from grafix.core.geometry import Geometry
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.view import ParameterRow
+from grafix.interactive.parameter_gui.grouping import group_info_for_row
 
 
 @preset(meta={"center": ParamMeta(kind="vec3")})
-def grouping_logo(*, center=(0.0, 0.0, 0.0), name=None, key=None):
-    return None
+def grouping_logo(*, center=(0.0, 0.0, 0.0), name=None, key=None) -> Geometry:
+    return Geometry.create(op="concat")
 
 
 def _row(*, op: str, site_id: str, ordinal: int, arg: str) -> ParameterRow:

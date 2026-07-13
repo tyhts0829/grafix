@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from grafix.api import G
+from grafix.core.primitives import asemic as asemic_module
 from grafix.core.primitives.asemic import asemic as asemic_impl
 from grafix.core.realize import realize
 
@@ -93,3 +94,63 @@ def test_asemic_api_returns_valid_geometry() -> None:
     assert np.all(np.diff(g.offsets) >= 0)
     assert np.all(np.isfinite(g.coords))
     assert g.coords.shape[0] > 0
+
+
+def test_asemic_rng_adjacency_matches_small_reference() -> None:
+    points = np.asarray(
+        [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5], [0.0, 0.0]],
+        dtype=np.float64,
+    )
+    diff = points[:, None, :] - points[None, :, :]
+    distance_sq = np.sum(diff * diff, axis=2)
+    expected = [set() for _ in range(len(points))]
+    for i in range(len(points)):
+        for j in range(i + 1, len(points)):
+            dij = float(distance_sq[i, j])
+            blocked = any(
+                k not in {i, j}
+                and distance_sq[i, k] < dij
+                and distance_sq[j, k] < dij
+                for k in range(len(points))
+            )
+            if not blocked:
+                expected[i].add(j)
+                expected[j].add(i)
+
+    assert asemic_module._build_rng_adjacency(points) == expected
+
+
+def test_asemic_glyph_cache_is_bounded_and_reused_across_layouts() -> None:
+    asemic_module._generate_asemic_glyph.cache_clear()
+
+    asemic_impl(text="A", seed=7, center=(0.0, 0.0, 0.0), scale=1.0)
+    after_first = asemic_module._generate_asemic_glyph.cache_info()
+    asemic_impl(text="A", seed=7, center=(100.0, 20.0, 0.0), scale=4.0)
+    after_second = asemic_module._generate_asemic_glyph.cache_info()
+
+    assert after_first.misses == 1
+    assert after_second.hits == 1
+    assert after_second.currsize <= 256
+
+
+def test_asemic_cached_glyph_arrays_are_read_only() -> None:
+    asemic_module._generate_asemic_glyph.cache_clear()
+    asemic_impl(text="A", seed=11)
+
+    # 同じ key を直接取得し、cache が共有する配列の不変契約を確認する。
+    seed_char = asemic_module._stable_hash64("11|A")
+    polylines = asemic_module._generate_asemic_glyph(
+        seed=int(seed_char),
+        n_nodes=28,
+        candidates=12,
+        stroke_min=2,
+        stroke_max=5,
+        walk_min_steps=2,
+        walk_max_steps=4,
+        stroke_style="bezier",
+        bezier_samples=12,
+        bezier_tension=0.5,
+    )
+
+    assert polylines
+    assert all(polyline.flags.writeable is False for polyline in polylines)

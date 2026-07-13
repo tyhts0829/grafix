@@ -26,12 +26,6 @@ collapse_ui_visible = {
     "pivot": lambda v: not bool(v.get("auto_center", True)),
 }
 
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
 @effect(meta=collapse_meta, ui_visible=collapse_ui_visible)
 def collapse(
     g: GeomTuple,
@@ -96,109 +90,6 @@ def collapse(
         pivot=pivot,
     )
     return new_coords, new_offsets
-
-
-def _collapse_numpy_v2(
-    coords: np.ndarray,
-    offsets: np.ndarray,
-    intensity: float,
-    divisions: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """collapse を分布互換のまま効率化（2 パス + 前方確保）。"""
-    if coords.shape[0] == 0 or intensity == 0.0 or divisions <= 0:
-        return coords.copy(), offsets.copy()
-
-    rng = np.random.default_rng(0)
-    n_lines = len(offsets) - 1
-
-    total_lines = 0
-    total_vertices = 0
-    for li in range(n_lines):
-        v = coords[offsets[li] : offsets[li + 1]]
-        n = v.shape[0]
-        if n < 2:
-            total_lines += 1
-            total_vertices += n
-            continue
-        seg = v[1:] - v[:-1]
-        L = np.sqrt(np.sum(seg.astype(np.float64) ** 2, axis=1))
-        nz = L > EPS
-        total_lines += int(np.count_nonzero(nz)) * divisions + int(np.count_nonzero(~nz))
-        total_vertices += (
-            int(np.count_nonzero(nz)) * (2 * divisions) + int(np.count_nonzero(~nz)) * 2
-        )
-
-    if total_lines == 0:
-        return coords.copy(), offsets.copy()
-
-    out_coords = np.empty((total_vertices, 3), dtype=np.float32)
-    out_offsets = np.empty((total_lines + 1,), dtype=np.int32)
-    out_offsets[0] = 0
-    vc = 0
-    oc = 1
-
-    t = np.linspace(0.0, 1.0, divisions + 1, dtype=np.float64)
-    t0 = t[:-1]
-    t1 = t[1:]
-
-    for li in range(n_lines):
-        v = coords[offsets[li] : offsets[li + 1]].astype(np.float64, copy=False)
-        n = v.shape[0]
-        if n < 2:
-            if n > 0:
-                out_coords[vc : vc + n] = v.astype(np.float32, copy=False)
-                vc += n
-            out_offsets[oc] = vc
-            oc += 1
-            continue
-
-        for j in range(n - 1):
-            a = v[j]
-            b = v[j + 1]
-            d = b - a
-            L = float(np.sqrt(np.dot(d, d)))
-            if not np.isfinite(L) or L <= EPS:
-                out_coords[vc] = a.astype(np.float32)
-                vc += 1
-                out_coords[vc] = b.astype(np.float32)
-                vc += 1
-                out_offsets[oc] = vc
-                oc += 1
-                continue
-
-            n_main = d / L
-            ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-            if abs(n_main[2]) >= 0.9:
-                ref = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-            u = np.cross(n_main, ref)
-            ul = float(np.sqrt(np.dot(u, u)))
-            if ul <= EPS:
-                u = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-                ul = 1.0
-            u /= ul
-            v_basis = np.cross(n_main, u)
-
-            starts = a * (1.0 - t0[:, None]) + b * t0[:, None]
-            ends = a * (1.0 - t1[:, None]) + b * t1[:, None]
-
-            theta = rng.random(divisions) * (2.0 * math.pi)
-            c = np.cos(theta)
-            s = np.sin(theta)
-            noise = (c[:, None] * u[None, :] + s[:, None] * v_basis[None, :]) * float(intensity)
-
-            out_coords[vc : vc + 2 * divisions : 2] = (starts + noise).astype(
-                np.float32, copy=False
-            )
-            out_coords[vc + 1 : vc + 2 * divisions : 2] = (ends + noise).astype(
-                np.float32, copy=False
-            )
-            out_offsets[oc : oc + divisions] = vc + 2 * (np.arange(divisions, dtype=np.int32) + 1)
-            vc += 2 * divisions
-            oc += divisions
-
-    if oc < out_offsets.shape[0]:
-        out_offsets[oc:] = vc
-    return out_coords, out_offsets
 
 
 def _collapse_count(

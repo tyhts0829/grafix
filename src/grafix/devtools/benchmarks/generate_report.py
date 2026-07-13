@@ -13,6 +13,9 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from grafix.core.atomic_write import atomic_write_text
+from grafix.devtools.benchmarks import BENCHMARK_SCHEMA_VERSION
+
 _RUN_ID_FORMAT = "%Y%m%d_%H%M%S"
 _CANVAS_HEIGHT = 600
 
@@ -22,9 +25,12 @@ class _Run:
     run_id: str
     dt: datetime
     meta: dict[str, Any]
-    cases: dict[str, dict[str, Any]]
+    scenarios: dict[str, dict[str, Any]]
     effect_names: list[str]
     means_ms: dict[str, dict[str, float]]
+    metrics: dict[str, dict[str, dict[str, Any]]]
+    system_profile: str
+    system_results: dict[str, dict[str, Any]]
 
 
 def main(*, out: str | Path = "data/output/benchmarks") -> int:
@@ -35,8 +41,7 @@ def main(*, out: str | Path = "data/output/benchmarks") -> int:
     report = build_timeseries_report(runs_dir=runs_dir)
     html = render_report_html(report)
 
-    out_root.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(html, encoding="utf-8")
+    atomic_write_text(report_path, html)
     print(f"[grafix-bench] wrote: {report_path}")  # noqa: T201
     return 0
 
@@ -46,9 +51,10 @@ def build_timeseries_report(*, runs_dir: Path) -> dict[str, Any]:
     if not runs:
         raise SystemExit(f"no runs found: {runs_dir}")
 
-    latest = runs[-1]
-    case_list = list(latest.cases.values())
-    effect_names = list(latest.effect_names)
+    effect_runs = [run for run in runs if run.scenarios or run.effect_names]
+    latest_effect = effect_runs[-1] if effect_runs else runs[-1]
+    scenario_list = list(latest_effect.scenarios.values())
+    effect_names = list(latest_effect.effect_names)
 
     run_rows = [
         {
@@ -56,24 +62,24 @@ def build_timeseries_report(*, runs_dir: Path) -> dict[str, Any]:
             "created_at": r.meta.get("created_at", ""),
             "git_sha": r.meta.get("git_sha", ""),
         }
-        for r in runs
+        for r in effect_runs
     ]
 
     chart_specs: list[dict[str, Any]] = []
-    for case in case_list:
-        case_id = str(case.get("id", ""))
-        if not case_id:
+    for scenario in scenario_list:
+        scenario_id = str(scenario.get("id", ""))
+        if not scenario_id:
             continue
 
         series: dict[str, list[float | None]] = {}
         for eff in effect_names:
             pts: list[float | None] = []
-            for r in runs:
-                v = r.means_ms.get(case_id, {}).get(eff)
+            for r in effect_runs:
+                v = r.means_ms.get(scenario_id, {}).get(eff)
                 pts.append(float(v) if v is not None else None)
             series[eff] = pts
 
-        latest_means = latest.means_ms.get(case_id, {})
+        latest_means = latest_effect.means_ms.get(scenario_id, {})
         ordered_effects = sorted(
             effect_names,
             key=lambda e: float(latest_means.get(e, -1.0)),
@@ -101,49 +107,78 @@ def build_timeseries_report(*, runs_dir: Path) -> dict[str, Any]:
             ratio = ""
             if first is not None and last is not None and float(first) > 0.0:
                 ratio = f"{float(last) / float(first):.3f}x"
+            latest_metrics = latest_effect.metrics.get(scenario_id, {}).get(eff, {})
+            cold = latest_metrics.get("cold", {})
+            output = latest_metrics.get("output", {})
             table_rows.append(
                 {
                     "effect": eff,
                     "first_ms": first,
                     "last_ms": last,
+                    "p95_ms": latest_metrics.get("p95_ms"),
+                    "cold_ms": cold.get("median_ms"),
+                    "peak_rss_bytes": cold.get("peak_rss_bytes"),
+                    "output_vertices": output.get("n_vertices"),
+                    "output_lines": output.get("n_lines"),
+                    "output_bytes": output.get("bytes"),
                     "ratio": ratio,
                 }
             )
 
         chart_specs.append(
             {
-                "case_id": case_id,
-                "case_label": str(case.get("label", case_id)),
-                "case_description": str(case.get("description", "")),
-                "n_vertices": case.get("n_vertices", ""),
-                "n_lines": case.get("n_lines", ""),
-                "closed_lines": case.get("closed_lines", ""),
+                "scenario_id": scenario_id,
+                "scenario_label": str(scenario.get("label", scenario_id)),
+                "scenario_description": str(scenario.get("description", "")),
+                "tags": list(scenario.get("tags", [])),
+                "inputs": list(scenario.get("inputs", [])),
                 "datasets": datasets,
                 "table": table_rows,
             }
         )
 
+    system_run = next(
+        (run for run in reversed(runs) if run.system_results),
+        None,
+    )
+    system: dict[str, Any] = {}
+    if system_run is not None:
+        system = {
+            "run_id": system_run.run_id,
+            "profile": system_run.system_profile,
+            "rows": list(system_run.system_results.values()),
+        }
+
     meta = {
+        "schema_version": BENCHMARK_SCHEMA_VERSION,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "runs": len(runs),
+        "effect_runs": len(effect_runs),
+        "system_runs": sum(bool(run.system_results) for run in runs),
         "first_run": runs[0].run_id,
         "last_run": runs[-1].run_id,
     }
+    if system_run is not None:
+        meta["last_system_run"] = system_run.run_id
+        meta["system_profile"] = system_run.system_profile
     return {
         "meta": meta,
         "runs": run_rows,
-        "cases": [
-            {"id": c.get("id", ""), "label": c.get("label", "")} for c in case_list
+        "scenarios": [
+            {"id": scenario.get("id", ""), "label": scenario.get("label", "")}
+            for scenario in scenario_list
         ],
         "charts": chart_specs,
+        "system": system,
     }
 
 
 def render_report_html(report: dict[str, Any]) -> str:
     meta: dict[str, Any] = dict(report.get("meta", {}))
     runs: list[dict[str, Any]] = list(report.get("runs", []))
-    cases: list[dict[str, Any]] = list(report.get("cases", []))
+    scenarios: list[dict[str, Any]] = list(report.get("scenarios", []))
     charts: list[dict[str, Any]] = list(report.get("charts", []))
+    system: dict[str, Any] = dict(report.get("system", {}))
 
     payload_json = json.dumps(
         {
@@ -157,39 +192,38 @@ def render_report_html(report: dict[str, Any]) -> str:
     body = []
     body.append("<h1>grafix effect benchmark (timeseries)</h1>")
     body.append(_render_meta(meta))
-    body.append(_render_case_index(cases))
+    body.append(_render_scenario_index(scenarios))
 
     body.append('<div class="panel">')
     body.append('<div class="muted">Note</div>')
     body.append("<ul>")
-    body.append(
-        "<li>グラフは Chart.js（CDN）で描画する。ネット接続が無いと表だけになる。</li>"
-    )
+    body.append("<li>グラフは Chart.js（CDN）で描画する。ネット接続が無いと表だけになる。</li>")
     body.append("<li>凡例クリックで effect の表示/非表示を切り替えできる。</li>")
     body.append("</ul>")
     body.append("</div>")
 
-    for chart in charts:
-        case_id = str(chart.get("case_id", ""))
-        case_label = str(chart.get("case_label", case_id))
-        case_desc = str(chart.get("case_description", ""))
-        n_vertices = chart.get("n_vertices", "")
-        n_lines = chart.get("n_lines", "")
-        closed_lines = chart.get("closed_lines", "")
+    if system.get("rows"):
+        body.append(_render_system_section(system=system))
 
-        body.append(f'<h2 id="case-{escape(case_id)}">Case: {escape(case_label)}</h2>')
+    for chart in charts:
+        scenario_id = str(chart.get("scenario_id", ""))
+        scenario_label = str(chart.get("scenario_label", scenario_id))
+        scenario_desc = str(chart.get("scenario_description", ""))
+        tags = ", ".join(str(tag) for tag in chart.get("tags", []))
+        input_stats = _format_input_stats(list(chart.get("inputs", [])))
+
+        body.append(
+            f'<h2 id="scenario-{escape(scenario_id)}">Scenario: {escape(scenario_label)}</h2>'
+        )
         parts = [
-            f'<div class="muted">{escape(case_desc)}</div>' if case_desc else "",
-            '<div style="margin-top:6px" class="mono">'
-            f"verts={escape(str(n_vertices))} lines={escape(str(n_lines))} closed_lines={escape(str(closed_lines))}"
-            "</div>",
+            f'<div class="muted">{escape(scenario_desc)}</div>' if scenario_desc else "",
+            f'<div class="muted">tags: {escape(tags)}</div>' if tags else "",
+            f'<div style="margin-top:6px" class="mono">{escape(input_stats)}</div>',
         ]
         body.append('<div class="panel">' + "\n".join(p for p in parts if p) + "</div>")
 
         body.append('<div class="panel">')
-        body.append(
-            f'<canvas id="chart-{escape(case_id)}" height="{_CANVAS_HEIGHT}"></canvas>'
-        )
+        body.append(f'<canvas id="chart-{escape(scenario_id)}" height="{_CANVAS_HEIGHT}"></canvas>')
         body.append("</div>")
 
         table_rows: list[dict[str, Any]] = list(chart.get("table", []))
@@ -266,10 +300,15 @@ def _render_head(*, title: str) -> str:
 def _render_meta(meta: dict[str, Any]) -> str:
     items: list[str] = []
     for key in (
+        "schema_version",
         "generated_at",
         "runs",
+        "effect_runs",
+        "system_runs",
         "first_run",
         "last_run",
+        "last_system_run",
+        "system_profile",
     ):
         if key in meta:
             items.append(
@@ -280,21 +319,33 @@ def _render_meta(meta: dict[str, Any]) -> str:
     return '<div class="panel">' + "\n".join(items) + "</div>"
 
 
-def _render_case_index(cases: list[dict[str, Any]]) -> str:
+def _render_scenario_index(scenarios: list[dict[str, Any]]) -> str:
     links: list[str] = []
-    for case in cases:
-        cid = str(case.get("id", ""))
-        label = str(case.get("label", cid))
-        if not cid:
+    for scenario in scenarios:
+        scenario_id = str(scenario.get("id", ""))
+        label = str(scenario.get("label", scenario_id))
+        if not scenario_id:
             continue
-        links.append(f'<a href="#case-{escape(cid)}">{escape(label)}</a>')
+        links.append(f'<a href="#scenario-{escape(scenario_id)}">{escape(label)}</a>')
     if not links:
         return ""
     return (
-        '<div class="panel case-index"><div class="muted">Cases</div>'
+        '<div class="panel case-index"><div class="muted">Scenarios</div>'
         + " ".join(links)
         + "</div>"
     )
+
+
+def _format_input_stats(inputs: list[dict[str, Any]]) -> str:
+    """scenario の全入力規模を1行の表示文字列へ整形する。"""
+
+    parts: list[str] = []
+    for index, stats in enumerate(inputs):
+        parts.append(
+            f"input[{index}]: verts={stats.get('n_vertices', '')} "
+            f"lines={stats.get('n_lines', '')} closed_lines={stats.get('closed_lines', '')}"
+        )
+    return " | ".join(parts)
 
 
 def _render_improvement_table(*, rows: list[dict[str, Any]]) -> str:
@@ -305,8 +356,12 @@ def _render_improvement_table(*, rows: list[dict[str, Any]]) -> str:
     out.append(
         "<tr>"
         "<th>effect</th>"
-        "<th>first_ms</th>"
-        "<th>last_ms</th>"
+        "<th>first median_ms</th>"
+        "<th>last median_ms</th>"
+        "<th>p95_ms</th>"
+        "<th>cold median_ms</th>"
+        "<th>peak RSS MiB</th>"
+        "<th>output (verts / lines / KiB)</th>"
         "<th>ratio</th>"
         "</tr>"
     )
@@ -315,18 +370,74 @@ def _render_improvement_table(*, rows: list[dict[str, Any]]) -> str:
         name = escape(str(r.get("effect", "")))
         first_ms = _fmt_num(r.get("first_ms"))
         last_ms = _fmt_num(r.get("last_ms"))
+        p95_ms = _fmt_num(r.get("p95_ms"))
+        cold_ms = _fmt_num(r.get("cold_ms"))
+        peak_rss = _fmt_bytes_mib(r.get("peak_rss_bytes"))
+        output = _fmt_output(r)
         ratio = escape(str(r.get("ratio", "")))
         out.append(
             "<tr>"
             f"<td>{name}</td>"
             f"<td>{first_ms}</td>"
             f"<td>{last_ms}</td>"
+            f"<td>{p95_ms}</td>"
+            f"<td>{cold_ms}</td>"
+            f"<td>{peak_rss}</td>"
+            f"<td>{output}</td>"
             f"<td>{ratio}</td>"
             "</tr>"
         )
 
     out.append("</table></div>")
     return "\n".join(out)
+
+
+def _render_system_section(*, system: dict[str, Any]) -> str:
+    """最新のsystem/micro計測を独立した表として描画する。"""
+
+    run_id = escape(str(system.get("run_id", "")))
+    profile = escape(str(system.get("profile", "")))
+    rows = list(system.get("rows", []))
+    out = [
+        '<h2 id="system-benchmarks">System / micro benchmarks</h2>',
+        '<div class="panel">',
+        f'<div class="muted">run: <span class="mono">{run_id}</span> '
+        f'profile: <span class="mono">{profile}</span></div>',
+        "<table>",
+        "<tr>"
+        "<th>benchmark</th>"
+        "<th>category</th>"
+        "<th>status</th>"
+        "<th>median_ms</th>"
+        "<th>p95_ms</th>"
+        "<th>peak RSS MiB</th>"
+        "<th>output</th>"
+        "<th>cache</th>"
+        "<th>error</th>"
+        "</tr>",
+    ]
+    for row in rows:
+        out.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('label', row.get('id', ''))))}</td>"
+            f"<td>{escape(str(row.get('category', '')))}</td>"
+            f"<td>{escape(str(row.get('status', '')))}</td>"
+            f"<td>{_fmt_num(row.get('median_ms'))}</td>"
+            f"<td>{_fmt_num(row.get('p95_ms'))}</td>"
+            f"<td>{_fmt_bytes_mib(row.get('peak_rss_bytes'))}</td>"
+            f"<td>{_fmt_mapping(row.get('output'))}</td>"
+            f"<td>{_fmt_mapping(row.get('cache'))}</td>"
+            f"<td>{escape(str(row.get('error', '')))}</td>"
+            "</tr>"
+        )
+    out.append("</table></div>")
+    return "\n".join(out)
+
+
+def _fmt_mapping(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return escape(", ".join(f"{key}={item}" for key, item in value.items()))
 
 
 def _fmt_num(value: Any) -> str:
@@ -336,6 +447,27 @@ def _fmt_num(value: Any) -> str:
         return f"{float(value):.3f}"
     except Exception:
         return escape(str(value))
+
+
+def _fmt_bytes_mib(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        return f"{float(value) / (1024.0 * 1024.0):.1f}"
+    except Exception:
+        return escape(str(value))
+
+
+def _fmt_output(row: dict[str, Any]) -> str:
+    vertices = row.get("output_vertices")
+    lines = row.get("output_lines")
+    size = row.get("output_bytes")
+    if vertices is None or lines is None or size is None:
+        return ""
+    try:
+        return f"{int(vertices)} / {int(lines)} / {int(size) / 1024.0:.1f}"
+    except Exception:
+        return escape(f"{vertices} / {lines} / {size}")
 
 
 def _render_scripts(*, payload_json: str) -> str:
@@ -361,8 +493,8 @@ def _render_scripts(*, payload_json: str) -> str:
     return `${label}: ${Number(v).toFixed(3)} ms`;
   }
 
-  function buildChart(caseId, spec) {
-    const canvas = document.getElementById(`chart-${caseId}`);
+  function buildChart(scenarioId, spec) {
+    const canvas = document.getElementById(`chart-${scenarioId}`);
     if (!canvas) return;
 
     const labels = REPORT.runs.map(r => r.run_id);
@@ -400,7 +532,7 @@ def _render_scripts(*, payload_json: str) -> str:
           },
           y: {
             type: 'logarithmic',
-            title: { display: true, text: 'mean_ms (log10)' },
+            title: { display: true, text: 'median_ms (log10)' },
             grid: { color: 'rgba(255,255,255,0.06)' },
             ticks: {
               callback: (value) => {
@@ -451,7 +583,7 @@ def _render_scripts(*, payload_json: str) -> str:
     Chart.defaults.borderColor = 'rgba(255,255,255,0.12)';
 
     for (const spec of REPORT.charts) {
-      buildChart(spec.case_id, spec);
+      buildChart(spec.scenario_id, spec);
     }
   }
   main();
@@ -478,16 +610,20 @@ def _load_runs(*, runs_dir: Path) -> list[_Run]:
         except Exception:
             continue
 
+        if raw.get("schema_version") != BENCHMARK_SCHEMA_VERSION:
+            continue
+
         meta = dict(raw.get("meta", {}))
-        cases = {
-            str(c.get("id", "")): dict(c)
-            for c in raw.get("cases", [])
-            if str(c.get("id", ""))
+        scenarios = {
+            str(scenario.get("id", "")): dict(scenario)
+            for scenario in raw.get("scenarios", [])
+            if str(scenario.get("id", ""))
         }
 
         effect_names: list[str] = []
         seen_effects: set[str] = set()
         means_ms: dict[str, dict[str, float]] = {}
+        metrics: dict[str, dict[str, dict[str, Any]]] = {}
         for eff in raw.get("effects", []):
             name = str(eff.get("name", ""))
             if not name:
@@ -495,23 +631,40 @@ def _load_runs(*, runs_dir: Path) -> list[_Run]:
             if name not in seen_effects:
                 seen_effects.add(name)
                 effect_names.append(name)
-            for case_id, res in dict(eff.get("results", {})).items():
+            for scenario_id, res in dict(eff.get("results", {})).items():
                 if str(res.get("status", "")) != "ok":
                     continue
                 try:
-                    mean_ms = float(res.get("mean_ms", 0.0))
+                    median_ms = float(res.get("median_ms", res.get("mean_ms", 0.0)))
                 except Exception:
                     continue
-                means_ms.setdefault(str(case_id), {})[name] = mean_ms
+                scenario_key = str(scenario_id)
+                means_ms.setdefault(scenario_key, {})[name] = median_ms
+                metrics.setdefault(scenario_key, {})[name] = dict(res)
+
+        system_raw = raw.get("system", {})
+        if not isinstance(system_raw, dict):
+            system_raw = {}
+        results_raw = system_raw.get("results", {})
+        if not isinstance(results_raw, dict):
+            results_raw = {}
+        system_results = {
+            str(case_id): dict(result)
+            for case_id, result in results_raw.items()
+            if isinstance(result, dict)
+        }
 
         runs.append(
             _Run(
                 run_id=fp.stem,
                 dt=dt,
                 meta=meta,
-                cases=cases,
+                scenarios=scenarios,
                 effect_names=effect_names,
                 means_ms=means_ms,
+                metrics=metrics,
+                system_profile=str(system_raw.get("profile", "")),
+                system_results=system_results,
             )
         )
 

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from grafix.core.parameters import current_frame_params, current_param_store, resolve_params
@@ -45,8 +46,8 @@ def resolve_api_params(
     op: str,
     site_id: str,
     user_params: dict[str, Any],
-    defaults: dict[str, Any],
-    meta: dict[str, ParamMeta],
+    defaults: Mapping[str, Any],
+    meta: Mapping[str, ParamMeta],
     chain_id: str | None = None,
     step_index: int | None = None,
 ) -> dict[str, Any]:

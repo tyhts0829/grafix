@@ -242,12 +242,12 @@ def snippet_for_block(
         for r in layer_rows:
             layer_by_site.setdefault(str(r.site_id), []).append(r)
 
-        out_lines: list[str] = []
+        style_output_lines: list[str] = []
 
         if global_items:
             # `run(..., background_color=..., line_thickness=..., line_color=...)` の引数部分だけを出す。
-            out_lines.append("# --- run(...) ---")
-            out_lines.extend(f"{k}={v}," for k, v in global_items)
+            style_output_lines.append("# --- run(...) ---")
+            style_output_lines.extend(f"{k}={v}," for k, v in global_items)
 
         named_layer_blocks: list[list[str]] = []
         unnamed_layer_site_ids: list[str] = []
@@ -288,25 +288,25 @@ def snippet_for_block(
                 )
 
         if named_layer_blocks:
-            if out_lines:
-                out_lines.append("")
+            if style_output_lines:
+                style_output_lines.append("")
             # 先頭ブロックだけ “セクション見出し” を付けて、以降の繰り返しを減らす。
-            out_lines.extend(named_layer_blocks[0])
+            style_output_lines.extend(named_layer_blocks[0])
             for block_lines in named_layer_blocks[1:]:
-                out_lines.append("")
-                out_lines.extend(block_lines[1:])
+                style_output_lines.append("")
+                style_output_lines.extend(block_lines[1:])
 
         if unnamed_layer_site_ids:
-            if out_lines:
-                out_lines.append("")
-            out_lines.append(
+            if style_output_lines:
+                style_output_lines.append("")
+            style_output_lines.append(
                 "# NOTE: 名前の無い layer_style は snippet に出しません。"
                 "（`L(name=...).layer(...)` でラベル付けすると出ます）"
             )
 
-        if not out_lines:
+        if not style_output_lines:
             return ""
-        return _indent_code("\n".join(out_lines).rstrip() + "\n")
+        return _indent_code("\n".join(style_output_lines).rstrip() + "\n")
 
     if group_type == "preset":
         row0 = rows[0]

@@ -62,6 +62,13 @@ if __name__ == "__main__":
 - `cc`: MIDI CC(`cc[1]` -> 0..1) to control parameters with physical controllers
 - `run(draw)`: interactive rendering + Parameter GUI
 
+`run()` uses synchronous drawing by default (`n_worker=1`). For CPU-heavy `draw(t)`
+functions, pass `n_worker=4` explicitly to keep the window responsive with mp-draw.
+
+`G`, `E`, `L`, and `P` accept `key=str|int` when a parameter group must keep the same
+identity after moving its call within the same source file. Without `key`, Grafix derives
+a cached project-relative call-site identity automatically.
+
 ## Export & shortcuts
 
 When the draw window is focused:
@@ -73,6 +80,9 @@ When the draw window is focused:
 - `Shift+G`: save G-code per layer (when your sketch returns multiple Layers)
 
 Outputs are written under `paths.output_dir` (default: `data/output`), under per-kind subdirectories (`svg/`, `png/`, `gcode/`, ...).
+PNG and G-code shortcuts enqueue an immutable frame snapshot on one bounded background
+worker, so a slow export does not stop the preview loop. Repeated shortcuts keep only
+the currently running job and the latest pending job.
 
 ## Examples
 
@@ -149,7 +159,7 @@ Notes:
 Use `@preset` to register a component, and call it via `P.<name>(...)`:
 
 ```python
-from grafix import P, preset
+from grafix import G, P, preset
 
 meta = {
     "n_rows": {"kind": "int", "ui_min": 1, "ui_max": 20},
@@ -164,11 +174,21 @@ def grid_system_frame(
     name=None,
     key=None,
 ):
-    ...
+    return G.grid(
+        nx=n_cols,
+        ny=n_rows,
+        center=(150.0, 150.0, 0.0),
+        scale=180.0,
+    )
 
 
 P.grid_system_frame()
 ```
+
+A preset is a scene component: it must return a `Geometry`, a `Layer`, or a nested
+sequence of those values (`SceneItem`). Every preset also accepts the automatically
+added `activate` argument. When `activate=False`, Grafix skips the function body and
+returns an empty `Geometry` that can be passed through the normal scene pipeline.
 
 For IDE completion of `P.<name>(...)`, regenerate stubs after adding/changing presets:
 
@@ -208,8 +228,9 @@ python -c "from importlib.resources import files; print(files('grafix').joinpath
 $EDITOR .grafix/config.yaml
 ```
 
-Overlay is a top-level shallow update (no deep merge). If you override `export:`, keep both `export.png` and `export.gcode` blocks
-from the packaged defaults.
+Overlay is recursive for mapping values. For example, overriding only
+`export.gcode.travel_feed` keeps the packaged defaults under `export.png` and the other
+G-code fields.
 
 To autoload user presets from a directory:
 
@@ -270,8 +291,13 @@ PYTHONPATH=src python sketch/main.py
 
 # tests / lint / typecheck
 PYTHONPATH=src pytest -q
-ruff check .
+ruff check src/grafix tests
 mypy src/grafix
+
+# short deterministic measurements (JSON + HTML report)
+PYTHONPATH=src python -m grafix benchmark --system --repeats 3 --warmup 1
+# long comparison is explicit; it is not a normal CI speed gate
+PYTHONPATH=src python -m grafix benchmark --system-long --repeats 5 --warmup 1
 ```
 
 See: `architecture.md` and `docs/developer_guide.md`.

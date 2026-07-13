@@ -18,8 +18,7 @@
 
 実装メモ
 --------
-- ユーザー設定の適用は `dict.update()`（トップレベルの浅い上書き）で行う。
-  ネストした mapping は「部分的にマージ」されず「丸ごと置換」される。
+- ユーザー設定は mapping を再帰的にマージし、指定された leaf だけを上書きする。
 """
 
 from __future__ import annotations
@@ -113,6 +112,30 @@ class RuntimeConfig:
     png_scale: float
     gcode: GCodeExportConfig
     midi_inputs: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PathsSection:
+    output_dir: Path
+    sketch_dir: Path | None
+    preset_module_dirs: tuple[Path, ...]
+    font_dirs: tuple[Path, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _UiSection:
+    window_pos_draw: tuple[int, int]
+    window_pos_parameter_gui: tuple[int, int]
+    parameter_gui_window_size: tuple[int, int]
+    parameter_gui_fallback_font_japanese: str | None
+    parameter_gui_font_size_base_px: float
+    parameter_gui_table_column_weights: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExportSection:
+    png_scale: float
+    gcode: GCodeExportConfig
 
 
 # `set_config_path()` で指定される「明示 config」のパス。
@@ -411,7 +434,8 @@ def _load_packaged_default_config() -> dict[str, Any]:
     try:
         blob = (
             resources.files("grafix")
-            .joinpath("resource", "default_config.yaml")
+            .joinpath("resource")
+            .joinpath("default_config.yaml")
             .read_text(encoding="utf-8")
         )
     except Exception as exc:  # pragma: no cover
@@ -423,44 +447,24 @@ def _load_packaged_default_config() -> dict[str, Any]:
     return _load_yaml_text(blob, source="grafix/resource/default_config.yaml")
 
 
-def runtime_config() -> RuntimeConfig:
-    """実行時設定をロードして返す（キャッシュ）。
+def _merge_mappings(
+    base: dict[str, Any],
+    override: dict[str, Any],
+) -> dict[str, Any]:
+    """``override`` で指定された leaf だけを再帰的に上書きする。"""
 
-    読み込み元の優先順位（後勝ち）:
-    1) 同梱 `grafix/resource/default_config.yaml`
-    2) 探索で見つかった `config.yaml`（任意）
-    3) `set_config_path()` で明示指定された `config.yaml`（任意）
+    merged = dict(base)
+    for key, value in override.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_mappings(current, value)
+        else:
+            merged[key] = value
+    return merged
 
-    Notes
-    -----
-    - 一度ロードした結果はモジュール内にキャッシュされる。
-      `set_config_path()` はキャッシュを破棄するため、次回呼び出しで再ロードされる。
-    - ユーザー設定の適用はトップレベルの浅い上書きである（ネストの部分マージはしない）。
-    """
 
-    global _CONFIG_CACHE
-    # キャッシュがあれば即返す。設定の切り替えは `set_config_path()` で行う。
-    if _CONFIG_CACHE is not None:
-        return _CONFIG_CACHE
-
-    explicit_path = _EXPLICIT_CONFIG_PATH
-    if explicit_path is not None and not explicit_path.is_file():
-        raise FileNotFoundError(f"config.yaml が見つかりません: {explicit_path}")
-
-    discovered_path: Path | None = None
-    # 既定の探索は「CWD → HOME」の順。最初に見つかった 1 つのみを採用する。
-    for p in _default_config_candidates():
-        if p.is_file():
-            discovered_path = p
-            break
-
-    # 同梱デフォルトをベースにし、ユーザー設定で上書きする。
-    # `dict.update()` はトップレベルの浅い上書きなので、ネストした mapping は丸ごと置換になる。
-    payload = _load_packaged_default_config()
-    if discovered_path is not None:
-        payload.update(_load_yaml_config(discovered_path))
-    if explicit_path is not None:
-        payload.update(_load_yaml_config(explicit_path))
+def _validate_version(payload: dict[str, Any]) -> None:
+    """設定 schema version を検証する。"""
 
     version = payload.get("version")
     if version is None:
@@ -470,9 +474,15 @@ def runtime_config() -> RuntimeConfig:
     try:
         version_i = int(version)
     except Exception as exc:
-        raise RuntimeError(f"config.yaml の version は整数である必要があります: got={version!r}") from exc
+        raise RuntimeError(
+            f"config.yaml の version は整数である必要があります: got={version!r}"
+        ) from exc
     if version_i != 1:
         raise RuntimeError(f"未対応の config.yaml version です: got={version_i}")
+
+
+def _parse_paths_section(payload: dict[str, Any]) -> _PathsSection:
+    """``paths`` section を検証して返す。"""
 
     paths = _as_mapping(payload.get("paths"), key="paths")
     output_dir = _as_optional_path(paths.get("output_dir"))
@@ -480,9 +490,16 @@ def runtime_config() -> RuntimeConfig:
         raise RuntimeError(
             "paths.output_dir が未設定です（同梱 default_config.yaml を確認してください）"
         )
-    sketch_dir = _as_optional_path(paths.get("sketch_dir"))
-    preset_module_dirs = _as_path_list(paths.get("preset_module_dirs"))
-    font_dirs = _as_path_list(paths.get("font_dirs"))
+    return _PathsSection(
+        output_dir=output_dir,
+        sketch_dir=_as_optional_path(paths.get("sketch_dir")),
+        preset_module_dirs=tuple(_as_path_list(paths.get("preset_module_dirs"))),
+        font_dirs=tuple(_as_path_list(paths.get("font_dirs"))),
+    )
+
+
+def _parse_ui_section(payload: dict[str, Any]) -> _UiSection:
+    """``ui`` section を検証して返す。"""
 
     ui = _as_mapping(payload.get("ui"), key="ui")
     window_positions = _as_mapping(ui.get("window_positions"), key="ui.window_positions")
@@ -502,59 +519,61 @@ def runtime_config() -> RuntimeConfig:
     )
     if window_pos_parameter_gui is None:
         raise RuntimeError(
-            "ui.window_positions.parameter_gui が未設定です（同梱 default_config.yaml を確認してください）"
+            "ui.window_positions.parameter_gui が未設定です"
+            "（同梱 default_config.yaml を確認してください）"
         )
 
     parameter_gui = _as_mapping(ui.get("parameter_gui"), key="ui.parameter_gui")
-    parameter_gui_window_size = _as_int_pair(
+    window_size = _as_int_pair(
         parameter_gui.get("window_size"),
         key="ui.parameter_gui.window_size",
     )
-    if parameter_gui_window_size is None:
+    if window_size is None:
         raise RuntimeError(
-            "ui.parameter_gui.window_size が未設定です（同梱 default_config.yaml を確認してください）"
+            "ui.parameter_gui.window_size が未設定です"
+            "（同梱 default_config.yaml を確認してください）"
         )
 
-    parameter_gui_fallback_font_japanese = _as_optional_str(
-        parameter_gui.get("fallback_font_japanese")
-    )
-
-    parameter_gui_font_size_base_px = _as_float(
+    font_size = _as_float(
         parameter_gui.get("font_size_base_px"),
         key="ui.parameter_gui.font_size_base_px",
     )
-    if parameter_gui_font_size_base_px is None:
-        parameter_gui_font_size_base_px = float(_PARAMETER_GUI_FONT_SIZE_BASE_PX_DEFAULT)
-    if parameter_gui_font_size_base_px <= 0.0:
+    if font_size is None:
+        font_size = float(_PARAMETER_GUI_FONT_SIZE_BASE_PX_DEFAULT)
+    if font_size <= 0.0:
         raise ValueError(
             "ui.parameter_gui.font_size_base_px は正の値である必要があります"
-            f": got={parameter_gui_font_size_base_px}"
+            f": got={font_size}"
         )
 
-    parameter_gui_table_column_weights = _as_float_quad(
+    column_weights = _as_float_quad(
         parameter_gui.get("table_column_weights"),
         key="ui.parameter_gui.table_column_weights",
     )
-    if parameter_gui_table_column_weights is None:
-        parameter_gui_table_column_weights = _PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT
-    if any(float(w) <= 0.0 for w in parameter_gui_table_column_weights):
+    if column_weights is None:
+        column_weights = _PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT
+    if any(float(weight) <= 0.0 for weight in column_weights):
         raise ValueError(
             "ui.parameter_gui.table_column_weights は全要素が正である必要があります"
-            f": got={parameter_gui_table_column_weights}"
+            f": got={column_weights}"
         )
 
-    export = _as_mapping(payload.get("export"), key="export")
-    png = _as_mapping(export.get("png"), key="export.png")
-    png_scale = _as_float(png.get("scale"), key="export.png.scale")
-    if png_scale is None:
-        raise RuntimeError(
-            "export.png.scale が未設定です（同梱 default_config.yaml を確認してください）"
-        )
-    if png_scale <= 0:
-        raise ValueError(f"export.png.scale は正の値である必要があります: got={png_scale}")
+    return _UiSection(
+        window_pos_draw=window_pos_draw,
+        window_pos_parameter_gui=window_pos_parameter_gui,
+        parameter_gui_window_size=window_size,
+        parameter_gui_fallback_font_japanese=_as_optional_str(
+            parameter_gui.get("fallback_font_japanese")
+        ),
+        parameter_gui_font_size_base_px=float(font_size),
+        parameter_gui_table_column_weights=column_weights,
+    )
 
-    gcode = _as_mapping(export.get("gcode"), key="export.gcode")
-    required_gcode_keys = (
+
+def _parse_gcode_section(gcode: dict[str, Any]) -> GCodeExportConfig:
+    """``export.gcode`` section を検証して返す。"""
+
+    required_keys = (
         "travel_feed",
         "draw_feed",
         "z_up",
@@ -570,26 +589,26 @@ def runtime_config() -> RuntimeConfig:
         "allow_reverse",
         "canvas_height_mm",
     )
-    missing_gcode_keys = [k for k in required_gcode_keys if k not in gcode]
-    if missing_gcode_keys:
+    missing_keys = [key for key in required_keys if key not in gcode]
+    if missing_keys:
         raise RuntimeError(
             "export.gcode が未設定、または必須キーが不足しています"
-            "（config.yaml はトップレベル浅い上書きのため、export: を上書きする場合は"
-            " 同梱 default_config.yaml をコピーして export.gcode も含めてください）"
-            f": missing={missing_gcode_keys}"
+            "（再帰 merge 後の config.yaml を確認してください）"
+            f": missing={missing_keys}"
         )
 
     travel_feed = _as_float(gcode.get("travel_feed"), key="export.gcode.travel_feed")
     if travel_feed is None:
         raise RuntimeError(
-            "export.gcode.travel_feed が未設定です（同梱 default_config.yaml を確認してください）"
+            "export.gcode.travel_feed が未設定です"
+            "（同梱 default_config.yaml を確認してください）"
         )
     draw_feed = _as_float(gcode.get("draw_feed"), key="export.gcode.draw_feed")
     if draw_feed is None:
         raise RuntimeError(
-            "export.gcode.draw_feed が未設定です（同梱 default_config.yaml を確認してください）"
+            "export.gcode.draw_feed が未設定です"
+            "（同梱 default_config.yaml を確認してください）"
         )
-
     z_up = _as_float(gcode.get("z_up"), key="export.gcode.z_up")
     if z_up is None:
         raise RuntimeError(
@@ -600,46 +619,44 @@ def runtime_config() -> RuntimeConfig:
         raise RuntimeError(
             "export.gcode.z_down が未設定です（同梱 default_config.yaml を確認してください）"
         )
-
     y_down = _as_bool(gcode.get("y_down"), key="export.gcode.y_down")
     if y_down is None:
         raise RuntimeError(
             "export.gcode.y_down が未設定です（同梱 default_config.yaml を確認してください）"
         )
-
     origin = _as_float_pair(gcode.get("origin"), key="export.gcode.origin")
     if origin is None:
         raise RuntimeError(
             "export.gcode.origin が未設定です（同梱 default_config.yaml を確認してください）"
         )
-
     decimals = _as_int(gcode.get("decimals"), key="export.gcode.decimals")
     if decimals is None:
         raise RuntimeError(
             "export.gcode.decimals が未設定です（同梱 default_config.yaml を確認してください）"
         )
-    if int(decimals) < 0:
+    if decimals < 0:
         raise ValueError(f"export.gcode.decimals は 0 以上である必要があります: got={decimals}")
 
-    paper_margin_mm = _as_float(gcode.get("paper_margin_mm"), key="export.gcode.paper_margin_mm")
+    paper_margin_mm = _as_float(
+        gcode.get("paper_margin_mm"),
+        key="export.gcode.paper_margin_mm",
+    )
     if paper_margin_mm is None:
         raise RuntimeError(
-            "export.gcode.paper_margin_mm が未設定です（同梱 default_config.yaml を確認してください）"
+            "export.gcode.paper_margin_mm が未設定です"
+            "（同梱 default_config.yaml を確認してください）"
         )
-    if float(paper_margin_mm) < 0.0:
+    if paper_margin_mm < 0.0:
         raise ValueError(
             "export.gcode.paper_margin_mm は 0 以上である必要があります"
             f": got={paper_margin_mm}"
         )
 
-    bed_x_range = _as_float_pair(gcode.get("bed_x_range"), key="export.gcode.bed_x_range")
-    bed_y_range = _as_float_pair(gcode.get("bed_y_range"), key="export.gcode.bed_y_range")
-
     bridge_draw_distance = _as_float(
         gcode.get("bridge_draw_distance"),
         key="export.gcode.bridge_draw_distance",
     )
-    if bridge_draw_distance is not None and float(bridge_draw_distance) < 0.0:
+    if bridge_draw_distance is not None and bridge_draw_distance < 0.0:
         raise ValueError(
             "export.gcode.bridge_draw_distance は 0 以上である必要があります"
             f": got={bridge_draw_distance}"
@@ -651,24 +668,20 @@ def runtime_config() -> RuntimeConfig:
     )
     if optimize_travel is None:
         raise RuntimeError(
-            "export.gcode.optimize_travel が未設定です（同梱 default_config.yaml を確認してください）"
+            "export.gcode.optimize_travel が未設定です"
+            "（同梱 default_config.yaml を確認してください）"
         )
-
     allow_reverse = _as_bool(
         gcode.get("allow_reverse"),
         key="export.gcode.allow_reverse",
     )
     if allow_reverse is None:
         raise RuntimeError(
-            "export.gcode.allow_reverse が未設定です（同梱 default_config.yaml を確認してください）"
+            "export.gcode.allow_reverse が未設定です"
+            "（同梱 default_config.yaml を確認してください）"
         )
 
-    canvas_height_mm = _as_float(
-        gcode.get("canvas_height_mm"),
-        key="export.gcode.canvas_height_mm",
-    )
-
-    gcode_cfg = GCodeExportConfig(
+    return GCodeExportConfig(
         travel_feed=float(travel_feed),
         draw_feed=float(draw_feed),
         z_up=float(z_up),
@@ -677,33 +690,111 @@ def runtime_config() -> RuntimeConfig:
         origin=(float(origin[0]), float(origin[1])),
         decimals=int(decimals),
         paper_margin_mm=float(paper_margin_mm),
-        bed_x_range=bed_x_range,
-        bed_y_range=bed_y_range,
+        bed_x_range=_as_float_pair(
+            gcode.get("bed_x_range"),
+            key="export.gcode.bed_x_range",
+        ),
+        bed_y_range=_as_float_pair(
+            gcode.get("bed_y_range"),
+            key="export.gcode.bed_y_range",
+        ),
         bridge_draw_distance=bridge_draw_distance,
         optimize_travel=bool(optimize_travel),
         allow_reverse=bool(allow_reverse),
-        canvas_height_mm=canvas_height_mm,
+        canvas_height_mm=_as_float(
+            gcode.get("canvas_height_mm"),
+            key="export.gcode.canvas_height_mm",
+        ),
     )
 
+
+def _parse_export_section(payload: dict[str, Any]) -> _ExportSection:
+    """``export`` section を検証して返す。"""
+
+    export = _as_mapping(payload.get("export"), key="export")
+    png = _as_mapping(export.get("png"), key="export.png")
+    png_scale = _as_float(png.get("scale"), key="export.png.scale")
+    if png_scale is None:
+        raise RuntimeError(
+            "export.png.scale が未設定です（同梱 default_config.yaml を確認してください）"
+        )
+    if png_scale <= 0.0:
+        raise ValueError(f"export.png.scale は正の値である必要があります: got={png_scale}")
+
+    gcode = _as_mapping(export.get("gcode"), key="export.gcode")
+    return _ExportSection(
+        png_scale=float(png_scale),
+        gcode=_parse_gcode_section(gcode),
+    )
+
+
+def _parse_midi_section(payload: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    """``midi`` section を検証して入力設定を返す。"""
+
     midi = _as_mapping(payload.get("midi"), key="midi")
-    midi_inputs = _as_midi_inputs(midi.get("inputs"))
+    return tuple(_as_midi_inputs(midi.get("inputs")))
+
+
+def runtime_config() -> RuntimeConfig:
+    """実行時設定をロードして返す（キャッシュ）。
+
+    読み込み元の優先順位（後勝ち）:
+    1) 同梱 `grafix/resource/default_config.yaml`
+    2) 探索で見つかった `config.yaml`（任意）
+    3) `set_config_path()` で明示指定された `config.yaml`（任意）
+
+    Notes
+    -----
+    - 一度ロードした結果はモジュール内にキャッシュされる。
+      `set_config_path()` はキャッシュを破棄するため、次回呼び出しで再ロードされる。
+    - ユーザー設定は mapping を再帰的にマージし、未指定の同梱既定値を維持する。
+    """
+
+    global _CONFIG_CACHE
+    # キャッシュがあれば即返す。設定の切り替えは `set_config_path()` で行う。
+    if _CONFIG_CACHE is not None:
+        return _CONFIG_CACHE
+
+    explicit_path = _EXPLICIT_CONFIG_PATH
+    if explicit_path is not None and not explicit_path.is_file():
+        raise FileNotFoundError(f"config.yaml が見つかりません: {explicit_path}")
+
+    discovered_path: Path | None = None
+    # 既定の探索は「CWD → HOME」の順。最初に見つかった 1 つのみを採用する。
+    for p in _default_config_candidates():
+        if p.is_file():
+            discovered_path = p
+            break
+
+    # 同梱デフォルトをベースにし、ユーザー設定で指定された leaf だけを上書きする。
+    payload = _load_packaged_default_config()
+    if discovered_path is not None:
+        payload = _merge_mappings(payload, _load_yaml_config(discovered_path))
+    if explicit_path is not None:
+        payload = _merge_mappings(payload, _load_yaml_config(explicit_path))
+
+    _validate_version(payload)
+    paths = _parse_paths_section(payload)
+    ui = _parse_ui_section(payload)
+    export = _parse_export_section(payload)
+    midi_inputs = _parse_midi_section(payload)
 
     cfg = RuntimeConfig(
         # config_path は「ユーザー設定の出典」を記録する用途（同梱デフォルトにはパスが無い）。
         config_path=explicit_path or discovered_path,
-        output_dir=output_dir,
-        sketch_dir=sketch_dir,
-        preset_module_dirs=tuple(preset_module_dirs),
-        font_dirs=tuple(font_dirs),
-        window_pos_draw=window_pos_draw,
-        window_pos_parameter_gui=window_pos_parameter_gui,
-        parameter_gui_window_size=parameter_gui_window_size,
-        parameter_gui_fallback_font_japanese=parameter_gui_fallback_font_japanese,
-        parameter_gui_font_size_base_px=float(parameter_gui_font_size_base_px),
-        parameter_gui_table_column_weights=parameter_gui_table_column_weights,
-        png_scale=float(png_scale),
-        gcode=gcode_cfg,
-        midi_inputs=tuple(midi_inputs),
+        output_dir=paths.output_dir,
+        sketch_dir=paths.sketch_dir,
+        preset_module_dirs=paths.preset_module_dirs,
+        font_dirs=paths.font_dirs,
+        window_pos_draw=ui.window_pos_draw,
+        window_pos_parameter_gui=ui.window_pos_parameter_gui,
+        parameter_gui_window_size=ui.parameter_gui_window_size,
+        parameter_gui_fallback_font_japanese=ui.parameter_gui_fallback_font_japanese,
+        parameter_gui_font_size_base_px=ui.parameter_gui_font_size_base_px,
+        parameter_gui_table_column_weights=ui.parameter_gui_table_column_weights,
+        png_scale=export.png_scale,
+        gcode=export.gcode,
+        midi_inputs=midi_inputs,
     )
     _CONFIG_CACHE = cfg
     return cfg

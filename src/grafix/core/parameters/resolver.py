@@ -4,13 +4,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from .context import current_cc_snapshot, current_frame_params, current_param_snapshot
 from .frame_params import FrameParamsBuffer
 from .key import ParameterKey
 from .meta import ParamMeta
-from .state import ParamState
+from .state import ParamState, ParamStateSnapshot
 
 DEFAULT_QUANT_STEP = 1e-3
 
@@ -44,7 +45,7 @@ def _quantize(value: Any, meta: ParamMeta) -> Any:
 
 
 def _choose_value(
-    base_value: Any, state: ParamState, meta: ParamMeta
+    base_value: Any, state: ParamState | ParamStateSnapshot, meta: ParamMeta
 ) -> tuple[Any, str]:
     """base/GUI/CC から effective 値を選び、(値, source) を返す。
 
@@ -129,7 +130,7 @@ def resolve_params(
     *,
     op: str,
     params: dict[str, Any],
-    meta: dict[str, ParamMeta],
+    meta: Mapping[str, ParamMeta],
     site_id: str,
     chain_id: str | None = None,
     step_index: int | None = None,
@@ -158,6 +159,7 @@ def resolve_params(
 
         # param_snapshot は parameter_context 開始時点の store_snapshot(store) で固定されている。
         # そのため 1 draw 呼び出しの途中で GUI が動いても、このフレームの解決は決定的になる。
+        state: ParamState | ParamStateSnapshot
         snapshot_entry = param_snapshot.get(key)
         if snapshot_entry is not None:
             # 既に GUI 側で状態が存在する場合は、それを正として meta/state を採用する。

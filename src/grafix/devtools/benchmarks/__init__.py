@@ -6,4 +6,7 @@
 
 from __future__ import annotations
 
-__all__: list[str] = []
+BENCHMARK_SCHEMA_VERSION = 2
+"""effect benchmark の結果 JSON schema version。"""
+
+__all__ = ["BENCHMARK_SCHEMA_VERSION"]

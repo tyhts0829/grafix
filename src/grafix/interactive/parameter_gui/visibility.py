@@ -8,7 +8,12 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+from grafix.core.builtins import (
+    ensure_builtin_effect_registered,
+    ensure_builtin_primitive_registered,
+)
 from grafix.core.effect_registry import effect_registry
+from grafix.core.op_registry import UiVisiblePred
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
@@ -50,7 +55,7 @@ def active_mask_for_rows(
             row.ui_value if effective is None else effective.get(key, row.ui_value)
         )
 
-    ui_visible_by_op: dict[str, dict[str, object]] = {}
+    ui_visible_by_op: dict[str, dict[str, UiVisiblePred]] = {}
 
     # activate=False の group は、activate 行以外を一律で非表示にする。
     # 目的: ui_visible を書かなくても「無効化中は引数の海にならない」状態にする。
@@ -61,16 +66,24 @@ def active_mask_for_rows(
         if not bool(values.get("activate", True)):
             disabled_groups.add(group)
 
-    def _rules_for_op(op: str) -> dict[str, object]:
+    def _rules_for_op(op: str) -> dict[str, UiVisiblePred]:
         cached = ui_visible_by_op.get(op)
         if cached is not None:
             return cached
+        if (
+            op not in preset_registry
+            and op not in primitive_registry
+            and op not in effect_registry
+        ):
+            ensure_builtin_primitive_registered(op)
+            ensure_builtin_effect_registered(op)
+        rules: Mapping[str, UiVisiblePred]
         if op in preset_registry:
             rules = preset_registry.get_ui_visible(op)
         elif op in primitive_registry:
-            rules = primitive_registry.get_ui_visible(op)
+            rules = primitive_registry[op].ui_visible
         elif op in effect_registry:
-            rules = effect_registry.get_ui_visible(op)
+            rules = effect_registry[op].ui_visible
         else:
             rules = {}
         ui_visible_by_op[op] = dict(rules)
@@ -94,7 +107,7 @@ def active_mask_for_rows(
 
         values = values_by_group.get(group, {})
         try:
-            mask.append(bool(pred(values)))  # type: ignore[misc]
+            mask.append(bool(pred(values)))
         except Exception as exc:
             _logger.warning(
                 "ui_visible の評価に失敗: op=%s arg=%s err=%s", op, arg, exc

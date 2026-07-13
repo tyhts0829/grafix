@@ -83,13 +83,16 @@ def parameter_context(
     try:
         yield
     finally:
-        # フレーム終了時に観測結果を ParamStore へ保存
-        merge_frame_labels(store, frame_params.labels)
-        merge_frame_params(store, frame_params.records)
-        _param_snapshot_var.reset(t1)
-        _frame_params_var.reset(t2)
-        _cc_snapshot_var.reset(t3)
-        _store_var.reset(t4)
+        try:
+            # フレーム終了時に観測結果を ParamStore へ保存する。
+            # merge が失敗しても、下の finally で ContextVar は必ず元へ戻す。
+            merge_frame_labels(store, frame_params.labels)
+            merge_frame_params(store, frame_params.records)
+        finally:
+            _store_var.reset(t4)
+            _cc_snapshot_var.reset(t3)
+            _frame_params_var.reset(t2)
+            _param_snapshot_var.reset(t1)
 
 
 @contextlib.contextmanager
@@ -107,7 +110,7 @@ def parameter_context_from_snapshot(
     try:
         yield frame_params
     finally:
-        _param_snapshot_var.reset(t1)
-        _frame_params_var.reset(t2)
-        _cc_snapshot_var.reset(t3)
         _store_var.reset(t4)
+        _cc_snapshot_var.reset(t3)
+        _frame_params_var.reset(t2)
+        _param_snapshot_var.reset(t1)

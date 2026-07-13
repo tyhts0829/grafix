@@ -9,11 +9,12 @@
 ## Core（データモデル/評価）
 
 - `Geometry`: 配列そのものではなく「幾何のレシピ」を表す DAG ノード。`src/grafix/core/geometry.py:Geometry`
-- `GeometryId`: `(op, inputs, args)` から計算される内容署名 ID。キャッシュキーとして使う。`src/grafix/core/geometry.py:compute_geometry_id`
+- `GeometryId`: schema v2 の型付き canonical encoding `(op, inputs, args)` から計算される内容署名 ID。`src/grafix/core/geometry.py:compute_geometry_id`
 - `RealizedGeometry`: `Geometry` を評価して得られる実体配列（`coords` + `offsets`）。`src/grafix/core/realized_geometry.py:RealizedGeometry`
 - `GeomTuple`: `(coords, offsets)` タプルで表す最小実体表現。`@primitive` / `@effect` のユーザー定義 I/O に使う。`src/grafix/core/realized_geometry.py:GeomTuple`
-- `realize`: `Geometry -> RealizedGeometry` を評価し、cache/inflight で重複計算を避ける。`src/grafix/core/realize.py:realize`
-- `RealizedLayer`: 描画/出力用の「Layer + realize 済みジオメトリ + style」。`src/grafix/core/pipeline.py:RealizedLayer`
+- `RealizeSession`: `Geometry -> RealizedGeometry` の評価、byte-LRU、inflight 集約を所有する明示的な寿命単位。`src/grafix/core/realize.py:RealizeSession`
+- `GeometryCacheKey`: `GeometryId` と primitive/effect registry revision の組。CPU/GPU cache で共有する。`src/grafix/core/realize.py:GeometryCacheKey`
+- `RealizedLayer`: 描画/出力用の「Layer + realize 済みジオメトリ + cache key + style」。`src/grafix/core/pipeline.py:RealizedLayer`
 
 ## Scene / Layer（描画単位）
 
@@ -23,9 +24,10 @@
 
 ## Registry / builtins（拡張ポイント）
 
-- `primitive_registry` / `effect_registry`: op 名 → 実体関数/メタ情報のレジストリ。`src/grafix/core/primitive_registry.py` / `src/grafix/core/effect_registry.py`
+- `OpSpec`: evaluator、meta、defaults、引数順、arity を同じ世代として保持する frozen registry entry。`src/grafix/core/op_registry.py:OpSpec`
+- `primitive_registry` / `effect_registry`: op 名 → `OpSpec` の revision 付きレジストリ。`src/grafix/core/primitive_registry.py` / `src/grafix/core/effect_registry.py`
 - `@primitive` / `@effect`: `(coords, offsets)` タプル I/O の関数をレジストリへ登録するデコレータ。組み込み op は `meta=...` 必須。内部では `RealizedGeometry` に包む。`src/grafix/core/primitive_registry.py:primitive` / `src/grafix/core/effect_registry.py:effect`
-- built-in 登録: 組み込み primitive/effect を import して登録する入口。`src/grafix/core/builtins.py:ensure_builtin_ops_registered`
+- built-in manifest: op 名から対象 module だけを lazy import する対応表。list/stub生成時だけ全件を読む。`src/grafix/core/builtins.py`
 
 ## parameters（GUI/CC と値解決・永続）
 
@@ -33,8 +35,9 @@
 - `ParamMeta`: 引数の UI 種別・範囲などの最小メタ。`src/grafix/core/parameters/meta.py:ParamMeta`
 - `ParamState`: UI 値・override・CC 割当などの状態。`src/grafix/core/parameters/state.py:ParamState`
 - `ParameterKey`: `(op, site_id, arg)` で GUI 行を一意化するキー。`src/grafix/core/parameters/key.py:ParameterKey`
-- `site_id`: 呼び出し箇所 ID。既定は `"{abs_filename}:{co_firstlineno}:{f_lasti}"`。`src/grafix/core/parameters/key.py:make_site_id`
-- `ParamSnapshot`: `ParamStore` を読み取り用に固めた辞書。`src/grafix/core/parameters/snapshot_ops.py:ParamSnapshot`
+- `site_id`: project-relative code location、または G/E/L/P の明示 `key=` から作る呼び出し箇所 ID。`src/grafix/core/parameters/key.py:make_site_id`
+- `ParamSnapshot`: `ParamStore` を revision 単位で読み取り用に固定した mapping。`src/grafix/core/parameters/snapshot_ops.py:ParamSnapshot`
+- `ParamStore.revision`: snapshot/GUI model/worker 同期を無効化する、snapshot に影響する永続状態の変更時だけ進む単調 revision。
 - `parameter_context`: フレーム境界で `ParamSnapshot` と `FrameParamsBuffer`（観測バッファ）を固定し、終了時に store へマージする。`src/grafix/core/parameters/context.py:parameter_context`
 - `FrameParamsBuffer`: そのフレームで観測・解決した引数を貯めるバッファ。`src/grafix/core/parameters/frame_params.py:FrameParamsBuffer`
 - `resolve_params`: base/GUI/CC から effective 値を決め、観測を記録する関数。`src/grafix/core/parameters/resolver.py:resolve_params`
@@ -49,3 +52,10 @@
 - `P` / `@preset`: preset 登録と呼び出しの公開導線。`src/grafix/api/presets.py:P` / `src/grafix/api/preset.py:preset`
 - `run(draw)`: interactive ランナー。`src/grafix/api/runner.py:run`
 - `Export`: headless export の入口。`src/grafix/api/export.py:Export`
+
+## Effect math / runtime
+
+- `PlanarFrame`: 3D の平面形状を決定的な2D座標へ写し、rank/residualも返す共通平面基底。`src/grafix/core/effects/util.py:PlanarFrame`
+- `GridSpec`: bbox、pitch、cell上限から確保前に格子解像度を決める値。`src/grafix/core/effects/util.py:GridSpec`
+- `ExportJobSystem`: PNG/G-code を bounded queue と latest-wins pending で処理する長寿命 spawn worker。`src/grafix/interactive/runtime/export_job_system.py:ExportJobSystem`
+- `ParameterTableModel`: store/registry revision 内で不変なGUI行・順序・ヘッダを保持するcache単位。`src/grafix/interactive/parameter_gui/table_model.py:ParameterTableModel`

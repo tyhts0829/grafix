@@ -8,8 +8,6 @@
 from __future__ import annotations
 
 import math
-from typing import Sequence
-
 import numpy as np
 from numba import njit, types  # type: ignore[import-untyped]
 from numba.typed import List  # type: ignore[attr-defined]
@@ -17,7 +15,7 @@ from numba.typed import List  # type: ignore[attr-defined]
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import transform_back, transform_to_xy_plane
+from .util import PlanarFrame, pack_polylines
 
 weave_meta = {
     "num_candidate_lines": ParamMeta(kind="int", ui_min=0, ui_max=500),
@@ -28,12 +26,8 @@ weave_meta = {
 MAX_NUM_CANDIDATE_LINES = 500
 MAX_RELAXATION_ITERATIONS = 50
 MAX_STEP = 0.5
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
+_PLANAR_EPS_ABS = 1e-6
+_PLANAR_EPS_REL = 1e-5
 
 
 def _iter_polylines(coords: np.ndarray, offsets: np.ndarray):
@@ -43,31 +37,16 @@ def _iter_polylines(coords: np.ndarray, offsets: np.ndarray):
         yield coords[s:e]
 
 
-def _lines_to_realized(lines: Sequence[np.ndarray]) -> GeomTuple:
-    """ポリライン列を (coords, offsets) にまとめる。"""
-    if not lines:
-        return _empty_geometry()
-
-    coords_list: list[np.ndarray] = []
-    offsets = np.zeros((len(lines) + 1,), dtype=np.int32)
-    acc = 0
-    for i, line in enumerate(lines):
-        ln = np.asarray(line)
-        if ln.ndim != 2 or ln.shape[1] != 3:
-            raise ValueError("lines は shape (N,3) の配列列である必要がある")
-        coords_list.append(ln.astype(np.float32, copy=False))
-        acc += int(ln.shape[0])
-        offsets[i + 1] = acc
-    coords = (
-        np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), dtype=np.float32)
-    )
-    return coords, offsets
-
-
 def _is_closed_polyline(vertices: np.ndarray) -> bool:
     if vertices.shape[0] < 2:
         return False
     return bool(np.allclose(vertices[0], vertices[-1], rtol=0.0, atol=1e-6))
+
+
+def _planarity_threshold(points: np.ndarray) -> float:
+    points64 = points.astype(np.float64, copy=False)
+    diagonal = float(np.linalg.norm(np.ptp(points64, axis=0)))
+    return max(_PLANAR_EPS_ABS, _PLANAR_EPS_REL * diagonal)
 
 
 @effect(meta=weave_meta)
@@ -137,7 +116,7 @@ def weave(
 
     if not did_webify:
         return coords, offsets
-    return _lines_to_realized(out_lines)
+    return pack_polylines(out_lines)
 
 
 def _webify_single_polyline(
@@ -148,14 +127,17 @@ def _webify_single_polyline(
     step: float,
 ) -> list[np.ndarray]:
     """単一ポリラインからウェブ状の線分群を生成して 3D に戻す。"""
-    transformed, R, z = transform_to_xy_plane(vertices)
+    frame = PlanarFrame.from_points(vertices)
+    if not frame.is_planar(_planarity_threshold(vertices)):
+        return [vertices]
+    transformed = frame.to_local(vertices)
     polylines_xy = create_web(
         transformed,
         num_candidate_lines=num_candidate_lines,
         relaxation_iterations=relaxation_iterations,
         step=step,
     )
-    return [transform_back(poly, R, z) for poly in polylines_xy]
+    return [frame.to_world(poly) for poly in polylines_xy]
 
 
 @njit(fastmath=True, cache=True)

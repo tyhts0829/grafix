@@ -5,7 +5,13 @@ from __future__ import annotations
 import numpy as np
 
 from grafix.api import E, G
-from grafix.core.effects.fill import _build_evenodd_groups, _point_in_polygon, _polygon_area_abs
+from grafix.core.effects.fill import (
+    _build_evenodd_groups,
+    _pack_planar_fill_chunks,
+    _point_in_polygon_coords_njit,
+    _polygon_area_abs,
+)
+from grafix.core.effects.util import PlanarFrame
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
@@ -25,6 +31,24 @@ def fill_test_square() -> GeomTuple:
         dtype=np.float32,
     )
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
+    return coords, offsets
+
+
+@primitive
+def fill_test_tilted_collinear_start() -> GeomTuple:
+    """先頭3点が共線で、z=x+y の傾斜平面上にある閉ポリラインを返す。"""
+    coords = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [5.0, 0.0, 5.0],
+            [10.0, 0.0, 10.0],
+            [10.0, 10.0, 20.0],
+            [0.0, 10.0, 10.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    offsets = np.asarray([0, coords.shape[0]], dtype=np.int32)
     return coords, offsets
 
 
@@ -106,6 +130,18 @@ def _iter_polylines(realized: RealizedGeometry):
         yield realized.coords[s:e]
 
 
+def _point_inside(point: np.ndarray, polygon: np.ndarray) -> bool:
+    return bool(
+        _point_in_polygon_coords_njit(
+            polygon,
+            0,
+            int(polygon.shape[0]),
+            float(point[0]),
+            float(point[1]),
+        )
+    )
+
+
 def test_fill_square_generates_expected_line_count() -> None:
     g = G.fill_test_square()
     filled = E.fill(angle_sets=1, angle=0.0, density=10.0, remove_boundary=True)(g)
@@ -116,6 +152,37 @@ def test_fill_square_generates_expected_line_count() -> None:
     for seg in _iter_polylines(realized):
         assert seg.shape == (2, 3)
         assert float(seg[0, 1]) == float(seg[1, 1])
+
+
+def test_fill_uses_all_points_for_tilted_ring_with_collinear_start() -> None:
+    filled = E.fill(angle_sets=1, angle=0.0, density=8.0, remove_boundary=True)(
+        G.fill_test_tilted_collinear_start()
+    )
+    realized = realize(filled)
+
+    assert realized.offsets.size > 1
+    np.testing.assert_allclose(
+        realized.coords[:, 2],
+        realized.coords[:, 0] + realized.coords[:, 1],
+        rtol=0.0,
+        atol=2e-5,
+    )
+
+
+def test_fill_packed_hatch_offsets_use_two_vertex_stride() -> None:
+    frame = PlanarFrame.from_points(
+        np.asarray([[0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0], [0, 0, 0]])
+    )
+    boundary = frame.to_local(
+        np.asarray([[0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0], [0, 0, 0]])
+    )
+    hatch = np.asarray([[0, 1], [4, 1], [0, 2], [4, 2], [0, 3], [4, 3]], dtype=np.float32)
+
+    coords, offsets = _pack_planar_fill_chunks([boundary, hatch], frame)
+
+    assert coords.dtype == np.float32
+    assert offsets.tolist() == [0, 5, 7, 9, 11]
+    np.testing.assert_array_equal(np.diff(offsets[1:]), np.full((3,), 2, dtype=np.int32))
 
 
 def test_fill_remove_boundary_false_keeps_input() -> None:
@@ -189,10 +256,10 @@ def test_point_in_polygon_treats_boundary_as_outside() -> None:
         dtype=np.float32,
     )
 
-    assert _point_in_polygon(np.array([5.0, 5.0], dtype=np.float32), poly)
-    assert not _point_in_polygon(np.array([0.0, 5.0], dtype=np.float32), poly)
-    assert not _point_in_polygon(np.array([0.0, 0.0], dtype=np.float32), poly)
-    assert not _point_in_polygon(np.array([15.0, 5.0], dtype=np.float32), poly)
+    assert _point_inside(np.array([5.0, 5.0], dtype=np.float32), poly)
+    assert not _point_inside(np.array([0.0, 5.0], dtype=np.float32), poly)
+    assert not _point_inside(np.array([0.0, 0.0], dtype=np.float32), poly)
+    assert not _point_inside(np.array([15.0, 5.0], dtype=np.float32), poly)
 
 
 def test_fill_text_o_respects_hole() -> None:
@@ -223,7 +290,7 @@ def test_fill_text_o_respects_hole() -> None:
     y0 = float(np.min(hole_poly[:, 1]))
     y1 = float(np.max(hole_poly[:, 1]))
     probe = np.array([(x0 + x1) * 0.5, (y0 + y1) * 0.5], dtype=np.float32)
-    assert _point_in_polygon(probe, hole_poly)
+    assert _point_inside(probe, hole_poly)
 
     filled = realize(E.fill(angle_sets=1, angle=0.0, density=25.0, remove_boundary=True)(g))
     assert filled.coords.shape[0] > 0
@@ -231,7 +298,7 @@ def test_fill_text_o_respects_hole() -> None:
         if seg.shape != (2, 3):
             continue
         mid = seg.mean(axis=0)
-        assert not _point_in_polygon(mid[:2].astype(np.float32, copy=False), hole_poly)
+        assert not _point_inside(mid[:2].astype(np.float32, copy=False), hole_poly)
 
 
 def _mean_dir_from_segments(segments: list[np.ndarray]) -> np.ndarray:

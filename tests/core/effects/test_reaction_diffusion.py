@@ -53,3 +53,22 @@ def test_reaction_diffusion_empty_mask_returns_empty() -> None:
     )
     assert out.coords.shape == (0, 3)
     assert out.offsets.tolist() == [0]
+
+
+def test_reaction_diffusion_is_deterministic_for_fixed_seed() -> None:
+    mask = G.polygon(n_sides=24, scale=24.0)
+    effect = E.reaction_diffusion(
+        grid_pitch=1.5,
+        steps=4,
+        seed=37,
+        seed_radius=4.0,
+        noise=0.03,
+        level=0.5,
+        min_points=4,
+    )
+
+    first = realize(effect(mask))
+    second = realize(effect(mask))
+
+    np.testing.assert_array_equal(first.coords, second.coords)
+    np.testing.assert_array_equal(first.offsets, second.offsets)

@@ -5,15 +5,18 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from grafix.core.atomic_write import atomic_write_text
+from grafix.core.output_paths import output_path_for_draw
+
 from .codec import dumps_param_store, loads_param_store
 from .prune_ops import prune_stale_loaded_groups, prune_unknown_args_in_known_ops
 from .store import ParamStore
-
-from grafix.core.output_paths import output_path_for_draw
 
 _logger = logging.getLogger(__name__)
 
@@ -38,13 +41,20 @@ def load_param_store(path: Path) -> ParamStore:
         payload = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return ParamStore()
-    except OSError:
-        return ParamStore()
 
     try:
         return loads_param_store(payload)
-    except Exception:
-        # 破損した JSON は利便性のため無視して起動する。
+    except Exception as exc:
+        corrupt_path = path.with_name(
+            f"{path.name}.corrupt-{os.getpid()}-{time.time_ns()}"
+        )
+        os.replace(path, corrupt_path)
+        _logger.warning(
+            "壊れた ParamStore を退避しました: source=%s backup=%s error=%s",
+            path,
+            corrupt_path,
+            exc,
+        )
         return ParamStore()
 
 
@@ -65,5 +75,4 @@ def save_param_store(store: ParamStore, path: Path) -> None:
             preview,
             suffix,
         )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(dumps_param_store(store) + "\n", encoding="utf-8")
+    atomic_write_text(path, dumps_param_store(store) + "\n")

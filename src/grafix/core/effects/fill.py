@@ -13,9 +13,9 @@ import numpy as np
 from numba import njit  # type: ignore[attr-defined]
 
 from grafix.core.effect_registry import effect
-from grafix.core.realized_geometry import GeomTuple
-from .util import transform_back, transform_to_xy_plane
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.realized_geometry import GeomTuple
+from .util import PlanarFrame, empty_geom, pack_polylines
 
 # 生成する塗り線の最大本数（密度の上限）。
 MAX_FILL_LINES = 1000
@@ -29,14 +29,6 @@ fill_meta = {
     "spacing_gradient": ParamMeta(kind="float", ui_min=-5.0, ui_max=5.0),
     "remove_boundary": ParamMeta(kind="bool"),
 }
-
-
-def _empty_geometry() -> GeomTuple:
-    # (coords, offsets) の「空」表現。
-    # offsets は常に先頭 0 を 1 つ持つ（ポリライン 0 本の意味）。
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
 
 
 def _as_float_cycle(value: float | Sequence[float]) -> tuple[float, ...]:
@@ -145,198 +137,6 @@ def _is_degenerate_fill_input(coords_2d_all: np.ndarray, offsets: np.ndarray) ->
             return False
 
     return True
-
-
-def _point_in_polygon(point: np.ndarray, polygon: np.ndarray) -> bool:
-    """点が多角形内部にあるかを返す（境界上は False 扱い）。"""
-    # 目的:
-    # - even-odd のグルーピング（外環/穴の判定）に使う。
-    # - partition 後のセルは隣接し、代表点が「他セルの境界上」に乗りやすい。
-    #   このとき境界上を inside 扱いすると hole 誤判定が起きるため、境界は必ず False にする。
-    x = float(point[0])
-    y = float(point[1])
-    return bool(_point_in_polygon_njit(polygon, x, y))
-
-
-@njit(cache=True)  # type: ignore[misc]
-def _point_in_polygon_njit(polygon: np.ndarray, x: float, y: float) -> bool:
-    """点が多角形内部にあるかを返す（境界上は False 扱い、Numba 版）。"""
-    n = int(polygon.shape[0])
-    if n < 3:
-        return False
-
-    # 境界上を明示的に除外してから、偶奇レイキャストで内部判定する。
-    eps = 1e-6
-
-    x1 = float(polygon[n - 1, 0])
-    y1 = float(polygon[n - 1, 1])
-    for i in range(n):
-        x2 = float(polygon[i, 0])
-        y2 = float(polygon[i, 1])
-
-        if abs(x - x2) <= eps and abs(y - y2) <= eps:
-            return False
-
-        dx = x2 - x1
-        dy = y2 - y1
-
-        min_x = x1 if x1 < x2 else x2
-        max_x = x2 if x1 < x2 else x1
-        min_y = y1 if y1 < y2 else y2
-        max_y = y2 if y1 < y2 else y1
-        if (
-            x >= min_x - eps
-            and x <= max_x + eps
-            and y >= min_y - eps
-            and y <= max_y + eps
-        ):
-            cross = dx * (y - y1) - dy * (x - x1)
-            tol = eps * (abs(dx) + abs(dy))
-            if tol < eps:
-                tol = eps
-            if abs(cross) <= tol:
-                dot = (x - x1) * (x - x2) + (y - y1) * (y - y2)
-                if dot <= eps * eps:
-                    return False
-
-        x1, y1 = x2, y2
-
-    inside = False
-    x1 = float(polygon[n - 1, 0])
-    y1 = float(polygon[n - 1, 1])
-    for i in range(n):
-        x2 = float(polygon[i, 0])
-        y2 = float(polygon[i, 1])
-        if (y1 > y) != (y2 > y):
-            x_int = (x2 - x1) * (y - y1) / (y2 - y1) + x1
-            if x < x_int:
-                inside = not inside
-        x1, y1 = x2, y2
-    return inside
-
-
-def _estimate_global_xy_transform_pca(
-    coords: np.ndarray,
-    offsets: np.ndarray,
-    *,
-    threshold: float,
-) -> tuple[np.ndarray, np.ndarray, float] | None:
-    """全点から平面を推定し、XY 平面へ整列した座標と変換を返す。
-
-    - PCA（最小分散軸）で法線を推定し、Z 軸へ合わせる回転を作る。
-    - 面内回転は「代表リングの最長辺」を +X に合わせて固定する。
-    - 返す座標は z=0 に寄せる（代表リング先頭点の z を 0 に合わせる）。
-    """
-    # ここで返す aligned_all は「全点を同一平面へ倒した座標」。
-    # fill の本体では、この 2D 座標で:
-    # - 外環＋穴の even-odd グルーピング
-    # - ハッチ線分生成（水平スキャンライン）
-    # を行い、最後に transform_back で元の 3D 姿勢へ戻す。
-    if coords.shape[0] < 3 or offsets.size <= 1:
-        return None
-
-    # 1) PCA で平面法線を推定（最小分散軸）。
-    coords64 = coords.astype(np.float64, copy=False)
-    centroid = np.mean(coords64, axis=0)
-    centered = coords64 - centroid
-    cov = centered.T @ centered
-
-    _, eigvecs = np.linalg.eigh(cov)
-    if eigvecs.shape != (3, 3):
-        return None
-
-    normal = eigvecs[:, 0]
-    n_norm = float(np.linalg.norm(normal))
-    if not np.isfinite(n_norm) or n_norm <= 0.0:
-        return None
-    normal = normal / n_norm
-
-    # 法線の符号は不定なので、Z が正になるように揃える（姿勢の一意化）。
-    if float(normal[2]) < 0.0:
-        normal = -normal
-
-    # 2) 推定法線を +Z に合わせる回転を作る。
-    z_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-    rotation_axis = np.cross(normal, z_axis)
-    axis_norm = float(np.linalg.norm(rotation_axis))
-    if axis_norm <= 1e-12:
-        r0 = np.eye(3, dtype=np.float64)
-    else:
-        rotation_axis = rotation_axis / axis_norm
-        cos_theta = float(np.dot(normal, z_axis))
-        cos_theta = float(np.clip(cos_theta, -1.0, 1.0))
-        angle = float(np.arccos(cos_theta))
-
-        k = np.zeros((3, 3), dtype=np.float64)
-        k[0, 1] = -rotation_axis[2]
-        k[0, 2] = rotation_axis[1]
-        k[1, 0] = rotation_axis[2]
-        k[1, 2] = -rotation_axis[0]
-        k[2, 0] = -rotation_axis[1]
-        k[2, 1] = rotation_axis[0]
-
-        r0 = np.eye(3, dtype=np.float64) + np.sin(angle) * k + (1.0 - np.cos(angle)) * (k @ k)
-
-    ring_indices = [
-        i
-        for i in range(int(offsets.size) - 1)
-        if int(offsets[i + 1]) - int(offsets[i]) >= 3
-    ]
-    if not ring_indices:
-        return None
-
-    # 3) 面内回転の自由度を潰す（ハッチ方向の安定化）。
-    # 面を Z に倒しただけだと、XY 平面内で任意回転できてしまい、描画がフレームごとに揺れる。
-    # 代表リング（面積最大）の「最初に見つかった非ゼロ辺」を +X に合わせる。
-    ref_ring_i = ring_indices[0]
-    ref_area = -1.0
-    for ring_i in ring_indices:
-        start = int(offsets[ring_i])
-        end = int(offsets[ring_i + 1])
-        poly = coords64[start:end]
-        if poly.shape[0] < 3:
-            continue
-        aligned0 = poly @ r0.T
-        a = _polygon_area_abs(aligned0[:, :2])
-        if a > ref_area:
-            ref_area = a
-            ref_ring_i = ring_i
-
-    s_ref = int(offsets[ref_ring_i])
-    e_ref = int(offsets[ref_ring_i + 1])
-    ref_poly = coords64[s_ref:e_ref]
-    if ref_poly.shape[0] < 2:
-        return None
-
-    aligned_ref = ref_poly @ r0.T
-    xy = aligned_ref[:, :2]
-    phi: float | None = None
-    for i in range(int(xy.shape[0]) - 1):
-        dx = float(xy[i + 1, 0] - xy[i, 0])
-        dy = float(xy[i + 1, 1] - xy[i, 1])
-        if dx * dx + dy * dy > 1e-12:
-            phi = float(np.arctan2(dy, dx))
-            break
-    if phi is None:
-        return None
-
-    cos_phi = float(np.cos(phi))
-    sin_phi = float(np.sin(phi))
-    rz = np.eye(3, dtype=np.float64)
-    rz[0, 0] = cos_phi
-    rz[0, 1] = sin_phi
-    rz[1, 0] = -sin_phi
-    rz[1, 1] = cos_phi
-
-    # 4) 最終回転を適用し、z=0 近傍へ寄せる（残差チェックを簡単にする）。
-    rot = rz @ r0
-    aligned_all = coords64 @ rot.T
-    z_offset = float(aligned_all[s_ref, 2])
-    aligned_all[:, 2] -= z_offset
-    residual = float(np.max(np.abs(aligned_all[:, 2])))
-    if residual > threshold:
-        return None
-    return aligned_all, rot, z_offset
 
 
 @njit(cache=True)  # type: ignore[misc]
@@ -654,8 +454,8 @@ def _generate_line_fill_evenodd_multi(
     angle_rad: float,
     spacing_override: float | None,
     spacing_gradient: float,
-) -> list[np.ndarray]:
-    """複数輪郭を偶奇規則でまとめてハッチングする（2D 平面前提）。"""
+) -> np.ndarray:
+    """複数輪郭のハッチ端点をline順のpacked ``(2*n, 2)`` で返す。"""
     # 目的:
     # - 複数輪郭（外周＋穴）をまとめて扱い、even-odd で内側区間だけを線分化する。
     #
@@ -665,7 +465,7 @@ def _generate_line_fill_evenodd_multi(
     # 3) 各スキャンラインとポリゴン辺の交点 x を集め、ソートして [x0,x1],[x2,x3]... を線分にする。
     # 4) 回転した場合は線分を元角度に戻す。
     if density <= 0.0 or offsets.size <= 1 or coords_2d.size == 0:
-        return []
+        return np.empty((0, 2), dtype=np.float32)
 
     c2 = coords_2d.astype(np.float32, copy=False)
     center = np.mean(c2, axis=0)
@@ -685,17 +485,16 @@ def _generate_line_fill_evenodd_multi(
 
     ref_height = float(np.max(c2[:, 1]) - np.min(c2[:, 1]))
     if ref_height <= 0.0:
-        return []
+        return np.empty((0, 2), dtype=np.float32)
 
     min_y = float(np.min(work[:, 1]))
     max_y = float(np.max(work[:, 1]))
 
     spacing = float(spacing_override) if spacing_override is not None else _spacing_from_height(ref_height, density)
     if not np.isfinite(spacing) or spacing <= 0.0:
-        return []
+        return np.empty((0, 2), dtype=np.float32)
 
     y_values = _generate_y_values(min_y, max_y, spacing, float(spacing_gradient))
-    out_lines: list[np.ndarray] = []
 
     # 全輪郭の辺を 1 つの配列へ集約する（交点計算のベクトル化）。
     edges_list: list[np.ndarray] = []
@@ -712,7 +511,7 @@ def _generate_line_fill_evenodd_multi(
         edges_list.append(np.concatenate([poly, nxt], axis=1))
 
     if not edges_list:
-        return []
+        return np.empty((0, 2), dtype=np.float32)
     edges = np.concatenate(edges_list, axis=0).astype(np.float32, copy=False)
     ex1 = edges[:, 0]
     ey1 = edges[:, 1]
@@ -721,6 +520,8 @@ def _generate_line_fill_evenodd_multi(
     edy = ey2 - ey1
     edx = ex2 - ex1
 
+    scanlines: list[tuple[np.float32, np.ndarray]] = []
+    segment_count = 0
     for y in y_values:
         yy = float(y)
         # 半開区間で交差判定し、頂点での二重カウントを抑える。
@@ -736,41 +537,63 @@ def _generate_line_fill_evenodd_multi(
 
         # even-odd: ソートした交点を 2 個ずつペアにして内側区間を得る。
         xs_sorted = np.sort(xs.astype(np.float32, copy=False))
-        for j in range(0, int(xs_sorted.size) - 1, 2):
-            x_a = float(xs_sorted[j])
-            x_b = float(xs_sorted[j + 1])
-            if x_b - x_a <= 1e-9:
+        valid_count = 0
+        for pair_index in range(0, int(xs_sorted.size) - 1, 2):
+            if float(xs_sorted[pair_index + 1] - xs_sorted[pair_index]) > 1e-9:
+                valid_count += 1
+        if valid_count > 0:
+            scanlines.append((y, xs_sorted))
+            segment_count += valid_count
+
+    endpoints = np.empty((2 * segment_count, 2), dtype=np.float32)
+    cursor = 0
+    for y, xs_sorted in scanlines:
+        for pair_index in range(0, int(xs_sorted.size) - 1, 2):
+            x_a = xs_sorted[pair_index]
+            x_b = xs_sorted[pair_index + 1]
+            if float(x_b - x_a) <= 1e-9:
                 continue
-            seg2d = np.array([[x_a, float(y)], [x_b, float(y)]], dtype=np.float32)
-            if rot_fwd is not None:
-                # 作業座標 → 元角度へ戻す。
-                seg2d = (seg2d - center) @ rot_fwd.T + center
-            out_lines.append(seg2d)
-    return out_lines
+            endpoints[cursor, 0] = x_a
+            endpoints[cursor, 1] = y
+            endpoints[cursor + 1, 0] = x_b
+            endpoints[cursor + 1, 1] = y
+            cursor += 2
+    if rot_fwd is not None and endpoints.size > 0:
+        endpoints[:] = (endpoints - center) @ rot_fwd.T + center
+    return endpoints
 
 
-def _lines_to_realized(lines: Sequence[np.ndarray]) -> GeomTuple:
-    """ポリライン列を (coords, offsets) にまとめる。"""
-    if not lines:
-        return _empty_geometry()
+def _pack_planar_fill_chunks(
+    chunks: Sequence[np.ndarray], frame: PlanarFrame
+) -> GeomTuple:
+    """local boundaryとpacked hatchを詰め、world変換を一度だけ適用する。"""
 
-    # Grafix のジオメトリは「coords 1 本 + offsets」で複数ポリラインを表現する。
-    # ここでは lines を連結し、各線の終端 index を offsets に積む。
-    coords_list: list[np.ndarray] = []
-    offsets = np.zeros((len(lines) + 1,), dtype=np.int32)
-    acc = 0
-    for i, line in enumerate(lines):
-        ln = np.asarray(line)
-        if ln.ndim != 2 or ln.shape[1] != 3:
-            raise ValueError("lines は shape (N,3) の配列列である必要がある")
-        coords_list.append(ln.astype(np.float32, copy=False))
-        acc += int(ln.shape[0])
-        offsets[i + 1] = acc
-    coords = (
-        np.concatenate(coords_list, axis=0)
-        if coords_list
-        else np.zeros((0, 3), dtype=np.float32)
+    if not chunks:
+        return empty_geom()
+    total_vertices = sum(int(chunk.shape[0]) for chunk in chunks)
+    total_lines = sum(
+        1 if int(chunk.shape[1]) == 3 else int(chunk.shape[0]) // 2 for chunk in chunks
     )
+    local = np.zeros((total_vertices, 3), dtype=np.float64)
+    offsets = np.empty((total_lines + 1,), dtype=np.int32)
+    offsets[0] = 0
+    vertex_cursor = 0
+    line_cursor = 0
+    for chunk in chunks:
+        count = int(chunk.shape[0])
+        if int(chunk.shape[1]) == 3:
+            local[vertex_cursor : vertex_cursor + count] = chunk
+            line_cursor += 1
+            offsets[line_cursor] = np.int32(vertex_cursor + count)
+        else:
+            local[vertex_cursor : vertex_cursor + count, :2] = chunk
+            line_count = count // 2
+            offsets[line_cursor + 1 : line_cursor + line_count + 1] = (
+                vertex_cursor + np.arange(2, count + 1, 2, dtype=np.int32)
+            )
+            line_cursor += line_count
+        vertex_cursor += count
+    coords = frame.to_world(local).astype(np.float32, copy=False)
     return coords, offsets
 
 
@@ -829,14 +652,9 @@ def fill(
     # （0° と 180° は同方向扱いなので 2π ではなく π）
     # 1) 全体がほぼ平面なら、外周＋穴をグルーピングして even-odd 塗りを行う。
     # 3D -> XY 平面への整列で 2D 化し、生成した線分を元姿勢へ戻す。
-    global_threshold = _planarity_threshold(coords)
-    global_est = _estimate_global_xy_transform_pca(
-        coords,
-        offsets,
-        threshold=float(global_threshold),
-    )
-    if global_est is not None:
-        coords_xy_all, rot_global, z_global = global_est
+    global_frame = PlanarFrame.from_points(coords, offsets)
+    if global_frame.is_planar(_planarity_threshold(coords)):
+        coords_xy_all = global_frame.to_local(coords)
         coords2d_all = coords_xy_all[:, :2].astype(np.float32, copy=False)
         if _is_degenerate_fill_input(coords2d_all, offsets):
             return coords, offsets
@@ -852,7 +670,7 @@ def fill(
                 s = int(offsets[poly_i])
                 e = int(offsets[poly_i + 1])
                 out_lines.append(coords[s:e])
-            return _lines_to_realized(out_lines)
+            return pack_polylines(out_lines)
 
         ref_height_global = float(np.max(coords2d_all[:, 1]) - np.min(coords2d_all[:, 1]))
         if ref_height_global <= 0.0:
@@ -865,9 +683,9 @@ def fill(
                     s = int(offsets[ring_i])
                     e = int(offsets[ring_i + 1])
                     out_lines.append(coords[s:e])
-            return _lines_to_realized(out_lines)
+            return pack_polylines(out_lines)
 
-        out_lines = []
+        out_chunks: list[np.ndarray] = []
         for gi, ring_indices in enumerate(groups):
             # groupwise cycle
             remove_boundary_i = bool(remove_boundary_seq[gi % len(remove_boundary_seq)])
@@ -883,7 +701,7 @@ def fill(
                 for ring_i in ring_indices:
                     s = int(offsets[ring_i])
                     e = int(offsets[ring_i + 1])
-                    out_lines.append(coords[s:e])
+                    out_chunks.append(coords_xy_all[s:e])
 
             # density<=0 は「塗り線無し」。境界だけで終わる。
             if not np.isfinite(density_i) or density_i <= 0.0:
@@ -913,7 +731,7 @@ def fill(
             g_coords2d = np.concatenate(parts, axis=0)
             for i in range(k_i):
                 ang_i = base_angle_rad + (np.pi / k_i) * i
-                segs2d = _generate_line_fill_evenodd_multi(
+                endpoints = _generate_line_fill_evenodd_multi(
                     g_coords2d,
                     g_offsets,
                     density=density_i,
@@ -921,12 +739,10 @@ def fill(
                     spacing_override=float(base_spacing),
                     spacing_gradient=float(grad_i),
                 )
-                for seg in segs2d:
-                    seg3 = np.zeros((int(seg.shape[0]), 3), dtype=np.float32)
-                    seg3[:, :2] = seg
-                    out_lines.append(transform_back(seg3, rot_global, z_global))
+                if endpoints.size > 0:
+                    out_chunks.append(endpoints)
 
-        return _lines_to_realized(out_lines)
+        return _pack_planar_fill_chunks(out_chunks, global_frame)
 
     # 2) 全体が非平面なら、各ポリラインごとに「平面なら塗り、非平面なら境界のみ」とする。
     # この経路では外環＋穴の統合は行わない（グローバルな平面が取れないため）。
@@ -942,13 +758,17 @@ def fill(
             out_lines.append(vertices)
             continue
 
-        vxy, rot, z_off = transform_to_xy_plane(vertices)
-        residual = float(np.max(np.abs(vxy[:, 2].astype(np.float64, copy=False))))
-        if residual > _planarity_threshold(vertices):
+        frame = PlanarFrame.from_points(vertices)
+        if not frame.valid:
+            # 点・直線は閉領域を定義しないため、remove_boundary に関係なく no-op。
+            out_lines.append(vertices)
+            continue
+        if not frame.is_planar(_planarity_threshold(vertices)):
             # non-planar では「各ポリライン」をグループとみなし、poly_i でサイクルする。
             if not bool(remove_boundary_seq[poly_i % len(remove_boundary_seq)]):
                 out_lines.append(vertices)
             continue
+        vxy = frame.to_local(vertices)
 
         coords2d = vxy[:, :2].astype(np.float32, copy=False)
         if _is_degenerate_fill_input(coords2d, np.array([0, coords2d.shape[0]], dtype=np.int32)):
@@ -974,9 +794,10 @@ def fill(
             k_i = 1
         base_angle_rad = float(np.deg2rad(float(angle_seq[poly_i % len(angle_seq)])))
         grad_i = float(spacing_gradient_seq[poly_i % len(spacing_gradient_seq)])
+        hatch_chunks: list[np.ndarray] = []
         for i in range(k_i):
             ang_i = base_angle_rad + (np.pi / k_i) * i
-            segs2d = _generate_line_fill_evenodd_multi(
+            endpoints = _generate_line_fill_evenodd_multi(
                 coords2d,
                 poly_offsets,
                 density=density_i,
@@ -984,9 +805,22 @@ def fill(
                 spacing_override=float(base_spacing),
                 spacing_gradient=float(grad_i),
             )
-            for seg in segs2d:
-                seg3 = np.zeros((int(seg.shape[0]), 3), dtype=np.float32)
-                seg3[:, :2] = seg
-                out_lines.append(transform_back(seg3, rot, float(z_off)))
+            if endpoints.size > 0:
+                hatch_chunks.append(endpoints)
+        if hatch_chunks:
+            local_hatch = np.zeros(
+                (sum(int(chunk.shape[0]) for chunk in hatch_chunks), 3),
+                dtype=np.float64,
+            )
+            cursor = 0
+            for chunk in hatch_chunks:
+                count = int(chunk.shape[0])
+                local_hatch[cursor : cursor + count, :2] = chunk
+                cursor += count
+            world_hatch = frame.to_world(local_hatch).astype(np.float32, copy=False)
+            out_lines.extend(
+                world_hatch[start : start + 2]
+                for start in range(0, int(world_hatch.shape[0]), 2)
+            )
 
-    return _lines_to_realized(out_lines)
+    return pack_polylines(out_lines)

@@ -49,7 +49,7 @@ def _ffmpeg_command(
         "-i",
         "-",
         "-vf",
-        "vflip",
+        "vflip,pad=ceil(iw/2)*2:ceil(ih/2)*2",
         "-an",
         "-c:v",
         "libx264",
@@ -60,7 +60,11 @@ def _ffmpeg_command(
 
 
 class VideoRecorder:
-    """raw RGB フレーム列を動画へ保存する録画器。"""
+    """raw RGB フレーム列を動画へ保存する録画器。
+
+    入力 frame は ``size`` どおりの RGB24 とし、H.264 側では必要な場合だけ右端・下端を
+    1 px pad して、yuv420p が要求する偶数寸法へ揃える。
+    """
 
     def __init__(
         self,
@@ -115,7 +119,14 @@ class VideoRecorder:
         stdin = proc.stdin
         if stdin is None:
             raise RuntimeError("ffmpeg stdin pipe が閉じられています")
-        stdin.write(frame)
+        try:
+            stdin.write(frame)
+        except (BrokenPipeError, OSError) as e:
+            width, height = self.size
+            raise RuntimeError(
+                "ffmpeg への frame 書き込みに失敗しました"
+                f": path={self.path}, input_size={width}x{height}, fps={self.fps:g}"
+            ) from e
 
     def close(self) -> None:
         """録画を終了し、ffmpeg を待つ。"""
@@ -136,6 +147,9 @@ class VideoRecorder:
             details = ""
             if stderr:
                 details = stderr.decode("utf-8", errors="replace").strip()
+            width, height = self.size
             raise RuntimeError(
-                f"ffmpeg が失敗しました (code={proc.returncode}). {details}".strip()
+                "ffmpeg が失敗しました"
+                f" (code={proc.returncode}, path={self.path},"
+                f" input_size={width}x{height}, fps={self.fps:g}). {details}".strip()
             )

@@ -20,12 +20,6 @@ subdivide_meta = {
 }
 
 
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
 @effect(meta=subdivide_meta)
 def subdivide(
     g: GeomTuple,
@@ -69,38 +63,76 @@ def subdivide(
     if n_lines <= 0:
         return coords, offsets
 
-    out_lines: list[np.ndarray] = []
-    total_vertices = 0
-    for li in range(n_lines):
-        s = int(offsets[li])
-        e = int(offsets[li + 1])
-        vertices = coords[s:e]
+    base_total = int(coords.shape[0])
+    if base_total > MAX_TOTAL_VERTICES:
+        return coords, offsets
 
-        base_n = int(vertices.shape[0])
-        remaining = MAX_TOTAL_VERTICES - total_vertices
-        if remaining <= 0 or remaining < base_n:
+    # 全ポリラインを残せる共通の細分回数を、配列確保前に決める。
+    selected_divisions = divisions
+    counts: list[int] = []
+    while selected_divisions > 0:
+        counts = [
+            _subdivided_vertex_count(
+                coords[int(offsets[i]) : int(offsets[i + 1])],
+                selected_divisions,
+            )
+            for i in range(n_lines)
+        ]
+        if sum(counts) <= MAX_TOTAL_VERTICES:
             break
+        selected_divisions -= 1
 
-        subdivided = _subdivide_core(vertices, divisions, int(remaining))
-        out_lines.append(subdivided)
-        total_vertices += int(subdivided.shape[0])
+    if selected_divisions <= 0:
+        return coords, offsets
 
-    if not out_lines:
-        return _empty_geometry()
+    if not counts:
+        counts = [
+            _subdivided_vertex_count(
+                coords[int(offsets[i]) : int(offsets[i + 1])],
+                selected_divisions,
+            )
+            for i in range(n_lines)
+        ]
 
-    offsets_out = np.zeros((len(out_lines) + 1,), dtype=np.int32)
-    acc = 0
-    coords_list: list[np.ndarray] = []
-    for i, line in enumerate(out_lines):
-        line32 = np.asarray(line, dtype=np.float32)
-        coords_list.append(line32)
-        acc += int(line32.shape[0])
-        offsets_out[i + 1] = acc
+    total_vertices = sum(counts)
+    if total_vertices == base_total:
+        return coords, offsets
 
-    coords_out = (
-        np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), dtype=np.float32)
-    )
+    coords_out = np.empty((total_vertices, coords.shape[1]), dtype=np.float32)
+    offsets_out = np.empty((n_lines + 1,), dtype=np.int32)
+    offsets_out[0] = 0
+    write_at = 0
+    for li, count in enumerate(counts):
+        start = int(offsets[li])
+        end = int(offsets[li + 1])
+        line = _subdivide_core(coords[start:end], selected_divisions, count)
+        next_at = write_at + count
+        coords_out[write_at:next_at] = line
+        offsets_out[li + 1] = next_at
+        write_at = next_at
+
     return coords_out, offsets_out
+
+
+def _subdivided_vertex_count(vertices: np.ndarray, subdivisions: int) -> int:
+    """配列を増やさず、``_subdivide_core`` の出力頂点数を返す。"""
+
+    n = int(vertices.shape[0])
+    if n < 2 or subdivisions <= 0:
+        return n
+
+    delta = vertices[1:] - vertices[:-1]
+    distance_sq = np.einsum("ij,ij->i", delta, delta)
+    min_distance_sq = float(np.min(distance_sq))
+    if min_distance_sq < MIN_SEG_LEN_SQ:
+        return n
+
+    for _ in range(min(int(subdivisions), MAX_SUBDIVISIONS)):
+        n = 2 * n - 1
+        min_distance_sq *= 0.25
+        if min_distance_sq < MIN_SEG_LEN_SQ:
+            break
+    return n
 
 
 @njit(fastmath=True, cache=True)

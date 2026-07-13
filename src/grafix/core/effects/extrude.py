@@ -35,12 +35,6 @@ _CONNECT_ATOL = 1e-8
 _CONNECT_RTOL = 1e-5
 
 
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
 @njit(cache=True)
 def _subdivide_midpoints(vertices: np.ndarray, subdivisions: int) -> np.ndarray:
     """各セグメントへ中点挿入を繰り返す（旧 extrude の仕様踏襲、Numba 実装）。"""

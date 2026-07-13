@@ -15,3 +15,22 @@ class ParamState:
     override: bool = True
     ui_value: Any = None
     cc_key: int | tuple[int | None, int | None, int | None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ParamStateSnapshot:
+    """revision cache から安全に共有できる読み取り専用の ParamState。"""
+
+    override: bool
+    ui_value: Any
+    cc_key: int | tuple[int | None, int | None, int | None] | None
+
+    @classmethod
+    def from_state(cls, state: ParamState) -> ParamStateSnapshot:
+        """mutable な store state を読み取り専用値へコピーする。"""
+
+        return cls(
+            override=bool(state.override),
+            ui_value=state.ui_value,
+            cc_key=state.cc_key,
+        )

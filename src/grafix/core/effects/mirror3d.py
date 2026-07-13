@@ -9,6 +9,7 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from .util import empty_geom
 
 EPS = 1e-6
 INCLUDE_BOUNDARY = True
@@ -45,12 +46,6 @@ mirror3d_ui_visible = {
     "group": _mode_is("polyhedral"),
     "use_reflection": _mode_is("polyhedral"),
 }
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
 
 
 @effect(meta=mirror3d_meta, ui_visible=mirror3d_ui_visible)
@@ -154,7 +149,7 @@ def mirror3d(
 
     uniq = _dedup_lines(out_lines)
     if not uniq:
-        return _empty_geometry()
+        return empty_geom()
 
     all_coords = np.vstack(uniq).astype(np.float32, copy=False)
     new_offsets = np.zeros((len(uniq) + 1,), dtype=np.int32)

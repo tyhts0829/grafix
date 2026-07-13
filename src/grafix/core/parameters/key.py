@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from types import FrameType
+from types import CodeType, FrameType
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,36 +20,59 @@ class ParameterKey:
     arg: str
 
 
-def make_site_id(frame: FrameType | None = None) -> str:
-    """フレーム情報から site_id を生成する。
+@lru_cache(maxsize=4096)
+def _code_file_id(code: CodeType, module_name: str) -> str:
+    """code object の永続化向け相対 file ID を返す。"""
 
-    site_id の形式: ``\"{filename}:{co_firstlineno}:{f_lasti}\"``。
-    """
+    filename = str(code.co_filename)
+    if filename and not filename.startswith("<"):
+        resolved = Path(filename).resolve()
+        try:
+            return resolved.relative_to(Path.cwd().resolve()).as_posix()
+        except ValueError:
+            pass
+    if module_name and module_name != "__main__":
+        return module_name
+    if filename and not filename.startswith("<"):
+        return Path(filename).name
+    return module_name or filename or "<unknown>"
+
+
+@lru_cache(maxsize=16_384)
+def _automatic_site_id(code: CodeType, instruction: int, module_name: str) -> str:
+    file_id = _code_file_id(code, module_name)
+    return f"{file_id}:{code.co_firstlineno}:{int(instruction)}"
+
+
+def make_site_id(
+    frame: FrameType | None = None,
+    *,
+    key: str | int | None = None,
+) -> str:
+    """frame から project-relative site ID または明示 key ID を生成する。"""
 
     if frame is None:
         frame = inspect.currentframe()
         if frame is not None:
-            frame = frame.f_back  # 呼び出し元を指す
+            frame = frame.f_back
     if frame is None:
         return "<unknown>:0:0"
+
     code = frame.f_code
-    filename = str(code.co_filename)
-    if filename and not filename.startswith("<"):
-        try:
-            filename = str(Path(filename).resolve())
-        except Exception:
-            pass
-    return f"{filename}:{code.co_firstlineno}:{frame.f_lasti}"
+    module_name = str(frame.f_globals.get("__name__", ""))
+    if key is not None:
+        if not isinstance(key, (str, int)):
+            raise TypeError("parameter key は str|int|None である必要がある")
+        return f"{_code_file_id(code, module_name)}|{key}"
+    return _automatic_site_id(code, frame.f_lasti, module_name)
 
 
-def caller_site_id(skip: int = 1) -> str:
-    """呼び出し元スタックから site_id を取得する。
-
-    Parameters
-    ----------
-    skip : int
-        何フレーム遡るか。1 でこの関数の呼び出し元。
-    """
+def caller_site_id(
+    skip: int = 1,
+    *,
+    key: str | int | None = None,
+) -> str:
+    """呼び出し元 stack から site ID を取得する。"""
 
     frame: FrameType | None = inspect.currentframe()
     for _ in range(skip + 1):
@@ -57,4 +81,4 @@ def caller_site_id(skip: int = 1) -> str:
         frame = frame.f_back
     if frame is None:
         return "<unknown>:0:0"
-    return make_site_id(frame)
+    return make_site_id(frame, key=key)

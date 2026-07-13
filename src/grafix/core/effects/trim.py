@@ -2,25 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 from numba import njit  # type: ignore[import-untyped, attr-defined]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from .util import pack_polylines
 
 trim_meta = {
     "start_param": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
     "end_param": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
 }
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
 
 
 def _clamp01(value: float) -> float:
@@ -32,25 +25,6 @@ def _clamp01(value: float) -> float:
     if v >= 1.0:
         return 1.0
     return v
-
-
-def _lines_to_realized(lines: Sequence[np.ndarray]) -> GeomTuple:
-    if not lines:
-        return _empty_geometry()
-
-    coords_list: list[np.ndarray] = []
-    offsets = np.zeros((len(lines) + 1,), dtype=np.int32)
-    cursor = 0
-    for i, line in enumerate(lines):
-        v = np.asarray(line)
-        if v.ndim != 2 or v.shape[1] != 3:
-            raise ValueError("trim: polyline は shape (N,3) が必要")
-        coords_list.append(v.astype(np.float32, copy=False))
-        cursor += int(v.shape[0])
-        offsets[i + 1] = cursor
-
-    coords = np.concatenate(coords_list, axis=0) if coords_list else np.zeros((0, 3), np.float32)
-    return coords, offsets
 
 
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
@@ -274,7 +248,7 @@ def trim(
     if not results:
         return coords, offsets
 
-    out_coords, out_offsets = _lines_to_realized(results)
+    out_coords, out_offsets = pack_polylines(results)
     if out_coords.shape[0] == 0 and coords.shape[0] != 0:
         return coords, offsets
     return out_coords, out_offsets

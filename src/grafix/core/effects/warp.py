@@ -11,12 +11,12 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from numba import njit, prange  # type: ignore[import-untyped]
+from numba import njit, prange  # type: ignore[import-untyped, attr-defined]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
-from .util import transform_back, transform_to_xy_plane
+from .util import PlanarFrame
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
 _PLANAR_EPS_ABS = 1e-6
@@ -74,12 +74,6 @@ class _Ring2D:
     maxs: np.ndarray  # (2,) float64
 
 
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
 def _planarity_threshold(points: np.ndarray) -> float:
     if points.size == 0:
         return float(_PLANAR_EPS_ABS)
@@ -90,12 +84,6 @@ def _planarity_threshold(points: np.ndarray) -> float:
     return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
 
 
-def _apply_alignment(coords: np.ndarray, rotation_matrix: np.ndarray, z_offset: float) -> np.ndarray:
-    aligned = coords.astype(np.float64, copy=False) @ rotation_matrix.T
-    aligned[:, 2] -= float(z_offset)
-    return aligned
-
-
 def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
     if points.shape[0] < 2:
         return points
@@ -103,17 +91,6 @@ def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
     if dist <= float(threshold):
         return np.concatenate([points[:-1], points[0:1]], axis=0)
     return points
-
-
-def _pick_representative_ring(
-    mask_coords: np.ndarray, mask_offsets: np.ndarray
-) -> np.ndarray | None:
-    for i in range(int(mask_offsets.size) - 1):
-        s = int(mask_offsets[i])
-        e = int(mask_offsets[i + 1])
-        if e - s >= 3:
-            return mask_coords[s:e]
-    return None
 
 
 def _extract_rings_xy(
@@ -413,17 +390,14 @@ def warp(
         if falloff_f < 0.0:
             falloff_f = 0.0
 
-    rep = _pick_representative_ring(mask_coords, mask_offsets)
-    if rep is None:
+    frame = PlanarFrame.from_points(mask_coords, mask_offsets)
+    threshold = _planarity_threshold(mask_coords)
+    if not frame.is_planar(threshold):
         return _with_extras(base)
 
-    _rep_aligned, rotation_matrix, z_offset = transform_to_xy_plane(rep)
-    aligned_base = _apply_alignment(base_coords, rotation_matrix, float(z_offset))
-    aligned_mask = _apply_alignment(mask_coords, rotation_matrix, float(z_offset))
+    aligned_base = frame.to_local(base_coords)
+    aligned_mask = frame.to_local(mask_coords)
 
-    threshold = _planarity_threshold(rep)
-    if float(np.max(np.abs(aligned_mask[:, 2]))) > threshold:
-        return _with_extras(base)
     if float(np.max(np.abs(aligned_base[:, 2]))) > threshold:
         return _with_extras(base)
 
@@ -451,7 +425,7 @@ def warp(
             pivot3 = np.array(
                 [[float(pivot[0]), float(pivot[1]), float(pivot[2])]], dtype=np.float64
             )
-            pivot_xy = _apply_alignment(pivot3, rotation_matrix, float(z_offset))[0, 0:2]
+            pivot_xy = frame.to_local(pivot3)[0, 0:2]
             center2 = pivot_xy.astype(np.float64, copy=False)
 
         if band_f <= 0.0:
@@ -509,9 +483,7 @@ def warp(
         out_xy = base_xy + mix[:, None] * (target_xy - base_xy)
         out3 = np.zeros((out_xy.shape[0], 3), dtype=np.float64)
         out3[:, 0:2] = out_xy
-        restored = transform_back(out3, rotation_matrix, float(z_offset)).astype(
-            np.float32, copy=False
-        )
+        restored = frame.to_world(out3).astype(np.float32, copy=False)
         return _with_extras((restored, base_offsets))
 
     # mode_s == "attract"
@@ -529,9 +501,7 @@ def warp(
     out_aligned[:, 0] += shift * gx
     out_aligned[:, 1] += shift * gy
 
-    out = transform_back(out_aligned, rotation_matrix, float(z_offset)).astype(
-        np.float32, copy=False
-    )
+    out = frame.to_world(out_aligned).astype(np.float32, copy=False)
     return _with_extras((out, base_offsets))
 
 

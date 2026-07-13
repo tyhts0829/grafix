@@ -34,12 +34,13 @@ def test_generate_stub_lists_user_presets_on_p(tmp_path: Path) -> None:
                 "from pathlib import Path",
                 "",
                 "from grafix.api import preset",
+                "from grafix.core.geometry import Geometry",
                 "",
-                "meta = {\"out\": {\"kind\": \"str\"}}",
+                'meta = {"out": {"kind": "str"}}',
                 "",
                 "@preset(meta=meta)",
-                "def stubgen_path(*, out: Path = Path('out'), name=None, key=None) -> Path:",
-                "    return out",
+                "def stubgen_path(*, out: Path = Path('out'), name=None, key=None) -> Geometry:",
+                "    return Geometry.create(op='concat')",
                 "",
             ]
         ),
@@ -56,6 +57,8 @@ def test_generate_stub_lists_user_presets_on_p(tmp_path: Path) -> None:
         set_config_path(None)
 
     assert (
-        "def stubgen_path(self, *, activate: bool = ..., out: Path = ...) -> Path:"
+        "def stubgen_path(self, *, activate: bool = ..., out: Path = ..., "
+        "name: str | None = ..., key: str | int | None = ...) -> SceneItem:"
         in stub
     )
+    assert "def __getattr__(self, name: str) -> Callable[..., SceneItem]:" in stub

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -63,12 +63,6 @@ repeat_ui_visible = {
     "curve": _curve_visible,
     "pivot": lambda v: not bool(v.get("auto_center", True)),
 }
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
 
 
 @njit(cache=True, fastmath=True)  # type: ignore[misc]

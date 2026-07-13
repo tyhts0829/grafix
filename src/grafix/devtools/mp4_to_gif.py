@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """動画（mp4/mov 等）を GIF に変換する。
 
 `python tools/mp4_to_gif.py` を実行するとファイル選択ダイアログが開く。
@@ -8,6 +6,8 @@ from __future__ import annotations
 必要:
 - ffmpeg（例: `brew install ffmpeg`）
 """
+
+from __future__ import annotations
 
 import shutil
 import subprocess

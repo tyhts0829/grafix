@@ -14,6 +14,7 @@ from typing import Any
 
 from grafix.core.preset_registry import preset_func_registry
 from grafix.core.runtime_config import runtime_config
+from grafix.core.scene import SceneItem
 
 _AUTOLOAD_KEY: tuple[Path | None, tuple[Path, ...]] | None = None
 
@@ -59,7 +60,7 @@ class PresetNamespace:
     - 未登録名は `AttributeError`。
     """
 
-    def __getattr__(self, name: str) -> Callable[..., Any]:
+    def __getattr__(self, name: str) -> Callable[..., SceneItem]:
         if name.startswith("_"):
             raise AttributeError(name)
 
@@ -74,7 +75,7 @@ class PresetNamespace:
         if pending_name is None and pending_key is None:
             return func
 
-        def _call_with_pending(*args: Any, **kwargs: Any) -> Any:
+        def _call_with_pending(*args: Any, **kwargs: Any) -> SceneItem:
             if pending_name is not None and "name" not in kwargs:
                 kwargs["name"] = pending_name
             if pending_key is not None and "key" not in kwargs:

@@ -36,6 +36,7 @@ class LayerNamespace:
         self,
         geometry_or_list: Geometry | Sequence[Geometry],
         *,
+        key: str | int | None = None,
         color: tuple[float, float, float] | None = None,
         thickness: float | None = None,
     ) -> list[Layer]:
@@ -45,6 +46,8 @@ class LayerNamespace:
         ----------
         geometry_or_list : Geometry or Sequence[Geometry]
             入力 Geometry または Geometry の列。
+        key : str or int or None, optional
+            行移動に影響されない明示 site key。
         color : tuple[float, float, float] or None, optional
             RGB 色。None の場合は既定値に委譲。
         thickness : float or None, optional
@@ -91,7 +94,7 @@ class LayerNamespace:
 
         # site_id は「この Layer が生成された呼び出し箇所」を識別する安定 ID。
         # Layer style（line_thickness/line_color）の行は、この site_id をキーとして保存する。
-        site_id = caller_site_id(skip=1)
+        site_id = caller_site_id(skip=1, key=key)
 
         store = current_param_store()
         if store is not None and resolved_name is not None:

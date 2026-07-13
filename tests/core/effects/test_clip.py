@@ -80,7 +80,7 @@ def test_clip_outside_empty_when_mask_covers_all() -> None:
 
 @pytest.mark.skipif(pyclipper is None, reason="pyclipper が未インストール")  # type: ignore[arg-type]
 def test_clip_restores_pose_from_rotated_plane() -> None:
-    from grafix.core.effects.util import transform_to_xy_plane
+    from grafix.core.effects.util import PlanarFrame
 
     a0 = G.grid(nx=11, ny=11, scale=10.0)
     b0 = G.polygon(n_sides=6, scale=3.0)
@@ -98,9 +98,8 @@ def test_clip_restores_pose_from_rotated_plane() -> None:
     assert z_range > 0.5
 
     mask = realize(b)
-    _aligned_mask, rotation_matrix, z_offset = transform_to_xy_plane(mask.coords)
-    aligned_out = realized_out.coords.astype(np.float64, copy=False) @ rotation_matrix.T
-    aligned_out[:, 2] -= float(z_offset)
+    frame = PlanarFrame.from_points(mask.coords, mask.offsets)
+    aligned_out = frame.to_local(realized_out.coords)
     assert float(np.max(np.abs(aligned_out[:, 2]))) < 1e-3
 
 

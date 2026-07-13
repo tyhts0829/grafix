@@ -80,8 +80,8 @@ def assert_invariants(store: ParamStore) -> None:
 
     # snapshot は pure 前提（= 不足補完をしない）なので、ここで例外が出るのは不変条件違反。
     snapshot = store_snapshot(store)
-    for _key, (_meta, state, _ordinal, _label) in snapshot.items():
-        assert not isinstance(state.ui_value, (list, dict))
+    for _key, (_meta, snapshot_state, _ordinal, _label) in snapshot.items():
+        assert not isinstance(snapshot_state.ui_value, (list, dict))
 
 
 __all__ = ["assert_invariants"]

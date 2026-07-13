@@ -7,7 +7,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Mapping
 from functools import wraps
-from typing import Any, ParamSpec, TypeVar, cast
+from typing import Any, ParamSpec
 
 from grafix.core.geometry import Geometry
 from grafix.core.parameters import caller_site_id, current_frame_params, current_param_store
@@ -20,9 +20,9 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_dict_from_user
 from grafix.core.parameters.resolver import resolve_params
 from grafix.core.preset_registry import preset_func_registry, preset_registry
+from grafix.core.scene import SceneItem
 
 _PSpec = ParamSpec("_PSpec")
-R = TypeVar("R")
 
 # --- 役割メモ ---
 #
@@ -48,29 +48,15 @@ def _defaults_from_signature(
     for arg in meta.keys():
         param = sig.parameters.get(arg)
         if param is None:
-            raise ValueError(
-                f"@preset meta 引数がシグネチャに存在しません: {func.__name__}.{arg}"
-            )
+            raise ValueError(f"@preset meta 引数がシグネチャに存在しません: {func.__name__}.{arg}")
         if param.default is inspect._empty:
-            raise ValueError(
-                f"@preset meta 引数は default 必須です: {func.__name__}.{arg}"
-            )
+            raise ValueError(f"@preset meta 引数は default 必須です: {func.__name__}.{arg}")
         if param.default is None:
             raise ValueError(
                 f"@preset meta 引数 default に None は使えません: {func.__name__}.{arg}"
             )
         defaults[arg] = param.default
     return defaults
-
-
-def _preset_site_id(base_site_id: str, key: object | None) -> str:
-    # preset は「呼び出し箇所（site_id）」で GUI 行を安定化させたい。
-    # ただし同一行で preset を複数回呼ぶこともあるため、その場合は key で分岐できるようにする。
-    if key is None:
-        return str(base_site_id)
-    if isinstance(key, (str, int)):
-        return f"{base_site_id}|{key}"
-    raise TypeError("preset の key は str|int|None である必要があります")
 
 
 def _maybe_set_label(*, op: str, site_id: str, label: str) -> None:
@@ -90,7 +76,7 @@ def preset(
     *,
     meta: Mapping[str, ParamMeta | Mapping[str, object]],
     ui_visible: Mapping[str, Callable[[Mapping[str, Any]], bool]] | None = None,
-) -> Callable[[Callable[_PSpec, R]], Callable[_PSpec, R]]:
+) -> Callable[[Callable[_PSpec, SceneItem]], Callable[_PSpec, SceneItem]]:
     """プリセット関数を Parameter GUI 向けにラップするデコレータ。
 
     Parameters
@@ -109,9 +95,11 @@ def preset(
 
     Notes
     -----
+    - preset 関数は `SceneItem`（Geometry / Layer / それらのネスト列）を返す component 専用。
     - 公開対象は `meta` に含まれる引数のみ。
     - 関数本体は自動で mute され、内部の `G.*` / `E.*` の観測（GUI/永続化）を行わない。
     - `activate` は予約引数として自動追加され、GUI/永続化の対象になる（meta に含めない）。
+      `False` の場合は関数本体を実行せず、空の `Geometry` を返す。
     - `name=` と `key=` を予約引数として使える（GUI には出さない）。
       `key` は同一呼び出し箇所から複数回生成する場合の衝突回避に使う。
     """
@@ -126,7 +114,7 @@ def preset(
         bad = ", ".join(sorted(reserved & set(meta_norm.keys())))
         raise ValueError(f"@preset meta に予約引数は含められません: {bad}")
 
-    def decorator(func: Callable[_PSpec, R]) -> Callable[_PSpec, R]:
+    def decorator(func: Callable[_PSpec, SceneItem]) -> Callable[_PSpec, SceneItem]:
         preset_name = str(func.__name__)
         # name 重複は「P.<name>」の解決が曖昧になるため禁止する。
         if preset_name in preset_func_registry:
@@ -158,7 +146,7 @@ def preset(
         )
 
         @wraps(func)
-        def wrapper(*args: _PSpec.args, **kwargs: _PSpec.kwargs) -> R:
+        def wrapper(*args: _PSpec.args, **kwargs: _PSpec.kwargs) -> SceneItem:
             # activate を kwargs から取り出す。
             # `explicit` 判定が必要なので、pop 前に「明示指定されていたか」を保持する。
             activate_explicit = "activate" in kwargs
@@ -189,11 +177,17 @@ def preset(
             elif "name" in sig.parameters:
                 display_name = bound.arguments.get("name", None)
 
-            key = None
+            key: str | int | None = None
             if key_explicit:
-                key = key_input
+                raw_key = key_input
             elif "key" in sig.parameters:
-                key = bound.arguments.get("key", None)
+                raw_key = bound.arguments.get("key", None)
+            else:
+                raw_key = None
+            if raw_key is not None:
+                if not isinstance(raw_key, (str, int)):
+                    raise TypeError("preset の key は str|int|None である必要があります")
+                key = raw_key
 
             # name/key がシグネチャに含まれる場合のみ、実関数呼び出しへ渡す。
             if "name" in sig.parameters and name_explicit:
@@ -203,8 +197,7 @@ def preset(
 
             # site_id は「ユーザーの呼び出し箇所」を指すようにする（skip=1）。
             # 同じ行で複数回呼ぶ場合は key で区別する。
-            base_site_id = caller_site_id(skip=1)
-            site_id = _preset_site_id(base_site_id, key)
+            site_id = caller_site_id(skip=1, key=key)
 
             # group header 名は、指定が無ければ関数名を使う（GUI 未使用時は何もしない）。
             if current_param_recording_enabled():
@@ -245,7 +238,7 @@ def preset(
             if not bool(resolved_params.get("activate", True)):
                 # activate=False なら「何も描かない Geometry」を返して終了する。
                 # （GUI 行としての preset 自体は記録/表示される）
-                return cast(R, Geometry.create(op="concat"))
+                return Geometry.create(op="concat")
 
             # 本体は常に mute:
             # preset 内部で生成される Geometry（G.* / E.*）は公開 API の外に置き、

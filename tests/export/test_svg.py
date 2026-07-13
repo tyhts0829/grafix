@@ -30,7 +30,13 @@ def _realized_layer(
         coords=np.asarray(coords, dtype=np.float32),
         offsets=np.asarray(offsets, dtype=np.int32),
     )
-    return RealizedLayer(layer=layer, realized=realized, color=color, thickness=thickness)
+    return RealizedLayer(
+        layer=layer,
+        realized=realized,
+        cache_key=(geometry.id, (0, 0)),
+        color=color,
+        thickness=thickness,
+    )
 
 
 def _parse_svg(text: str) -> ET.Element:

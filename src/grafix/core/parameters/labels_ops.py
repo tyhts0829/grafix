@@ -11,7 +11,11 @@ from .store import ParamStore
 def set_label(store: ParamStore, *, op: str, site_id: str, label: str) -> None:
     """(op, site_id) のラベルを上書きする。"""
 
-    store._labels_ref().set(op, site_id, label)
+    labels = store._labels_ref()
+    before = labels.get(op, site_id)
+    labels.set(op, site_id, label)
+    if labels.get(op, site_id) != before:
+        store._touch()
 
 
 def merge_frame_labels(store: ParamStore, labels: list[FrameLabelRecord]) -> None:
@@ -19,8 +23,10 @@ def merge_frame_labels(store: ParamStore, labels: list[FrameLabelRecord]) -> Non
 
     store_labels = store._labels_ref()
     for rec in labels:
+        before = store_labels.get(rec.op, rec.site_id)
         store_labels.set(rec.op, rec.site_id, rec.label)
+        if store_labels.get(rec.op, rec.site_id) != before:
+            store._touch()
 
 
 __all__ = ["set_label", "merge_frame_labels"]
-

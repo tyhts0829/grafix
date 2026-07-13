@@ -25,14 +25,23 @@ class BenchmarkCase:
         レポート表示用の短い名前。
     description : str
         目的・形状・規模の説明。
-    geometry : RealizedGeometry
-        入力実体ジオメトリ（通常は 1 要素 inputs[0] として渡す）。
+    inputs : tuple[RealizedGeometry, ...]
+        effect へ順番どおりに渡す入力実体ジオメトリ列。
+    tags : tuple[str, ...]
+        入力の特徴を表す安定な scenario tag。
     """
 
     case_id: str
     label: str
     description: str
-    geometry: RealizedGeometry
+    inputs: tuple[RealizedGeometry, ...]
+    tags: tuple[str, ...]
+
+    @property
+    def n_inputs(self) -> int:
+        """effect へ渡す入力数を返す。"""
+
+        return len(self.inputs)
 
 
 def describe_geometry(geom: RealizedGeometry) -> dict[str, int | bool]:
@@ -73,7 +82,8 @@ def build_default_cases(*, seed: int) -> list[BenchmarkCase]:
             case_id="line_small",
             label="line (2 verts)",
             description="最小ケース（2 点の線分 1 本）",
-            geometry=_line_segment(),
+            inputs=(_line_segment(),),
+            tags=("unary", "small"),
         )
     )
     cases.append(
@@ -81,7 +91,8 @@ def build_default_cases(*, seed: int) -> list[BenchmarkCase]:
             case_id="polyline_long",
             label="polyline (50k verts)",
             description="1 本の長い折れ線（頂点数が多い）",
-            geometry=_polyline_sine(n_vertices=50_000),
+            inputs=(_polyline_sine(n_vertices=50_000),),
+            tags=("unary", "huge-single-line"),
         )
     )
     cases.append(
@@ -89,7 +100,8 @@ def build_default_cases(*, seed: int) -> list[BenchmarkCase]:
             case_id="many_lines",
             label="many lines (5k)",
             description="短い線分を多数（ポリライン本数が多い）",
-            geometry=_many_line_segments(n_lines=5_000, rng=rng),
+            inputs=(_many_line_segments(n_lines=5_000, rng=rng),),
+            tags=("unary", "many-short-lines"),
         )
     )
     cases.append(
@@ -97,7 +109,8 @@ def build_default_cases(*, seed: int) -> list[BenchmarkCase]:
             case_id="ring_big",
             label="ring (5k sides)",
             description="大きめの閉曲線（正多角形リング）",
-            geometry=_regular_polygon_ring(n_sides=5_000, radius=120.0),
+            inputs=(_regular_polygon_ring(n_sides=5_000, radius=120.0),),
+            tags=("unary", "rings"),
         )
     )
     cases.append(
@@ -105,7 +118,20 @@ def build_default_cases(*, seed: int) -> list[BenchmarkCase]:
             case_id="rings_2",
             label="rings (outer+hole)",
             description="外周 + 穴の 2 リング（平面領域系 effect 向け）",
-            geometry=_two_rings(outer_sides=2_000, inner_sides=1_200),
+            inputs=(_two_rings(outer_sides=2_000, inner_sides=1_200),),
+            tags=("unary", "mask-grid", "rings"),
+        )
+    )
+    cases.append(
+        BenchmarkCase(
+            case_id="binary_mask",
+            label="binary (lines + rings)",
+            description="多数の横線 + 外周と穴のマスク（clip / warp 向け）",
+            inputs=(
+                _parallel_lines(n_lines=1_000, half_extent=180.0),
+                _two_rings(outer_sides=512, inner_sides=256),
+            ),
+            tags=("binary", "mask-grid", "many-short-lines", "rings"),
         )
     )
 
@@ -150,6 +176,23 @@ def _many_line_segments(*, n_lines: int, rng: np.random.Generator) -> RealizedGe
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
+def _parallel_lines(*, n_lines: int, half_extent: float) -> RealizedGeometry:
+    """同じ長さの水平線を等間隔に並べた geometry を返す。"""
+
+    count = max(1, int(n_lines))
+    extent = abs(float(half_extent))
+    ys = np.linspace(-extent, extent, num=count, dtype=np.float32)
+
+    coords = np.empty((2 * count, 3), dtype=np.float32)
+    coords[0::2, 0] = np.float32(-extent)
+    coords[1::2, 0] = np.float32(extent)
+    coords[0::2, 1] = ys
+    coords[1::2, 1] = ys
+    coords[:, 2] = np.float32(0.0)
+    offsets = np.arange(0, coords.shape[0] + 1, 2, dtype=np.int32)
+    return RealizedGeometry(coords=coords, offsets=offsets)
+
+
 def _regular_polygon_ring(*, n_sides: int, radius: float) -> RealizedGeometry:
     sides = int(n_sides)
     if sides < 3:
@@ -180,4 +223,3 @@ def _two_rings(*, outer_sides: int, inner_sides: int) -> RealizedGeometry:
         dtype=np.int32,
     )
     return RealizedGeometry(coords=coords, offsets=offsets)
-

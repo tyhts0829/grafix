@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.scene import SceneItem
 
 UiVisiblePred = Callable[[Mapping[str, Any]], bool]
 
@@ -28,6 +29,13 @@ class PresetRegistry:
 
     def __init__(self) -> None:
         self._items: dict[str, PresetSpec] = {}
+        self._revision = 0
+
+    @property
+    def revision(self) -> int:
+        """登録または上書きごとに増える単調 revision。"""
+
+        return int(self._revision)
 
     def _register(
         self,
@@ -56,6 +64,7 @@ class PresetRegistry:
             param_order=tuple(str(a) for a in param_order),
             ui_visible={} if ui_visible is None else dict(ui_visible),
         )
+        self._revision += 1
 
     def __contains__(self, op: object) -> bool:
         return str(op) in self._items
@@ -85,12 +94,12 @@ class PresetFuncRegistry:
     """preset（@preset）の name -> callable を保持するレジストリ。"""
 
     def __init__(self) -> None:
-        self._items: dict[str, Callable[..., Any]] = {}
+        self._items: dict[str, Callable[..., SceneItem]] = {}
 
     def _register(
         self,
         name: str,
-        func: Callable[..., Any],
+        func: Callable[..., SceneItem],
         *,
         overwrite: bool = False,
     ) -> None:
@@ -104,12 +113,12 @@ class PresetFuncRegistry:
     def __contains__(self, name: object) -> bool:
         return str(name) in self._items
 
-    def items(self) -> ItemsView[str, Callable[..., Any]]:
+    def items(self) -> ItemsView[str, Callable[..., SceneItem]]:
         """登録済みエントリの (name, func) ビューを返す。"""
 
         return self._items.items()
 
-    def get(self, name: str) -> Callable[..., Any] | None:
+    def get(self, name: str) -> Callable[..., SceneItem] | None:
         """name に対応する callable preset を返す。未登録なら None を返す。"""
 
         return self._items.get(str(name))

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
+from grafix.core.effects import subdivide as subdivide_module
+from grafix.core.effects.subdivide import subdivide as subdivide_impl
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
@@ -115,3 +118,35 @@ def test_subdivide_empty_geometry_is_noop() -> None:
 
     assert realized.coords.shape == (0, 3)
     assert realized.offsets.tolist() == [0]
+
+
+def test_subdivide_vertex_cap_never_drops_trailing_polylines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = realize(G.subdivide_test_two_lines())
+    monkeypatch.setattr(subdivide_module, "MAX_TOTAL_VERTICES", 3)
+
+    out_coords, out_offsets = subdivide_impl(
+        (base.coords, base.offsets),
+        subdivisions=1,
+    )
+
+    assert out_coords is base.coords
+    assert out_offsets is base.offsets
+    assert out_offsets.tolist() == [0, 2, 4]
+
+
+def test_subdivide_lowers_divisions_uniformly_to_fit_vertex_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = realize(G.subdivide_test_two_lines())
+    monkeypatch.setattr(subdivide_module, "MAX_TOTAL_VERTICES", 5)
+
+    out_coords, out_offsets = subdivide_impl(
+        (base.coords, base.offsets),
+        subdivisions=1,
+    )
+
+    assert out_coords is base.coords
+    assert out_offsets is base.offsets
+    assert out_offsets.tolist() == [0, 2, 4]

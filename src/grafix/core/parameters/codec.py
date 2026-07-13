@@ -288,6 +288,7 @@ def decode_param_store(obj: object) -> ParamStore:
         ordinals.get_or_assign(key.op, key.site_id)
     for key in store._meta.keys():
         ordinals.get_or_assign(key.op, key.site_id)
+    store._touch()
     return store
 
 

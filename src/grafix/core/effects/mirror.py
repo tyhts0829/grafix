@@ -10,6 +10,7 @@ from numba import njit  # type: ignore[import-untyped]
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from .util import empty_geom
 
 EPS = 1e-6
 INCLUDE_BOUNDARY = True
@@ -28,12 +29,6 @@ mirror_ui_visible = {
     "source_positive_x": lambda v: int(v.get("n_mirror", 1)) in {1, 2},
     "source_positive_y": lambda v: int(v.get("n_mirror", 1)) == 2,
 }
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
 
 @effect(meta=mirror_meta, ui_visible=mirror_ui_visible)
 def mirror(
@@ -166,7 +161,7 @@ def mirror(
                         need_dedup = True
 
         if not wedge_pieces:
-            return _empty_geometry()
+            return empty_geom()
 
         angles = (np.arange(n, dtype=np.float32) * np.float32(step)).astype(
             np.float32, copy=False
@@ -209,7 +204,7 @@ def mirror(
             ]
             uniq = _dedup_lines(lines)
             if not uniq:
-                return _empty_geometry()
+                return empty_geom()
             out_coords_arr = np.vstack(uniq).astype(np.float32, copy=False)
             out_offsets_arr = np.zeros((len(uniq) + 1,), dtype=np.int32)
             acc = 0
@@ -301,7 +296,7 @@ def mirror(
             uniq.extend(plane_lines)
 
     if not uniq:
-        return _empty_geometry()
+        return empty_geom()
 
     all_coords = np.vstack(uniq).astype(np.float32, copy=False)
     new_offsets = np.zeros((len(uniq) + 1,), dtype=np.int32)
@@ -396,73 +391,6 @@ def _clip_polyline_quadrant(
     for p in pieces:
         out.extend(_clip_polyline_halfspace(p, axis=1, thresh=cy, side=sy))
     return out
-
-
-def _clip_polyline_halfplane(
-    vertices: np.ndarray,
-    *,
-    cx: float,
-    cy: float,
-    normal: np.ndarray,
-) -> list[np.ndarray]:
-    cxy = np.array([cx, cy], dtype=np.float32)
-    nrm = normal.astype(np.float32, copy=False)
-    nl = float(np.linalg.norm(nrm))
-    if nl <= 0.0 or not np.isfinite(nl):
-        return []
-    nrm = nrm / np.float32(nl)
-
-    npts = int(vertices.shape[0])
-    if npts == 0:
-        return []
-    if npts == 1:
-        s0 = float(np.dot(vertices[0, :2].astype(np.float32, copy=False) - cxy, nrm))
-        ok = s0 >= (-EPS if INCLUDE_BOUNDARY else EPS)
-        return [vertices.astype(np.float32, copy=True)] if ok else []
-
-    out_segs: list[np.ndarray] = []
-    cur: list[np.ndarray] = []
-
-    a = vertices[0].astype(np.float32, copy=False)
-    s_a = float(np.dot(a[:2] - cxy, nrm))
-    in_a = s_a >= (-EPS if INCLUDE_BOUNDARY else EPS)
-    if in_a:
-        cur.append(a.copy())
-
-    for j in range(1, npts):
-        b = vertices[j].astype(np.float32, copy=False)
-        s_b = float(np.dot(b[:2] - cxy, nrm))
-        in_b = s_b >= (-EPS if INCLUDE_BOUNDARY else EPS)
-
-        if in_a and in_b:
-            cur.append(b.copy())
-        elif in_a and not in_b:
-            denom = s_a - s_b
-            t = 0.0 if abs(denom) < 1e-20 else s_a / denom
-            if t < 0.0:
-                t = 0.0
-            elif t > 1.0:
-                t = 1.0
-            p = a + (b - a) * np.float32(t)
-            if len(cur) == 0 or not np.allclose(cur[-1], p, atol=EPS):
-                cur.append(p.astype(np.float32, copy=False))
-            out_segs.append(np.vstack(cur).astype(np.float32, copy=False))
-            cur = []
-        elif (not in_a) and in_b:
-            denom = s_a - s_b
-            t = 0.0 if abs(denom) < 1e-20 else s_a / denom
-            if t < 0.0:
-                t = 0.0
-            elif t > 1.0:
-                t = 1.0
-            p = a + (b - a) * np.float32(t)
-            cur = [p.astype(np.float32, copy=False), b.copy()]
-
-        a, s_a, in_a = b, s_b, in_b
-
-    if cur:
-        out_segs.append(np.vstack(cur).astype(np.float32, copy=False))
-    return out_segs
 
 
 def _has_wedge_boundary_segment(
@@ -708,23 +636,6 @@ def _reflect_y(vertices: np.ndarray, cy: float) -> np.ndarray:
     r = vertices.astype(np.float32, copy=True)
     r[:, 1] = np.float32(2.0 * float(cy)) - r[:, 1]
     return r
-
-
-def _rotate_xy(vertices: np.ndarray, ang: float, cx: float, cy: float) -> np.ndarray:
-    if vertices.shape[0] == 0:
-        return vertices.astype(np.float32, copy=True)
-    c = float(np.cos(ang))
-    s = float(np.sin(ang))
-    out = vertices.astype(np.float32, copy=True)
-    out[:, 0] -= np.float32(cx)
-    out[:, 1] -= np.float32(cy)
-    x = out[:, 0].copy()
-    y = out[:, 1].copy()
-    out[:, 0] = x * np.float32(c) - y * np.float32(s)
-    out[:, 1] = x * np.float32(s) + y * np.float32(c)
-    out[:, 0] += np.float32(cx)
-    out[:, 1] += np.float32(cy)
-    return out
 
 
 def _dedup_lines(lines: Iterable[np.ndarray]) -> list[np.ndarray]:

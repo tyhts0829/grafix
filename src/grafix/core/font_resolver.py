@@ -25,8 +25,12 @@ class FontChoice:
 
 
 _PACKAGED_FONT_DIRS: tuple[Path, ...] | None = None
+_FONT_SEARCH_CONFIG: object | None = None
+_FONT_SEARCH_DIRS: tuple[Path, ...] = ()
 _FONT_FILES_CACHE: dict[tuple[str, ...], tuple[Path, ...]] = {}
-_FONT_CHOICES_CACHE: dict[tuple[str, ...], tuple[FontChoice, ...]] = {}
+_FONT_CHOICES_CACHE: dict[
+    tuple[str, ...], tuple[tuple[str, str, bool, str], ...]
+] = {}
 
 
 def _packaged_font_dirs() -> tuple[Path, ...]:
@@ -41,8 +45,8 @@ def _packaged_font_dirs() -> tuple[Path, ...]:
         return _PACKAGED_FONT_DIRS
 
     candidates = [
-        base.joinpath("resource", "font", "Google_Sans", "static"),
-        base.joinpath("resource", "font", "Noto_Sans_JP", "static"),
+        base.joinpath("resource").joinpath("font").joinpath("Google_Sans").joinpath("static"),
+        base.joinpath("resource").joinpath("font").joinpath("Noto_Sans_JP").joinpath("static"),
     ]
 
     dirs: list[Path] = []
@@ -59,7 +63,11 @@ def _packaged_font_dirs() -> tuple[Path, ...]:
 
 
 def _search_dirs() -> tuple[Path, ...]:
+    global _FONT_SEARCH_CONFIG, _FONT_SEARCH_DIRS
     cfg = runtime_config()
+    if cfg is _FONT_SEARCH_CONFIG:
+        return _FONT_SEARCH_DIRS
+
     dirs: list[Path] = []
     for d in cfg.font_dirs:
         try:
@@ -70,7 +78,9 @@ def _search_dirs() -> tuple[Path, ...]:
 
     dirs.extend(_packaged_font_dirs())
 
-    return tuple(dirs)
+    _FONT_SEARCH_CONFIG = cfg
+    _FONT_SEARCH_DIRS = tuple(dirs)
+    return _FONT_SEARCH_DIRS
 
 
 def _list_font_files(*, dirs: tuple[Path, ...]) -> tuple[Path, ...]:
@@ -165,7 +175,7 @@ def list_font_choices() -> tuple[tuple[str, str, bool, str], ...]:
     key = tuple(str(d) for d in dirs)
     cached = _FONT_CHOICES_CACHE.get(key)
     if cached is not None:
-        return tuple((c.stem, c.value, c.is_ttc, c.search_key) for c in cached)
+        return cached
 
     files = _list_font_files(dirs=dirs)
 
@@ -182,8 +192,9 @@ def list_font_choices() -> tuple[tuple[str, str, bool, str], ...]:
         )
 
     choices = tuple(by_value[v] for v in sorted(by_value.keys(), key=str))
-    _FONT_CHOICES_CACHE[key] = choices
-    return tuple((c.stem, c.value, c.is_ttc, c.search_key) for c in choices)
+    rows = tuple((c.stem, c.value, c.is_ttc, c.search_key) for c in choices)
+    _FONT_CHOICES_CACHE[key] = rows
+    return rows
 
 
 __all__ = [

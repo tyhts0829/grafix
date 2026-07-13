@@ -1,4 +1,6 @@
 import json
+import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -105,13 +107,60 @@ def test_param_store_file_roundtrip(tmp_path: Path):
     assert_invariants(loaded)
 
 
-def test_load_param_store_ignores_broken_json(tmp_path: Path):
+def test_load_param_store_backs_up_broken_json(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
     path = tmp_path / "broken.json"
-    path.write_text("{broken-json", encoding="utf-8")
+    broken_payload = "{broken-json"
+    path.write_text(broken_payload, encoding="utf-8")
 
-    loaded = load_param_store(path)
+    with caplog.at_level(logging.WARNING):
+        loaded = load_param_store(path)
+
     assert store_snapshot(loaded) == {}
     assert_invariants(loaded)
+    assert not path.exists()
+    backups = list(tmp_path.glob("broken.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == broken_payload
+    assert "壊れた ParamStore を退避しました" in caplog.text
+
+
+def test_load_param_store_does_not_hide_read_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "store.json"
+    path.write_text("{}", encoding="utf-8")
+
+    def fail_read_text(self: Path, *, encoding: str) -> str:
+        raise PermissionError(self)
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+    with pytest.raises(PermissionError):
+        load_param_store(path)
+
+
+def test_save_param_store_keeps_existing_file_when_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "store.json"
+    path.write_text("original\n", encoding="utf-8")
+
+    def fail_replace(
+        src: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        dst: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    ) -> None:
+        raise OSError(f"replace failed: {src} -> {dst}")
+
+    monkeypatch.setattr("grafix.core.atomic_write.os.replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        save_param_store(ParamStore(), path)
+
+    assert path.read_text(encoding="utf-8") == "original\n"
+    assert list(tmp_path.glob(".store.json.*.tmp")) == []
 
 
 def test_save_param_store_prunes_unknown_arg_for_known_primitive(tmp_path: Path):

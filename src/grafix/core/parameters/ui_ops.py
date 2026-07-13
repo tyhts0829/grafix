@@ -40,6 +40,7 @@ def update_state_from_ui(
     )
 
     state = store._ensure_state(key, base_value=canonical)
+    before = (state.ui_value, state.override, state.cc_key)
     state.ui_value = canonical
     if override is not None:
         state.override = bool(override)
@@ -57,6 +58,9 @@ def update_state_from_ui(
                 None if c is None else int(c),
             )
             state.cc_key = None if cc_tuple == (None, None, None) else cc_tuple
+
+    if (state.ui_value, state.override, state.cc_key) != before:
+        store._touch()
 
     return True, err
 

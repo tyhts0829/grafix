@@ -8,13 +8,10 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ._param_resolution import resolve_api_params, set_api_label
-from grafix.core.builtins import ensure_builtin_effects_registered
+from grafix.core.builtins import ensure_builtin_effect_registered
 from grafix.core.effect_registry import effect_registry
 from grafix.core.geometry import Geometry
 from grafix.core.parameters import caller_site_id
-
-ensure_builtin_effects_registered()
-
 
 @dataclass(frozen=True, slots=True)
 class EffectBuilder:
@@ -58,15 +55,14 @@ class EffectBuilder:
             # site_id は「その effect ステップが宣言された呼び出し箇所」。
             # 例: E.scale(...).rotate(...)(g) の scale と rotate を別の GUI 行として扱うため、
             # apply（__call__）時点ではなく「ステップ追加時点」で固定された site_id を使う。
-            meta = effect_registry.get_meta(op)
-            defaults = effect_registry.get_defaults(op)
+            spec = effect_registry[op]
 
             resolved = resolve_api_params(
                 op=op,
                 site_id=site_id,
                 user_params=params,
-                defaults=defaults,
-                meta=meta,
+                defaults=spec.defaults,
+                meta=spec.meta,
                 chain_id=self.chain_id,
                 step_index=int(step_index),
             )
@@ -77,7 +73,7 @@ class EffectBuilder:
 
             # 直前までの result を inputs として 1 段 effect ノードを積む。
             # これを steps の数だけ繰り返すことでチェーン全体の DAG になる。
-            n_inputs = int(effect_registry.get_n_inputs(op))
+            n_inputs = spec.n_inputs
             if step_index == 0:
                 if len(first_inputs) != n_inputs:
                     raise TypeError(
@@ -115,6 +111,8 @@ class EffectBuilder:
             raise AttributeError(name)
 
         if name not in effect_registry:
+            ensure_builtin_effect_registered(name)
+        if name not in effect_registry:
             raise AttributeError(f"未登録の effect: {name!r}")
 
         def factory(**params: Any) -> "EffectBuilder":
@@ -131,7 +129,8 @@ class EffectBuilder:
                 既存の steps に 1 つ追加したビルダ。
             """
 
-            site_id = caller_site_id(skip=1)
+            key = params.pop("key", None)
+            site_id = caller_site_id(skip=1, key=key)
             new_steps = self.steps + ((name, dict(params), site_id),)
             return EffectBuilder(
                 steps=new_steps,
@@ -174,6 +173,8 @@ class EffectNamespace:
             raise AttributeError(name)
 
         if name not in effect_registry:
+            ensure_builtin_effect_registered(name)
+        if name not in effect_registry:
             raise AttributeError(f"未登録の effect: {name!r}")
 
         def factory(**params: Any) -> EffectBuilder:
@@ -190,7 +191,8 @@ class EffectNamespace:
                 1 つの effect を保持するビルダ。
             """
 
-            site_id = caller_site_id(skip=1)
+            key = params.pop("key", None)
+            site_id = caller_site_id(skip=1, key=key)
             return EffectBuilder(
                 steps=((name, dict(params), site_id),),
                 chain_id=site_id,

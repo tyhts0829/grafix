@@ -11,11 +11,19 @@ from numba import njit  # type: ignore[import-untyped]
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import transform_back, transform_to_xy_plane
+from .util import (
+    DEFAULT_MAX_GRID_CELLS,
+    GridSpec,
+    PlanarFrame,
+    marching_squares_loops,
+    pack_polylines,
+    scanline_evenodd_mask,
+)
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
 _PLANAR_EPS_ABS = 1e-6
 _PLANAR_EPS_REL = 1e-5
+MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 
 metaball_meta = {
     "radius": ParamMeta(kind="float", ui_min=0.0, ui_max=50.0),
@@ -34,12 +42,6 @@ class _Ring2D:
     maxs: np.ndarray  # (2,) float64
 
 
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
 def _planarity_threshold(points: np.ndarray) -> float:
     if points.size == 0:
         return float(_PLANAR_EPS_ABS)
@@ -50,12 +52,6 @@ def _planarity_threshold(points: np.ndarray) -> float:
     return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
 
 
-def _apply_alignment(coords: np.ndarray, rotation_matrix: np.ndarray, z_offset: float) -> np.ndarray:
-    aligned = coords.astype(np.float64, copy=False) @ rotation_matrix.T
-    aligned[:, 2] -= float(z_offset)
-    return aligned
-
-
 def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
     if points.shape[0] < 2:
         return points
@@ -63,17 +59,6 @@ def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
     if dist <= float(threshold):
         return np.concatenate([points[:-1], points[0:1]], axis=0)
     return points
-
-
-def _pick_representative_ring(
-    coords: np.ndarray, offsets: np.ndarray
-) -> np.ndarray | None:
-    for i in range(int(offsets.size) - 1):
-        s = int(offsets[i])
-        e = int(offsets[i + 1])
-        if e - s >= 3:
-            return coords[s:e]
-    return None
 
 
 def _extract_rings_xy(
@@ -140,8 +125,7 @@ def _evaluate_field_grid_numba(
     ys: np.ndarray,
     ring_vertices: np.ndarray,
     ring_offsets: np.ndarray,
-    ring_mins: np.ndarray,
-    ring_maxs: np.ndarray,
+    inside_mask: np.ndarray,
     inv_r2: float,
 ) -> np.ndarray:
     ny = int(ys.shape[0])
@@ -154,21 +138,12 @@ def _evaluate_field_grid_numba(
         for i in range(nx):
             x = float(xs[i])
             val = 0.0
-            inside_parity = 0
 
             for ri in range(n_rings):
                 s = int(ring_offsets[ri])
                 e = int(ring_offsets[ri + 1])
 
-                inside_possible = (
-                    x >= float(ring_mins[ri, 0])
-                    and x <= float(ring_maxs[ri, 0])
-                    and y >= float(ring_mins[ri, 1])
-                    and y <= float(ring_maxs[ri, 1])
-                )
-
                 min_ds = 1e300
-                inside = 0
                 for k in range(s, e - 1):
                     ax = float(ring_vertices[k, 0])
                     ay = float(ring_vertices[k, 1])
@@ -193,199 +168,13 @@ def _evaluate_field_grid_numba(
                     if ds < min_ds:
                         min_ds = ds
 
-                    # even-odd (boundary is treated as outside)
-                    if inside_possible and ((ay > y) != (by > y)):
-                        x_int = ax + (y - ay) * (bx - ax) / (by - ay)
-                        if x < x_int:
-                            inside ^= 1
-
                 val += math.exp(-min_ds * inv_r2)
-                inside_parity ^= inside
 
-            val += float(inside_parity)
+            val += float(inside_mask[j, i])
             out[j, i] = val
 
     return out
 
-
-def _quant_key(x: float, y: float, snap: float) -> tuple[int, int]:
-    return (int(np.rint(x / snap)), int(np.rint(y / snap)))
-
-
-def _stitch_segments_to_loops(
-    segments: list[tuple[tuple[int, int], tuple[int, int]]],
-) -> list[list[tuple[int, int]]]:
-    adj: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    for a, b in segments:
-        adj.setdefault(a, []).append(b)
-        adj.setdefault(b, []).append(a)
-
-    visited_edges: set[tuple[tuple[int, int], tuple[int, int]]] = set()
-
-    def _edge_key(u: tuple[int, int], v: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
-        return (u, v) if u <= v else (v, u)
-
-    loops: list[list[tuple[int, int]]] = []
-    for start, neighs in adj.items():
-        for nxt in neighs:
-            ek = _edge_key(start, nxt)
-            if ek in visited_edges:
-                continue
-
-            path = [start, nxt]
-            visited_edges.add(ek)
-            prev = start
-            cur = nxt
-            while True:
-                cand = adj.get(cur, [])
-                next_node: tuple[int, int] | None = None
-                for nn in cand:
-                    if nn == prev:
-                        continue
-                    ek2 = _edge_key(cur, nn)
-                    if ek2 in visited_edges:
-                        continue
-                    next_node = nn
-                    visited_edges.add(ek2)
-                    break
-
-                if next_node is None:
-                    break
-
-                path.append(next_node)
-                prev, cur = cur, next_node
-                if cur == start:
-                    break
-
-            if len(path) >= 4 and path[-1] == start:
-                loops.append(path)
-
-    return loops
-
-
-def _marching_squares_segments(
-    field: np.ndarray,
-    xs: np.ndarray,
-    ys: np.ndarray,
-    *,
-    level: float,
-    snap: float,
-    key_to_xy: dict[tuple[int, int], tuple[float, float]],
-) -> list[tuple[tuple[int, int], tuple[int, int]]]:
-    """等値線を線分集合として抽出する（Marching Squares）。"""
-    ny, nx = int(field.shape[0]), int(field.shape[1])
-    segments: list[tuple[tuple[int, int], tuple[int, int]]] = []
-
-    def _interp(a: float, b: float, t_level: float) -> float:
-        denom = b - a
-        if denom == 0.0:
-            return 0.5
-        return (t_level - a) / denom
-
-    for j in range(ny - 1):
-        y0 = float(ys[j])
-        y1 = float(ys[j + 1])
-        for i in range(nx - 1):
-            x0 = float(xs[i])
-            x1 = float(xs[i + 1])
-
-            v00 = float(field[j, i])
-            v10 = float(field[j, i + 1])
-            v11 = float(field[j + 1, i + 1])
-            v01 = float(field[j + 1, i])
-
-            b0 = v00 >= level
-            b1 = v10 >= level
-            b2 = v11 >= level
-            b3 = v01 >= level
-            idx = (1 if b0 else 0) | (2 if b1 else 0) | (4 if b2 else 0) | (8 if b3 else 0)
-            if idx == 0 or idx == 15:
-                continue
-
-            e0 = b0 != b1
-            e1 = b1 != b2
-            e2 = b3 != b2
-            e3 = b0 != b3
-
-            p0 = None
-            p1 = None
-            p2 = None
-            p3 = None
-
-            if e0:
-                t = _interp(v00, v10, level)
-                x = x0 + float(np.clip(t, 0.0, 1.0)) * (x1 - x0)
-                y = y0
-                k = _quant_key(x, y, snap)
-                key_to_xy.setdefault(k, (x, y))
-                p0 = k
-            if e1:
-                t = _interp(v10, v11, level)
-                x = x1
-                y = y0 + float(np.clip(t, 0.0, 1.0)) * (y1 - y0)
-                k = _quant_key(x, y, snap)
-                key_to_xy.setdefault(k, (x, y))
-                p1 = k
-            if e2:
-                t = _interp(v01, v11, level)
-                x = x0 + float(np.clip(t, 0.0, 1.0)) * (x1 - x0)
-                y = y1
-                k = _quant_key(x, y, snap)
-                key_to_xy.setdefault(k, (x, y))
-                p2 = k
-            if e3:
-                t = _interp(v00, v01, level)
-                x = x0
-                y = y0 + float(np.clip(t, 0.0, 1.0)) * (y1 - y0)
-                k = _quant_key(x, y, snap)
-                key_to_xy.setdefault(k, (x, y))
-                p3 = k
-
-            pts = [p for p in (p0, p1, p2, p3) if p is not None]
-            if len(pts) == 2:
-                segments.append((pts[0], pts[1]))
-                continue
-            if len(pts) != 4:
-                continue
-
-            # 5/10 の曖昧ケースは、中心値で接続を決める（midpoint decider）。
-            vc = 0.25 * (v00 + v10 + v11 + v01)
-            center_inside = vc >= level
-            if idx == 5:
-                if center_inside:
-                    segments.append((p0, p1))  # type: ignore[arg-type]
-                    segments.append((p2, p3))  # type: ignore[arg-type]
-                else:
-                    segments.append((p0, p3))  # type: ignore[arg-type]
-                    segments.append((p1, p2))  # type: ignore[arg-type]
-                continue
-            if idx == 10:
-                if center_inside:
-                    segments.append((p0, p3))  # type: ignore[arg-type]
-                    segments.append((p1, p2))  # type: ignore[arg-type]
-                else:
-                    segments.append((p0, p1))  # type: ignore[arg-type]
-                    segments.append((p2, p3))  # type: ignore[arg-type]
-                continue
-
-            # その他の 4 交点は、隣接順で 2 本にする（トポロジが壊れにくい最小処理）。
-            segments.append((p0, p1))  # type: ignore[arg-type]
-            segments.append((p2, p3))  # type: ignore[arg-type]
-
-    return segments
-
-
-def _lines_to_realized(lines: list[np.ndarray]) -> GeomTuple:
-    if not lines:
-        return _empty_geometry()
-    coords = np.concatenate(lines, axis=0).astype(np.float32, copy=False)
-    offsets = np.empty((len(lines) + 1,), dtype=np.int32)
-    offsets[0] = 0
-    acc = 0
-    for i, ln in enumerate(lines):
-        acc += int(ln.shape[0])
-        offsets[i + 1] = acc
-    return coords, offsets
 
 
 def _pack_loops_xy(loops_xy: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
@@ -406,21 +195,6 @@ def _pack_loops_xy(loops_xy: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
         cursor += m
         offsets[i + 1] = np.int32(cursor)
     return vertices, offsets
-
-
-@njit(cache=True)
-def _round_ties_to_even(x: float) -> int:
-    # `np.rint`（banker's rounding: ties to even）相当。
-    f = math.floor(x)
-    frac = x - f
-    if frac < 0.5:
-        return int(f)
-    if frac > 0.5:
-        return int(f + 1.0)
-    # frac == 0.5
-    if int(f) % 2 == 0:
-        return int(f)
-    return int(f + 1.0)
 
 
 @njit(cache=True)
@@ -463,12 +237,14 @@ def _exterior_loop_mask_numba(
         ccw = area2 > 0.0
 
         k0 = -1
+        longest_edge_sq = 1e-12
         for k in range(s, e - 1):
             dx = float(loop_vertices[k + 1, 0] - loop_vertices[k, 0])
             dy = float(loop_vertices[k + 1, 1] - loop_vertices[k, 1])
-            if dx * dx + dy * dy > 1e-12:
+            edge_sq = dx * dx + dy * dy
+            if edge_sq > longest_edge_sq:
+                longest_edge_sq = edge_sq
                 k0 = k
-                break
         if k0 < 0:
             continue
 
@@ -486,19 +262,30 @@ def _exterior_loop_mask_numba(
 
         xin = float(loop_vertices[k0, 0]) + float(nx_in) * eps
         yin = float(loop_vertices[k0, 1]) + float(ny_in) * eps
-        ii = _round_ties_to_even((xin - float(x0)) / float(pitch))
-        jj = _round_ties_to_even((yin - float(y0)) / float(pitch))
-
+        fx = (xin - float(x0)) / float(pitch)
+        fy = (yin - float(y0)) / float(pitch)
+        ii = int(math.floor(fx))
+        jj = int(math.floor(fy))
+        tx = fx - float(ii)
+        ty = fy - float(jj)
         if ii < 0:
             ii = 0
-        elif ii >= nx:
-            ii = nx - 1
+            tx = 0.0
+        elif ii >= nx - 1:
+            ii = nx - 2
+            tx = 1.0
         if jj < 0:
             jj = 0
-        elif jj >= ny:
-            jj = ny - 1
+            ty = 0.0
+        elif jj >= ny - 1:
+            jj = ny - 2
+            ty = 1.0
 
-        if float(field[jj, ii]) >= float(level):
+        value0 = (1.0 - tx) * float(field[jj, ii]) + tx * float(field[jj, ii + 1])
+        value1 = (1.0 - tx) * float(field[jj + 1, ii]) + tx * float(
+            field[jj + 1, ii + 1]
+        )
+        if (1.0 - ty) * value0 + ty * value1 >= float(level):
             out[li] = 1
 
     return out
@@ -595,14 +382,10 @@ def metaball(
     if not np.isfinite(auto_close) or auto_close < 0.0:
         auto_close = 0.0
 
-    rep = _pick_representative_ring(coords, offsets)
-    if rep is None:
+    frame = PlanarFrame.from_points(coords, offsets)
+    if not frame.is_planar(_planarity_threshold(coords)):
         return coords, offsets
-
-    _rep_xy, rot, z_off = transform_to_xy_plane(rep)
-    coords_xy_all = _apply_alignment(coords, rot, float(z_off))
-    if float(np.max(np.abs(coords_xy_all[:, 2]))) > _planarity_threshold(coords):
-        return coords, offsets
+    coords_xy_all = frame.to_local(coords)
 
     rings = _extract_rings_xy(coords_xy_all, offsets, auto_close_threshold=auto_close)
     if not rings:
@@ -612,50 +395,47 @@ def metaball(
     maxs = np.max(np.stack([r0.maxs for r0 in rings], axis=0), axis=0)
 
     margin = 2.0 * r + 2.0 * pitch
-    x0 = float(mins[0] - margin)
-    x1 = float(maxs[0] + margin)
-    y0 = float(mins[1] - margin)
-    y1 = float(maxs[1] + margin)
-
-    span_x = max(0.0, x1 - x0)
-    span_y = max(0.0, y1 - y0)
-    nx = int(np.ceil(span_x / pitch)) + 1
-    ny = int(np.ceil(span_y / pitch)) + 1
-    if nx < 2 or ny < 2:
+    grid = GridSpec.from_bbox(
+        mins,
+        maxs,
+        pitch=pitch,
+        padding=margin,
+        max_cells=MAX_GRID_POINTS,
+        overflow="reject",
+    )
+    if grid is None:
         return coords, offsets
-
-    xs = x0 + pitch * np.arange(nx, dtype=np.float64)
-    ys = y0 + pitch * np.arange(ny, dtype=np.float64)
+    xs, ys = grid.coordinates()
+    pitch = grid.pitch
 
     ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
+    inside_mask = scanline_evenodd_mask(
+        ys,
+        origin_x=grid.origin_x,
+        pitch=pitch,
+        nx=grid.nx,
+        ring_vertices=ring_vertices,
+        ring_offsets=ring_offsets,
+        ring_mins=ring_mins,
+        ring_maxs=ring_maxs,
+    )
     inv_r2 = 1.0 / (r * r)
     field2 = _evaluate_field_grid_numba(
         xs.astype(np.float64, copy=False),
         ys.astype(np.float64, copy=False),
         ring_vertices,
         ring_offsets,
-        ring_mins,
-        ring_maxs,
+        inside_mask,
         float(inv_r2),
     )
 
-    snap = max(1e-9, pitch * 1e-6)
-    key_to_xy: dict[tuple[int, int], tuple[float, float]] = {}
-    segments = _marching_squares_segments(
+    loops_xy = marching_squares_loops(
         field2,
-        xs,
-        ys,
+        origin_x=grid.origin_x,
+        origin_y=grid.origin_y,
+        pitch=pitch,
         level=level,
-        snap=snap,
-        key_to_xy=key_to_xy,
     )
-    loops = _stitch_segments_to_loops(segments)
-
-    loops_xy: list[np.ndarray] = []
-    for loop in loops:
-        pts_xy = np.asarray([key_to_xy[k] for k in loop], dtype=np.float64)
-        if pts_xy.shape[0] >= 4:
-            loops_xy.append(pts_xy)
 
     if output_s == "exterior":
         loops_xy = _filter_exterior_loops(
@@ -671,7 +451,7 @@ def metaball(
     for pts_xy in loops_xy:
         v3 = np.zeros((pts_xy.shape[0], 3), dtype=np.float64)
         v3[:, 0:2] = pts_xy
-        out = transform_back(v3, rot, float(z_off)).astype(np.float32, copy=False)
+        out = frame.to_world(v3).astype(np.float32, copy=False)
         out_lines.append(out)
 
     if bool(keep_original):
@@ -682,4 +462,4 @@ def metaball(
             if original.shape[0] > 0:
                 out_lines.append(original.astype(np.float32, copy=False))
 
-    return _lines_to_realized(out_lines)
+    return pack_polylines(out_lines)

@@ -31,11 +31,11 @@ def _import_builtin_ops() -> None:
 
 
 def _list_effects() -> list[str]:
-    return sorted(name for name, _ in effect_registry.items() if not name.startswith("_"))
+    return sorted(name for name in effect_registry if not name.startswith("_"))
 
 
 def _list_primitives() -> list[str]:
-    return sorted(name for name, _ in primitive_registry.items() if not name.startswith("_"))
+    return sorted(name for name in primitive_registry if not name.startswith("_"))
 
 
 def main(argv: list[str] | None = None) -> int:

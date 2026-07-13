@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -82,6 +83,12 @@ class RealizedGeometry:
         object.__setattr__(self, "coords", coords)
         object.__setattr__(self, "offsets", offsets)
 
+    @property
+    def byte_size(self) -> int:
+        """座標・境界配列が使用する byte 数を返す。"""
+
+        return int(self.coords.nbytes + self.offsets.nbytes)
+
 
 def realized_geometry_from_tuple(value: object, *, context: str) -> RealizedGeometry:
     """`(coords, offsets)` を `RealizedGeometry` に変換する。
@@ -142,26 +149,14 @@ def concat_geom_tuples(*geometries: GeomTuple) -> GeomTuple:
         結合後の (coords, offsets)。
     """
     if not geometries:
-        empty_coords = np.zeros((0, 3), dtype=np.float32)
-        empty_offsets = np.zeros((1,), dtype=np.int32)
-        return empty_coords, empty_offsets
-
-    coords_list = [g[0] for g in geometries]
-    offsets_list = [g[1] for g in geometries]
-
-    total_coords = np.concatenate(coords_list, axis=0).astype(np.float32, copy=False)
-
-    new_offsets: list[int] = []
-    offset_base = 0
-    for offsets in offsets_list:
-        shifted = np.asarray(offsets, dtype=np.int64)[1:] + int(offset_base)
-        if not new_offsets:
-            new_offsets.append(0)
-        new_offsets.extend(shifted.tolist())
-        offset_base += int(np.asarray(offsets)[-1])
-
-    new_offsets_array = np.asarray(new_offsets, dtype=np.int32)
-    return total_coords, new_offsets_array
+        return _empty_geom_tuple()
+    if len(geometries) == 1:
+        coords, offsets = geometries[0]
+        return (
+            np.asarray(coords, dtype=np.float32),
+            np.asarray(offsets, dtype=np.int32),
+        )
+    return _concat_arrays(geometries)
 
 
 def concat_realized_geometries(*geometries: RealizedGeometry) -> RealizedGeometry:
@@ -178,24 +173,54 @@ def concat_realized_geometries(*geometries: RealizedGeometry) -> RealizedGeometr
         結合後の実体ジオメトリ。
     """
     if not geometries:
-        empty_coords = np.zeros((0, 3), dtype=np.float32)
-        empty_offsets = np.zeros((1,), dtype=np.int32)
-        return RealizedGeometry(coords=empty_coords, offsets=empty_offsets)
+        coords, offsets = _empty_geom_tuple()
+        return RealizedGeometry(coords=coords, offsets=offsets)
+    if len(geometries) == 1:
+        return geometries[0]
 
-    coords_list = [g.coords for g in geometries]
-    offsets_list = [g.offsets for g in geometries]
+    coords, offsets = _concat_arrays([(g.coords, g.offsets) for g in geometries])
+    return RealizedGeometry(coords=coords, offsets=offsets)
 
-    total_coords = np.concatenate(coords_list, axis=0)
 
-    new_offsets: list[int] = []
-    offset_base = 0
-    for offsets in offsets_list:
-        # 先頭 0 を除いた差分部分だけをシフトして足し込む。
-        shifted = offsets[1:] + offset_base
-        if not new_offsets:
-            new_offsets.append(0)
-        new_offsets.extend(shifted.tolist())
-        offset_base += offsets[-1]
+def _empty_geom_tuple() -> GeomTuple:
+    return (
+        np.zeros((0, 3), dtype=np.float32),
+        np.zeros((1,), dtype=np.int32),
+    )
 
-    new_offsets_array = np.asarray(new_offsets, dtype=np.int32)
-    return RealizedGeometry(coords=total_coords, offsets=new_offsets_array)
+
+def _concat_arrays(geometries: Sequence[GeomTuple]) -> GeomTuple:
+    """最終サイズを一度数え、連結配列へ直接書き込む。"""
+
+    arrays = [
+        (
+            np.asarray(coords, dtype=np.float32),
+            np.asarray(offsets, dtype=np.int32),
+        )
+        for coords, offsets in geometries
+    ]
+    total_vertices = sum(int(coords.shape[0]) for coords, _ in arrays)
+    total_offsets = 1 + sum(max(0, int(offsets.size) - 1) for _, offsets in arrays)
+    int32_max = int(np.iinfo(np.int32).max)
+    if total_vertices > int32_max or total_offsets > int32_max:
+        raise OverflowError("連結結果が int32 の表現範囲を超える")
+
+    coords_out = np.empty((total_vertices, 3), dtype=np.float32)
+    offsets_out = np.empty((total_offsets,), dtype=np.int32)
+    offsets_out[0] = 0
+
+    vertex_at = 0
+    offset_at = 1
+    for coords, offsets in arrays:
+        n_vertices = int(coords.shape[0])
+        next_vertex = vertex_at + n_vertices
+        coords_out[vertex_at:next_vertex] = coords
+
+        n_offsets = max(0, int(offsets.size) - 1)
+        if n_offsets:
+            next_offset = offset_at + n_offsets
+            offsets_out[offset_at:next_offset] = offsets[1:] + vertex_at
+            offset_at = next_offset
+        vertex_at = next_vertex
+
+    return coords_out, offsets_out

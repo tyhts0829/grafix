@@ -10,6 +10,7 @@
 
 - **Store はデータ**（永続データの核）。書き込みは **`*_ops.py` 経由**を原則とする。
 - **snapshot は pure**（読むつもりが書く、を排除）。不足補完は merge/load 側の責務。
+- `ParamStore.revision` が同じ間は snapshot と GUI 静的モデルを再構築しない。
 - 1 フレームの値解決は `parameter_context()` が固定した snapshot に基づき **決定的**に行う。
 - 永続化（JSON）は `codec.py` に閉じる。ロード時に **修復・正規化**を行い、汚染を止める。
 
@@ -22,6 +23,7 @@
 - `ParameterKey`（`key.py`）: `(op, site_id, arg)` で GUI 行を一意に識別する。
 - Group: `(op, site_id)` を 1 グループとして扱う（GUI ヘッダ単位）。
 - `site_id` は基本的に呼び出し箇所由来（`make_site_id()`）で、コード変更で揺れ得る。
+  G/E/L/P の `key=` は同一ファイル内の明示 ID として instruction location を固定できる。
 
 ### Meta / State
 

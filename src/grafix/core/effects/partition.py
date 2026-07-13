@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
-
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
+from .util import pack_polylines
 
 NONPLANAR_EPS_ABS = 1e-6
 NONPLANAR_EPS_REL = 1e-5
@@ -37,12 +36,6 @@ class _PlaneBasis:
     origin: np.ndarray  # (3,)
     u: np.ndarray  # (3,)
     v: np.ndarray  # (3,)
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
 
 
 def _fit_plane_basis(
@@ -168,27 +161,6 @@ def _ensure_closed_2d(loop: np.ndarray) -> np.ndarray:
     if loop.shape[0] >= 2 and np.allclose(loop[0], loop[-1], rtol=0.0, atol=1e-6):
         return loop
     return np.concatenate([loop, loop[:1]], axis=0)
-
-
-def _lines_to_realized_geometry(lines: Sequence[np.ndarray]) -> GeomTuple:
-    if not lines:
-        return _empty_geometry()
-    coords_list = [np.asarray(line, dtype=np.float32) for line in lines if line.shape[0] > 0]
-    if not coords_list:
-        return _empty_geometry()
-
-    total = int(sum(int(a.shape[0]) for a in coords_list))
-    coords = np.empty((total, 3), dtype=np.float32)
-    offsets = np.empty((len(coords_list) + 1,), dtype=np.int32)
-    offsets[0] = 0
-
-    cursor = 0
-    for i, arr in enumerate(coords_list, start=1):
-        n = int(arr.shape[0])
-        coords[cursor : cursor + n] = arr
-        cursor += n
-        offsets[i] = cursor
-    return coords, offsets
 
 
 def _collect_polygon_exteriors(geom) -> list[np.ndarray]:  # type: ignore[no-untyped-def]
@@ -602,4 +574,4 @@ def partition(
     loops_2d.sort(key=_sort_key)
 
     lines_3d = [_lift_to_3d(loop, basis) for loop in loops_2d]
-    return _lines_to_realized_geometry(lines_3d)
+    return pack_polylines([line for line in lines_3d if line.shape[0] > 0])

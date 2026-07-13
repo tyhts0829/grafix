@@ -18,22 +18,26 @@ class Shader:
         #version 410
         layout(lines) in; // 入力は線
         layout(triangle_strip, max_vertices = 4) out; // 出力は四角形（2つの三角形）
-        uniform float line_thickness = 0.0006;
+        uniform vec2 viewport_size;
+        uniform float line_width_px;
         void main() {
-            // 線の太さ
-            float thickness = line_thickness; // 太さを調整
-            // 線の方向を計算
-            vec2 dir = normalize(gl_in[1].gl_Position.xy - gl_in[0].gl_Position.xy);
-            // 垂直な方向を計算
-            vec2 offset = vec2(-dir.y, dir.x) * thickness / 2.0;
+            vec4 p0 = gl_in[0].gl_Position;
+            vec4 p1 = gl_in[1].gl_Position;
+            vec2 delta_px = (p1.xy - p0.xy) * viewport_size * 0.5;
+            float segment_length_px = length(delta_px);
+            if (segment_length_px <= 1e-6) {
+                return;
+            }
+            vec2 normal_px = vec2(-delta_px.y, delta_px.x) / segment_length_px;
+            vec2 offset = normal_px * line_width_px / viewport_size;
             // 四角形の頂点を出力
-            gl_Position = vec4(gl_in[0].gl_Position.xy + offset, 0.0, 1.0);
+            gl_Position = p0 + vec4(offset, 0.0, 0.0);
             EmitVertex();
-            gl_Position = vec4(gl_in[0].gl_Position.xy - offset, 0.0, 1.0);
+            gl_Position = p0 - vec4(offset, 0.0, 0.0);
             EmitVertex();
-            gl_Position = vec4(gl_in[1].gl_Position.xy + offset, 0.0, 1.0);
+            gl_Position = p1 + vec4(offset, 0.0, 0.0);
             EmitVertex();
-            gl_Position = vec4(gl_in[1].gl_Position.xy - offset, 0.0, 1.0);
+            gl_Position = p1 - vec4(offset, 0.0, 0.0);
             EmitVertex();
             EndPrimitive();
         }

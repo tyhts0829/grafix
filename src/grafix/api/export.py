@@ -1,7 +1,7 @@
 """
 どこで: `src/grafix/api/export.py`。
-何を: ヘッドレス export の公開導線 `Export` を提供する（当面はスタブ）。
-なぜ: 対話ウィンドウを立ち上げずに `draw(t)` の 1 フレーム出力を保存できる形を先に固定するため。
+何を: ヘッドレス export の公開導線 `Export` を提供する。
+なぜ: 対話ウィンドウを立ち上げずに `draw(t)` の 1 フレームを SVG/PNG/G-code へ保存するため。
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.persistence import default_param_store_path, load_param_store
 from grafix.core.parameters.style_resolver import FrameStyle, StyleResolver
 from grafix.core.pipeline import RealizedLayer, realize_scene
+from grafix.core.realize import RealizeSession
 from grafix.core.scene import SceneItem
 from grafix.export.gcode import export_gcode
 from grafix.export.image import export_image
@@ -21,12 +22,7 @@ from grafix.export.svg import export_svg
 
 
 class Export:
-    """`draw(t)` の 1 フレーム分をファイルへ書き出す。
-
-    Notes
-    -----
-    現段階では API の骨格のみを提供し、各フォーマットの実出力は未実装とする。
-    """
+    """`draw(t)` の 1 フレーム分をファイルへ書き出す。"""
 
     def __init__(
         self,
@@ -54,13 +50,13 @@ class Export:
         path : str or Path
             出力先パス。
         canvas_size : tuple[int, int]
-            キャンバス寸法（将来の出力で使用）。
+            SVG、PNG、G-code で使用するキャンバス寸法。
         line_color : tuple[float, float, float]
             Layer の既定線色（0..1）。
         line_thickness : float
             Layer の既定線幅。
         background_color : tuple[float, float, float]
-            背景色（0..1）。画像出力で使用する想定。
+            背景色（0..1）。PNG 出力で使用する。
         run_id : str | None
             ParamStore の既定パス（読み込み元）の run_id suffix。
         """
@@ -84,8 +80,13 @@ class Export:
             color=self.style.global_line_color_rgb01,
             thickness=float(self.style.global_thickness),
         )
-        with parameter_context(store):
-            self.layers: list[RealizedLayer] = realize_scene(draw, float(t), defaults)
+        with RealizeSession() as session, parameter_context(store):
+            self.layers: list[RealizedLayer] = realize_scene(
+                draw,
+                float(t),
+                defaults,
+                session=session,
+            )
 
         if self.fmt == "svg":
             export_svg(self.layers, self.path, canvas_size=canvas_size)

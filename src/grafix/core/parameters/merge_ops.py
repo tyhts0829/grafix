@@ -50,6 +50,8 @@ def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> No
             # これによりフレーム間で行が並び替わりにくくなり、GUI の視認性が安定する。
             runtime.display_order_by_group[group] = int(runtime.next_display_order)
             runtime.next_display_order += 1
+            # display_order は GUI の静的行モデルを決めるため、cache revision に含める。
+            store._touch()
 
         # --- 2) このフレームの explicit を集計 ---
         explicit_by_key_this_frame[rec.key] = bool(rec.explicit)
@@ -65,7 +67,10 @@ def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> No
             runtime.last_effective_by_key[rec.key] = rec.effective
 
         # --- 4) group ordinal を確保 ---
+        ordinal_before = ordinals.get(rec.key.op, rec.key.site_id)
         ordinals.get_or_assign(rec.key.op, rec.key.site_id)
+        if ordinal_before is None:
+            store._touch()
 
         # --- 5) ParamState を確保（初出のみ初期化）---
         #
@@ -84,19 +89,22 @@ def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> No
         # 「kind 不一致」は別のパラメータとして扱い、新しい meta を採用する。
         existing_meta = store._meta.get(rec.key)
         if existing_meta is None or existing_meta.kind != rec.meta.kind:
-            store._meta[rec.key] = rec.meta
+            store._set_meta(rec.key, rec.meta)
 
         # --- 6) effect chain 索引（GUI の表示順/ヘッダ単位）を更新 ---
         #
         # chain_id/step_index は「この key がどのチェーンの何番目か」を表す。
         # effect 以外の op では None のままなので、その場合は何もしない。
         if rec.chain_id is not None and rec.step_index is not None:
+            step_before = effects.get_step(rec.key.op, rec.key.site_id)
             effects.record_step(
                 op=str(rec.key.op),
                 site_id=str(rec.key.site_id),
                 chain_id=str(rec.chain_id),
                 step_index=int(rec.step_index),
             )
+            if effects.get_step(rec.key.op, rec.key.site_id) != step_before:
+                store._touch()
 
     # loaded/observed の差分を見て「site_id が揺れた group」を再リンクする。
     # この呼び出しは「このフレームで observed_groups を積んだ後」である必要がある。
@@ -119,7 +127,7 @@ def _apply_explicit_override_follow_policy(
 
         if prev_explicit is None:
             # 旧 JSON（explicit 情報なし）もあるので、unknown の場合は触らず記録だけ行う。
-            store._explicit_by_key[key] = new_explicit
+            store._set_explicit(key, new_explicit)
             continue
 
         prev_explicit = bool(prev_explicit)
@@ -129,7 +137,7 @@ def _apply_explicit_override_follow_policy(
         # state が無ければ override を更新できないので、explicit の記録だけ更新して終える。
         state = store._states.get(key)
         if state is None:
-            store._explicit_by_key[key] = new_explicit
+            store._set_explicit(key, new_explicit)
             continue
 
         # explicit の意味は「コード側が値を明示指定したか」。
@@ -148,10 +156,13 @@ def _apply_explicit_override_follow_policy(
         #   explicit に変わったら、override は False に追従して「コード優先」に戻る。
         # - ユーザーが明示的に override を切り替えていたら、explicit が変わっても維持する。
         if bool(state.override) == bool(default_override_prev):
-            state.override = bool(default_override_new)
+            next_override = bool(default_override_new)
+            if state.override != next_override:
+                state.override = next_override
+                store._touch()
 
         # 次フレーム以降の差分判定のため、explicit の記録は必ず更新する。
-        store._explicit_by_key[key] = new_explicit
+        store._set_explicit(key, new_explicit)
 
 
 __all__ = ["merge_frame_params"]

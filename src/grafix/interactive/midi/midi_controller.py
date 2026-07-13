@@ -10,6 +10,7 @@ import re
 import sys
 from pathlib import Path
 
+from grafix.core.atomic_write import atomic_write_text
 from grafix.core.runtime_config import output_root_dir
 
 
@@ -95,10 +96,10 @@ def load_cc_snapshot(path: Path) -> dict[int, float]:
 def save_cc_snapshot(snapshot: dict[int, float], path: Path) -> None:
     """CC スナップショットを JSON として保存する。"""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {str(k): float(v) for k, v in sorted(snapshot.items())}
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    atomic_write_text(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
     )
 
 

@@ -145,15 +145,8 @@ def test_drop_probability_is_deterministic_for_same_seed() -> None:
     )(g)
     r1 = realize(out1)
 
-    # realize_cache を回避して同じ計算を再実行するため、別 ID の no-op ノードを噛ませる。
-    g2 = E.translate(delta=(0.0, 0.0, 0.0))(g)
-    out2 = E.drop(
-        probability_base=(0.5, 0.5, 0.5),
-        probability_slope=(0.0, 0.0, 0.0),
-        seed=42,
-        keep_mode="drop",
-    )(g2)
-    r2 = realize(out2)
+    # convenience API は呼び出しごとに一時 session を使うため、同じ DAG を再評価できる。
+    r2 = realize(out1)
 
     np.testing.assert_allclose(r2.coords, r1.coords, rtol=0.0, atol=0.0)
     assert r2.offsets.tolist() == r1.offsets.tolist()
@@ -229,6 +222,20 @@ def test_drop_unknown_by_is_noop() -> None:
     out = realize(E.drop(interval=1, by="wat", keep_mode="drop")(g))
     np.testing.assert_allclose(out.coords, base.coords, rtol=0.0, atol=0.0)
     assert out.offsets.tolist() == base.offsets.tolist()
+
+
+def test_drop_face_mode_with_lines_only_is_noop() -> None:
+    g = G.drop_test_lines5()
+    base = realize(g)
+
+    out_coords, out_offsets = drop_impl(
+        (base.coords, base.offsets),
+        interval=1,
+        by="face",
+    )
+
+    assert out_coords is base.coords
+    assert out_offsets is base.offsets
 
 
 def test_drop_face_interval_uses_face_index_and_drops_faces_only() -> None:

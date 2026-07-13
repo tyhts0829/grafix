@@ -42,7 +42,7 @@ def run(
     parameter_persistence: bool = True,
     midi_port_name: str | None = "auto",
     midi_mode: str = "7bit",
-    n_worker: int = 4,
+    n_worker: int = 1,
     fps: float = 60.0,
 ) -> None:
     """pyglet ウィンドウを生成し `draw(t)` のシーンをリアルタイム描画する。
@@ -83,7 +83,8 @@ def run(
         MIDI CC の解釈モード。`"7bit"` または `"14bit"`。
     n_worker : int
         `draw(t)` を multiprocessing で実行するワーカープロセス数。
-        `<=1` の場合は無効。`>=2` の場合は spawn + Queue（pickle）で非同期化する。
+        既定は同期実行の 1。`>=2` の場合は spawn + Queue（pickle）で非同期化する。
+        CPU負荷の高いdrawでプレビュー応答性を優先するときだけ明示的に増やす。
     fps : float
         目標フレームレート。`<=0` の場合はフレーム末尾で sleep せず、可能な限り速く回す。
         録画機能（V キー）は fps > 0 が必要。

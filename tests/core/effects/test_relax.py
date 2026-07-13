@@ -6,7 +6,7 @@ import numpy as np
 
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeSession, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -46,8 +46,10 @@ def relax_test_shared_point() -> GeomTuple:
 
 def test_relax_zero_iterations_is_noop() -> None:
     g = G.relax_test_chain5()
-    base = realize(g)
-    out = realize(E.relax(relaxation_iterations=0, step=0.5)(g))
+    relaxed = E.relax(relaxation_iterations=0, step=0.5)(g)
+    with RealizeSession() as session:
+        base = session.realize(g)
+        out = session.realize(relaxed)
     assert out is base
 
 

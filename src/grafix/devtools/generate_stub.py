@@ -26,15 +26,15 @@ import re
 from pathlib import Path
 from typing import Any
 
+from grafix.core.atomic_write import atomic_write_text
+
 # `G.<prim>(...)` / `E.<eff>(...)` / `P.<preset>(...)` といった
 # スタブ側メソッド名に使える識別子をフィルタするための正規表現。
 _VALID_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # 実装側の型注釈が `tuple[float, float, float]`（or `Tuple[...]`）でも、
 # スタブでは統一して `Vec3` として表現したいので置換する。
-_VEC3_TUPLE_RE = re.compile(
-    r"(?:tuple|Tuple)\[\s*float\s*,\s*float\s*,\s*float\s*\]"
-)
+_VEC3_TUPLE_RE = re.compile(r"(?:tuple|Tuple)\[\s*float\s*,\s*float\s*,\s*float\s*\]")
 
 # 型文字列を厳密にパースせず、「識別子っぽいトークン」だけ拾うための正規表現。
 # `list[Path]` なら `list` と `Path` が取れる想定。
@@ -274,9 +274,7 @@ def _type_str_from_impl_param(impl: Any, param_name: str) -> str | None:
     return _type_str_from_annotation(p.annotation)
 
 
-def _type_str_for_effect_param(
-    *, impl: Any | None, param_name: str, meta: Any
-) -> str:
+def _type_str_for_effect_param(*, impl: Any | None, param_name: str, meta: Any) -> str:
     """effect の param に対する型文字列を決める。
 
     - 実装関数が見つかれば、その型注釈（文字列化）を優先
@@ -313,23 +311,6 @@ def _type_str_for_preset_param(*, impl: Any, param_name: str, meta: Any) -> str:
     type_str_norm = _normalize_type_str(type_str)
     if not _is_resolvable_type_str(type_str_norm):
         return fallback
-    return type_str_norm
-
-
-def _type_str_for_preset_return(*, impl: Any) -> str:
-    """preset 関数の戻り値型を（解決可能性を見ながら）文字列として返す。"""
-    try:
-        sig = inspect.signature(impl)
-    except Exception:
-        return "Any"
-
-    type_str = _type_str_from_annotation(sig.return_annotation)
-    if type_str is None:
-        return "Any"
-
-    type_str_norm = _normalize_type_str(type_str)
-    if not _is_resolvable_type_str(type_str_norm):
-        return "Any"
     return type_str_norm
 
 
@@ -435,9 +416,9 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
     from grafix.core.primitive_registry import primitive_registry  # type: ignore[import]
 
     for prim in primitive_names:
-        meta = primitive_registry.get_meta(prim)
-        meta_by_name: dict[str, Any] = dict(meta)
-        param_order = list(meta_by_name.keys())
+        spec = primitive_registry[prim]
+        meta_by_name: dict[str, Any] = dict(spec.meta)
+        param_order = [name for name in spec.param_order if name in meta_by_name]
 
         params: list[str] = []
         if meta_by_name:
@@ -445,8 +426,9 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
                 pm = meta_by_name[p]
                 kind = str(getattr(pm, "kind", ""))
                 params.append(f"{p}: {_type_for_kind(kind)} = ...")
+            params.append("key: str | int | None = ...")
         else:
-            params = ["**params: Any"]
+            params = ["key: str | int | None = ...", "**params: Any"]
 
         impl = _resolve_impl_callable("primitive", prim)
         if impl is not None:
@@ -478,7 +460,9 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
     """`E.xxx(...)` の戻り値である builder の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _EffectBuilder(Protocol):\n")
-    lines.append("    def __call__(self, geometry: Geometry, *more_geometries: Geometry) -> Geometry:\n")
+    lines.append(
+        "    def __call__(self, geometry: Geometry, *more_geometries: Geometry) -> Geometry:\n"
+    )
     lines.append('        """保持している effect 列を Geometry に適用する。"""\n')
     lines.append("        ...\n")
 
@@ -487,9 +471,9 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
     for eff in effect_names:
         impl = _resolve_impl_callable("effect", eff)
 
-        meta = effect_registry.get_meta(eff)
-        meta_by_name: dict[str, Any] = dict(meta)
-        param_order = list(meta_by_name.keys())
+        spec = effect_registry[eff]
+        meta_by_name: dict[str, Any] = dict(spec.meta)
+        param_order = [name for name in spec.param_order if name in meta_by_name]
 
         params: list[str] = []
         if meta_by_name:
@@ -497,8 +481,9 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
                 pm = meta_by_name[p]
                 type_str = _type_str_for_effect_param(impl=impl, param_name=p, meta=pm)
                 params.append(f"{p}: {type_str} = ...")
+            params.append("key: str | int | None = ...")
         else:
-            params = ["**params: Any"]
+            params = ["key: str | int | None = ...", "**params: Any"]
 
         if impl is not None:
             parsed_summary, parsed_docs = _parse_numpy_doc(inspect.getdoc(impl) or "")
@@ -539,9 +524,9 @@ def _render_e_protocol(effect_names: list[str]) -> str:
     for eff in effect_names:
         impl = _resolve_impl_callable("effect", eff)
 
-        meta = effect_registry.get_meta(eff)
-        meta_by_name: dict[str, Any] = dict(meta)
-        param_order = list(meta_by_name.keys())
+        spec = effect_registry[eff]
+        meta_by_name: dict[str, Any] = dict(spec.meta)
+        param_order = [name for name in spec.param_order if name in meta_by_name]
 
         params: list[str] = []
         if meta_by_name:
@@ -549,8 +534,9 @@ def _render_e_protocol(effect_names: list[str]) -> str:
                 pm = meta_by_name[p]
                 type_str = _type_str_for_effect_param(impl=impl, param_name=p, meta=pm)
                 params.append(f"{p}: {type_str} = ...")
+            params.append("key: str | int | None = ...")
         else:
-            params = ["**params: Any"]
+            params = ["key: str | int | None = ...", "**params: Any"]
 
         if impl is not None:
             parsed_summary, parsed_docs = _parse_numpy_doc(inspect.getdoc(impl) or "")
@@ -582,10 +568,7 @@ def _render_l_protocol() -> str:
     lines: list[str] = []
     lines.append("class _L(Protocol):\n")
     lines.append(
-        "    def __call__(\n"
-        "        self,\n"
-        "        name: str | None = None,\n"
-        "    ) -> _L:\n"
+        "    def __call__(\n        self,\n        name: str | None = None,\n    ) -> _L:\n"
     )
     lines.append('        """ラベル付き Layer 名前空間を返す。"""\n')
     lines.append("        ...\n\n")
@@ -595,6 +578,7 @@ def _render_l_protocol() -> str:
         "        self,\n"
         "        geometry_or_list: Geometry | Sequence[Geometry],\n"
         "        *,\n"
+        "        key: str | int | None = ...,\n"
         "        color: Vec3 | None = ...,\n"
         "        thickness: float | None = ...,\n"
         "    ) -> list[Layer]:\n"
@@ -618,7 +602,7 @@ def _render_p_protocol(preset_names: list[str]) -> str:
     )
     lines.append('        """ラベル付き preset 名前空間を返す。"""\n')
     lines.append("        ...\n\n")
-    lines.append("    def __getattr__(self, name: str) -> Callable[..., Any]:\n")
+    lines.append("    def __getattr__(self, name: str) -> Callable[..., SceneItem]:\n")
     lines.append('        """preset を `P.<name>(...)` で呼び出す。"""\n')
     lines.append("        ...\n\n")
 
@@ -642,6 +626,13 @@ def _render_p_protocol(preset_names: list[str]) -> str:
                 pm = meta_by_name[p]
                 type_str = _type_str_for_preset_param(impl=impl, param_name=p, meta=pm)
                 params.append(f"{p}: {type_str} = ...")
+        # @preset wrapper が全 preset に追加する予約引数も補完へ出す。
+        params.extend(
+            (
+                "name: str | None = ...",
+                "key: str | int | None = ...",
+            )
+        )
 
         parsed_summary, parsed_docs = _parse_numpy_doc(inspect.getdoc(impl) or "")
         doc_lines = _render_docstring(
@@ -651,12 +642,11 @@ def _render_p_protocol(preset_names: list[str]) -> str:
             meta_by_name=meta_by_name,
         )
 
-        return_type = _type_str_for_preset_return(impl=impl)
         lines.append(
             _render_method(
                 indent="    ",
                 name=preset_name,
-                return_type=return_type,
+                return_type="SceneItem",
                 params=params,
                 doc_lines=doc_lines,
             )
@@ -692,14 +682,14 @@ def generate_stubs_str() -> str:
     # - 実装関数が見つからないものは除外（docstring/型注釈を拾えないため）
     primitive_names = sorted(
         name
-        for name, _ in primitive_registry.items()
+        for name in primitive_registry
         if _is_valid_identifier(name)
         and not name.startswith("_")
         and _resolve_impl_callable("primitive", name) is not None
     )
     effect_names = sorted(
         name
-        for name, _ in effect_registry.items()
+        for name in effect_registry
         if _is_valid_identifier(name)
         and not name.startswith("_")
         and _resolve_impl_callable("effect", name) is not None
@@ -720,10 +710,7 @@ def generate_stubs_str() -> str:
         if _is_valid_identifier(name)
         and not name.startswith("_")
         and f"preset.{name}" in preset_registry
-        and any(
-            str(getattr(fn, "__module__", "")).startswith(pref)
-            for pref in preset_pkg_prefixes
-        )
+        and any(str(getattr(fn, "__module__", "")).startswith(pref) for pref in preset_pkg_prefixes)
     )
 
     # 生成物の先頭には「自動生成」ヘッダと lint 抑制を入れる。
@@ -799,7 +786,7 @@ def main() -> None:
 
     api_init = Path(grafix.api.__file__).resolve()
     out_path = api_init.with_name("__init__.pyi")
-    out_path.write_text(content, encoding="utf-8")
+    atomic_write_text(out_path, content)
     print(f"Wrote {out_path}")  # noqa: T201
 
 

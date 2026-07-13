@@ -4,15 +4,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import TypeAlias
 
 from .key import ParameterKey
 from .meta import ParamMeta
-from .state import ParamState
+from .state import ParamStateSnapshot
 from .store import ParamStore
 
-ParamSnapshotEntry: TypeAlias = tuple[ParamMeta, ParamState, int, str | None]
-ParamSnapshot: TypeAlias = dict[ParameterKey, ParamSnapshotEntry]
+ParamSnapshotEntry: TypeAlias = tuple[ParamMeta, ParamStateSnapshot, int, str | None]
+ParamSnapshot: TypeAlias = Mapping[ParameterKey, ParamSnapshotEntry]
 
 
 def store_snapshot(
@@ -20,10 +22,14 @@ def store_snapshot(
 ) -> ParamSnapshot:
     """(key -> (meta, state, ordinal, label)) のスナップショットを返す（副作用なし）。"""
 
+    cached = store._get_snapshot_cache()
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
     labels = store._labels_ref()
     ordinals = store._ordinals_ref()
 
-    result: ParamSnapshot = {}
+    result: dict[ParameterKey, ParamSnapshotEntry] = {}
     for key, state in store._states.items():
         meta = store._meta.get(key)
         if meta is None:
@@ -38,9 +44,11 @@ def store_snapshot(
             )
 
         label = labels.get(key.op, key.site_id)
-        state_copy = ParamState(**vars(state))
+        state_copy = ParamStateSnapshot.from_state(state)
         result[key] = (meta, state_copy, int(ordinal), label)
-    return result
+    snapshot: ParamSnapshot = MappingProxyType(result)
+    store._set_snapshot_cache(snapshot)
+    return snapshot
 
 
 def store_snapshot_for_gui(

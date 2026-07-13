@@ -1,0 +1,77 @@
+"""正式パスを部分書き込みから守る atomic file writer。"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import TextIO
+
+
+@contextmanager
+def atomic_output_path(path: str | Path) -> Iterator[Path]:
+    """外部 writer 用の sibling temp path を返し、成功時だけ正式 path と置換する。"""
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.stem}.",
+        suffix=f".tmp{target.suffix}",
+    )
+    os.close(fd)
+    temp_path = Path(temp_name)
+    temp_path.unlink()
+    try:
+        yield temp_path
+        with temp_path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.replace(temp_path, target)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+@contextmanager
+def atomic_text_writer(
+    path: str | Path,
+    *,
+    encoding: str = "utf-8",
+    newline: str | None = None,
+) -> Iterator[TextIO]:
+    """同じ directory の一時ファイルへ書き、成功時だけ ``path`` と置換する。"""
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline=newline) as stream:
+            yield stream
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, target)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+
+
+def atomic_write_text(
+    path: str | Path,
+    text: str,
+    *,
+    encoding: str = "utf-8",
+    newline: str | None = None,
+) -> None:
+    """``text`` を atomic に保存する。"""
+
+    with atomic_text_writer(path, encoding=encoding, newline=newline) as stream:
+        stream.write(text)
+
+
+__all__ = ["atomic_output_path", "atomic_text_writer", "atomic_write_text"]

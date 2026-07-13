@@ -7,14 +7,11 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from grafix.core.geometry import Geometry
-from grafix.core.builtins import ensure_builtin_primitives_registered
+from grafix.core.builtins import ensure_builtin_primitive_registered
 from grafix.core.parameters import caller_site_id
 from grafix.core.primitive_registry import primitive_registry
 
 from ._param_resolution import resolve_api_params, set_api_label
-
-ensure_builtin_primitives_registered()
-
 
 class PrimitiveNamespace:
     """primitive Geometry ノードを生成する名前空間。
@@ -48,6 +45,8 @@ class PrimitiveNamespace:
             raise AttributeError(name)
 
         if name not in primitive_registry:
+            ensure_builtin_primitive_registered(name)
+        if name not in primitive_registry:
             raise AttributeError(f"未登録の primitive: {name!r}")
 
         def factory(**params: Any) -> Geometry:
@@ -66,7 +65,8 @@ class PrimitiveNamespace:
 
             # site_id は「呼び出し箇所」を識別するための安定 ID。
             # 同じ行（同じ呼び出し箇所）からの呼び出しであれば、フレームが変わっても同一になる。
-            site_id = caller_site_id(skip=1)
+            key = params.pop("key", None)
+            site_id = caller_site_id(skip=1, key=key)
 
             # ParamStore が利用できるコンテキスト（parameter_context）内なら、
             # G(name="...") のラベル情報を (op, site_id) に紐づけて保存する。
@@ -77,15 +77,14 @@ class PrimitiveNamespace:
             # defaults: meta に含まれる引数について、関数シグネチャから抽出した安全なデフォルト値。
             # これにより、G.circle() のように kwargs を省略しても ParamStore にキーが観測され、
             # GUI が空になりにくい。
-            meta = primitive_registry.get_meta(name)
-            defaults = primitive_registry.get_defaults(name)
+            spec = primitive_registry[name]
 
             resolved = resolve_api_params(
                 op=name,
                 site_id=site_id,
                 user_params=params,
-                defaults=defaults,
-                meta=meta,
+                defaults=spec.defaults,
+                meta=spec.meta,
             )
             # resolved は Geometry.create に渡され、正規化・署名化される。
             # primitive は inputs を持たないため op と params のみでノードが確定する。

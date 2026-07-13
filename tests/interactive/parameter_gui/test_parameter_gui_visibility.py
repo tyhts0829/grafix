@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from grafix.api import preset
+from grafix.core.geometry import Geometry
 from grafix.core.parameters import ParamMeta, ParamStore, ParameterKey
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.merge_ops import merge_frame_params
@@ -43,8 +44,8 @@ def _vis_preset(
     boom: float = 0.0,
     name=None,
     key=None,
-):
-    return None
+) -> Geometry:
+    return Geometry.create(op="concat")
 
 
 def _row(*, arg: str, value: object) -> ParameterRow:
@@ -98,9 +99,7 @@ def test_active_mask_uses_last_effective_by_key() -> None:
         _row(arg="cell_size", value=10.0),
         _row(arg="ratio", value=1.618),
     ]
-    eff = {
-        ParameterKey(op="preset._vis_preset", site_id="s:1", arg="base"): "ratio_lines"
-    }
+    eff = {ParameterKey(op="preset._vis_preset", site_id="s:1", arg="base"): "ratio_lines"}
     mask = active_mask_for_rows(rows, show_inactive=False, last_effective_by_key=eff)
     assert mask == [True, False, True]
 

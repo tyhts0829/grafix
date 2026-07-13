@@ -164,6 +164,7 @@ class ParameterGUI:
         self._custom_font_path = _DEFAULT_GUI_FONT_PATH
         self._font_backing_scale: float | None = None
         self._font_fallback_path_for_japanese: Path | None = None
+        self._font_sync_key: tuple[object, ...] | None = None
         self._sync_font_for_window()
 
         import time
@@ -314,12 +315,27 @@ class ParameterGUI:
             return
 
         backing_scale = _compute_window_backing_scale(self._window)
-        fallback = _gui_fallback_font_path_for_japanese()
-        if (
-            self._font_backing_scale == backing_scale
-            and self._font_fallback_path_for_japanese == fallback
-        ):
+        try:
+            cfg = runtime_config()
+            config_key: tuple[object, ...] = (
+                id(cfg),
+                cfg.config_path,
+                cfg.parameter_gui_fallback_font_japanese,
+                tuple(cfg.font_dirs),
+            )
+        except Exception:
+            config_key = (None,)
+        sync_key: tuple[object, ...] = (
+            float(backing_scale),
+            self._custom_font_path,
+            float(self._font_size_base_px),
+            config_key,
+        )
+        # フォント探索/resolve はディスクアクセスを含み得る。安定フレームでは行わず、
+        # backing scale または runtime config が変わったときだけ再同期する。
+        if getattr(self, "_font_sync_key", None) == sync_key:
             return
+        fallback = _gui_fallback_font_path_for_japanese()
 
         io = self._imgui.get_io()
         io.fonts.clear()
@@ -349,6 +365,7 @@ class ParameterGUI:
 
         self._font_backing_scale = backing_scale
         self._font_fallback_path_for_japanese = fallback
+        self._font_sync_key = sync_key
 
     def draw_frame(self) -> bool:
         """1 フレーム分の GUI を描画し、変更があれば store に反映する。

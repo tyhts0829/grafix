@@ -5,11 +5,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any, Iterable, Sequence
 
 from .key import ParameterKey
 from .meta import ParamMeta
-from .state import ParamState
+from .state import ParamStateSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +32,10 @@ class ParameterRow:
 
 
 def rows_from_snapshot(
-    snapshot: dict[ParameterKey, tuple[ParamMeta, ParamState, int, str | None]],
+    snapshot: Mapping[
+        ParameterKey,
+        tuple[ParamMeta, ParamStateSnapshot, int, str | None],
+    ],
 ) -> list[ParameterRow]:
     """Snapshot から ParameterRow を生成し、op→ordinal→arg の順で並べる。"""
 

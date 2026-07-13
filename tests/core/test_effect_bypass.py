@@ -36,8 +36,8 @@ def test_effect_activate_false_multiple_inputs_pass_through_by_concat() -> None:
 
 
 def test_effect_activate_false_empty_inputs_returns_empty_geometry() -> None:
-    func = effect_registry.get("scale")
-    out = func([], (("activate", False),))
+    spec = effect_registry["scale"]
+    out = spec.evaluator([], (("activate", False),))
 
     assert out.coords.shape == (0, 3)
     assert out.offsets.shape == (1,)

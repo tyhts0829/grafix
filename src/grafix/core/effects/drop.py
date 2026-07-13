@@ -7,6 +7,7 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from .util import empty_geom
 
 drop_meta = {
     "interval": ParamMeta(kind="int", ui_min=0, ui_max=100),
@@ -19,12 +20,6 @@ drop_meta = {
     "keep_mode": ParamMeta(kind="choice", choices=("drop", "keep")),
     "seed": ParamMeta(kind="int", ui_min=0, ui_max=2**31 - 1),
 }
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
 
 
 def _compute_polyline_lengths(
@@ -288,7 +283,7 @@ def drop(
             if end - start >= 3:
                 face_count += 1
         if face_count <= 0:
-            return base
+            return coords, offsets
 
         lengths = None
         if use_min or use_max:
@@ -326,7 +321,7 @@ def drop(
             face_index += 1
 
     if not np.any(keep_mask):
-        return _empty_geometry()
+        return empty_geom()
 
     out_coords_list: list[np.ndarray] = []
     out_offsets_list: list[int] = [0]
@@ -345,7 +340,7 @@ def drop(
         out_offsets_list.append(cursor)
 
     if len(out_offsets_list) == 1:
-        return _empty_geometry()
+        return empty_geom()
 
     out_coords = np.concatenate(out_coords_list, axis=0)
     out_offsets = np.asarray(out_offsets_list, dtype=np.int32)

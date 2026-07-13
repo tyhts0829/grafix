@@ -64,7 +64,7 @@ def test_discovered_config_overrides_packaged_defaults(tmp_path: Path, monkeypat
     cfg = runtime_config()
     assert cfg.config_path == discovered
     assert cfg.output_dir == Path("out_discovered")
-    assert cfg.sketch_dir is None
+    assert cfg.sketch_dir == Path("sketch")
     assert cfg.font_dirs == (Path("fonts_discovered"),)
 
 
@@ -147,7 +147,7 @@ def test_explicit_config_overrides_discovered_config(tmp_path: Path, monkeypatch
     cfg = runtime_config()
     assert cfg.config_path == explicit
     assert cfg.output_dir == Path("out_explicit")
-    assert cfg.sketch_dir is None
+    assert cfg.sketch_dir == Path("sketch")
     assert cfg.font_dirs == (Path("fonts_discovered"),)
 
 
@@ -174,7 +174,10 @@ def test_explicit_config_path_missing_raises(tmp_path: Path, monkeypatch: pytest
         output_root_dir()
 
 
-def test_overriding_export_without_gcode_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_partial_export_override_keeps_packaged_gcode_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _isolate_config_discovery(tmp_path, monkeypatch)
 
     discovered = tmp_path / ".grafix" / "config.yaml"
@@ -191,5 +194,44 @@ def test_overriding_export_without_gcode_raises(tmp_path: Path, monkeypatch: pyt
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match=r"export\.gcode"):
+    cfg = runtime_config()
+
+    assert cfg.png_scale == 8.0
+    assert cfg.gcode.travel_feed == 3000.0
+    assert cfg.gcode.optimize_travel is True
+
+
+def test_partial_gcode_override_keeps_other_packaged_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+
+    discovered = tmp_path / ".grafix" / "config.yaml"
+    discovered.parent.mkdir(parents=True, exist_ok=True)
+    discovered.write_text(
+        "export:\n  gcode:\n    travel_feed: 4321.0\n",
+        encoding="utf-8",
+    )
+
+    cfg = runtime_config()
+
+    assert cfg.gcode.travel_feed == 4321.0
+    assert cfg.gcode.draw_feed == 3000.0
+    assert cfg.gcode.optimize_travel is True
+
+
+def test_missing_gcode_error_matches_recursive_merge_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+
+    discovered = tmp_path / ".grafix" / "config.yaml"
+    discovered.parent.mkdir(parents=True, exist_ok=True)
+    discovered.write_text("export:\n  gcode: null\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="再帰 merge") as exc_info:
         runtime_config()
+
+    assert "浅い上書き" not in str(exc_info.value)

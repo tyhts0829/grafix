@@ -43,12 +43,14 @@ def test_build_line_indices_skips_short_polylines() -> None:
     assert indices.tolist() == [1, 2, 3]
 
 
-def test_build_line_indices_is_cached_by_offsets_content() -> None:
+def test_build_line_indices_returns_immutable_arrays() -> None:
     offsets1 = np.array([0, 3, 5], dtype=np.int32)
     offsets2 = np.array([0, 3, 5], dtype=np.int32)
     indices1 = build_line_indices(offsets1)
     indices2 = build_line_indices(offsets2)
-    assert indices1 is indices2
+    np.testing.assert_array_equal(indices1, indices2)
+    assert indices1.flags.writeable is False
+    assert indices2.flags.writeable is False
 
 
 def test_build_line_indices_and_stats_single_polyline() -> None:

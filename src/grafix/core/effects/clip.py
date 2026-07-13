@@ -6,13 +6,11 @@
 - mask: マスク（閉ループ列）
 
 処理:
-- マスクの代表リングから姿勢（平面）を推定し、両入力を XY 平面へ整列して 2D クリップする。
+- マスクの全点から姿勢（平面）を推定し、両入力を XY 平面へ整列して 2D クリップする。
 - 結果のポリラインを元の姿勢へ戻して出力する。
 """
 
 from __future__ import annotations
-
-from typing import Sequence
 
 import numpy as np
 import pyclipper  # type: ignore[import-not-found, import-untyped]
@@ -21,7 +19,7 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .util import transform_back, transform_to_xy_plane
+from .util import PlanarFrame, empty_geom, pack_polylines
 
 clip_meta = {
     "mode": ParamMeta(kind="choice", choices=("inside", "outside")),
@@ -32,12 +30,6 @@ _PLANAR_EPS_ABS = 1e-6
 _PLANAR_EPS_REL = 1e-5
 
 
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
 def _planarity_threshold(points: np.ndarray) -> float:
     if points.size == 0:
         return float(_PLANAR_EPS_ABS)
@@ -46,14 +38,6 @@ def _planarity_threshold(points: np.ndarray) -> float:
     maxs = np.max(p, axis=0)
     diag = float(np.linalg.norm(maxs - mins))
     return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
-
-
-def _apply_alignment(
-    coords: np.ndarray, rotation_matrix: np.ndarray, z_offset: float
-) -> np.ndarray:
-    aligned = coords.astype(np.float64, copy=False) @ rotation_matrix.T
-    aligned[:, 2] -= float(z_offset)
-    return aligned
 
 
 def _remove_consecutive_duplicates(
@@ -98,40 +82,6 @@ def _to_int_path_ring(xy: np.ndarray, scale: int) -> list[tuple[int, int]] | Non
     return path if len(path) >= 3 else None
 
 
-def _lines_to_realized_geometry(lines: Sequence[np.ndarray]) -> GeomTuple:
-    if not lines:
-        return _empty_geometry()
-
-    coords_list: list[np.ndarray] = []
-    offsets = np.zeros((len(lines) + 1,), dtype=np.int32)
-    cursor = 0
-    for i, line in enumerate(lines):
-        v = np.asarray(line)
-        if v.ndim != 2 or v.shape[1] != 3:
-            raise ValueError("clip: polyline は shape (N,3) が必要")
-        coords_list.append(v.astype(np.float32, copy=False))
-        cursor += int(v.shape[0])
-        offsets[i + 1] = cursor
-
-    coords = (
-        np.concatenate(coords_list, axis=0)
-        if coords_list
-        else np.zeros((0, 3), np.float32)
-    )
-    return coords, offsets
-
-
-def _pick_representative_ring(
-    mask_coords: np.ndarray, mask_offsets: np.ndarray
-) -> np.ndarray | None:
-    for i in range(int(mask_offsets.size) - 1):
-        s = int(mask_offsets[i])
-        e = int(mask_offsets[i + 1])
-        if e - s >= 3:
-            return mask_coords[s:e]
-    return None
-
-
 @effect(meta=clip_meta, n_inputs=2)
 def clip(
     base: GeomTuple,
@@ -167,18 +117,14 @@ def clip(
     if mask_coords.shape[0] == 0:
         return base_coords, base_offsets
 
-    rep = _pick_representative_ring(mask_coords, mask_offsets)
-    if rep is None:
+    frame = PlanarFrame.from_points(mask_coords, mask_offsets)
+    threshold = _planarity_threshold(mask_coords)
+    if not frame.is_planar(threshold):
         return base_coords, base_offsets
 
-    _rep_aligned, rotation_matrix, z_offset = transform_to_xy_plane(rep)
+    aligned_base = frame.to_local(base_coords)
+    aligned_mask = frame.to_local(mask_coords)
 
-    aligned_base = _apply_alignment(base_coords, rotation_matrix, z_offset)
-    aligned_mask = _apply_alignment(mask_coords, rotation_matrix, z_offset)
-
-    threshold = _planarity_threshold(rep)
-    if float(np.max(np.abs(aligned_mask[:, 2]))) > threshold:
-        return base_coords, base_offsets
     if float(np.max(np.abs(aligned_base[:, 2]))) > threshold:
         return base_coords, base_offsets
 
@@ -212,12 +158,12 @@ def clip(
             xy = np.asarray(ring + [ring[0]], dtype=np.float64) / float(scale_i)
             v = np.zeros((xy.shape[0], 3), dtype=np.float64)
             v[:, 0:2] = xy
-            restored = transform_back(v, rotation_matrix, float(z_offset))
+            restored = frame.to_world(v)
             outline_lines.append(restored)
 
     if not subject_paths:
         if outline_lines:
-            return _lines_to_realized_geometry(outline_lines)
+            return pack_polylines(outline_lines)
         return base_coords, base_offsets
 
     pc = pyclipper.Pyclipper()  # type: ignore[attr-defined]
@@ -232,8 +178,8 @@ def clip(
 
     if not out_paths:
         if outline_lines:
-            return _lines_to_realized_geometry(outline_lines)
-        return _empty_geometry()
+            return pack_polylines(outline_lines)
+        return empty_geom()
 
     out_lines: list[np.ndarray] = []
     for path in out_paths:
@@ -242,10 +188,10 @@ def clip(
         xy = np.asarray(path, dtype=np.float64) / float(scale_i)
         v = np.zeros((xy.shape[0], 3), dtype=np.float64)
         v[:, 0:2] = xy
-        restored = transform_back(v, rotation_matrix, float(z_offset))
+        restored = frame.to_world(v)
         out_lines.append(restored)
 
     out_lines.extend(outline_lines)
     if not out_lines:
-        return _empty_geometry()
-    return _lines_to_realized_geometry(out_lines)
+        return empty_geom()
+    return pack_polylines(out_lines)

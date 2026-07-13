@@ -1,4 +1,5 @@
 from grafix.api import preset
+from grafix.core.geometry import Geometry
 from grafix.core.parameters import ParameterKey, ParameterRow
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.style import STYLE_OP
@@ -131,9 +132,9 @@ def test_snippet_effect_chain_orders_steps_by_step_index() -> None:
 
 def test_snippet_component_uses_display_op_call_name() -> None:
     @preset(meta={"x": {"kind": "float"}})
-    def snippet_logo(*, x: float = 1.0, name=None, key=None):
+    def snippet_logo(*, x: float = 1.0, name=None, key=None) -> Geometry:
         _ = (x, name, key)
-        return None
+        return Geometry.create(op="concat")
 
     row = _row(op="preset.snippet_logo", site_id="c:1", ordinal=1, arg="x", ui_value=1.0)
     block = GroupBlock(
@@ -266,9 +267,9 @@ def test_snippet_style_layer_dict_includes_name_when_raw_label_exists() -> None:
 
 def test_snippet_preset_includes_name_only_when_raw_label_differs() -> None:
     @preset(meta={"x": {"kind": "float"}})
-    def snippet_badge(*, x: float = 1.0, name=None, key=None):
+    def snippet_badge(*, x: float = 1.0, name=None, key=None) -> Geometry:
         _ = (x, name, key)
-        return None
+        return Geometry.create(op="concat")
 
     row = _row(op="preset.snippet_badge", site_id="c:1", ordinal=1, arg="x", ui_value=1.0)
     block = GroupBlock(

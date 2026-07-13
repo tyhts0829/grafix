@@ -8,6 +8,7 @@ from numba import njit  # type: ignore[import-untyped]
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from .util import empty_geom
 
 MAX_TOTAL_VERTICES = 10_000_000
 
@@ -15,12 +16,6 @@ pixelate_meta = {
     "step": ParamMeta(kind="vec3", ui_min=0.0, ui_max=10.0),
     "corner": ParamMeta(kind="choice", choices=("auto", "xy", "yx")),
 }
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
 
 
 def _round_half_away_from_zero(values: np.ndarray) -> np.ndarray:
@@ -312,7 +307,7 @@ def pixelate(
         total_vertices += est_n
 
     if not line_ranges:
-        return _empty_geometry()
+        return empty_geom()
 
     offsets_out = np.empty((len(line_ranges) + 1,), dtype=np.int32)
     acc = 0

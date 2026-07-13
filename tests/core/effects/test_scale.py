@@ -6,7 +6,7 @@ import numpy as np
 
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeSession, realize
 
 
 @primitive
@@ -87,6 +87,17 @@ def test_scale_empty_geometry_is_noop() -> None:
 
     assert realized.coords.shape == (0, 3)
     assert realized.offsets.tolist() == [0]
+
+
+def test_scale_identity_reuses_realized_input_for_every_mode() -> None:
+    g = G.scale_test_mixed_open_and_closed()
+    scaled_geometries = [
+        E.scale(mode=mode, scale=(1.0, 1.0, 1.0))(g) for mode in ("all", "by_line", "by_face")
+    ]
+    with RealizeSession() as session:
+        base = session.realize(g)
+        for scaled in scaled_geometries:
+            assert session.realize(scaled) is base
 
 
 def test_scale_by_line_scales_each_open_polyline_and_keeps_closed_ones() -> None:

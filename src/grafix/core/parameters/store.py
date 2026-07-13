@@ -37,6 +37,15 @@ class ParamStore:
 
         # 永続化しない実行時情報（loaded/observed/reconcile-applied）。
         self._runtime = ParamStoreRuntime()
+        self._revision = 0
+        self._snapshot_cache_revision = -1
+        self._snapshot_cache: object | None = None
+
+    @property
+    def revision(self) -> int:
+        """snapshot/model に影響する永続状態の変更時だけ増える単調 revision。"""
+
+        return self._revision
 
     def get_state(self, key: ParameterKey) -> ParamState | None:
         """登録済みの ParamState を返す。未登録なら None。"""
@@ -97,19 +106,27 @@ class ParamStore:
         if initial_override is not None:
             state.override = bool(initial_override)
         self._states[key] = state
+        self._touch()
         return state
 
     def _get_meta_ref(self, key: ParameterKey) -> ParamMeta | None:
         return self._meta.get(key)
 
     def _set_meta(self, key: ParameterKey, meta: ParamMeta) -> None:
+        if self._meta.get(key) == meta:
+            return
         self._meta[key] = meta
+        self._touch()
 
     def _get_explicit_ref(self, key: ParameterKey) -> bool | None:
         return self._explicit_by_key.get(key)
 
     def _set_explicit(self, key: ParameterKey, value: bool) -> None:
-        self._explicit_by_key[key] = bool(value)
+        normalized = bool(value)
+        if self._explicit_by_key.get(key) == normalized:
+            return
+        self._explicit_by_key[key] = normalized
+        self._touch()
 
     def _labels_ref(self) -> ParamLabels:
         return self._labels
@@ -125,6 +142,20 @@ class ParamStore:
 
     def _runtime_ref(self) -> ParamStoreRuntime:
         return self._runtime
+
+    def _touch(self) -> None:
+        self._revision += 1
+        self._snapshot_cache = None
+        self._snapshot_cache_revision = -1
+
+    def _get_snapshot_cache(self) -> object | None:
+        if self._snapshot_cache_revision != self._revision:
+            return None
+        return self._snapshot_cache
+
+    def _set_snapshot_cache(self, snapshot: object) -> None:
+        self._snapshot_cache = snapshot
+        self._snapshot_cache_revision = self._revision
 
 
 __all__ = ["ParamStore"]

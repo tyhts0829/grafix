@@ -17,6 +17,7 @@ class LineMesh:
     """
 
     PRIMITIVE_RESTART_INDEX = 0xFFFFFFFF
+    BUFFER_GROWTH_FACTOR = 2
 
     def __init__(
         self,
@@ -53,27 +54,56 @@ class LineMesh:
     # ---------- バッファ操作 ----------
     def _ensure_capacity(self, vbo_size: int, ibo_size: int) -> None:
         """データが大きくなったらGPUのバッファを再確保"""
-        vao_needs_rebuild = False
-        if vbo_size > self.vbo.size:
-            self.vbo.release()
-            self.vbo = self.ctx.buffer(
-                reserve=max(vbo_size, self.initial_reserve), dynamic=True
-            )
-            vao_needs_rebuild = True
+        grow_vbo = int(vbo_size) > int(self.vbo.size)
+        grow_ibo = int(ibo_size) > int(self.ibo.size)
+        if not grow_vbo and not grow_ibo:
+            return
 
-        if ibo_size > self.ibo.size:
-            self.ibo.release()
-            self.ibo = self.ctx.buffer(
-                reserve=max(ibo_size, self.initial_reserve), dynamic=True
+        old_vbo = self.vbo
+        old_ibo = self.ibo
+        new_vbo = old_vbo
+        new_ibo = old_ibo
+        try:
+            if grow_vbo:
+                new_vbo = self.ctx.buffer(
+                    reserve=self._grown_capacity(old_vbo.size, vbo_size),
+                    dynamic=True,
+                )
+            if grow_ibo:
+                new_ibo = self.ctx.buffer(
+                    reserve=self._grown_capacity(old_ibo.size, ibo_size),
+                    dynamic=True,
+                )
+            new_vao = self.ctx.simple_vertex_array(
+                self.program,
+                new_vbo,
+                "in_vert",
+                index_buffer=new_ibo,
             )
-            vao_needs_rebuild = True
+        except BaseException:
+            if new_vbo is not old_vbo:
+                new_vbo.release()
+            if new_ibo is not old_ibo:
+                new_ibo.release()
+            raise
 
-        # VAO は VBO/IBO が差し替わるときだけ張り直す（毎フレーム/毎レイヤーは重い）。
-        if vao_needs_rebuild:
-            self.vao.release()
-            self.vao = self.ctx.simple_vertex_array(
-                self.program, self.vbo, "in_vert", index_buffer=self.ibo
-            )
+        self.vao.release()
+        if new_vbo is not old_vbo:
+            old_vbo.release()
+        if new_ibo is not old_ibo:
+            old_ibo.release()
+        self.vbo = new_vbo
+        self.ibo = new_ibo
+        self.vao = new_vao
+
+    def _grown_capacity(self, current: int, required: int) -> int:
+        """再確保回数を抑える geometric growth 後の byte 数を返す。"""
+
+        return max(
+            int(required),
+            int(self.initial_reserve),
+            int(current) * self.BUFFER_GROWTH_FACTOR,
+        )
 
     def upload(self, vertices: np.ndarray, indices: np.ndarray) -> None:
         """実際にデータをGPUへ送り込む"""

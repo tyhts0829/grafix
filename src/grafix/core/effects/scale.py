@@ -76,6 +76,9 @@ def scale(
         return coords, offsets
 
     sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
+    if sx == 1.0 and sy == 1.0 and sz == 1.0:
+        return coords, offsets
+
     factors = np.array([sx, sy, sz], dtype=np.float64)
 
     if mode_s == "all":

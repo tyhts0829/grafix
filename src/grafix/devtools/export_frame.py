@@ -53,7 +53,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument(
         "--run-id",
         default=None,
-        help="既定出力パスの run_id（ファイル名 suffix）",
+        help="既定出力パスと ParamStore の run_id（ファイル名 suffix）",
     )
     p.add_argument(
         "--config",
@@ -102,6 +102,27 @@ def _frame_output_paths(base_path: Path, *, n_frames: int) -> list[Path]:
     ]
 
 
+def _export_png_frame(
+    draw: Callable[[float], Any],
+    *,
+    t: float,
+    path: Path,
+    canvas_size: tuple[int, int],
+    run_id: str | None,
+) -> None:
+    """1 frame を PNG へ書き出し、保存先を表示する。"""
+
+    Export(
+        draw,
+        t=float(t),
+        fmt="png",
+        path=path,
+        canvas_size=canvas_size,
+        run_id=run_id,
+    )
+    print(f"Saved PNG: {path} (t={float(t)})")
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -116,26 +137,35 @@ def main(argv: list[str] | None = None) -> int:
     ts = [0.0] if args.t is None else [float(t) for t in args.t]
     canvas_w, canvas_h = args.canvas
     canvas_size = (int(canvas_w), int(canvas_h))
+    run_id = None if args.run_id is None else str(args.run_id)
 
     out_path = None if args.out is None else Path(str(args.out))
     if out_path is not None:
-        t0 = float(ts[0])
-        Export(draw, t=t0, fmt="png", path=out_path, canvas_size=canvas_size)
-        print(f"Saved PNG: {out_path} (t={t0})")
+        _export_png_frame(
+            draw,
+            t=float(ts[0]),
+            path=out_path,
+            canvas_size=canvas_size,
+            run_id=run_id,
+        )
         return 0
 
-    base_path = default_png_output_path(draw, run_id=args.run_id, canvas_size=canvas_size)
+    base_path = default_png_output_path(draw, run_id=run_id, canvas_size=canvas_size)
     out_dir = None if args.out_dir is None else Path(str(args.out_dir))
     if out_dir is not None:
         base_path = out_dir / base_path.name
 
     paths = _frame_output_paths(base_path, n_frames=len(ts))
     for t, path in zip(ts, paths, strict=True):
-        Export(draw, t=float(t), fmt="png", path=path, canvas_size=canvas_size)
-        print(f"Saved PNG: {path} (t={float(t)})")
+        _export_png_frame(
+            draw,
+            t=float(t),
+            path=path,
+            canvas_size=canvas_size,
+            run_id=run_id,
+        )
 
     return 0
 
 
 __all__ = ["main"]
-
