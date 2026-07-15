@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from numba import njit  # type: ignore[import-untyped]
+from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 DEFAULT_MAX_GRID_CELLS = 4_000_000
 RESAMPLE_CLOSED_DISTANCE_EPS = 0.01

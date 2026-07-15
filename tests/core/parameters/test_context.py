@@ -10,6 +10,9 @@ from grafix.core.parameters.context import (
     current_param_store,
     parameter_context,
 )
+from grafix.core.parameters.key import ParameterKey
+from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.store import ParamStore
 
 
@@ -79,3 +82,29 @@ def test_parameter_context_restores_state_when_body_raises() -> None:
         cc_snapshot=None,
         param_snapshot={},
     )
+
+
+def test_parameter_context_rolls_back_frame_observations_when_body_raises() -> None:
+    store = ParamStore()
+    key = ParameterKey(op="temporary", site_id="failed-frame", arg="amount")
+
+    with pytest.raises(ValueError, match="draw failed"):
+        with parameter_context(store):
+            frame_params = current_frame_params()
+            assert frame_params is not None
+            frame_params.record(
+                key=key,
+                base=0.5,
+                meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                explicit=False,
+            )
+            frame_params.set_label(
+                op=key.op,
+                site_id=key.site_id,
+                label="failed label",
+            )
+            raise ValueError("draw failed")
+
+    assert key not in store_snapshot(store)
+    assert store.get_label(key.op, key.site_id) is None
+    assert (key.op, key.site_id) not in store._runtime_ref().observed_groups

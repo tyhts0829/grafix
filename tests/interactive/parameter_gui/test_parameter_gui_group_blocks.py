@@ -1,4 +1,5 @@
 from grafix.interactive.parameter_gui.group_blocks import group_blocks_from_rows
+from grafix.interactive.parameter_gui.table import _effect_step_heading_by_site
 from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.view import ParameterRow
 
@@ -36,8 +37,8 @@ def test_group_blocks_from_rows_merges_contiguous_same_group():
     assert block.header_id == "primitive:polygon#1"
     assert block.header == "P"
     assert [it.visible_label for it in block.items] == [
-        "polygon#1 n_sides",
-        "polygon#1 r",
+        "N sides",
+        "R",
     ]
 
 
@@ -69,9 +70,32 @@ def test_group_blocks_from_rows_preserves_effect_visible_label():
     assert blocks[0].group_id == ("effect_chain", "chain:1")
     assert blocks[0].header == "xf"
     assert [it.visible_label for it in blocks[0].items] == [
-        "scale#1 auto_center",
-        "rotate#1 deg",
+        "Auto center",
+        "Deg",
     ]
+
+
+def test_effect_step_headings_number_only_duplicate_operations():
+    rows = [
+        _row(op="scale", site_id="e:1", ordinal=99, arg="x"),
+        _row(op="rotate", site_id="e:2", ordinal=99, arg="deg"),
+        _row(op="scale", site_id="e:3", ordinal=99, arg="y"),
+    ]
+    blocks = group_blocks_from_rows(
+        rows,
+        step_info_by_site={
+            ("scale", "e:1"): ("chain:1", 0),
+            ("rotate", "e:2"): ("chain:1", 1),
+            ("scale", "e:3"): ("chain:1", 2),
+        },
+        effect_chain_header_by_id={"chain:1": "xf"},
+    )
+
+    assert _effect_step_heading_by_site(blocks[0]) == {
+        "e:1": "Scale 1",
+        "e:2": "Rotate",
+        "e:3": "Scale 2",
+    }
 
 
 def test_group_blocks_from_rows_style_is_single_block():

@@ -34,7 +34,11 @@ from .store import ParamStore
 from .view import canonicalize_ui_value
 
 
-def encode_param_store(store: ParamStore) -> dict[str, Any]:
+def encode_param_store(
+    store: ParamStore,
+    *,
+    preserve_explicit_overrides: bool = False,
+) -> dict[str, Any]:
     """ParamStore を JSON 化可能な dict に変換して返す。
 
     Notes
@@ -43,7 +47,10 @@ def encode_param_store(store: ParamStore) -> dict[str, Any]:
       射影した「永続化ペイロード」。
     - `states` は GUI 対象のみに限定するため、`meta` の無い state は含めない。
     - `explicit=True` な key（コード側で明示指定された kwargs）は「起動時はコードが勝つ」前提なので、
-      `override=True` を保存せず、次回起動時は `override=False` から開始する。
+      通常保存では `override=True` を保存せず、次回起動時は
+      `override=False` から開始する。
+    - `preserve_explicit_overrides=True` は未完了 session の recovery 用。
+      この場合は explicit key も live override をそのまま保持する。
     """
 
     # codec は ParamStore の内部表現へ直接アクセスする。
@@ -58,12 +65,16 @@ def encode_param_store(store: ParamStore) -> dict[str, Any]:
                 "op": k.op,
                 "site_id": k.site_id,
                 "arg": k.arg,
-                # 明示 kwargs は「起動時はコードが勝つ」が期待値なので、
-                # override=True を永続化しない（次回起動で override=False から開始する）。
+                # 通常保存では明示 kwargs はコードを優先する。
+                # recovery だけはクラッシュ直前の live override を保持する。
                 "override": (
-                    False
-                    if store._explicit_by_key.get(k) is True
-                    else bool(v.override)
+                    bool(v.override)
+                    if preserve_explicit_overrides
+                    else (
+                        False
+                        if store._explicit_by_key.get(k) is True
+                        else bool(v.override)
+                    )
                 ),
                 "ui_value": v.ui_value,
                 # ui_value/cc_key は JSON では list 化されることがある（tuple -> list）。
@@ -116,7 +127,11 @@ def encode_param_store(store: ParamStore) -> dict[str, Any]:
     }
 
 
-def dumps_param_store(store: ParamStore) -> str:
+def dumps_param_store(
+    store: ParamStore,
+    *,
+    preserve_explicit_overrides: bool = False,
+) -> str:
     """ParamStore を JSON 文字列へ変換して返す。
 
     Notes
@@ -125,10 +140,19 @@ def dumps_param_store(store: ParamStore) -> str:
     - バイナリや圧縮などの「保存形式の選択」は、このレイヤでは扱わない。
     """
 
-    return json.dumps(encode_param_store(store))
+    return json.dumps(
+        encode_param_store(
+            store,
+            preserve_explicit_overrides=preserve_explicit_overrides,
+        )
+    )
 
 
-def decode_param_store(obj: object) -> ParamStore:
+def decode_param_store(
+    obj: object,
+    *,
+    preserve_explicit_overrides: bool = False,
+) -> ParamStore:
     """JSON 由来の dict から ParamStore を復元して返す。
 
     Parameters
@@ -136,6 +160,9 @@ def decode_param_store(obj: object) -> ParamStore:
     obj : object
         `json.loads()` の結果（dict）を想定する。
         スキーマが古い/壊れている場合でも、可能な範囲で復元して不正な要素は捨てる。
+    preserve_explicit_overrides : bool
+        True なら recovery に記録した explicit key の live override を保持する。
+        通常ファイルのロードでは False のままとし、コードを優先する。
 
     Returns
     -------
@@ -268,12 +295,12 @@ def decode_param_store(obj: object) -> ParamStore:
                 except Exception:
                     continue
 
-    # explicit=True のキーは再起動時に override=False から開始する。
-    # 目的: explicit=True は「コードが与えた base を優先」するのが自然なので、
-    #       既定値として override を False に戻し、起動直後の挙動を安定させる。
-    for key, is_explicit in store._explicit_by_key.items():
-        if is_explicit is True and key in store._states:
-            store._states[key].override = False
+    # 通常ロードでは explicit key のコード値を優先する。
+    # recovery ロードでは未完了 session の実効状態を復元するため触らない。
+    if not preserve_explicit_overrides:
+        for key, is_explicit in store._explicit_by_key.items():
+            if is_explicit is True and key in store._states:
+                store._states[key].override = False
 
     # reconcile の材料として「ロード時点で存在していた group」を runtime に記録する。
     # これがあることで、次フレームの observed_groups と比較して site_id の揺れを吸収できる。
@@ -292,7 +319,11 @@ def decode_param_store(obj: object) -> ParamStore:
     return store
 
 
-def loads_param_store(payload: str) -> ParamStore:
+def loads_param_store(
+    payload: str,
+    *,
+    preserve_explicit_overrides: bool = False,
+) -> ParamStore:
     """JSON 文字列から ParamStore を復元して返す。
 
     Notes
@@ -301,7 +332,10 @@ def loads_param_store(payload: str) -> ParamStore:
     - 例外方針や修復ロジックは `decode_param_store()` 側に集約する。
     """
 
-    return decode_param_store(json.loads(payload))
+    return decode_param_store(
+        json.loads(payload),
+        preserve_explicit_overrides=preserve_explicit_overrides,
+    )
 
 
 __all__ = [

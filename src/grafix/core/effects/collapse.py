@@ -5,11 +5,12 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from numba import njit  # type: ignore[import-untyped]
+from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
-from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.realized_geometry import GeomTuple
+from grafix.core.resource_budget import ensure_geometry_output
 
 EPS = 1e-12
 
@@ -391,6 +392,16 @@ def _collapse_numba(
     total_lines, total_vertices, valid_seg_count = _collapse_count(coords, offsets, divisions)
     if total_lines == 0:
         return coords.copy(), offsets.copy()
+
+    # theta/cos/sin と補間係数は float64。確保前に output と併せて検査する。
+    random_sample_count = valid_seg_count * divisions
+    ensure_geometry_output(
+        "collapse",
+        vertices=total_vertices,
+        lines=total_lines,
+        scratch_bytes=random_sample_count * 3 * 8 + (divisions + 1) * 3 * 8,
+        hint="subdivisions または入力 geometry の複雑さを減らしてください",
+    )
 
     out_coords = np.empty((total_vertices, 3), dtype=np.float32)
     out_offsets = np.empty((total_lines + 1,), dtype=np.int32)

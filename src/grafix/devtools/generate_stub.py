@@ -748,7 +748,11 @@ def generate_stubs_str() -> str:
     lines.append("from grafix.api.export import Export as Export\n")
     lines.append("from grafix.api.preset import preset as preset\n")
     lines.append("from grafix.core.effect_registry import effect as effect\n")
-    lines.append("from grafix.core.primitive_registry import primitive as primitive\n\n")
+    lines.append("from grafix.core.primitive_registry import primitive as primitive\n")
+    lines.append(
+        "from grafix.core.resource_budget import ResourceBudget as ResourceBudget, "
+        "ResourceLimitError as ResourceLimitError\n\n"
+    )
 
     # `grafix.api.__init__.py` は遅延 import だが、型はここで固定する。
     lines.append(
@@ -768,13 +772,15 @@ def generate_stubs_str() -> str:
         "    midi_mode: str = ...,\n"
         "    n_worker: int = ...,\n"
         "    fps: float = ...,\n"
+        "    resource_budget: ResourceBudget = ...,\n"
         ") -> None:\n"
         '    """pyglet ウィンドウを生成し `draw(t)` のシーンをリアルタイム描画する。"""\n'
         "    ...\n\n"
     )
 
     lines.append(
-        "__all__ = ['E', 'Export', 'G', 'L', 'P', 'effect', 'preset', 'primitive', 'run']\n"
+        "__all__ = ['E', 'Export', 'G', 'L', 'P', 'ResourceBudget', "
+        "'ResourceLimitError', 'effect', 'preset', 'primitive', 'run']\n"
     )
     return "".join(lines)
 

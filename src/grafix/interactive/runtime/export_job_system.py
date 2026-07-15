@@ -11,6 +11,8 @@ import multiprocessing.process as mp_process
 import multiprocessing.queues as mp_queues
 import os
 import queue
+import shutil
+import tempfile
 import time
 import traceback
 from collections import deque
@@ -21,8 +23,14 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
+from grafix.core.capture_manifest import (
+    CaptureManifest,
+    capture_manifest_path_for,
+    publish_capture_generation,
+)
 from grafix.core.output_paths import gcode_layer_output_path
 from grafix.core.pipeline import RealizedLayer
+from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET
 from grafix.export.gcode import export_gcode
 from grafix.export.image import png_output_size, rasterize_svg_to_png
 from grafix.export.svg import export_svg
@@ -30,6 +38,45 @@ from grafix.export.svg import export_svg
 _WORKER_JOIN_TIMEOUT_S = 0.5
 _PARENT_TIMEOUT_GRACE_S = 0.25
 _COMPLETED_RESULT_LIMIT = 64
+_DEFAULT_PENDING_JOB_LIMIT = 16
+_DEFAULT_MAX_RETAINED_BYTES = int(DEFAULT_RESOURCE_BUDGET.max_output_bytes)
+# 1つのin-flight snapshotは、親のimmutable geometry、multiprocessing Queueの
+# serialization buffer、workerでunpickleしたgeometryの最大3世代を同時に持ち得る。
+# pending jobにも同じ係数を保守的に課し、queue全体がprocessをまたいでbudget内に
+# 収まる契約にする（Python objectの小さなoverheadは従来どおり推定外）。
+_SNAPSHOT_PROCESS_COPY_FACTOR = 3
+
+
+class ExportQueueFullError(RuntimeError):
+    """明示 capture が件数または aggregate byte budget で拒否された。"""
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        reason: str = "unknown",
+        request_count: int = 0,
+        request_limit: int = 0,
+        retained_bytes: int = 0,
+        requested_bytes: int = 0,
+        byte_limit: int = 0,
+    ) -> None:
+        self.reason = str(reason)
+        self.request_count = int(request_count)
+        self.request_limit = int(request_limit)
+        self.retained_bytes = int(retained_bytes)
+        self.requested_bytes = int(requested_bytes)
+        self.byte_limit = int(byte_limit)
+        projected = self.retained_bytes + self.requested_bytes
+        detail = (
+            "capture queue が満杯のため rejected: "
+            f"reason={self.reason}, requests={self.request_count}/{self.request_limit}, "
+            f"estimated-retained={self.retained_bytes / (1024 * 1024):.1f} MiB, "
+            f"estimated-request={self.requested_bytes / (1024 * 1024):.1f} MiB, "
+            f"projected={projected / (1024 * 1024):.1f} MiB, "
+            f"limit={self.byte_limit / (1024 * 1024):.1f} MiB"
+        )
+        super().__init__(detail if message is None else str(message))
 
 
 class ExportKind(StrEnum):
@@ -57,6 +104,7 @@ class FrameExportSnapshot:
     layers: tuple[RealizedLayer, ...]
     canvas_size: tuple[int, int]
     background_color_rgb01: tuple[float, float, float]
+    t: float = 0.0
 
     def __post_init__(self) -> None:
         layers = tuple(self.layers)
@@ -69,6 +117,67 @@ class FrameExportSnapshot:
         object.__setattr__(self, "layers", layers)
         object.__setattr__(self, "canvas_size", canvas_size)
         object.__setattr__(self, "background_color_rgb01", background)
+        capture_t = float(self.t)
+        if not isfinite(capture_t):
+            raise ValueError("t は有限値である必要がある")
+        object.__setattr__(self, "t", capture_t)
+
+    @property
+    def retained_bytes(self) -> int:
+        """親 process が保持する immutable geometry array の推定 byte 数。"""
+
+        return estimate_snapshot_retained_bytes(self)
+
+
+def estimate_snapshot_retained_bytes(snapshot: FrameExportSnapshot) -> int:
+    """snapshot が参照する geometry array の重複を除いた byte 数を返す。
+
+    ``RealizedGeometry`` は immutable なので、同じ array を複数 layer が共有する場合は
+    物理メモリも共有される。配列 identity ごとに一度だけ数え、Python object の小さな
+    overhead は含めない。test double / 旧実装で配列が見えない layer は 0 bytes とする。
+    """
+
+    seen_arrays: set[int] = set()
+    total = 0
+    for layer in snapshot.layers:
+        realized = getattr(layer, "realized", None)
+        if realized is None:
+            continue
+        found_array = False
+        for name in ("coords", "offsets"):
+            array = getattr(realized, name, None)
+            nbytes = getattr(array, "nbytes", None)
+            if array is None or nbytes is None:
+                continue
+            found_array = True
+            identity = id(array)
+            if identity in seen_arrays:
+                continue
+            seen_arrays.add(identity)
+            total += max(0, int(nbytes))
+        if not found_array:
+            # RealizedGeometry 互換 object が array を公開せず byte_size だけを持つ場合。
+            byte_size = getattr(realized, "byte_size", 0)
+            total += max(0, int(byte_size))
+    return int(total)
+
+
+def _estimate_snapshot_process_bytes(snapshot: FrameExportSnapshot) -> int:
+    """queue輸送中にprocessをまたいで同時保持し得るbyte数を保守的に返す。"""
+
+    return int(estimate_snapshot_retained_bytes(snapshot)) * int(
+        _SNAPSHOT_PROCESS_COPY_FACTOR
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ExportQueueStatus:
+    """capture admission の現在値。GUI と拒否診断で同じ契約を共有する。"""
+
+    request_count: int
+    request_limit: int
+    retained_bytes: int
+    byte_limit: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,9 +189,13 @@ class ExportJob:
     snapshot: FrameExportSnapshot
     output_path: Path
     timeout_s: float
+    # 後方互換のため request には残すが、PNG の中間 SVG 保存先としては使用しない。
     svg_output_path: Path | None = None
     output_size: tuple[int, int] | None = None
     deadline_monotonic: float | None = field(default=None, compare=False, repr=False)
+    # 既定 backend の非同期実行時だけ親 process が sibling staging dir を設定する。
+    # None の場合は `_execute_export_job()` を直接呼ぶ従来 semantics（output_path へ保存）。
+    staging_dir: Path | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if int(self.job_id) <= 0:
@@ -107,6 +220,8 @@ class ExportJob:
                 "deadline_monotonic",
                 float(self.deadline_monotonic),
             )
+        if self.staging_dir is not None:
+            object.__setattr__(self, "staging_dir", Path(self.staging_dir))
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +236,8 @@ class ExportJobResult:
     error: str | None = None
     worker_pid: int | None = None
     worker_exitcode: int | None = None
+    # 既存 positional field の意味を変えないよう、新 metadata は末尾へ追加する。
+    manifest_path: Path | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "job_id", int(self.job_id))
@@ -128,6 +245,8 @@ class ExportJobResult:
         object.__setattr__(self, "status", ExportJobStatus(self.status))
         object.__setattr__(self, "output_path", Path(self.output_path))
         object.__setattr__(self, "paths", tuple(Path(path) for path in self.paths))
+        if self.manifest_path is not None:
+            object.__setattr__(self, "manifest_path", Path(self.manifest_path))
         if self.worker_pid is not None:
             object.__setattr__(self, "worker_pid", int(self.worker_pid))
         if self.worker_exitcode is not None:
@@ -143,33 +262,157 @@ _WorkerMessage = _WorkerReady | ExportJobResult
 ExportBackend = Callable[[ExportJob], Sequence[Path]]
 
 
+def _job_work_output_path(job: ExportJob) -> Path:
+    """worker が書く path を返す。非同期既定 backend では staging 内へ隔離する。"""
+
+    staging_dir = job.staging_dir
+    if staging_dir is None:
+        return job.output_path
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    return staging_dir / job.output_path.name
+
+
+def _final_output_paths(job: ExportJob) -> tuple[Path, ...]:
+    """job 成功時に親 process が公開すべき最終 path 群を返す。"""
+
+    if job.kind is not ExportKind.GCODE_LAYERS:
+        return (job.output_path,)
+    return tuple(
+        gcode_layer_output_path(
+            job.output_path,
+            layer_index=index,
+            n_layers=len(job.snapshot.layers),
+            layer_name=layer.layer.name,
+        )
+        for index, layer in enumerate(job.snapshot.layers, start=1)
+    )
+
+
+def _cleanup_job_staging(job: ExportJob) -> None:
+    """job-private staging directory を best-effort で削除する。"""
+
+    staging_dir = job.staging_dir
+    if staging_dir is not None:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+def _commit_staged_outputs(
+    job: ExportJob,
+    staged_paths: Sequence[Path],
+) -> tuple[tuple[Path, ...], Path | None]:
+    """成果物と manifest を上書きなしの一世代として親側で公開する。"""
+
+    staging_dir = job.staging_dir
+    if staging_dir is None:
+        return tuple(Path(path) for path in staged_paths), None
+
+    staged = tuple(Path(path) for path in staged_paths)
+    final_paths = _final_output_paths(job)
+    if len(staged) != len(final_paths):
+        raise RuntimeError(
+            "staged artifact 数が期待値と一致しません: "
+            f"got={len(staged)}, expected={len(final_paths)}"
+        )
+
+    # 0 layer の per-layer export は成果物を生成しない。空 manifest は schema 上も
+    # 無効なので、従来どおり成功 paths=() として扱う。
+    if not final_paths:
+        return (), None
+
+    staging_root = staging_dir.resolve(strict=False)
+    for staged_path, final_path in zip(staged, final_paths, strict=True):
+        if staged_path.parent.resolve(strict=False) != staging_root:
+            raise RuntimeError(f"staged artifact が job directory 外です: {staged_path}")
+        if staged_path.name != final_path.name:
+            raise RuntimeError(
+                "staged artifact 名が最終 path と一致しません: "
+                f"staged={staged_path.name!r}, final={final_path.name!r}"
+            )
+        if staged_path.is_symlink() or not staged_path.is_file():
+            raise RuntimeError(f"staged artifact が通常ファイルではありません: {staged_path}")
+
+    manifest_path = capture_manifest_path_for(job.output_path)
+    manifest = CaptureManifest(
+        t=float(job.snapshot.t),
+        canvas_size=job.snapshot.canvas_size,
+        format=job.kind.value,
+        artifact_paths=final_paths,
+    )
+    published = publish_capture_generation(
+        staged_artifact_paths=staged,
+        artifact_paths=final_paths,
+        manifest_path=manifest_path,
+        manifest=manifest,
+    )
+    return published.artifact_paths, published.manifest_path
+
+
+def _finalize_default_backend_result(
+    job: ExportJob,
+    result: ExportJobResult,
+) -> ExportJobResult:
+    """worker result を親側で commit し、staging を必ず掃除する。"""
+
+    try:
+        if result.status is not ExportJobStatus.SUCCESS:
+            return result
+        committed_paths, manifest_path = _commit_staged_outputs(job, result.paths)
+        return replace(
+            result,
+            paths=committed_paths,
+            manifest_path=manifest_path,
+        )
+    except Exception:
+        return ExportJobResult(
+            job_id=result.job_id,
+            kind=result.kind,
+            status=ExportJobStatus.ERROR,
+            output_path=result.output_path,
+            error="parent-side export commit failed:\n" + traceback.format_exc(),
+            worker_pid=result.worker_pid,
+            worker_exitcode=result.worker_exitcode,
+        )
+    finally:
+        _cleanup_job_staging(job)
+
+
 def _execute_export_job(job: ExportJob) -> tuple[Path, ...]:
     """既定 backend として PNG/G-code job を同期実行する。"""
 
     snapshot = job.snapshot
+    work_output_path = _job_work_output_path(job)
     if job.kind is ExportKind.PNG:
-        svg_path = job.svg_output_path or job.output_path.with_suffix(".svg")
-        export_svg(snapshot.layers, svg_path, canvas_size=snapshot.canvas_size)
-        remaining = (
-            job.timeout_s
-            if job.deadline_monotonic is None
-            else job.deadline_monotonic - time.monotonic()
-        )
-        if remaining <= 0.0:
-            raise TimeoutError("PNG export deadline exceeded before resvg")
-        png_path = rasterize_svg_to_png(
-            svg_path,
-            job.output_path,
-            output_size=job.output_size or png_output_size(snapshot.canvas_size),
-            background_color_rgb01=snapshot.background_color_rgb01,
-            timeout_s=remaining,
-        )
+        # PNG 用 SVG はあくまで job 内部の中間生成物である。公開 SVG の保存先
+        # (`svg_output_path`) を共有すると、S キーの SVG 保存と P キーの PNG 保存が
+        # 同時に走ったときに片方がもう片方の入力を書き換え得るため、job ごとの一時
+        # ディレクトリへ隔離する。TemporaryDirectory により成功・失敗のどちらでも
+        # 中間 SVG を残さない。
+        with tempfile.TemporaryDirectory(
+            prefix=f"grafix-png-job-{job.job_id}-",
+            dir=job.staging_dir,
+        ) as temp_dir:
+            svg_path = Path(temp_dir) / "intermediate.svg"
+            export_svg(snapshot.layers, svg_path, canvas_size=snapshot.canvas_size)
+            remaining = (
+                job.timeout_s
+                if job.deadline_monotonic is None
+                else job.deadline_monotonic - time.monotonic()
+            )
+            if remaining <= 0.0:
+                raise TimeoutError("PNG export deadline exceeded before resvg")
+            png_path = rasterize_svg_to_png(
+                svg_path,
+                work_output_path,
+                output_size=job.output_size or png_output_size(snapshot.canvas_size),
+                background_color_rgb01=snapshot.background_color_rgb01,
+                timeout_s=remaining,
+            )
         return (png_path,)
 
     if job.kind is ExportKind.GCODE:
         path = export_gcode(
             snapshot.layers,
-            job.output_path,
+            work_output_path,
             canvas_size=snapshot.canvas_size,
         )
         return (path,)
@@ -177,7 +420,7 @@ def _execute_export_job(job: ExportJob) -> tuple[Path, ...]:
     paths: list[Path] = []
     for index, layer in enumerate(snapshot.layers, start=1):
         path = gcode_layer_output_path(
-            job.output_path,
+            work_output_path,
             layer_index=index,
             n_layers=len(snapshot.layers),
             layer_name=layer.layer.name,
@@ -225,7 +468,13 @@ def _export_worker_main(
                     output_path=job.output_path,
                     error=traceback.format_exc(),
                 )
-            result_q.put(result)
+            try:
+                result_q.put(result)
+            finally:
+                # 次のtask_q.get()で待機している間に直前の巨大snapshotをworkerが
+                # 保持し続けない。Queue feederが必要なのはsnapshotを含まないresultだけ。
+                del result
+                del job
     finally:
         for worker_queue in (task_q, result_q):
             try:
@@ -241,8 +490,8 @@ class ExportJobSystem:
     Notes
     -----
     - worker は最初の submit で spawn し、その後は job 間で再利用する。
-    - worker へ渡す in-flight job と、親が保持する最新 pending job は各 1 件まで。
-    - pending 中の再 submit は旧 pending を cancelled にして置換する。
+    - worker へ渡す in-flight job は 1 件、親の pending FIFO は bounded。
+    - 明示した保存操作は置換せず順番に実行し、満杯なら明示的に拒否する。
     - worker death/timeout/cancel 後は Queue ごと交換し、古い job の再実行を防ぐ。
     """
 
@@ -251,14 +500,23 @@ class ExportJobSystem:
         *,
         backend: ExportBackend = _execute_export_job,
         default_timeout_s: float = 30.0,
+        max_pending_jobs: int = _DEFAULT_PENDING_JOB_LIMIT,
+        max_retained_bytes: int = _DEFAULT_MAX_RETAINED_BYTES,
     ) -> None:
         timeout_s = float(default_timeout_s)
         if not isfinite(timeout_s) or timeout_s <= 0.0:
             raise ValueError("default_timeout_s は正である必要がある")
+        if int(max_pending_jobs) < 0:
+            raise ValueError("max_pending_jobs は 0 以上である必要がある")
+        if isinstance(max_retained_bytes, bool) or int(max_retained_bytes) < 0:
+            raise ValueError("max_retained_bytes は 0 以上の整数である必要がある")
 
         self._ctx = mp.get_context("spawn")
         self._backend = backend
+        self._uses_parent_commit = backend is _execute_export_job
         self._default_timeout_s = timeout_s
+        self._max_pending_jobs = int(max_pending_jobs)
+        self._max_retained_bytes = int(max_retained_bytes)
         self._task_q: mp.Queue[ExportJob | None]
         self._result_q: mp.Queue[_WorkerMessage]
         self._proc: mp_process.BaseProcess | None = None
@@ -267,8 +525,16 @@ class ExportJobSystem:
         self._closed = False
         self._next_job_id = 0
         self._in_flight: ExportJob | None = None
-        self._pending: ExportJob | None = None
+        self._pending: deque[ExportJob] = deque()
         self._completed: deque[ExportJobResult] = deque(maxlen=_COMPLETED_RESULT_LIMIT)
+        # 同じ immutable snapshot を pause 中に連続保存する場合、親 process の
+        # geometry 参照は共有する。job ごとの refcount だけを増やし、親参照 +
+        # Queue serialization + worker copy の保守的な推定bytesを一度だけ数える。
+        self._retained_snapshots: dict[
+            int, tuple[FrameExportSnapshot, int, int]
+        ] = {}
+        self._retained_job_ids: set[int] = set()
+        self._retained_bytes = 0
 
         self._create_queues()
 
@@ -280,13 +546,158 @@ class ExportJobSystem:
 
     @property
     def pending_job(self) -> ExportJob | None:
-        """次に実行する最新 pending job を返す。"""
+        """次に実行する pending job を返す。"""
 
-        return self._pending
+        return self._pending[0] if self._pending else None
+
+    @property
+    def pending_job_count(self) -> int:
+        """親 process で待機中の job 数を返す。"""
+
+        return len(self._pending)
+
+    @property
+    def request_count(self) -> int:
+        """in-flight と pending を合わせた accepted request 件数。"""
+
+        return (1 if self._in_flight is not None else 0) + len(self._pending)
+
+    @property
+    def request_limit(self) -> int:
+        """同時に accepted として保持する最大 request 件数。"""
+
+        return self._max_pending_jobs + 1
+
+    @property
+    def retained_bytes(self) -> int:
+        """accepted snapshotのprocess横断・同時保持byte数の保守的推定。"""
+
+        return int(self._retained_bytes)
+
+    @property
+    def max_retained_bytes(self) -> int:
+        """aggregate process-wide snapshot byte 推定の上限。"""
+
+        return int(self._max_retained_bytes)
+
+    @property
+    def queue_status(self) -> ExportQueueStatus:
+        """GUI/診断用の同一 backpressure 状態を返す。"""
+
+        return ExportQueueStatus(
+            request_count=self.request_count,
+            request_limit=self.request_limit,
+            retained_bytes=self.retained_bytes,
+            byte_limit=self.max_retained_bytes,
+        )
+
+    @property
+    def can_submit(self) -> bool:
+        """件数上、新しい job を受理できるなら True（byte 判定には snapshot が必要）。"""
+
+        if self._closed:
+            return False
+        return self.request_count < self.request_limit
+
+    def _incremental_snapshot_bytes(self, snapshot: FrameExportSnapshot) -> int:
+        if id(snapshot) in self._retained_snapshots:
+            return 0
+        return _estimate_snapshot_process_bytes(snapshot)
+
+    def _admission_error(
+        self, snapshot: FrameExportSnapshot
+    ) -> ExportQueueFullError | None:
+        requested_bytes = self._incremental_snapshot_bytes(snapshot)
+        def error(reason: str) -> ExportQueueFullError:
+            return ExportQueueFullError(
+                reason=reason,
+                request_count=self.request_count,
+                request_limit=self.request_limit,
+                retained_bytes=self.retained_bytes,
+                requested_bytes=requested_bytes,
+                byte_limit=self.max_retained_bytes,
+            )
+
+        if self.request_count >= self.request_limit:
+            return error("count")
+        if self.retained_bytes + requested_bytes > self.max_retained_bytes:
+            return error("bytes")
+        return None
+
+    def ensure_can_submit(self, snapshot: FrameExportSnapshot) -> None:
+        """同じ submit 契約で事前検査し、拒否理由を path 予約前に返す。"""
+
+        if self._closed:
+            raise RuntimeError("ExportJobSystem は close 済みです")
+        self._service()
+        error = self._admission_error(snapshot)
+        if error is not None:
+            raise error
+
+    def can_submit_snapshot(self, snapshot: FrameExportSnapshot) -> bool:
+        """件数と aggregate bytes の両方で snapshot を受理できるなら True。"""
+
+        try:
+            self.ensure_can_submit(snapshot)
+        except (ExportQueueFullError, RuntimeError):
+            return False
+        return True
+
+    def _retain_job(self, job: ExportJob) -> None:
+        if job.job_id in self._retained_job_ids:
+            return
+        snapshot_id = id(job.snapshot)
+        current = self._retained_snapshots.get(snapshot_id)
+        if current is None:
+            byte_size = _estimate_snapshot_process_bytes(job.snapshot)
+            self._retained_snapshots[snapshot_id] = (job.snapshot, 1, byte_size)
+            self._retained_bytes += byte_size
+        else:
+            snapshot, refcount, byte_size = current
+            self._retained_snapshots[snapshot_id] = (
+                snapshot,
+                refcount + 1,
+                byte_size,
+            )
+        self._retained_job_ids.add(job.job_id)
+
+    def _release_job(self, job: ExportJob) -> None:
+        if job.job_id not in self._retained_job_ids:
+            return
+        self._retained_job_ids.remove(job.job_id)
+        snapshot_id = id(job.snapshot)
+        snapshot, refcount, byte_size = self._retained_snapshots[snapshot_id]
+        if refcount <= 1:
+            del self._retained_snapshots[snapshot_id]
+            self._retained_bytes -= byte_size
+        else:
+            self._retained_snapshots[snapshot_id] = (
+                snapshot,
+                refcount - 1,
+                byte_size,
+            )
+
+    @property
+    def has_work(self) -> bool:
+        """worker 実行中または pending の job が残っているなら True。"""
+
+        return self._in_flight is not None or bool(self._pending)
 
     def _create_queues(self) -> None:
-        self._task_q = self._ctx.Queue(maxsize=1)
-        self._result_q = self._ctx.Queue(maxsize=2)
+        task_q: mp.Queue[ExportJob | None] | None = None
+        try:
+            task_q = self._ctx.Queue(maxsize=1)
+            result_q: mp.Queue[_WorkerMessage] = self._ctx.Queue(maxsize=2)
+        except BaseException:
+            # 2本目のQueue構築失敗時も、1本目のfeeder/thread descriptorを残さない。
+            if task_q is not None:
+                try:
+                    self._close_queue(task_q, cancel=True)
+                except BaseException:
+                    pass
+            raise
+        self._task_q = task_q
+        self._result_q = result_q
 
     def _start_worker(self) -> None:
         self._worker_generation += 1
@@ -301,36 +712,102 @@ class ExportJobSystem:
 
     @staticmethod
     def _join_process(proc: mp_process.BaseProcess) -> None:
-        proc.join(timeout=_WORKER_JOIN_TIMEOUT_S)
-        if proc.is_alive():
-            proc.terminate()
-            proc.join(timeout=_WORKER_JOIN_TIMEOUT_S)
-        if proc.is_alive():
-            proc.kill()
-            proc.join(timeout=_WORKER_JOIN_TIMEOUT_S)
-        if not proc.is_alive():
-            proc.close()
+        first_error: BaseException | None = None
+
+        def attempt(action: Callable[[], object]) -> None:
+            nonlocal first_error
+            try:
+                action()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+
+        def is_alive() -> bool:
+            nonlocal first_error
+            try:
+                return bool(proc.is_alive())
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+                # 生存状態を確認できない場合も、後続の terminate/kill は試す。
+                return True
+
+        attempt(lambda: proc.join(timeout=_WORKER_JOIN_TIMEOUT_S))
+        if is_alive():
+            attempt(proc.terminate)
+            attempt(lambda: proc.join(timeout=_WORKER_JOIN_TIMEOUT_S))
+        if is_alive():
+            attempt(proc.kill)
+            attempt(lambda: proc.join(timeout=_WORKER_JOIN_TIMEOUT_S))
+        if not is_alive():
+            attempt(proc.close)
+
+        if first_error is not None:
+            raise first_error
 
     @staticmethod
     def _close_queue(worker_queue: mp_queues.Queue[Any], *, cancel: bool) -> None:
+        first_error: BaseException | None = None
+
+        def attempt(action: Callable[[], object]) -> None:
+            nonlocal first_error
+            try:
+                action()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+
         if cancel:
-            worker_queue.cancel_join_thread()
-        worker_queue.close()
-        worker_queue.join_thread()
+            attempt(worker_queue.cancel_join_thread)
+        attempt(worker_queue.close)
+        attempt(worker_queue.join_thread)
+
+        if first_error is not None:
+            raise first_error
 
     def _close_queues(self, *, cancel_pending: bool) -> None:
-        self._close_queue(self._task_q, cancel=cancel_pending)
-        self._close_queue(self._result_q, cancel=False)
+        first_error: BaseException | None = None
+        for worker_queue, cancel in (
+            (self._task_q, cancel_pending),
+            (self._result_q, False),
+        ):
+            try:
+                self._close_queue(worker_queue, cancel=cancel)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+
+        if first_error is not None:
+            raise first_error
 
     def _replace_worker(self) -> None:
+        first_error: BaseException | None = None
         proc = self._proc
         if proc is not None:
-            if proc.is_alive():
-                proc.terminate()
-            self._join_process(proc)
+            try:
+                if proc.is_alive():
+                    proc.terminate()
+            except BaseException as exc:
+                first_error = exc
+            try:
+                self._join_process(proc)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
         self._proc = None
-        self._close_queues(cancel_pending=True)
-        self._create_queues()
+        try:
+            self._close_queues(cancel_pending=True)
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        try:
+            self._create_queues()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+
+        if first_error is not None:
+            raise first_error
 
     @staticmethod
     def _terminal_result(
@@ -357,10 +834,21 @@ class ExportJobSystem:
             deadline_monotonic=time.monotonic() + job.timeout_s,
         )
         try:
+            if self._uses_parent_commit:
+                output_parent = job.output_path.parent
+                output_parent.mkdir(parents=True, exist_ok=True)
+                staging_dir = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{job.output_path.stem}.export-{job.job_id}-",
+                        dir=output_parent,
+                    )
+                )
+                dispatched = replace(dispatched, staging_dir=staging_dir)
             if self._proc is None:
                 self._start_worker()
             self._task_q.put_nowait(dispatched)
         except Exception:
+            _cleanup_job_staging(dispatched)
             self._completed.append(
                 self._terminal_result(
                     job,
@@ -368,6 +856,7 @@ class ExportJobSystem:
                     error=traceback.format_exc(),
                 )
             )
+            self._release_job(job)
             return
         self._in_flight = dispatched
 
@@ -383,8 +872,11 @@ class ExportJobSystem:
             current = self._in_flight
             if current is None or message.job_id != current.job_id:
                 continue
+            if self._uses_parent_commit:
+                message = _finalize_default_backend_result(current, message)
             self._completed.append(message)
             self._in_flight = None
+            self._release_job(current)
 
     def _recover_dead_worker(self) -> None:
         proc = self._proc
@@ -406,7 +898,12 @@ class ExportJobSystem:
                 )
             )
             self._in_flight = None
-        self._replace_worker()
+            self._release_job(current)
+        try:
+            self._replace_worker()
+        finally:
+            if current is not None:
+                _cleanup_job_staging(current)
 
     def _expire_timed_out_job(self) -> None:
         current = self._in_flight
@@ -428,16 +925,18 @@ class ExportJobSystem:
             )
         )
         self._in_flight = None
-        self._replace_worker()
+        self._release_job(current)
+        try:
+            self._replace_worker()
+        finally:
+            _cleanup_job_staging(current)
 
     def _service(self) -> None:
         self._drain_worker_messages()
         self._recover_dead_worker()
         self._expire_timed_out_job()
-        if self._in_flight is None and self._pending is not None:
-            pending = self._pending
-            self._pending = None
-            self._dispatch(pending)
+        if self._in_flight is None and self._pending:
+            self._dispatch(self._pending.popleft())
 
     def submit(
         self,
@@ -449,11 +948,15 @@ class ExportJobSystem:
         svg_output_path: str | Path | None = None,
         output_size: tuple[int, int] | None = None,
     ) -> ExportJob:
-        """job を投入する。実行中なら pending 1 件を最新 job で置換する。"""
+        """job を bounded FIFO へ投入する。満杯なら明示的に拒否する。"""
 
         if self._closed:
             raise RuntimeError("ExportJobSystem は close 済みです")
         self._service()
+
+        error = self._admission_error(snapshot)
+        if error is not None:
+            raise error
 
         self._next_job_id += 1
         job = ExportJob(
@@ -466,20 +969,12 @@ class ExportJobSystem:
             output_size=output_size,
         )
 
+        self._retain_job(job)
+
         if self._in_flight is None:
             self._dispatch(job)
             return job
-
-        replaced = self._pending
-        if replaced is not None:
-            self._completed.append(
-                self._terminal_result(
-                    replaced,
-                    ExportJobStatus.CANCELLED,
-                    error=f"job {job.job_id} に置き換えられました",
-                )
-            )
-        self._pending = job
+        self._pending.append(job)
         return job
 
     def poll(self) -> list[ExportJobResult]:
@@ -499,17 +994,21 @@ class ExportJobSystem:
         self._service()
         cancelled = False
 
-        pending = self._pending
-        if pending is not None and (job_id is None or pending.job_id == int(job_id)):
-            self._completed.append(
-                self._terminal_result(
-                    pending,
-                    ExportJobStatus.CANCELLED,
-                    error="cancelled",
+        kept: deque[ExportJob] = deque()
+        for pending in self._pending:
+            if job_id is None or pending.job_id == int(job_id):
+                self._completed.append(
+                    self._terminal_result(
+                        pending,
+                        ExportJobStatus.CANCELLED,
+                        error="cancelled",
+                    )
                 )
-            )
-            self._pending = None
-            cancelled = True
+                self._release_job(pending)
+                cancelled = True
+            else:
+                kept.append(pending)
+        self._pending = kept
 
         current = self._in_flight
         if current is not None and (job_id is None or current.job_id == int(job_id)):
@@ -521,13 +1020,15 @@ class ExportJobSystem:
                 )
             )
             self._in_flight = None
-            self._replace_worker()
+            self._release_job(current)
             cancelled = True
+            try:
+                self._replace_worker()
+            finally:
+                _cleanup_job_staging(current)
 
-        if self._in_flight is None and self._pending is not None:
-            pending = self._pending
-            self._pending = None
-            self._dispatch(pending)
+        if self._in_flight is None and self._pending:
+            self._dispatch(self._pending.popleft())
         return cancelled
 
     def close(self) -> None:
@@ -537,7 +1038,9 @@ class ExportJobSystem:
             return
         self._closed = True
 
-        for job in (self._in_flight, self._pending):
+        current = self._in_flight
+        jobs_to_cancel = (() if current is None else (current,)) + tuple(self._pending)
+        for job in jobs_to_cancel:
             if job is not None:
                 self._completed.append(
                     self._terminal_result(
@@ -546,20 +1049,40 @@ class ExportJobSystem:
                         error="ExportJobSystem.close()",
                     )
                 )
+                self._release_job(job)
         had_in_flight = self._in_flight is not None
         self._in_flight = None
-        self._pending = None
+        self._pending.clear()
 
+        first_error: BaseException | None = None
         proc = self._proc
-        if proc is not None and not had_in_flight and proc.is_alive():
+        if proc is not None and not had_in_flight:
             try:
-                self._task_q.put_nowait(None)
+                if proc.is_alive():
+                    self._task_q.put_nowait(None)
             except queue.Full:
                 had_in_flight = True
+            except BaseException as exc:
+                first_error = exc
+                had_in_flight = True
         if proc is not None:
-            self._join_process(proc)
+            try:
+                self._join_process(proc)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
         self._proc = None
-        self._close_queues(cancel_pending=had_in_flight)
+        try:
+            self._close_queues(cancel_pending=had_in_flight)
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        finally:
+            if current is not None:
+                _cleanup_job_staging(current)
+
+        if first_error is not None:
+            raise first_error
 
 
 __all__ = [
@@ -567,6 +1090,9 @@ __all__ = [
     "ExportJobResult",
     "ExportJobStatus",
     "ExportJobSystem",
+    "ExportQueueStatus",
+    "ExportQueueFullError",
     "ExportKind",
     "FrameExportSnapshot",
+    "estimate_snapshot_retained_bytes",
 ]

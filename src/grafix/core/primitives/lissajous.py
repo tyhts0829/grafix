@@ -13,6 +13,7 @@ import numpy as np
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
+from grafix.core.resource_budget import ensure_geometry_output
 
 lissajous_meta = {
     "a": ParamMeta(kind="int", ui_min=0, ui_max=20),
@@ -61,6 +62,14 @@ def lissajous(
         リサージュ曲線を表す 1 本の開ポリライン（coords, offsets）。
     """
     samples_i = max(2, int(samples))
+    ensure_geometry_output(
+        "lissajous",
+        vertices=samples_i,
+        lines=1,
+        # t/x/y/z と stack 前後の一時配列を保守的に見積もる。
+        scratch_bytes=samples_i * 4 * 4,
+        hint="samples を減らしてください",
+    )
 
     try:
         cx, cy, cz = center

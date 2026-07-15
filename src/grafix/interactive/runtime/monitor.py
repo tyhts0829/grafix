@@ -18,6 +18,18 @@ class MonitorSnapshot:
     rss_mb: float
     vertices: int
     lines: int
+    frame_error: str | None = None
+    transport_t: float = 0.0
+    transport_requested_t: float = 0.0
+    transport_waiting: bool = False
+    transport_playing: bool = True
+    transport_speed: float = 1.0
+    transport_recording: bool = False
+    capture_request_count: int = 0
+    capture_request_limit: int = 0
+    capture_retained_bytes: int = 0
+    capture_byte_limit: int = 0
+    capture_notice: str | None = None
 
 
 class RuntimeMonitor:
@@ -53,6 +65,18 @@ class RuntimeMonitor:
 
         self._vertices = 0
         self._lines = 0
+        self._frame_error: str | None = None
+        self._transport_t = 0.0
+        self._transport_requested_t = 0.0
+        self._transport_waiting = False
+        self._transport_playing = True
+        self._transport_speed = 1.0
+        self._transport_recording = False
+        self._capture_request_count = 0
+        self._capture_request_limit = 0
+        self._capture_retained_bytes = 0
+        self._capture_byte_limit = 0
+        self._capture_notice: str | None = None
 
         try:
             import psutil  # type: ignore[import-untyped]
@@ -114,6 +138,49 @@ class RuntimeMonitor:
         self._vertices = int(vertices)
         self._lines = int(lines)
 
+    def set_frame_error(self, message: str | None) -> None:
+        """user scene の直近 error を設定する。成功 frame では None に戻す。"""
+
+        self._frame_error = None if message is None else str(message)
+
+    def set_transport(
+        self,
+        *,
+        t: float,
+        requested_t: float | None = None,
+        waiting: bool = False,
+        playing: bool,
+        speed: float,
+        recording: bool = False,
+    ) -> None:
+        """preview transport の現在状態を設定する。"""
+
+        self._transport_t = float(t)
+        self._transport_requested_t = float(
+            t if requested_t is None else requested_t
+        )
+        self._transport_waiting = bool(waiting)
+        self._transport_playing = bool(playing)
+        self._transport_speed = float(speed)
+        self._transport_recording = bool(recording)
+
+    def set_capture_queue(
+        self,
+        *,
+        request_count: int,
+        request_limit: int,
+        retained_bytes: int,
+        byte_limit: int,
+        notice: str | None = None,
+    ) -> None:
+        """capture queue の count/byte pressure と直近の明示拒否を設定する。"""
+
+        self._capture_request_count = max(0, int(request_count))
+        self._capture_request_limit = max(0, int(request_limit))
+        self._capture_retained_bytes = max(0, int(retained_bytes))
+        self._capture_byte_limit = max(0, int(byte_limit))
+        self._capture_notice = None if notice is None else str(notice)
+
     def snapshot(self) -> MonitorSnapshot:
         """現在の監視値をスナップショットとして返す。"""
 
@@ -123,6 +190,18 @@ class RuntimeMonitor:
             rss_mb=float(self._rss_mb),
             vertices=int(self._vertices),
             lines=int(self._lines),
+            frame_error=self._frame_error,
+            transport_t=float(self._transport_t),
+            transport_requested_t=float(self._transport_requested_t),
+            transport_waiting=bool(self._transport_waiting),
+            transport_playing=bool(self._transport_playing),
+            transport_speed=float(self._transport_speed),
+            transport_recording=bool(self._transport_recording),
+            capture_request_count=int(self._capture_request_count),
+            capture_request_limit=int(self._capture_request_limit),
+            capture_retained_bytes=int(self._capture_retained_bytes),
+            capture_byte_limit=int(self._capture_byte_limit),
+            capture_notice=self._capture_notice,
         )
 
     def _cpu_times_s(self, proc) -> float:

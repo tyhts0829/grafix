@@ -13,6 +13,13 @@ from .key import ParameterKey, make_site_id, caller_site_id
 from .meta import ParamMeta
 from .state import ParamState
 from .store import ParamStore
+from .memento import (
+    ParamStoreMemento,
+    capture_param_store_memento,
+    restore_param_store_memento,
+)
+from .history import ParamStoreHistory, ParamSnapshotSlots, SnapshotSlot
+from .autosave import ParamStoreAutosave
 from .frame_params import FrameParamsBuffer, FrameParamRecord, FrameLabelRecord
 from .resolver import resolve_params
 from .view import ParameterRow, rows_from_snapshot, normalize_input
@@ -29,6 +36,13 @@ __all__ = [
     "ParamMeta",
     "ParamState",
     "ParamStore",
+    "ParamStoreMemento",
+    "capture_param_store_memento",
+    "restore_param_store_memento",
+    "ParamStoreHistory",
+    "ParamSnapshotSlots",
+    "SnapshotSlot",
+    "ParamStoreAutosave",
     "FrameParamsBuffer",
     "FrameParamRecord",
     "FrameLabelRecord",

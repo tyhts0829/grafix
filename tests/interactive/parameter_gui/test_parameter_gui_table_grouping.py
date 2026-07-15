@@ -35,7 +35,7 @@ def test_group_info_for_row_style_global():
     assert info.group_id == ("style", "global")
     assert info.header_id == "style"
     assert info.header == "Style"
-    assert info.visible_label == "background_color"
+    assert info.visible_label == "Background color"
 
 
 def test_group_info_for_row_style_layer():
@@ -46,7 +46,7 @@ def test_group_info_for_row_style_layer():
     )
     assert info.group_id == ("style", "global")
     assert info.header == "Style"
-    assert info.visible_label == "bg#2 line_color"
+    assert info.visible_label == "Bg 2 · Line color"
 
 
 def test_group_info_for_row_primitive():
@@ -58,7 +58,7 @@ def test_group_info_for_row_primitive():
     assert info.group_id == ("primitive", ("polygon", 1))
     assert info.header_id == "primitive:polygon#1"
     assert info.header == "P"
-    assert info.visible_label == "polygon#1 n_sides"
+    assert info.visible_label == "N sides"
 
 
 def test_group_info_for_row_effect_chain_uses_step_ordinal():
@@ -72,7 +72,7 @@ def test_group_info_for_row_effect_chain_uses_step_ordinal():
     assert info.group_id == ("effect_chain", "chain:1")
     assert info.header_id == "effect_chain:chain:1"
     assert info.header == "xf"
-    assert info.visible_label == "scale#1 auto_center"
+    assert info.visible_label == "Auto center"
 
 
 def test_group_info_for_row_preset_shows_header_and_uses_display_op():
@@ -84,4 +84,4 @@ def test_group_info_for_row_preset_shows_header_and_uses_display_op():
     assert info.group_id == ("preset", ("preset.grouping_logo", 1))
     assert info.header_id == "preset:preset.grouping_logo#1"
     assert info.header == "Logo"
-    assert info.visible_label == "grouping_logo#1 center"
+    assert info.visible_label == "Center"

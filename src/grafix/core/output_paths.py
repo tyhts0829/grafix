@@ -5,11 +5,73 @@
 from __future__ import annotations
 
 import inspect
+import os
 import re
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
 from grafix.core.runtime_config import output_root_dir, runtime_config
+
+
+class VersionedPathAllocator:
+    """保存先を上書きしない連番 path として予約する。
+
+    1 つの instance を 1 live session で共有することを想定する。実ファイルがまだ作られて
+    いない非同期 export も予約集合へ残すため、キー連打や複数 thread からの呼び出しでも
+    同じ path を二度返さない。既定 path が使用中なら ``name_001.ext`` から順に探す。
+
+    Notes
+    -----
+    この class は空の placeholder を作らない。したがって export 失敗時に偽の成果物を
+    残さず、既存の atomic writer / recorder の確定処理も妨げない。allocation 自体は
+    別 process との排他境界ではないため、正式公開は必ず no-clobber transaction
+    （``publish_capture_generation`` 等）で行う。同一 session 内では同じ instance を
+    共有し、未公開の非同期予約同士の衝突を防ぐ。
+    """
+
+    def __init__(self, *, minimum_digits: int = 3) -> None:
+        digits = int(minimum_digits)
+        if digits <= 0:
+            raise ValueError("minimum_digits は 1 以上である必要がある")
+        self._minimum_digits = digits
+        self._reserved: set[str] = set()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _reservation_key(path: Path) -> str:
+        """相対表記の違いを吸収した session 内予約キーを返す。"""
+
+        return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+    @staticmethod
+    def _is_occupied(path: Path) -> bool:
+        """通常ファイルに加え broken symlink も使用中として扱う。"""
+
+        return os.path.lexists(path)
+
+    def _candidate(self, base_path: Path, index: int) -> Path:
+        if index == 0:
+            return base_path
+        suffix = f"_{index:0{self._minimum_digits}d}"
+        return base_path.with_name(f"{base_path.stem}{suffix}{base_path.suffix}")
+
+    def allocate(self, base_path: str | Path) -> Path:
+        """未使用の ``base_path`` またはその連番版を予約して返す。"""
+
+        base = Path(base_path)
+        if not base.name:
+            raise ValueError("base_path はファイル名を含む必要がある")
+
+        with self._lock:
+            index = 0
+            while True:
+                candidate = self._candidate(base, index)
+                key = self._reservation_key(candidate)
+                if key not in self._reserved and not self._is_occupied(candidate):
+                    self._reserved.add(key)
+                    return candidate
+                index += 1
 
 
 def _sanitize_run_id(run_id: str) -> str:
@@ -252,4 +314,4 @@ def output_path_for_draw(
     return base_dir / rel_parent / filename
 
 
-__all__ = ["gcode_layer_output_path", "output_path_for_draw"]
+__all__ = ["VersionedPathAllocator", "gcode_layer_output_path", "output_path_for_draw"]

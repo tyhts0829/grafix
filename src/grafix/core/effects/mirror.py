@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import numpy as np
-from numba import njit  # type: ignore[import-untyped]
+from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta

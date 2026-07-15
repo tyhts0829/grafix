@@ -112,3 +112,41 @@ def test_cc_reassign_does_not_bake_effective() -> None:
     assert state.override is False
     assert state.ui_value == 0.1
 
+
+def test_explicit_reset_to_code_clears_midi_without_baking_effective() -> None:
+    store = ParamStore()
+    key = ParameterKey(op="circle", site_id="s3", arg="r")
+    meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
+    merge_frame_params(
+        store,
+        [FrameParamRecord(key=key, base=0.2, meta=meta, explicit=True)],
+    )
+    stored_meta = store.get_meta(key)
+    assert stored_meta is not None
+    update_state_from_ui(
+        store,
+        key,
+        0.1,
+        meta=stored_meta,
+        override=False,
+        cc_key=12,
+    )
+    store._runtime_ref().last_effective_by_key[key] = 0.75
+
+    snapshot = store_snapshot_for_gui(store)
+    rows_before = rows_from_snapshot(snapshot)
+    rows_after = [
+        replace(
+            rows_before[0],
+            cc_key=None,
+            override=False,
+            reset_to_code=True,
+        )
+    ]
+    _apply_updated_rows_to_store(store, snapshot, rows_before, rows_after)
+
+    state = store.get_state(key)
+    assert state is not None
+    assert state.cc_key is None
+    assert state.override is False
+    assert state.ui_value == 0.1

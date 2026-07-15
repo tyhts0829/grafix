@@ -82,17 +82,21 @@ def parameter_context(
     t4 = _store_var.set(store)
     try:
         yield
+    except BaseException:
+        # draw が失敗した frame は、途中までの観測結果を反映しない。
+        # 不完全な records/labels が observed_groups や永続ストアを書き換えると、
+        # 次回の正常 frame でパラメータを復元できなくなるため。
+        raise
+    else:
+        # yield が正常完了した frame の観測結果だけを commit する。
+        merge_frame_labels(store, frame_params.labels)
+        merge_frame_params(store, frame_params.records)
     finally:
-        try:
-            # フレーム終了時に観測結果を ParamStore へ保存する。
-            # merge が失敗しても、下の finally で ContextVar は必ず元へ戻す。
-            merge_frame_labels(store, frame_params.labels)
-            merge_frame_params(store, frame_params.records)
-        finally:
-            _store_var.reset(t4)
-            _cc_snapshot_var.reset(t3)
-            _frame_params_var.reset(t2)
-            _param_snapshot_var.reset(t1)
+        # body/merge のどちらが失敗しても ContextVar は必ず元へ戻す。
+        _store_var.reset(t4)
+        _cc_snapshot_var.reset(t3)
+        _frame_params_var.reset(t2)
+        _param_snapshot_var.reset(t1)
 
 
 @contextlib.contextmanager

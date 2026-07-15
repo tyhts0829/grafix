@@ -85,6 +85,7 @@ class _DrawTask:
     t: float
     snapshot_revision: int
     cc_snapshot: dict[int, float] | None
+    epoch: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +130,11 @@ class DrawResult:
       `FrameParamsBuffer` にマージして GUI/記録に使う（メインの ParamStore は触らない）。
     - `error` が非 None の場合、`layers/records/labels` は空で、`error` には
       `traceback.format_exc()` の文字列が入る。
+    - `t` はこの結果を生成した task の時刻で、非同期 preview の capture metadata に使う。
+    - `epoch` は transport discontinuity の generation。現在より古い結果は親側で破棄する。
+
+    `t` と `epoch` は既存の positional/keyword constructor を壊さないよう、
+    旧 field（`error` を含む）の後ろに default 付きで追加している。
     """
 
     frame_id: int
@@ -136,6 +142,8 @@ class DrawResult:
     records: list[FrameParamRecord]
     labels: list[FrameLabelRecord]
     error: str | None = None
+    t: float = 0.0
+    epoch: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +258,8 @@ def _draw_worker_main(
                         records=list(frame_params.records),
                         labels=list(frame_params.labels),
                         error=None,
+                        t=float(task.t),
+                        epoch=int(task.epoch),
                     )
                 )
             except Exception:
@@ -262,6 +272,8 @@ def _draw_worker_main(
                         records=[],
                         labels=[],
                         error=traceback.format_exc(),
+                        t=float(task.t),
+                        epoch=int(task.epoch),
                     )
                 )
     finally:
@@ -284,7 +296,7 @@ class MpDraw:
 
     - `submit()` はノンブロッキングで、混雑時は古いタスクを捨てて最新を優先する。
     - `poll_latest()` は result queue を drain して最大 `frame_id` の結果のみ採用する。
-    - `latest_layers()` は直近の成功結果の `layers` を返す（失敗結果は None 扱い）。
+    - `latest_layers()` は後続 frame が失敗しても直近成功結果の `layers` を保持する。
     """
 
     def __init__(self, draw: Callable[[float], SceneItem], *, n_worker: int) -> None:
@@ -330,8 +342,15 @@ class MpDraw:
         self._closed = False
 
         self._next_frame_id = 0
-        self._latest: DrawResult | None = None
+        self._current_epoch = 0
+        # 「最後に受信した結果」と「最後に成功した結果」は別の寿命を持つ。
+        # error result も poll_latest() では呼び出し側へ通知する必要がある一方、
+        # preview は直近の成功 scene を保持し続ける必要があるため、1 変数で兼用しない。
+        self._latest_received: DrawResult | None = None
+        self._latest_successful: DrawResult | None = None
         self._completed_result_count = 0
+        self._stale_result_count = 0
+        self._last_stale_result: tuple[int, int, int] | None = None
         self._pending_task: _DrawTask | None = None
         self._snapshot_broadcast_revision: int | None = None
         self._snapshot_broadcast_count = 0
@@ -452,11 +471,32 @@ class MpDraw:
                 self._last_rejection = message
             else:
                 self._completed_result_count += 1
-                if self._latest is None or int(message.frame_id) > int(
-                    self._latest.frame_id
+                current_epoch = int(getattr(self, "_current_epoch", 0))
+                result_epoch = int(message.epoch)
+                if result_epoch != current_epoch:
+                    # worker error であっても旧 timeline の結果なら現在の preview
+                    # failure として通知しない。破棄理由は worker health error と
+                    # 区別できるよう診断値へ残す。
+                    self._stale_result_count = (
+                        int(getattr(self, "_stale_result_count", 0)) + 1
+                    )
+                    self._last_stale_result = (
+                        int(message.frame_id),
+                        result_epoch,
+                        current_epoch,
+                    )
+                    continue
+                if self._latest_received is None or int(message.frame_id) > int(
+                    self._latest_received.frame_id
                 ):
-                    # 複数結果が溜まっていても、保持するのは最新だけ。
-                    self._latest = message
+                    # poll 用には成功/失敗を問わず、受信した最新結果を保持する。
+                    self._latest_received = message
+                if message.error is None and (
+                    self._latest_successful is None
+                    or int(message.frame_id) > int(self._latest_successful.frame_id)
+                ):
+                    # preview fallback 用の成功結果は、後続の error で上書きしない。
+                    self._latest_successful = message
 
     def _broadcast_snapshot(self, *, revision: int, snapshot: ParamSnapshot) -> None:
         """snapshot 本体を各 worker へ 1 回ずつ配信する。"""
@@ -513,6 +553,58 @@ class MpDraw:
         self._pending_task = None
         self._enqueue_latest(task)
 
+    def begin_epoch(self, epoch: int | None = None) -> int:
+        """新しい transport epoch へ進み、旧結果を表示候補から外す。
+
+        Parameters
+        ----------
+        epoch:
+            明示する場合は現在値以上でなければならない。省略時は 1 増やす。
+
+        Returns
+        -------
+        int
+            適用後の epoch。
+
+        Notes
+        -----
+        実行中の worker task 自体は安全に中断できないため完了を許すが、その
+        result は `_drain_result_queue()` で stale として破棄する。queue 内で
+        まだ開始していない旧 task は best-effort で除去し、fresh task を優先する。
+        """
+
+        self._check_health()
+        current = int(self._current_epoch)
+        requested = current + 1 if epoch is None else int(epoch)
+        if requested < current:
+            raise ValueError(
+                f"epoch は現在値以上である必要があります: current={current}, got={requested}"
+            )
+        if requested == current:
+            return current
+
+        # 既に到着済みの current result を accounting してから境界を進める。
+        self._drain_result_queue()
+        self._current_epoch = requested
+        self._latest_received = None
+        self._latest_successful = None
+        self._pending_task = None
+
+        while True:
+            try:
+                queued = self._task_q.get_nowait()
+            except queue.Empty:
+                break
+            if queued is None:
+                # close sentinel を利用中に epoch 更新する呼び出しは通常ないが、
+                # 見つけた場合は失わないよう戻す。
+                try:
+                    self._task_q.put_nowait(None)
+                except queue.Full:
+                    pass
+                break
+        return int(self._current_epoch)
+
     def submit(
         self,
         *,
@@ -520,6 +612,7 @@ class MpDraw:
         snapshot_revision: int,
         snapshot: ParamSnapshot,
         cc_snapshot: dict[int, float] | None = None,
+        epoch: int | None = None,
     ) -> None:
         """このフレームの draw を worker に依頼する（ノンブロッキング）。
 
@@ -538,6 +631,14 @@ class MpDraw:
 
         self._check_health()
         try:
+            requested_epoch = self._current_epoch if epoch is None else int(epoch)
+            if requested_epoch < self._current_epoch:
+                raise ValueError(
+                    "古い epoch の draw task は投入できません: "
+                    f"current={self._current_epoch}, got={requested_epoch}"
+                )
+            if requested_epoch > self._current_epoch:
+                self.begin_epoch(requested_epoch)
             # 前フレームまでの ack を先に反映し、この submit の最新 task だけを残す。
             self._drain_result_queue()
             self._flush_snapshot_updates()
@@ -547,6 +648,7 @@ class MpDraw:
                 t=float(t),
                 snapshot_revision=int(snapshot_revision),
                 cc_snapshot=cc_snapshot,
+                epoch=int(requested_epoch),
             )
             if self._snapshot_broadcast_revision != int(snapshot_revision):
                 self._broadcast_snapshot(
@@ -595,13 +697,13 @@ class MpDraw:
         # drain 中に process が終了した場合も、その場で明示的に失敗させる。
         self._check_health()
 
-        if self._latest is None or int(self._latest.frame_id) <= int(
+        if self._latest_received is None or int(self._latest_received.frame_id) <= int(
             self._last_published_frame_id
         ):
             return None
 
-        self._last_published_frame_id = int(self._latest.frame_id)
-        return self._latest
+        self._last_published_frame_id = int(self._latest_received.frame_id)
+        return self._latest_received
 
     @property
     def snapshot_broadcast_count(self) -> int:
@@ -643,6 +745,24 @@ class MpDraw:
         return int(self._completed_result_count)
 
     @property
+    def current_epoch(self) -> int:
+        """現在採用対象としている transport epoch を返す。"""
+
+        return int(self._current_epoch)
+
+    @property
+    def stale_result_count(self) -> int:
+        """旧/未知 epoch のため表示候補から破棄した result 数を返す。"""
+
+        return int(self._stale_result_count)
+
+    @property
+    def last_stale_result(self) -> tuple[int, int, int] | None:
+        """直近 stale result の `(frame_id, result_epoch, current_epoch)`。"""
+
+        return self._last_stale_result
+
+    @property
     def pending_snapshot_update_count(self) -> int:
         """親側で保持する worker 別 latest update 数を返す。"""
 
@@ -668,11 +788,26 @@ class MpDraw:
         )
 
     def latest_layers(self) -> list[Layer] | None:
-        """直近の成功結果の layers を返す（失敗/未到着なら None）。"""
+        """直近の成功結果の layers を返す（成功結果が未到着なら None）。
 
-        if self._latest is None or self._latest.error is not None:
+        error result は `poll_latest()` で通知するが、ここでは直前の成功結果を保持する。
+        これにより一時的な user draw の失敗で preview が空になることを防ぐ。
+        """
+
+        if self._latest_successful is None:
             return None
-        return self._latest.layers
+        return self._latest_successful.layers
+
+    def latest_successful_result(self) -> DrawResult | None:
+        """直近の成功結果を、その入力時刻と共に返す。
+
+        `poll_latest()` は後続の error result を返す場合があるが、
+        preview/export は実際に採用した最新成功 frame の `t` を必要とする。
+        layers と `t` の対応を分離せず取得できるよう、
+        `latest_layers()` とは別に結果全体を公開する。
+        """
+
+        return self._latest_successful
 
     def _send_stop_tokens(self, count: int) -> None:
         """待機中の古い task を捨てながら、通常終了用 sentinel を送る。"""

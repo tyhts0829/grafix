@@ -15,6 +15,12 @@ from grafix.core.effect_registry import effect_registry
 from grafix.core.geometry import Geometry, GeometryId
 from grafix.core.primitive_registry import primitive_registry
 from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
+from grafix.core.resource_budget import (
+    DEFAULT_RESOURCE_BUDGET,
+    ResourceBudget,
+    ensure_geometry_output,
+    resource_budget_context,
+)
 
 RegistryRevision: TypeAlias = tuple[int, int]
 """``(primitive revision, effect revision)`` のスナップショット。"""
@@ -64,6 +70,8 @@ class RealizeSession:
     ----------
     max_cache_bytes : int, optional
         cache に保持する配列の合計 byte 上限。0 は cache を無効化する。
+    resource_budget : ResourceBudget, optional
+        各 operation が大規模配列を確保する前に適用する頂点・線・byte 上限。
 
     Notes
     -----
@@ -71,12 +79,20 @@ class RealizeSession:
     先行する 1 スレッドだけが実行し、残りはその結果を共有する。
     """
 
-    def __init__(self, *, max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES) -> None:
+    def __init__(
+        self,
+        *,
+        max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
+        resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
+    ) -> None:
         max_bytes = int(max_cache_bytes)
         if max_bytes < 0:
             raise ValueError("max_cache_bytes は 0 以上である必要がある")
+        if not isinstance(resource_budget, ResourceBudget):
+            raise TypeError("resource_budget は ResourceBudget である必要がある")
 
         self._max_cache_bytes = max_bytes
+        self._resource_budget = resource_budget
         self._lock = threading.Lock()
         self._cache: OrderedDict[GeometryCacheKey, RealizedGeometry] = OrderedDict()
         self._cache_bytes = 0
@@ -98,6 +114,12 @@ class RealizeSession:
         """cache の byte 上限を返す。"""
 
         return self._max_cache_bytes
+
+    @property
+    def resource_budget(self) -> ResourceBudget:
+        """operation の配列確保前検査に使う resource budget を返す。"""
+
+        return self._resource_budget
 
     def stats(self) -> CacheStats:
         """現在の cache 統計を lock 下で取得する。"""
@@ -271,21 +293,28 @@ class RealizeSession:
         revision: RegistryRevision,
     ) -> RealizedGeometry:
         op = geometry.op
-        if op == "concat":
+        with resource_budget_context(self._resource_budget):
+            if op == "concat":
+                realized_inputs = [self._realize(item, revision) for item in geometry.inputs]
+                ensure_geometry_output(
+                    "concat",
+                    vertices=sum(int(item.coords.shape[0]) for item in realized_inputs),
+                    lines=sum(max(0, int(item.offsets.size) - 1) for item in realized_inputs),
+                    hint="入力 geometry または concat 対象数を減らしてください",
+                )
+                return concat_realized_geometries(*realized_inputs)
+
+            if not geometry.inputs:
+                if op not in primitive_registry:
+                    ensure_builtin_primitive_registered(op)
+                primitive_spec = primitive_registry[op]
+                return primitive_spec.evaluator(geometry.args)
+
             realized_inputs = [self._realize(item, revision) for item in geometry.inputs]
-            return concat_realized_geometries(*realized_inputs)
-
-        if not geometry.inputs:
-            if op not in primitive_registry:
-                ensure_builtin_primitive_registered(op)
-            primitive_spec = primitive_registry[op]
-            return primitive_spec.evaluator(geometry.args)
-
-        realized_inputs = [self._realize(item, revision) for item in geometry.inputs]
-        if op not in effect_registry:
-            ensure_builtin_effect_registered(op)
-        effect_spec = effect_registry[op]
-        return effect_spec.evaluator(realized_inputs, geometry.args)
+            if op not in effect_registry:
+                ensure_builtin_effect_registered(op)
+            effect_spec = effect_registry[op]
+            return effect_spec.evaluator(realized_inputs, geometry.args)
 
     def _store_locked(self, key: GeometryCacheKey, result: RealizedGeometry) -> None:
         size = result.byte_size

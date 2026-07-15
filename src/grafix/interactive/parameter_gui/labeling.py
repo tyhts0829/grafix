@@ -14,6 +14,24 @@ GroupKey = tuple[str, int]
 K = TypeVar("K", bound=Hashable)
 
 
+def humanize_identifier(value: str) -> str:
+    """code identifier を短い人間向け表示へ変換する。
+
+    内部 key と ImGui ID は変更せず、表示文字列だけを整える。
+    """
+
+    text = " ".join(str(value).replace("_", " ").replace("#", " #").split())
+    if not text:
+        return ""
+    return text[0].upper() + text[1:]
+
+
+def format_contextual_row_label(op: str, ordinal: int, arg: str) -> str:
+    """Effect 等、親内で operation 名も必要な行の表示ラベルを返す。"""
+
+    return f"{humanize_identifier(op)} {int(ordinal)} · {humanize_identifier(arg)}"
+
+
 def format_param_row_label(op: str, ordinal: int, arg: str) -> str:
     """パラメータ行の表示ラベル `"{op}#{ordinal} {arg}"` を返す。"""
 
@@ -87,9 +105,7 @@ def effect_step_ordinals_by_site(
 
     steps_by_chain: dict[str, list[tuple[int, str, str]]] = {}
     for (op, site_id), (chain_id, step_index) in step_info_by_site.items():
-        steps_by_chain.setdefault(str(chain_id), []).append(
-            (int(step_index), op, site_id)
-        )
+        steps_by_chain.setdefault(str(chain_id), []).append((int(step_index), op, site_id))
 
     out: dict[EffectStepKey, int] = {}
     for chain_id, steps in steps_by_chain.items():

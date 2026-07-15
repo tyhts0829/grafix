@@ -15,6 +15,7 @@ from grafix.core.parameters import (
 )
 from grafix.core.pipeline import RealizedLayer, realize_scene
 from grafix.core.realize import RealizeSession
+from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET, ResourceBudget
 from grafix.core.scene import SceneItem
 from grafix.interactive.runtime.mp_draw import MpDraw
 from grafix.interactive.runtime.perf import PerfCollector
@@ -29,13 +30,68 @@ class SceneRunner:
         *,
         perf: PerfCollector,
         n_worker: int,
+        resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
     ) -> None:
         self._draw = draw
         self._perf = perf
-        self._realize_session = RealizeSession()
+        self._realize_session = RealizeSession(resource_budget=resource_budget)
         self._mp_draw: MpDraw | None = (
             MpDraw(draw, n_worker=int(n_worker)) if int(n_worker) > 1 else None
         )
+        # mp-draw は結果未到着の frame でも前回 scene を再利用して返すため、単なる
+        # run() の正常 return だけでは user draw の回復を判定できない。None は
+        # 「この呼び出しでは新しい評価結果が無い」を表す。
+        self._last_evaluation_succeeded: bool | None = None
+        self._last_evaluation_t: float | None = None
+        # `last_evaluation_*` は worker から新しい終端結果を受け取ったかを
+        # 表す。一方、後続 error と同時に drain された成功 frame は、
+        # error 通知の次の run で初めて realize される。その出力時刻を
+        # manifest と結び付けるため、終端 status とは別に保持する。
+        self._last_realized_t: float | None = None
+        self._last_merged_mp_success_frame_id: int | None = None
+        self._last_merged_mp_success_epoch: int | None = None
+        # transport discontinuity 後に fresh mp result を待つ間も、実際に
+        # 画面へ出していた frame とその時刻を対で維持する。
+        self._retained_realized_layers: list[RealizedLayer] = []
+        self._retained_realized_t: float | None = None
+        self._waiting_for_fresh_result = False
+        self._mp_epoch = 0
+        self._last_transport_epoch: int | None = None
+        self._last_recording: bool | None = None
+
+    @property
+    def last_evaluation_succeeded(self) -> bool | None:
+        """直近 `run()` で新しい scene 評価が成功したかを返す。
+
+        `None` は mp-draw の結果待ちなど、この frame で新しい評価結果が無かった状態。
+        DrawWindowSystem はこの値を使い、error 表示を本当の成功結果まで保持する。
+        """
+
+        return self._last_evaluation_succeeded
+
+    @property
+    def last_evaluation_t(self) -> float | None:
+        """直近に新しく成功した scene が評価された `t` を返す。"""
+
+        return self._last_evaluation_t
+
+    @property
+    def last_realized_t(self) -> float | None:
+        """直近の `run()` が実際に realize して返した成功 frame の `t`。
+
+        mp-draw で成功 frame とより新しい error frame が同時に
+        drain された場合、`last_evaluation_succeeded` は error 表示を
+        維持するため `True` にしない。それでも、次の `run()` で
+        実際に描画出力となった成功 frame の時刻はこの値で返す。
+        """
+
+        return self._last_realized_t
+
+    @property
+    def is_waiting_for_fresh_result(self) -> bool:
+        """不連続操作後の current-epoch mp result を待っているか。"""
+
+        return bool(self._waiting_for_fresh_result)
 
     def run(
         self,
@@ -45,6 +101,7 @@ class SceneRunner:
         cc_snapshot: dict[int, float] | None,
         defaults: LayerStyleDefaults,
         recording: bool,
+        transport_epoch: int | None = None,
     ) -> list[RealizedLayer]:
         """シーンを実行して realized_layers を返す。
 
@@ -54,15 +111,87 @@ class SceneRunner:
             mp-draw worker が予期せず終了した場合。同期実行には切り替えない。
         """
 
-        with parameter_context(store, cc_snapshot=cc_snapshot):
-            if recording or self._mp_draw is None:
-                return self._run_sync(t, defaults=defaults)
-            return self._run_mp(
-                t,
-                snapshot_revision=store.revision,
-                cc_snapshot=cc_snapshot,
-                defaults=defaults,
+        self._last_evaluation_succeeded = None
+        self._last_evaluation_t = None
+        self._last_realized_t = None
+        self._waiting_for_fresh_result = False
+        try:
+            self._update_epoch(
+                recording=bool(recording),
+                transport_epoch=transport_epoch,
             )
+            with parameter_context(store, cc_snapshot=cc_snapshot):
+                if recording or self._mp_draw is None:
+                    realized_layers = self._run_sync(t, defaults=defaults)
+                    self._last_evaluation_succeeded = True
+                    self._last_evaluation_t = float(t)
+                    self._last_realized_t = float(t)
+                    self._retain_output(realized_layers, t=float(t))
+                    return realized_layers
+                return self._run_mp(
+                    t,
+                    snapshot_revision=store.revision,
+                    cc_snapshot=cc_snapshot,
+                    defaults=defaults,
+                )
+        except Exception:
+            self._last_evaluation_succeeded = False
+            self._last_evaluation_t = None
+            raise
+
+    def _update_epoch(
+        self,
+        *,
+        recording: bool,
+        transport_epoch: int | None,
+    ) -> None:
+        """transport/recording の不連続を mp generation へ写像する。"""
+
+        discontinuity = False
+        if transport_epoch is not None:
+            requested = int(transport_epoch)
+            if requested < 0:
+                raise ValueError("transport_epoch は 0 以上である必要があります")
+            previous = self._last_transport_epoch
+            if previous is not None and requested < previous:
+                raise ValueError(
+                    "transport_epoch は単調増加である必要があります: "
+                    f"previous={previous}, got={requested}"
+                )
+            if previous is None:
+                # SceneRunner 作成前に seek 済みの場合も、epoch=0 の既定 task と
+                # 混同しない。ただし初期値 0 は通常の連続開始として扱う。
+                discontinuity = requested > 0
+            elif requested != previous:
+                discontinuity = True
+            self._last_transport_epoch = requested
+
+        previous_recording = self._last_recording
+        if previous_recording is not None and recording != previous_recording:
+            # 録画中は同期 draw に切り替わる。開始・終了の両側で旧 preview
+            # task/result を無効化し、終了後に録画前へ巻き戻らないようにする。
+            discontinuity = True
+        self._last_recording = bool(recording)
+
+        if not discontinuity or self._mp_draw is None:
+            return
+        self._mp_epoch += 1
+        self._mp_draw.begin_epoch(self._mp_epoch)
+        self._last_merged_mp_success_frame_id = None
+        self._last_merged_mp_success_epoch = None
+
+    def _retain_output(self, layers: list[RealizedLayer], *, t: float) -> None:
+        """実表示として採用できた layers/t を同時に更新する。"""
+
+        self._retained_realized_layers = list(layers)
+        self._retained_realized_t = float(t)
+
+    def _fresh_result_pending_output(self) -> list[RealizedLayer]:
+        """fresh mp result 待ち中に直近の実表示 frame を返す。"""
+
+        self._waiting_for_fresh_result = True
+        self._last_realized_t = self._retained_realized_t
+        return list(self._retained_realized_layers)
 
     def _run_sync(self, t: float, *, defaults: LayerStyleDefaults) -> list[RealizedLayer]:
         perf = self._perf
@@ -104,33 +233,62 @@ class SceneRunner:
             snapshot_revision=int(snapshot_revision),
             snapshot=current_param_snapshot(),
             cc_snapshot=cc_snapshot,
+            epoch=int(self._mp_epoch),
         )
 
         new_result = mp_draw.poll_latest()
         if new_result is not None:
             if new_result.error is not None:
                 raise RuntimeError(f"mp-draw worker で例外が発生しました:\n{new_result.error}")
-            # worker は ParamStore を触れないので、観測（records/labels）の反映は main 側で行う。
+
+        latest_successful = mp_draw.latest_successful_result()
+        if latest_successful is None:
+            return self._fresh_result_pending_output()
+
+        # worker は ParamStore を触れないので、実際に preview 候補となる
+        # 最新成功 frame の観測を main 側で 1 回だけ反映する。
+        # success と後続 error が同時に drain されると poll_latest() は
+        # error だけを返すため、new_result ではなく latest_successful を基準にする。
+        latest_success_frame_id = int(latest_successful.frame_id)
+        latest_success_epoch = int(latest_successful.epoch)
+        should_merge_success = (
+            self._last_merged_mp_success_frame_id != latest_success_frame_id
+            or self._last_merged_mp_success_epoch != latest_success_epoch
+        )
+        if should_merge_success:
             frame_params = current_frame_params()
             if frame_params is not None:
-                frame_params.records.extend(new_result.records)
-                frame_params.labels.extend(new_result.labels)
-
-        layers = mp_draw.latest_layers()
-        if layers is None:
-            return []
+                frame_params.records.extend(latest_successful.records)
+                frame_params.labels.extend(latest_successful.labels)
 
         # 2) realize（main 側）: 最新の layers を通常パイプラインへ流して表示/出力する。
         def draw_from_mp(_t_arg: float) -> SceneItem:
-            return layers
+            return latest_successful.layers
 
         with perf.section("scene"):
-            return realize_scene(
+            realized_layers = realize_scene(
                 draw_from_mp,
                 t,
                 defaults,
                 session=self._realize_session,
             )
+        # worker 成功だけではなく、main 側の realize が成功した後にだけ
+        # output time を更新する。error result や realize 失敗の t を manifest へ
+        # 誤って記録しないための順序。
+        if should_merge_success:
+            # parameter_context は例外 frame の records/labels を rollback する。
+            # realize 成功前に consumed 扱いすると、次回 retry で観測を
+            # 再マージできないため、成功後にだけ frame id を進める。
+            self._last_merged_mp_success_frame_id = latest_success_frame_id
+            self._last_merged_mp_success_epoch = latest_success_epoch
+        self._last_realized_t = float(latest_successful.t)
+        self._retain_output(realized_layers, t=float(latest_successful.t))
+        if new_result is not None:
+            # ここに到達する new_result は error=None。新しい成功結果が
+            # 終端結果である場合のみ、既存 error 表示を解除する。
+            self._last_evaluation_succeeded = True
+            self._last_evaluation_t = float(latest_successful.t)
+        return realized_layers
 
     def close(self) -> None:
         """mp-draw worker と realize session を終了する。"""

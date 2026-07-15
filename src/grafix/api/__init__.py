@@ -12,8 +12,21 @@ from .layers import L
 from .primitives import G
 from grafix.core.effect_registry import effect
 from grafix.core.primitive_registry import primitive
+from grafix.core.resource_budget import ResourceBudget, ResourceLimitError
 
-__all__ = ["E", "Export", "G", "L", "P", "effect", "preset", "primitive", "run"]
+__all__ = [
+    "E",
+    "Export",
+    "G",
+    "L",
+    "P",
+    "ResourceBudget",
+    "ResourceLimitError",
+    "effect",
+    "preset",
+    "primitive",
+    "run",
+]
 
 
 def run(*args, **kwargs):

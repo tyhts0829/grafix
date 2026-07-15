@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 
 from grafix.core.parameters.key import ParameterKey
@@ -12,19 +13,21 @@ from grafix.core.preset_registry import preset_registry
 from grafix.core.runtime_config import runtime_config
 
 from .group_blocks import GroupBlock, group_blocks_from_rows
-from .labeling import format_param_row_label
+from .labeling import format_contextual_row_label, humanize_identifier
 from .midi_learn import MidiLearnState
 from .rules import ui_rules_for_row
 from .snippet import snippet_for_block
+from .theme import PARAMETER_GUI_PALETTE, source_badge_color
 from .widgets import render_value_widget
 
-SNIPPET_POPUP_WINDOW_SIZE_PX = (1000.0, 1000.0)
+SNIPPET_POPUP_WINDOW_SIZE_PX = (960.0, 720.0)
+SNIPPET_POPUP_VIEWPORT_MARGIN_PX = 24.0
 
 GROUP_HEADER_BASE_COLORS_RGBA: dict[str, tuple[int, int, int, int]] = {
-    "style": (51, 102, 217, 140),
-    "primitive": (152, 74, 74, 140),
-    "preset": (122, 71, 168, 140),
-    "effect": (53, 117, 76, 140),
+    "style": (104, 164, 255, 94),
+    "primitive": (229, 138, 125, 94),
+    "preset": (170, 140, 255, 94),
+    "effect": (107, 203, 149, 94),
 }
 
 
@@ -123,7 +126,7 @@ def _row_visible_label(row: ParameterRow) -> str:
     op = str(row.op)
     if op in preset_registry:
         op = preset_registry.get_display_op(op)
-    return format_param_row_label(op, int(row.ordinal), row.arg)
+    return format_contextual_row_label(op, int(row.ordinal), row.arg)
 
 
 def _row_id(row: ParameterRow) -> str:
@@ -132,11 +135,77 @@ def _row_id(row: ParameterRow) -> str:
     return f"{row.op}#{row.ordinal}:{row.arg}"
 
 
-def _render_label_cell(imgui, *, row_label: str) -> None:
-    """label 列を描画する。"""
+def source_badge_for_row(row: ParameterRow, last_source: str | None) -> str:
+    """行の現在の有効値ソースを、製品 UI 用の短い表記で返す。"""
+
+    # last_source は直近に実現した frame の観測値。Undo/Redo や
+    # Snapshot Load の直後は row だけが新状態に進んでいるため、
+    # 現在の control 状態と両立する観測値だけを使う。
+    cc_can_be_source = (isinstance(row.cc_key, int) and row.kind in {"float", "int", "choice"}) or (
+        isinstance(row.cc_key, tuple)
+        and row.kind == "vec3"
+        and any(cc is not None for cc in row.cc_key)
+    )
+    if last_source == "cc" and cc_can_be_source:
+        return "MIDI"
+    if last_source == "gui" and (row.kind == "bool" or row.override):
+        return "UI"
+    if last_source == "base" and row.kind != "bool" and not row.override:
+        return "CODE"
+    if row.kind == "bool" or row.override:
+        return "UI"
+    return "CODE"
+
+
+def _render_label_cell(
+    imgui,
+    *,
+    row_label: str,
+    source_badge: str,
+    show_reset_to_code: bool = False,
+) -> bool:
+    """label 列を描画し、明示的な source reset が押されたら True を返す。"""
 
     imgui.table_set_column_index(0)
-    imgui.text(str(row_label))
+    cell_width = _content_region_available_width(imgui)
+    label_text = f"[{source_badge}] {row_label}"
+    text_colored = getattr(imgui, "text_colored", None)
+    if callable(text_colored):
+        text_colored(str(source_badge), *source_badge_color(source_badge))
+        imgui.same_line(0.0, 6.0)
+        imgui.text(str(row_label))
+    else:
+        imgui.text(label_text)
+    if not show_reset_to_code:
+        return False
+
+    inline = True
+    calc_text_size = getattr(imgui, "calc_text_size", None)
+    if cell_width is not None and callable(calc_text_size):
+        try:
+            label_width = float(calc_text_size(label_text)[0])
+        except (IndexError, TypeError, ValueError):
+            pass
+        else:
+            button_width = _button_width_for_cell(
+                imgui,
+                "Code##reset_to_code",
+                minimum=1.0,
+                cell_width=None,
+            )
+            if math.isfinite(label_width):
+                # same_line() の既定 item spacing を保守的に 8px と見積もる。
+                inline = label_width + 8.0 + button_width <= cell_width
+
+    if inline:
+        # 幅取得 API を持たない従来 backend/test double では旧配置を維持する。
+        imgui.same_line()
+    clicked = bool(imgui.button("Code##reset_to_code"))
+    is_item_hovered = getattr(imgui, "is_item_hovered", None)
+    set_tooltip = getattr(imgui, "set_tooltip", None)
+    if callable(is_item_hovered) and callable(set_tooltip) and is_item_hovered():
+        set_tooltip("Reset this parameter to the value defined in code")
+    return clicked
 
 
 def _render_control_cell(imgui, row: ParameterRow) -> tuple[bool, object]:
@@ -145,6 +214,37 @@ def _render_control_cell(imgui, row: ParameterRow) -> tuple[bool, object]:
     imgui.table_set_column_index(1)
     imgui.set_next_item_width(-1)  # 残り幅いっぱい
     return render_value_widget(row)
+
+
+def _render_effect_step_heading(imgui, label: str) -> None:
+    """Effect chain 内で operation が切り替わる位置に小見出しを描く。"""
+
+    imgui.table_next_row()
+    imgui.table_set_column_index(0)
+    text_colored = getattr(imgui, "text_colored", None)
+    if callable(text_colored):
+        text_colored(str(label), *PARAMETER_GUI_PALETTE["success"])
+    else:
+        imgui.text(str(label))
+
+
+def _effect_step_heading_by_site(block: GroupBlock) -> dict[str, str]:
+    """Effect block の各 site_id に、短く一意な小見出しを割り当てる。"""
+
+    sites_by_op: dict[str, list[str]] = {}
+    for item in block.items:
+        op = str(item.row.op)
+        site_id = str(item.row.site_id)
+        op_sites = sites_by_op.setdefault(op, [])
+        if site_id not in op_sites:
+            op_sites.append(site_id)
+
+    out: dict[str, str] = {}
+    for op, sites in sites_by_op.items():
+        op_label = humanize_identifier(op)
+        for ordinal, site_id in enumerate(sites, start=1):
+            out[site_id] = op_label if len(sites) == 1 else f"{op_label} {int(ordinal)}"
+    return out
 
 
 def _should_auto_enable_override(
@@ -228,6 +328,177 @@ def _render_minmax_cell(
     return False, ui_min, ui_max
 
 
+def _content_region_available_width(imgui) -> float | None:
+    """現在の table cell で利用可能な幅を返す。
+
+    古い pyimgui backend や unit-test double に幅取得 API がない場合は
+    ``None`` を返し、従来どおり 1 行配置を使う。通常の pyimgui では table
+    column の work rect が反映されるため、右端 cell の実幅を取得できる。
+    """
+
+    getter = getattr(imgui, "get_content_region_available_width", None)
+    if callable(getter):
+        try:
+            width = float(getter())
+        except (TypeError, ValueError):
+            return None
+        if math.isfinite(width) and width > 0.0:
+            return width
+
+    getter_vec = getattr(imgui, "get_content_region_available", None)
+    if callable(getter_vec):
+        try:
+            available = getter_vec()
+            width = float(available[0])
+        except (IndexError, TypeError, ValueError):
+            return None
+        if math.isfinite(width) and width > 0.0:
+            return width
+    return None
+
+
+def _visible_widget_text(label: str) -> str:
+    """ImGui の ``##id`` より前にある可視ラベルだけを返す。"""
+
+    return str(label).split("##", 1)[0]
+
+
+def _button_width_for_cell(
+    imgui,
+    label: str,
+    *,
+    minimum: float,
+    cell_width: float | None,
+) -> float:
+    """ラベルが読める button 幅を求め、狭い cell の外へはみ出させない。"""
+
+    width = max(1.0, float(minimum))
+    calc_text_size = getattr(imgui, "calc_text_size", None)
+    if callable(calc_text_size):
+        try:
+            text_width = float(calc_text_size(_visible_widget_text(label))[0])
+        except (IndexError, TypeError, ValueError):
+            pass
+        else:
+            # ImGui 既定 frame padding（左右各 8px）相当。font scale は
+            # calc_text_size 側で追従する。
+            if math.isfinite(text_width):
+                width = max(width, text_width + 16.0)
+    if cell_width is not None:
+        width = min(width, max(1.0, float(cell_width)))
+    return width
+
+
+def _checkbox_width(imgui, label: str) -> float:
+    """checkbox を同行配置できるか判断するための保守的な推定幅。"""
+
+    text_width = 36.0
+    calc_text_size = getattr(imgui, "calc_text_size", None)
+    if callable(calc_text_size):
+        try:
+            measured = float(calc_text_size(_visible_widget_text(label))[0])
+        except (IndexError, TypeError, ValueError):
+            pass
+        else:
+            if math.isfinite(measured):
+                text_width = max(0.0, measured)
+
+    frame_height = 20.0
+    get_frame_height = getattr(imgui, "get_frame_height", None)
+    if callable(get_frame_height):
+        try:
+            measured_height = float(get_frame_height())
+        except (TypeError, ValueError):
+            pass
+        else:
+            if math.isfinite(measured_height) and measured_height > 0.0:
+                frame_height = measured_height
+
+    # checkbox square + item-inner spacing（4px）+ label。
+    return frame_height + 4.0 + text_width
+
+
+def _place_responsive_item(
+    imgui,
+    *,
+    cell_width: float | None,
+    used_width: float,
+    item_width: float,
+    spacing: float,
+) -> float:
+    """item を収まる場合だけ同行へ置き、現在行の使用幅を返す。"""
+
+    item_width = max(1.0, float(item_width))
+    if used_width <= 0.0:
+        return item_width
+
+    next_width = float(used_width) + float(spacing) + item_width
+    if cell_width is None or next_width <= float(cell_width):
+        imgui.same_line(0.0, float(spacing))
+        return next_width
+
+    # same_line を呼ばなければ、次の item は次行の先頭に置かれる。
+    return item_width
+
+
+def _snippet_popup_geometry(
+    imgui,
+    *,
+    preferred_size: tuple[float, float] = SNIPPET_POPUP_WINDOW_SIZE_PX,
+    margin: float = SNIPPET_POPUP_VIEWPORT_MARGIN_PX,
+) -> tuple[float, float, float, float]:
+    """Code popup の中心座標と viewport 内に収まるサイズを返す。"""
+
+    viewport_x = 0.0
+    viewport_y = 0.0
+    viewport_width = 0.0
+    viewport_height = 0.0
+
+    get_main_viewport = getattr(imgui, "get_main_viewport", None)
+    if callable(get_main_viewport):
+        try:
+            viewport = get_main_viewport()
+            work_pos = viewport.work_pos
+            work_size = viewport.work_size
+            viewport_x = float(work_pos[0])
+            viewport_y = float(work_pos[1])
+            viewport_width = float(work_size[0])
+            viewport_height = float(work_size[1])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            viewport_width = 0.0
+            viewport_height = 0.0
+
+    if (
+        not math.isfinite(viewport_width)
+        or not math.isfinite(viewport_height)
+        or viewport_width <= 0.0
+        or viewport_height <= 0.0
+    ):
+        # pyimgui 2.0 では frame 開始前の main viewport が 0x0 の場合がある。
+        # GUI backend が毎 frame 同期する io.display_size を fallback にする。
+        try:
+            display_size = imgui.get_io().display_size
+            viewport_x = 0.0
+            viewport_y = 0.0
+            viewport_width = float(display_size[0])
+            viewport_height = float(display_size[1])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            fallback_margin = max(0.0, float(margin)) * 2.0
+            viewport_width = float(preferred_size[0]) + fallback_margin
+            viewport_height = float(preferred_size[1]) + fallback_margin
+
+    preferred_width = max(1.0, float(preferred_size[0]))
+    preferred_height = max(1.0, float(preferred_size[1]))
+    inset = max(0.0, float(margin))
+    available_width = max(1.0, viewport_width - inset * 2.0)
+    available_height = max(1.0, viewport_height - inset * 2.0)
+    popup_width = min(preferred_width, available_width)
+    popup_height = min(preferred_height, available_height)
+    center_x = viewport_x + viewport_width * 0.5
+    center_y = viewport_y + viewport_height * 0.5
+    return center_x, center_y, popup_width, popup_height
+
+
 def _render_cc_cell(
     imgui,
     *,
@@ -245,11 +516,13 @@ def _render_cc_cell(
     imgui.table_set_column_index(3)
 
     changed_any = False
+    cell_width = _content_region_available_width(imgui)
+    used_width = 0.0
 
     if rules.cc_key == "none":
         clicked_override = False
         if rules.show_override:
-            clicked_override, override = imgui.checkbox("##override", bool(override))
+            clicked_override, override = imgui.checkbox("Use UI##override", bool(override))
             if clicked_override:
                 changed_any = True
         return changed_any, cc_key, bool(override)
@@ -290,9 +563,7 @@ def _render_cc_cell(
             return
         state.active_target = key
         state.active_component = component
-        state.last_seen_cc_seq = (
-            0 if midi_last_cc_change is None else int(midi_last_cc_change[0])
-        )
+        state.last_seen_cc_seq = 0 if midi_last_cc_change is None else int(midi_last_cc_change[0])
 
     def _cancel_learn() -> None:
         state = midi_learn_state
@@ -304,38 +575,44 @@ def _render_cc_cell(
     key = _key_for_row(row)
 
     if rules.cc_key == "int3":
-        button_width = float(cc_key_width * 1.6)
-
         current_tuple = cc_key if isinstance(cc_key, tuple) else (None, None, None)
         for i in range(3):
             component_cc = current_tuple[i]
             active = _is_active(key=key, component=int(i))
 
-            if (
-                active
-                and midi_learn_state is not None
-                and midi_last_cc_change is not None
-            ):
+            if active and midi_learn_state is not None and midi_last_cc_change is not None:
                 seq, learned_cc = midi_last_cc_change
                 if int(seq) > int(midi_learn_state.last_seen_cc_seq):
                     cc_key = _set_component(cc_key, index=int(i), value=int(learned_cc))
                     midi_learn_state.last_seen_cc_seq = int(seq)
                     _cancel_learn()
                     changed_any = True
-                    current_tuple = (
-                        cc_key if isinstance(cc_key, tuple) else (None, None, None)
-                    )
+                    current_tuple = cc_key if isinstance(cc_key, tuple) else (None, None, None)
                     component_cc = current_tuple[i]
                     active = False
 
             if active:
-                label_text = "..."
+                label_text = f"{chr(88 + i)} ..."
             elif component_cc is None:
-                label_text = ""
+                label_text = f"{chr(88 + i)} +"
             else:
-                label_text = str(int(component_cc))
+                label_text = f"{chr(88 + i)} {int(component_cc)} ×"
 
-            clicked = imgui.button(f"{label_text}##cc_learn_{i}", button_width)
+            button_label = f"{label_text}##cc_learn_{i}"
+            button_width = _button_width_for_cell(
+                imgui,
+                button_label,
+                minimum=float(cc_key_width * 1.6),
+                cell_width=cell_width,
+            )
+            used_width = _place_responsive_item(
+                imgui,
+                cell_width=cell_width,
+                used_width=used_width,
+                item_width=button_width,
+                spacing=float(width_spacer),
+            )
+            clicked = imgui.button(button_label, button_width)
             if clicked:
                 # 新規操作で learn は 1 件に限定する（別ターゲットがあればキャンセル）。
                 if (
@@ -353,9 +630,6 @@ def _render_cc_cell(
                 else:
                     _enter_learn(key=key, component=int(i))
 
-            if i < 2:
-                imgui.same_line(0.0, float(width_spacer))
-
     else:
         current_cc = cc_key if isinstance(cc_key, int) else None
         active = _is_active(key=key, component=None)
@@ -371,15 +645,27 @@ def _render_cc_cell(
                 active = False
 
         if active:
-            label_text = "Listening..."
+            label_text = "MIDI..."
         elif current_cc is None:
-            label_text = ""
+            label_text = "MIDI +"
         else:
-            label_text = str(int(current_cc))
+            label_text = f"MIDI {int(current_cc)} ×"
 
-        clicked = imgui.button(
-            f"{label_text}##cc_learn", float(cc_key_width * 1.8) * 0.88
+        button_label = f"{label_text}##cc_learn"
+        button_width = _button_width_for_cell(
+            imgui,
+            button_label,
+            minimum=float(cc_key_width * 1.8) * 0.88,
+            cell_width=cell_width,
         )
+        used_width = _place_responsive_item(
+            imgui,
+            cell_width=cell_width,
+            used_width=used_width,
+            item_width=button_width,
+            spacing=float(width_spacer),
+        )
+        clicked = imgui.button(button_label, button_width)
         if clicked:
             if (
                 midi_learn_state is not None
@@ -398,8 +684,14 @@ def _render_cc_cell(
 
     clicked_override = False
     if rules.show_override:
-        imgui.same_line(0.0, width_spacer)
-        clicked_override, override = imgui.checkbox("##override", bool(override))
+        used_width = _place_responsive_item(
+            imgui,
+            cell_width=cell_width,
+            used_width=used_width,
+            item_width=_checkbox_width(imgui, "Use UI##override"),
+            spacing=float(width_spacer),
+        )
+        clicked_override, override = imgui.checkbox("Use UI##override", bool(override))
         if clicked_override:
             changed_any = True
 
@@ -412,6 +704,7 @@ def render_parameter_row_4cols(
     visible_label: str | None = None,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
+    last_source: str | None = None,
 ) -> tuple[bool, ParameterRow]:
     """1 行（1 key）を 4 列テーブルとして描画し、更新後の row を返す。
 
@@ -457,7 +750,20 @@ def render_parameter_row_4cols(
         imgui.table_next_row()
 
         # --- Column 1: label（op#ordinal のみ表示）---
-        _render_label_cell(imgui, row_label=row_label)
+        reset_to_code = _render_label_cell(
+            imgui,
+            row_label=row_label,
+            source_badge=source_badge_for_row(row, last_source),
+            show_reset_to_code=(row.kind != "bool" and (cc_key is not None or bool(override))),
+        )
+        if reset_to_code:
+            cc_key = None
+            override = False
+            changed_any = True
+            target = ParameterKey(op=row.op, site_id=row.site_id, arg=row.arg)
+            if midi_learn_state is not None and midi_learn_state.active_target == target:
+                midi_learn_state.active_target = None
+                midi_learn_state.active_component = None
 
         # --- Column 2: control（kind に応じたウィジェット）---
         # slider の visible label はテーブルの label 列で代替するため、
@@ -520,6 +826,7 @@ def render_parameter_row_4cols(
         cc_key=cc_key,
         override=override,
         ordinal=row.ordinal,
+        reset_to_code=bool(reset_to_code),
     )
 
     return changed_any, updated
@@ -535,6 +842,7 @@ def render_parameter_table(
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
     effect_step_ordinal_by_site: Mapping[tuple[str, str], int] | None = None,
     last_effective_by_key: Mapping[ParameterKey, object] | None = None,
+    last_source_by_key: Mapping[ParameterKey, str] | None = None,
     raw_label_by_site: Mapping[tuple[str, str], str] | None = None,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
@@ -549,12 +857,7 @@ def render_parameter_table(
 
     # 列幅は stretch 比率として使う（負/ゼロは imgui 的にも意味が無いのでエラーにする）。
     label_weight, control_weight, range_weight, meta_weight = column_weights
-    if (
-        label_weight <= 0.0
-        or control_weight <= 0.0
-        or range_weight <= 0.0
-        or meta_weight <= 0.0
-    ):
+    if label_weight <= 0.0 or control_weight <= 0.0 or range_weight <= 0.0 or meta_weight <= 0.0:
         raise ValueError(f"column_weights must be > 0: {column_weights}")
 
     # このテーブル（rows 全体）で変更があったかの集計。
@@ -585,7 +888,11 @@ def render_parameter_table(
     # 最初に開いたグループのテーブルで 1 回だけ描画する。
     drew_column_headers = False
 
-    for block in blocks:
+    for block_index, block in enumerate(blocks):
+        if block_index > 0 and block.header:
+            spacing = getattr(imgui, "spacing", None)
+            if callable(spacing):
+                spacing()
         # 折りたたみ状態の永続化と ID 衝突回避のため、group 固有 ID で push_id する。
         # - collapsing_header の state（open/close）
         # - begin_table の内部 ID
@@ -596,11 +903,7 @@ def render_parameter_table(
             # visible=None なので close ボタン無しで常に表示する。
             group_open = True
             if block.header:
-                collapse_key = (
-                    None
-                    if collapsed_headers is None
-                    else _collapse_key_for_block(block)
-                )
+                collapse_key = None if collapsed_headers is None else _collapse_key_for_block(block)
                 if collapsed_headers is not None and collapse_key is not None:
                     want_open = collapse_key not in collapsed_headers
                     set_next_item_open = getattr(imgui, "set_next_item_open", None)
@@ -626,35 +929,34 @@ def render_parameter_table(
                         imgui.push_style_color(imgui.COLOR_HEADER_ACTIVE, *active)
                         color_count = 3
                 try:
-                    allow_overlap_flag = getattr(
-                        imgui, "TREE_NODE_ALLOW_ITEM_OVERLAP", 0
-                    )
+                    allow_overlap_flag = getattr(imgui, "TREE_NODE_ALLOW_ITEM_OVERLAP", 0)
                     group_open, _visible = imgui.collapsing_header(
-                        f"{block.header}##group_header",
+                        f"{humanize_identifier(block.header)}##group_header",
                         None,
                         flags=imgui.TREE_NODE_DEFAULT_OPEN | allow_overlap_flag,
                     )
-                    set_item_allow_overlap = getattr(
-                        imgui, "set_item_allow_overlap", None
-                    )
+                    set_item_allow_overlap = getattr(imgui, "set_item_allow_overlap", None)
                     if callable(set_item_allow_overlap):
                         set_item_allow_overlap()
                 finally:
                     if color_count:
                         imgui.pop_style_color(color_count)
 
-                # ヘッダ行の右側に Code ボタンを置く。
+                # ヘッダ行の右側に件数と Code ボタンを置く。
                 # collapsing_header は幅いっぱいを使うため、same_line(position=...) で明示配置する。
                 button_label = "Code"
                 text_w, _text_h = imgui.calc_text_size(button_label)
-                button_w = (
-                    float(text_w) + 32.0
-                )  # padding を雑に見積もる（過度に厳密にしない）
-                pos_x = float(imgui.get_window_width()) - float(button_w) - 12.0
+                button_w = float(text_w) + 24.0
+                count_label = f"{len(block.items)} parameters"
+                count_w, _count_h = imgui.calc_text_size(count_label)
+                cluster_w = float(count_w) + 12.0 + float(button_w)
+                pos_x = float(imgui.get_window_width()) - cluster_w - 16.0
                 if pos_x > 0.0:
                     imgui.same_line(position=pos_x)
                 else:
                     imgui.same_line()
+                imgui.text_disabled(count_label)
+                imgui.same_line()
                 if imgui.small_button(button_label):
                     snippet_popup_text_new = snippet_for_block(
                         block,
@@ -681,9 +983,13 @@ def render_parameter_table(
             #
             # `begin_table` は pyimgui のバージョン/バックエンドで返り値が揺れるため、
             # `.opened` 属性があればそれを使い、無ければ返り値自体を bool として扱う。
-            table = imgui.begin_table(
-                "##parameters", 4, imgui.TABLE_SIZING_STRETCH_PROP
+            table_flags = (
+                imgui.TABLE_SIZING_STRETCH_PROP
+                | getattr(imgui, "TABLE_ROW_BACKGROUND", 0)
+                | getattr(imgui, "TABLE_BORDERS_INNER_VERTICAL", 0)
+                | getattr(imgui, "TABLE_RESIZABLE", 0)
             )
+            table = imgui.begin_table("##parameters", 4, table_flags)
             opened = getattr(table, "opened", table)
             if not opened:
                 for item in block.items:
@@ -694,20 +1000,22 @@ def render_parameter_table(
                 # 4 列: label / control / min-max / cc
                 # それぞれ「残り幅に対する比率」で伸縮させる。
                 imgui.table_setup_column(
-                    "  label", imgui.TABLE_COLUMN_WIDTH_STRETCH, float(label_weight)
+                    "  Parameter",
+                    imgui.TABLE_COLUMN_WIDTH_STRETCH,
+                    float(label_weight),
                 )
                 imgui.table_setup_column(
-                    "  control",
+                    "  Value",
                     imgui.TABLE_COLUMN_WIDTH_STRETCH,
                     float(control_weight),
                 )
                 imgui.table_setup_column(
-                    "  min - max",
+                    "  Range",
                     imgui.TABLE_COLUMN_WIDTH_STRETCH,
                     float(range_weight),
                 )
                 imgui.table_setup_column(
-                    "  cc",
+                    "  MIDI / UI",
                     imgui.TABLE_COLUMN_WIDTH_STRETCH,
                     float(meta_weight),
                 )
@@ -716,12 +1024,33 @@ def render_parameter_table(
                     imgui.table_headers_row()
                     drew_column_headers = True
 
+                effect_heading_by_site = (
+                    _effect_step_heading_by_site(block)
+                    if str(block.group_id[0]) == "effect_chain"
+                    else {}
+                )
+                previous_effect_site: str | None = None
                 for item in block.items:
+                    item_site = str(item.row.site_id)
+                    if effect_heading_by_site and item_site != previous_effect_site:
+                        _render_effect_step_heading(
+                            imgui,
+                            effect_heading_by_site[item_site],
+                        )
+                        previous_effect_site = item_site
+                    row_key = ParameterKey(
+                        op=item.row.op,
+                        site_id=item.row.site_id,
+                        arg=item.row.arg,
+                    )
                     row_changed, updated = render_parameter_row_4cols(
                         item.row,
                         visible_label=item.visible_label,
                         midi_learn_state=midi_learn_state,
                         midi_last_cc_change=midi_last_cc_change,
+                        last_source=(
+                            None if last_source_by_key is None else last_source_by_key.get(row_key)
+                        ),
                     )
                     changed_any = changed_any or row_changed
                     updated_rows.append(updated)
@@ -738,7 +1067,21 @@ def render_parameter_table(
         _SNIPPET_POPUP_FOCUS_NEXT = True
         imgui.open_popup("Code##snippet_popup")
 
-    imgui.set_next_window_size(*SNIPPET_POPUP_WINDOW_SIZE_PX, condition=imgui.ONCE)
+    popup_x, popup_y, popup_width, popup_height = _snippet_popup_geometry(imgui)
+    # 親 window が 600px 程度でも modal を viewport 内へ収める。ALWAYS にして
+    # popup を開いたまま OS window が resize された場合にも追従させる。
+    imgui.set_next_window_position(
+        popup_x,
+        popup_y,
+        condition=imgui.ALWAYS,
+        pivot_x=0.5,
+        pivot_y=0.5,
+    )
+    imgui.set_next_window_size(
+        popup_width,
+        popup_height,
+        condition=imgui.ALWAYS,
+    )
     with imgui.begin_popup_modal("Code##snippet_popup") as popup:
         if popup.opened:
             if imgui.button("Close"):
@@ -755,21 +1098,20 @@ def render_parameter_table(
                 imgui.set_keyboard_focus_here()
                 _SNIPPET_POPUP_FOCUS_NEXT = False
 
-            _avail_w, avail_h = imgui.get_content_region_available()
-            height = max(120.0, float(avail_h) - 8.0)
+            avail_w, avail_h = imgui.get_content_region_available()
+            editor_width = max(1.0, float(avail_w))
+            editor_height = max(1.0, float(avail_h) - 8.0)
             _changed, _text_out = imgui.input_text_multiline(
                 "##snippet_text",
                 str(_SNIPPET_POPUP_TEXT),
                 -1,
-                SNIPPET_POPUP_WINDOW_SIZE_PX[0] - 16.0,
-                float(height),
+                editor_width,
+                editor_height,
                 flags=imgui.INPUT_TEXT_READ_ONLY | imgui.INPUT_TEXT_AUTO_SELECT_ALL,
             )
             if imgui.is_item_focused() or imgui.is_item_active():
                 io = imgui.get_io()
-                if (io.key_ctrl or io.key_super) and imgui.is_key_pressed(
-                    imgui.KEY_C, False
-                ):
+                if (io.key_ctrl or io.key_super) and imgui.is_key_pressed(imgui.KEY_C, False):
                     imgui.set_clipboard_text(str(_SNIPPET_POPUP_TEXT))
 
     # changed_any は「UI のどこかが変わったか」。

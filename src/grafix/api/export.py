@@ -15,6 +15,7 @@ from grafix.core.parameters.persistence import default_param_store_path, load_pa
 from grafix.core.parameters.style_resolver import FrameStyle, StyleResolver
 from grafix.core.pipeline import RealizedLayer, realize_scene
 from grafix.core.realize import RealizeSession
+from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET, ResourceBudget
 from grafix.core.scene import SceneItem
 from grafix.export.gcode import export_gcode
 from grafix.export.image import export_image
@@ -36,6 +37,7 @@ class Export:
         line_thickness: float = 0.01,
         background_color: tuple[float, float, float] = (1.0, 1.0, 1.0),
         run_id: str | None = None,
+        resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
     ) -> None:
         """export を実行する。
 
@@ -59,6 +61,8 @@ class Export:
             背景色（0..1）。PNG 出力で使用する。
         run_id : str | None
             ParamStore の既定パス（読み込み元）の run_id suffix。
+        resource_budget : ResourceBudget
+            operation の配列確保前検査に使う上限。interactive preview と同じ契約を使う。
         """
         self.path = Path(path)
         self.fmt = str(fmt).lower().strip()
@@ -80,7 +84,7 @@ class Export:
             color=self.style.global_line_color_rgb01,
             thickness=float(self.style.global_thickness),
         )
-        with RealizeSession() as session, parameter_context(store):
+        with RealizeSession(resource_budget=resource_budget) as session, parameter_context(store):
             self.layers: list[RealizedLayer] = realize_scene(
                 draw,
                 float(t),

@@ -11,6 +11,7 @@ import numpy as np
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
+from grafix.core.resource_budget import ensure_geometry_output
 
 grid_meta = {
     "nx": ParamMeta(kind="int", ui_min=1, ui_max=500),
@@ -56,6 +57,14 @@ def grid(
         offsets = np.zeros((1,), dtype=np.int32)
         return coords, offsets
 
+    line_count = nx_i + ny_i
+    ensure_geometry_output(
+        "grid",
+        vertices=2 * line_count,
+        lines=line_count,
+        hint="nx と ny を減らしてください",
+    )
+
     x_coords = (
         np.linspace(-0.5, 0.5, num=nx_i, dtype=np.float32)
         if nx_i > 0
@@ -67,7 +76,6 @@ def grid(
         else np.empty((0,), dtype=np.float32)
     )
 
-    line_count = nx_i + ny_i
     lines = np.empty((line_count, 2, 3), dtype=np.float32)
 
     cursor = 0

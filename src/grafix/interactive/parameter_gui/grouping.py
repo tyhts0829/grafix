@@ -13,7 +13,7 @@ from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
 
-from .labeling import format_layer_style_row_label, format_param_row_label
+from .labeling import format_contextual_row_label, humanize_identifier
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,16 +40,14 @@ def group_info_for_row(
     # --- Style（global + layer_style） ---
     if row.op in {STYLE_OP, LAYER_STYLE_OP}:
         if row.op == STYLE_OP:
-            visible_label = str(row.arg)
+            visible_label = humanize_identifier(row.arg)
         else:
             layer_name = (
                 "layer"
                 if layer_style_name_by_site_id is None
                 else str(layer_style_name_by_site_id.get(row.site_id, "layer"))
             )
-            visible_label = format_layer_style_row_label(
-                layer_name, int(row.ordinal), row.arg
-            )
+            visible_label = format_contextual_row_label(layer_name, int(row.ordinal), row.arg)
         return GroupInfo(
             group_id=("style", "global"),
             header_id="style",
@@ -65,14 +63,12 @@ def group_info_for_row(
     if step_info is not None:
         chain_id, _step_index = step_info
         header = (
-            None
-            if effect_chain_header_by_id is None
-            else effect_chain_header_by_id.get(chain_id)
+            None if effect_chain_header_by_id is None else effect_chain_header_by_id.get(chain_id)
         )
         step_ordinal = int(row.ordinal)
         if effect_step_ordinal_by_site is not None:
             step_ordinal = int(effect_step_ordinal_by_site.get(step_key, step_ordinal))
-        visible_label = format_param_row_label(row.op, step_ordinal, row.arg)
+        visible_label = humanize_identifier(row.arg)
         return GroupInfo(
             group_id=("effect_chain", chain_id),
             header_id=f"effect_chain:{chain_id}",
@@ -84,12 +80,9 @@ def group_info_for_row(
     if row.op in preset_registry:
         group_key = (row.op, int(row.ordinal))
         header = (
-            None
-            if primitive_header_by_group is None
-            else primitive_header_by_group.get(group_key)
+            None if primitive_header_by_group is None else primitive_header_by_group.get(group_key)
         )
-        display_op = preset_registry.get_display_op(row.op)
-        visible_label = format_param_row_label(display_op, int(row.ordinal), row.arg)
+        visible_label = humanize_identifier(row.arg)
         return GroupInfo(
             group_id=("preset", group_key),
             header_id=f"preset:{group_key[0]}#{group_key[1]}",
@@ -99,12 +92,8 @@ def group_info_for_row(
 
     # --- Primitive（(op, ordinal) でグループ化） ---
     group_key = (row.op, int(row.ordinal))
-    header = (
-        None
-        if primitive_header_by_group is None
-        else primitive_header_by_group.get(group_key)
-    )
-    visible_label = format_param_row_label(row.op, int(row.ordinal), row.arg)
+    header = None if primitive_header_by_group is None else primitive_header_by_group.get(group_key)
+    visible_label = humanize_identifier(row.arg)
     return GroupInfo(
         group_id=("primitive", group_key),
         header_id=f"primitive:{group_key[0]}#{group_key[1]}",

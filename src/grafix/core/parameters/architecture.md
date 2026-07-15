@@ -79,14 +79,14 @@
 - `meta_ops.py`: meta 更新。
 - `style_ops.py`: style エントリ生成（`__style__/__global__`）。
 - `reconcile_ops.py`: loaded/observed の差分を再リンク（削除はしない）。
-- `prune_ops.py`: 保存前の掃除（観測されなかった loaded group を削除、compact）。
+- `prune_ops.py`: 明示的な掃除（指定 group や観測されなかった loaded group を削除）。
 
 ### 4) 制御/永続化レイヤ
 
 - `context.py`: フレーム境界を作る（snapshot と buffer を contextvars に固定）。
 - `resolver.py`: base/GUI/CC から effective 値を決定し、Frame の観測ログ（record）を作る。
 - `codec.py`: JSON encode/decode（スキーマ仕様の置き場）。
-- `persistence.py`: ファイル入出力 + 保存前 prune。
+- `persistence.py`: ファイル入出力（未観測 group の自動削除は行わない）。
 - `invariants.py`: テスト専用の不変条件チェック（本番常時実行はしない）。
 
 ---
@@ -102,11 +102,13 @@
    - `snapshot` から既存 state/meta を参照
    - CC/GUI/base を統合して effective を決定（量子化もここで）
    - `FrameParamsBuffer.record(...)` へ `FrameParamRecord` を追加
-3. context 終了時（finally）に
+3. draw が正常終了した context の終了時に
    - `merge_frame_labels(store, frame_params.labels)`
    - `merge_frame_params(store, frame_params.records)`（store へ保存）
 
 重要: draw の途中で GUI が動いても、そのフレームの解決は「開始時点の snapshot」で固定される。
+draw が例外で失敗した場合は、途中までの labels/records を破棄して
+ParamStore には反映しない。
 
 ### 2) GUI 更新（パラメータ操作）
 
@@ -120,7 +122,9 @@
 ### 3) 永続化（JSON）
 
 - save:
-  - `save_param_store()` が保存前に `prune_stale_loaded_groups(store)` を実行して掃除する。
+  - `save_param_store()` は、今回未観測のロード済み group も保持する。
+  - 不要 group を掃除するときは `prune_stale_loaded_groups(store)` または
+    `prune_groups(store, groups)` を明示的に呼び出す。
   - `encode_param_store()` は **meta を持たない state を drop** して永続化しない。
 - load:
   - `decode_param_store()` は

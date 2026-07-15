@@ -1,0 +1,123 @@
+from grafix.core.parameters import FrameParamRecord, ParamMeta, ParamStore, ParameterKey
+from grafix.core.parameters.history import ParamStoreHistory
+from grafix.core.parameters.merge_ops import merge_frame_params
+from grafix.core.parameters.ui_ops import update_state_from_ui
+from grafix.core.parameters.view import ParameterRow
+from grafix.interactive.parameter_gui.table import _render_label_cell, source_badge_for_row
+
+
+class _LabelImGui:
+    def __init__(self, *, click_reset: bool) -> None:
+        self.click_reset = click_reset
+        self.labels: list[str] = []
+
+    def table_set_column_index(self, _index: int) -> None:
+        pass
+
+    def text(self, value: str) -> None:
+        self.labels.append(value)
+
+    def same_line(self) -> None:
+        pass
+
+    def button(self, label: str) -> bool:
+        return self.click_reset and label.endswith("##reset_to_code")
+
+
+def _row(
+    *,
+    override: bool,
+    kind: str = "float",
+    cc_key: int | None = None,
+) -> ParameterRow:
+    return ParameterRow(
+        label="1:x",
+        op="line",
+        site_id="site",
+        arg="x",
+        kind=kind,
+        ui_value=0.5,
+        ui_min=0.0,
+        ui_max=1.0,
+        choices=None,
+        cc_key=cc_key,
+        override=override,
+        ordinal=1,
+    )
+
+
+def test_source_badge_prefers_observed_effective_source() -> None:
+    assert source_badge_for_row(_row(override=False), "base") == "CODE"
+    assert source_badge_for_row(_row(override=True), "gui") == "UI"
+    assert source_badge_for_row(_row(override=False, cc_key=17), "cc") == "MIDI"
+
+
+def test_source_badge_ignores_an_observation_invalidated_by_history_restore() -> None:
+    assert source_badge_for_row(_row(override=False), "gui") == "CODE"
+    assert source_badge_for_row(_row(override=True), "base") == "UI"
+    assert source_badge_for_row(_row(override=True), "cc") == "UI"
+
+
+def test_undo_badge_matches_restored_effective_source_before_the_next_draw() -> None:
+    store = ParamStore()
+    key = ParameterKey(op="line", site_id="site", arg="x")
+    meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
+    merge_frame_params(
+        store,
+        [FrameParamRecord(key=key, base=0.0, meta=meta, explicit=True)],
+    )
+    history = ParamStoreHistory(store)
+    ok, error = update_state_from_ui(store, key, 0.75, meta=meta, override=True)
+    assert ok and error is None
+    assert history.record_change(source="slider") is True
+    store._runtime_ref().last_source_by_key[key] = "gui"
+
+    assert history.undo() is True
+    restored = store.get_state(key)
+    assert restored is not None
+    assert restored.override is False
+    # runtime 観測値は削除しないが、復元済み row と矛盾する
+    # 1-frame-old の source は badge 決定に使わない。
+    assert store._runtime_ref().last_source_by_key[key] == "gui"
+    assert source_badge_for_row(_row(override=restored.override), "gui") == "CODE"
+
+
+def test_source_badge_has_a_useful_pre_first_frame_fallback() -> None:
+    assert source_badge_for_row(_row(override=False), None) == "CODE"
+    assert source_badge_for_row(_row(override=True), None) == "UI"
+    assert source_badge_for_row(_row(override=False, kind="bool"), None) == "UI"
+
+
+def test_merge_remembers_last_effective_source_without_persisting_it() -> None:
+    store = ParamStore()
+    key = ParameterKey(op="line", site_id="site", arg="x")
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.0,
+                effective=0.75,
+                source="cc",
+                meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+            )
+        ],
+    )
+
+    runtime = store._runtime_ref()
+    assert runtime.last_effective_by_key[key] == 0.75
+    assert runtime.last_source_by_key[key] == "cc"
+
+
+def test_label_offers_an_explicit_reset_for_non_code_sources() -> None:
+    imgui = _LabelImGui(click_reset=True)
+
+    clicked = _render_label_cell(
+        imgui,
+        row_label="line#1 x",
+        source_badge="MIDI",
+        show_reset_to_code=True,
+    )
+
+    assert clicked is True
+    assert imgui.labels == ["[MIDI] line#1 x"]

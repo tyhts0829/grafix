@@ -31,9 +31,9 @@ from typing import Any
 
 
 # parameter_gui の設定が省略された場合のフォールバック値。
-_PARAMETER_GUI_FONT_SIZE_BASE_PX_DEFAULT = 12.0
+_PARAMETER_GUI_FONT_SIZE_BASE_PX_DEFAULT = 14.0
 # 重みは合計 1.0 を要求しない（ここでは正の値であることだけを検証する）。
-_PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT = (0.20, 0.60, 0.15, 0.20)
+_PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT = (0.28, 0.45, 0.16, 0.23)
 
 
 @dataclass(frozen=True, slots=True)

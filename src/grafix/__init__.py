@@ -4,7 +4,30 @@
 
 from __future__ import annotations
 
-from grafix.api import E, G, L, P, effect, preset, primitive, run
+from grafix.api import (
+    E,
+    G,
+    L,
+    P,
+    ResourceBudget,
+    ResourceLimitError,
+    effect,
+    preset,
+    primitive,
+    run,
+)
 from grafix.cc import cc
 
-__all__ = ["E", "G", "L", "P", "cc", "effect", "preset", "primitive", "run"]
+__all__ = [
+    "E",
+    "G",
+    "L",
+    "P",
+    "ResourceBudget",
+    "ResourceLimitError",
+    "cc",
+    "effect",
+    "preset",
+    "primitive",
+    "run",
+]

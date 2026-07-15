@@ -22,6 +22,9 @@ class ParamStoreRuntime:
     next_display_order: int = 1
     last_effective_by_key: dict[ParameterKey, object] = field(default_factory=dict)
     warned_unknown_args: set[tuple[str, str]] = field(default_factory=set)
+    # 新 field は従来 positional field の末尾に追加し、
+    # ParamStoreRuntime(..., warned_unknown_args) の位置互換を保つ。
+    last_source_by_key: dict[ParameterKey, str] = field(default_factory=dict)
 
 
 __all__ = ["ParamStoreRuntime"]

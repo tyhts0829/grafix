@@ -520,7 +520,7 @@ def _apply_updated_rows_to_store(
 
             baked_effective = (
                 store._runtime_ref().last_effective_by_key.get(key)
-                if cc_removed
+                if cc_removed and not after.reset_to_code
                 else None
             )
             if baked_effective is not None:
@@ -603,6 +603,7 @@ def render_store_parameter_table(
     ]
 
     runtime = store._runtime_ref()
+    collapsed_before = frozenset(store._collapsed_headers_ref())
     changed, view_rows_after = render_parameter_table(
         view_rows,
         column_weights=column_weights,
@@ -612,11 +613,15 @@ def render_store_parameter_table(
         step_info_by_site=model.step_info_by_site,
         effect_step_ordinal_by_site=model.effect_step_ordinal_by_site,
         last_effective_by_key=runtime.last_effective_by_key,
+        last_source_by_key=runtime.last_source_by_key,
         raw_label_by_site=model.raw_label_by_site,
         midi_learn_state=midi_learn_state,
         midi_last_cc_change=midi_last_cc_change,
         collapsed_headers=store._collapsed_headers_ref(),
     )
+    collapsed_changed = collapsed_before != store._collapsed_headers_ref()
+    if collapsed_changed:
+        store._touch()
     view_iter = iter(view_rows_after)
     rows_after = [
         next(view_iter) if visible else row
@@ -630,4 +635,4 @@ def render_store_parameter_table(
             rows_before,
             rows_after,
         )
-    return changed
+    return bool(changed or collapsed_changed)

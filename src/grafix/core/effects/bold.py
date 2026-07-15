@@ -9,6 +9,7 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from grafix.core.resource_budget import ensure_geometry_output
 
 bold_meta = {
     "count": ParamMeta(kind="int", ui_min=1, ui_max=10),
@@ -82,6 +83,15 @@ def bold(
     n_lines = int(offsets.size) - 1
     if n_vertices <= 0 or n_lines <= 0:
         return coords, offsets
+
+    # out_coords64 を経て float32 へ変換するため、float64 作業配列も budget に含める。
+    ensure_geometry_output(
+        "bold",
+        vertices=n_vertices * copies,
+        lines=n_lines * copies,
+        scratch_bytes=n_vertices * copies * 3 * 8,
+        hint="count または入力 geometry の複雑さを減らしてください",
+    )
 
     rng = np.random.default_rng(int(seed))
     offsets_xy = np.zeros((copies, 2), dtype=np.float64)

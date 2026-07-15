@@ -57,9 +57,12 @@ class MultiWindowLoop:
 
         tasks = list(self._tasks)
 
-        def request_exit(*_: object) -> None:
+        def request_exit(*_: object) -> object:
             # pyglet の on_close から呼ばれるコールバックは引数が来る場合があるため *args を受ける。
+            # EVENT_HANDLED を返さないと default on_close が直ちに context/window を
+            # 破棄し、runner の renderer teardown より順序が先になる場合がある。
             pyglet.app.exit()
+            return pyglet.event.EVENT_HANDLED
 
         # どれかのウィンドウを閉じたら、ループ全体を止める。
         for task in tasks:

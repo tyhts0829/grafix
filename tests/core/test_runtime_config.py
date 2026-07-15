@@ -30,8 +30,8 @@ def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pyt
     assert cfg.window_pos_parameter_gui == (950, 25)
     assert cfg.parameter_gui_window_size == (800, 1000)
     assert cfg.parameter_gui_fallback_font_japanese is None
-    assert cfg.parameter_gui_font_size_base_px == 12.0
-    assert cfg.parameter_gui_table_column_weights == (0.20, 0.60, 0.15, 0.20)
+    assert cfg.parameter_gui_font_size_base_px == 14.0
+    assert cfg.parameter_gui_table_column_weights == (0.28, 0.45, 0.16, 0.23)
     assert cfg.png_scale == 8.0
     assert cfg.gcode.travel_feed == 3000.0
     assert cfg.gcode.draw_feed == 3000.0
@@ -50,7 +50,9 @@ def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pyt
     assert cfg.midi_inputs == ()
 
 
-def test_discovered_config_overrides_packaged_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_discovered_config_overrides_packaged_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     _isolate_config_discovery(tmp_path, monkeypatch)
 
     discovered = tmp_path / ".grafix" / "config.yaml"
@@ -126,7 +128,9 @@ def test_parameter_gui_config_values_are_loaded(tmp_path: Path, monkeypatch: pyt
     assert cfg.parameter_gui_table_column_weights == (0.10, 0.20, 0.30, 0.40)
 
 
-def test_explicit_config_overrides_discovered_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_explicit_config_overrides_discovered_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     _isolate_config_discovery(tmp_path, monkeypatch)
 
     discovered = tmp_path / ".grafix" / "config.yaml"

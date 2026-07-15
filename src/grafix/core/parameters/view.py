@@ -29,6 +29,8 @@ class ParameterRow:
     cc_key: int | tuple[int | None, int | None, int | None] | None
     override: bool
     ordinal: int
+    # 1 GUI frame だけ有効な command。永続 state ではなく store bridge が消費する。
+    reset_to_code: bool = False
 
 
 def rows_from_snapshot(

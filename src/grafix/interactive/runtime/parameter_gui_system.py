@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from grafix.interactive.parameter_gui import ParameterGUI, create_parameter_gui_window
@@ -12,7 +14,12 @@ from grafix.core.runtime_config import runtime_config
 from grafix.interactive.midi import MidiController
 
 if TYPE_CHECKING:
+    from grafix.core.parameters.autosave import ParamStoreAutosave
+    from grafix.core.parameters.history import ParamSnapshotSlots, ParamStoreHistory
+    from grafix.interactive.runtime.frame_clock import TransportClock
     from grafix.interactive.runtime.monitor import RuntimeMonitor
+
+_logger = logging.getLogger(__name__)
 
 
 class ParameterGUIWindowSystem:
@@ -24,23 +31,42 @@ class ParameterGUIWindowSystem:
         store: ParamStore,
         midi_controller: MidiController | None = None,
         monitor: RuntimeMonitor | None = None,
+        transport: TransportClock | None = None,
+        transport_fps: float = 60.0,
+        history: ParamStoreHistory | None = None,
+        snapshot_slots: ParamSnapshotSlots | None = None,
+        autosave: ParamStoreAutosave | None = None,
+        is_recording: Callable[[], bool] | None = None,
     ) -> None:
         """GUI 用の window と ParameterGUI を初期化する。"""
 
         cfg = runtime_config()
         w, h = cfg.parameter_gui_window_size
         self.window = create_parameter_gui_window(width=w, height=h, vsync=False)
+        self._autosave = autosave
         self._gui = ParameterGUI(
             self.window,
             store=store,
             midi_controller=midi_controller,
             monitor=monitor,
+            transport=transport,
+            transport_fps=float(transport_fps),
+            history=history,
+            snapshot_slots=snapshot_slots,
+            is_recording=is_recording,
         )
 
     def draw_frame(self) -> None:
         """1 フレーム分の GUI を描画する（`flip()` は呼ばない）。"""
 
         self._gui.draw_frame()
+        autosave = self._autosave
+        if autosave is not None:
+            try:
+                autosave.tick()
+            except Exception:
+                # preview は継続する。helper 側の debounce により毎 frame の再試行も避ける。
+                _logger.exception("Failed to autosave ParameterStore: %s", autosave.path)
 
     def close(self) -> None:
         """GUI を終了し、ウィンドウを破棄する。"""

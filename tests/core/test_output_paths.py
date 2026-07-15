@@ -1,10 +1,66 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from grafix.core.output_paths import gcode_layer_output_path
+from grafix.core.output_paths import VersionedPathAllocator, gcode_layer_output_path
+
+
+def test_versioned_path_allocator_keeps_existing_and_reserved_paths(tmp_path: Path) -> None:
+    base = tmp_path / "capture.png"
+    numbered = tmp_path / "capture_001.png"
+    base.write_bytes(b"previous-base")
+    numbered.write_bytes(b"previous-001")
+
+    allocator = VersionedPathAllocator()
+    first = allocator.allocate(base)
+    second = allocator.allocate(base)
+
+    assert first == tmp_path / "capture_002.png"
+    assert second == tmp_path / "capture_003.png"
+    assert base.read_bytes() == b"previous-base"
+    assert numbered.read_bytes() == b"previous-001"
+    # 予約は export 完了前の衝突だけを防ぎ、偽の成果物は作らない。
+    assert not first.exists()
+    assert not second.exists()
+
+
+def test_versioned_path_allocator_is_thread_safe_for_rapid_submit(tmp_path: Path) -> None:
+    base = tmp_path / "capture.svg"
+    allocator = VersionedPathAllocator()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        paths = list(executor.map(lambda _index: allocator.allocate(base), range(32)))
+
+    assert len(set(paths)) == 32
+    assert set(paths) == {
+        base,
+        *(tmp_path / f"capture_{index:03d}.svg" for index in range(1, 32)),
+    }
+
+
+def test_versioned_path_allocator_normalizes_relative_reservations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    allocator = VersionedPathAllocator()
+
+    relative = allocator.allocate(Path("capture.gcode"))
+    absolute = allocator.allocate(tmp_path / "capture.gcode")
+
+    assert relative == Path("capture.gcode")
+    assert absolute == tmp_path / "capture_001.gcode"
+
+
+def test_versioned_path_allocator_validates_configuration() -> None:
+    with pytest.raises(ValueError, match="minimum_digits"):
+        VersionedPathAllocator(minimum_digits=0)
+
+    allocator = VersionedPathAllocator()
+    with pytest.raises(ValueError, match="ファイル名"):
+        allocator.allocate(Path("."))
 
 
 def test_gcode_layer_output_path_without_name() -> None:

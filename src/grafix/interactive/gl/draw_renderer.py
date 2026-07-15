@@ -24,6 +24,43 @@ if TYPE_CHECKING:
     from pyglet.window import Window
 
 
+def _aspect_fit_viewport(
+    framebuffer_size: tuple[int, int],
+    canvas_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """canvas の縦横比を保って framebuffer 中央へ収める viewport を返す。"""
+
+    framebuffer_w = max(1, int(framebuffer_size[0]))
+    framebuffer_h = max(1, int(framebuffer_size[1]))
+    canvas_w = max(1, int(canvas_size[0]))
+    canvas_h = max(1, int(canvas_size[1]))
+
+    # float の aspect 比較ではなく交差積で判定し、
+    # 同一 aspect で 1 px の不要な bar が出るのを防ぐ。
+    if framebuffer_w * canvas_h >= framebuffer_h * canvas_w:
+        viewport_h = framebuffer_h
+        viewport_w = max(
+            1,
+            min(
+                framebuffer_w,
+                int(round(framebuffer_h * canvas_w / canvas_h)),
+            ),
+        )
+    else:
+        viewport_w = framebuffer_w
+        viewport_h = max(
+            1,
+            min(
+                framebuffer_h,
+                int(round(framebuffer_w * canvas_h / canvas_w)),
+            ),
+        )
+
+    viewport_x = (framebuffer_w - viewport_w) // 2
+    viewport_y = (framebuffer_h - viewport_h) // 2
+    return viewport_x, viewport_y, viewport_w, viewport_h
+
+
 class DrawRenderer:
     """リアルタイム描画を担うシンプルなレンダラー。"""
 
@@ -43,6 +80,8 @@ class DrawRenderer:
         self._mesh_cache_max_bytes = 256 * 1024 * 1024
         self._mesh_candidates_max_bytes = 64 * 1024 * 1024
         self._canvas_w, self._canvas_h = settings.canvas_size
+        self._framebuffer_size = (1, 1)
+        self._viewport = (0, 0, 1, 1)
         self._viewport_size = (1, 1)
         self.program["viewport_size"].value = (1.0, 1.0)
         # 射影行列はキャンバス寸法にのみ依存するため初期化時に一度設定する。
@@ -53,16 +92,33 @@ class DrawRenderer:
         self.program["projection"].write(projection.tobytes())
 
     def viewport(self, width: int, height: int) -> None:
-        """ビューポートをウィンドウサイズに合わせて更新する。"""
-        size = (max(1, int(width)), max(1, int(height)))
-        self.ctx.viewport = (0, 0, *size)
+        """canvas 比率を保った viewport を framebuffer 中央へ設定する。"""
+
+        framebuffer_size = (max(1, int(width)), max(1, int(height)))
+        viewport = _aspect_fit_viewport(
+            framebuffer_size,
+            (int(self._canvas_w), int(self._canvas_h)),
+        )
+        size = (int(viewport[2]), int(viewport[3]))
+        self._framebuffer_size = framebuffer_size
+        self._viewport = viewport
+        self.ctx.viewport = viewport
         if size != self._viewport_size:
             self._viewport_size = size
             self.program["viewport_size"].value = (float(size[0]), float(size[1]))
 
     def clear(self, color: tuple[float, float, float]) -> None:
-        """背景色でクリアする。"""
-        self.ctx.clear(*color, 1.0)
+        """letterbox/pillarbox 領域を含む framebuffer 全体を背景色でクリアする。"""
+
+        framebuffer_w, framebuffer_h = self._framebuffer_size
+        self.ctx.clear(
+            *color,
+            1.0,
+            viewport=(0, 0, int(framebuffer_w), int(framebuffer_h)),
+        )
+        # backend によって clear(viewport=...) が GL viewport を変えても、
+        # 後続の mesh draw は aspect-fit 領域に限定する。
+        self.ctx.viewport = self._viewport
 
     def render_layer(
         self,

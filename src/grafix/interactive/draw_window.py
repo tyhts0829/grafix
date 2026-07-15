@@ -10,6 +10,9 @@ from pyglet.window import Window
 
 from grafix.interactive.render_settings import RenderSettings
 
+MINIMUM_DRAW_WINDOW_WIDTH = 320
+MINIMUM_DRAW_WINDOW_HEIGHT = 320
+
 
 def create_draw_window(settings: RenderSettings) -> Window:
     """設定に基づき描画ウィンドウを生成する。"""
@@ -19,8 +22,11 @@ def create_draw_window(settings: RenderSettings) -> Window:
     window = pyglet.window.Window(  # type: ignore[abstract]
         width=int(canvas_w * settings.render_scale),
         height=int(canvas_h * settings.render_scale),
-        resizable=False,
+        # viewport は DrawWindowSystem が毎 frame framebuffer size へ同期する。
+        # 小さな画面や作業配置に合わせて preview を調整できるようにする。
+        resizable=True,
         caption="Grafix",
         config=config,
     )
+    window.set_minimum_size(MINIMUM_DRAW_WINDOW_WIDTH, MINIMUM_DRAW_WINDOW_HEIGHT)
     return window

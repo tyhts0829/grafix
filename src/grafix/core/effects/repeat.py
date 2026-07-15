@@ -7,11 +7,12 @@ from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
-from numba import njit  # type: ignore[import-untyped]
+from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from grafix.core.resource_budget import ensure_geometry_output
 
 repeat_meta = {
     "layout": ParamMeta(kind="choice", choices=("grid", "radial")),
@@ -396,6 +397,12 @@ def repeat(
         )
 
         copies = n_dups + 1
+        ensure_geometry_output(
+            "repeat",
+            vertices=n_vertices * copies,
+            lines=n_lines * copies,
+            hint="count または入力 geometry の複雑さを減らしてください",
+        )
         out_coords = np.empty((n_vertices * copies, 3), dtype=np.float32)
         out_offsets = np.empty((n_lines * copies + 1,), dtype=np.int32)
         _repeat_fill_all(
@@ -424,6 +431,13 @@ def repeat(
         copies = n_theta_i
     else:
         copies = 1 + (n_radius_i - 1) * n_theta_i
+
+    ensure_geometry_output(
+        "repeat",
+        vertices=n_vertices * copies,
+        lines=n_lines * copies,
+        hint="n_theta/n_radius または入力 geometry の複雑さを減らしてください",
+    )
 
     radius_f = float(radius)
     if not np.isfinite(radius_f):

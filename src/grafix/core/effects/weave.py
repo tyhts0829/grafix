@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import numpy as np
-from numba import njit, types  # type: ignore[import-untyped]
+from numba import njit, types  # type: ignore[attr-defined, import-untyped]
 from numba.typed import List  # type: ignore[attr-defined]
 
 from grafix.core.effect_registry import effect

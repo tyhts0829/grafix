@@ -13,6 +13,7 @@ import numpy as np
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
+from grafix.core.resource_budget import ensure_geometry_output
 
 torus_meta = {
     "major_radius": ParamMeta(kind="float", ui_min=-100.0, ui_max=100.0),
@@ -65,6 +66,18 @@ def torus(
     minor_n = int(round(float(minor_segments)))
     if minor_n < 3:
         minor_n = 3
+
+    output_vertices = major_n * (minor_n + 1) + minor_n * (major_n + 1)
+    output_lines = major_n + minor_n
+    # sin/cos、broadcast 後の座標成分、stack 前後を含む概算。output 本体とは別枠。
+    scratch_bytes = major_n * minor_n * 3 * 4
+    ensure_geometry_output(
+        "torus",
+        vertices=output_vertices,
+        lines=output_lines,
+        scratch_bytes=scratch_bytes,
+        hint="major_segments と minor_segments を減らしてください",
+    )
 
     try:
         cx, cy, cz = center

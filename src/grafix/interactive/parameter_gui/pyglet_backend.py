@@ -8,8 +8,8 @@ from typing import Any
 
 DEFAULT_WINDOW_WIDTH = 800
 DEFAULT_WINDOW_HEIGHT = 1000
-# Retina(2x) を基準にしたターゲット framebuffer 幅（外部モニタでの見切れ対策）。
-DEFAULT_WINDOW_TARGET_FRAMEBUFFER_WIDTH_PX = DEFAULT_WINDOW_WIDTH * 1.5
+MINIMUM_PARAMETER_GUI_WINDOW_WIDTH = 560
+MINIMUM_PARAMETER_GUI_WINDOW_HEIGHT = 480
 
 
 def _install_imgui_clipboard_callbacks(imgui_mod: Any) -> None:
@@ -68,7 +68,7 @@ def create_parameter_gui_window(
     *,
     width: int = DEFAULT_WINDOW_WIDTH,
     height: int = DEFAULT_WINDOW_HEIGHT,
-    caption: str = "Parameter GUI",
+    caption: str = "Grafix Inspector",
     vsync: bool = False,
 ) -> Any:
     """Parameter GUI 用の pyglet ウィンドウを生成する。"""
@@ -80,11 +80,19 @@ def create_parameter_gui_window(
         sample_buffers=1,
         samples=4,
     )
-    return pyglet.window.Window(  # type: ignore[abstract]
+    window = pyglet.window.Window(  # type: ignore[abstract]
         width=int(width),
         height=int(height),
         caption=str(caption),
-        resizable=False,
+        # logical window size はユーザーが調整できる状態を保つ。
+        # Retina 対応は framebuffer scale / font atlas 側で行い、
+        # backing scale によって logical width を縮めない。
+        resizable=True,
         vsync=bool(vsync),
         config=gl_cfg,
     )
+    window.set_minimum_size(
+        MINIMUM_PARAMETER_GUI_WINDOW_WIDTH,
+        MINIMUM_PARAMETER_GUI_WINDOW_HEIGHT,
+    )
+    return window

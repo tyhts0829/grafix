@@ -1353,6 +1353,7 @@ from grafix.api.export import Export as Export
 from grafix.api.preset import preset as preset
 from grafix.core.effect_registry import effect as effect
 from grafix.core.primitive_registry import primitive as primitive
+from grafix.core.resource_budget import ResourceBudget as ResourceBudget, ResourceLimitError as ResourceLimitError
 
 def run(
     draw: Callable[[float], SceneItem],
@@ -1370,8 +1371,9 @@ def run(
     midi_mode: str = ...,
     n_worker: int = ...,
     fps: float = ...,
+    resource_budget: ResourceBudget = ...,
 ) -> None:
     """pyglet ウィンドウを生成し `draw(t)` のシーンをリアルタイム描画する。"""
     ...
 
-__all__ = ['E', 'Export', 'G', 'L', 'P', 'effect', 'preset', 'primitive', 'run']
+__all__ = ['E', 'Export', 'G', 'L', 'P', 'ResourceBudget', 'ResourceLimitError', 'effect', 'preset', 'primitive', 'run']

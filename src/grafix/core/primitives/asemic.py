@@ -12,7 +12,7 @@ import hashlib
 from functools import lru_cache
 
 import numpy as np
-from numba import njit  # type: ignore[import-untyped]
+from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive

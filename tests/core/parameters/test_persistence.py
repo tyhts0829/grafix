@@ -5,16 +5,23 @@ from pathlib import Path
 
 import pytest
 
+import grafix.core.parameters.persistence as persistence_module
 from grafix.core.parameters import ParamMeta, ParamStore, ParameterKey
+from grafix.core.parameters.context import current_frame_params, parameter_context
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.invariants import assert_invariants
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.persistence import (
     default_param_store_path,
+    finalize_param_store_session,
     load_param_store,
+    load_param_store_with_recovery,
+    param_store_recovery_path,
     save_param_store,
+    save_param_store_recovery,
 )
 from grafix.core.parameters.snapshot_ops import store_snapshot
+from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.runtime_config import set_config_path
 
 
@@ -35,6 +42,61 @@ def _make_draw_with_filename(filename: Path):
     ns: dict[str, object] = {}
     exec(code, ns)
     return ns["draw"]
+
+
+def _merge_float_group(
+    store: ParamStore,
+    *,
+    op: str,
+    site_id: str,
+) -> ParameterKey:
+    key = ParameterKey(op=op, site_id=site_id, arg="amount")
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.5,
+                meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                explicit=False,
+            )
+        ],
+    )
+    return key
+
+
+def _store_with_float_value(
+    value: float,
+    *,
+    explicit: bool = False,
+) -> tuple[ParamStore, ParameterKey]:
+    store = ParamStore()
+    key = ParameterKey(op="variant", site_id="site", arg="amount")
+    meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.1,
+                meta=meta,
+                explicit=explicit,
+            )
+        ],
+    )
+    ok, error = update_state_from_ui(
+        store,
+        key,
+        value,
+        meta=meta,
+        override=True,
+    )
+    assert ok and error is None
+    return store, key
+
+
+def _set_mtime(path: Path, value_ns: int) -> None:
+    os.utime(path, ns=(int(value_ns), int(value_ns)))
 
 
 def test_default_param_store_path_uses_data_dir_and_script_stem():
@@ -105,6 +167,212 @@ def test_param_store_file_roundtrip(tmp_path: Path):
     assert state.ui_value == 0.5
     assert ordinal == 1
     assert_invariants(loaded)
+
+
+def test_session_recovery_preserves_live_explicit_override_until_clean_exit(
+    tmp_path: Path,
+) -> None:
+    store = ParamStore()
+    key = ParameterKey(op="circle", site_id="site-1", arg="r")
+    meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
+    merge_frame_params(
+        store,
+        [FrameParamRecord(key=key, base=0.25, meta=meta, explicit=True)],
+    )
+    ok, error = update_state_from_ui(
+        store,
+        key,
+        0.9,
+        meta=meta,
+        override=True,
+    )
+    assert ok and error is None
+
+    primary = tmp_path / "store.json"
+    recovery = param_store_recovery_path(primary)
+    save_param_store_recovery(store, recovery)
+
+    recovered = load_param_store_with_recovery(primary)
+    recovered_state = recovered.get_state(key)
+    assert recovered_state is not None
+    assert recovered_state.ui_value == pytest.approx(0.9)
+    assert recovered_state.override is True
+
+    finalize_param_store_session(recovered, primary)
+    assert not recovery.exists()
+    clean_state = load_param_store(primary).get_state(key)
+    assert clean_state is not None
+    assert clean_state.ui_value == pytest.approx(0.9)
+    assert clean_state.override is False
+
+
+def test_newer_session_recovery_wins_over_primary(tmp_path: Path) -> None:
+    primary = tmp_path / "store.json"
+    recovery = param_store_recovery_path(primary)
+    primary_store, key = _store_with_float_value(0.2)
+    recovery_store, _ = _store_with_float_value(0.8)
+    save_param_store(primary_store, primary)
+    save_param_store_recovery(recovery_store, recovery)
+    _set_mtime(primary, 1_700_000_000_000_000_000)
+    _set_mtime(recovery, 1_700_000_001_000_000_000)
+
+    loaded = load_param_store_with_recovery(primary)
+
+    state = loaded.get_state(key)
+    assert state is not None
+    assert state.ui_value == pytest.approx(0.8)
+
+
+def test_primary_wins_when_it_is_newer_than_session_recovery(tmp_path: Path) -> None:
+    primary = tmp_path / "store.json"
+    recovery = param_store_recovery_path(primary)
+    primary_store, key = _store_with_float_value(0.2)
+    recovery_store, _ = _store_with_float_value(0.8)
+    save_param_store(primary_store, primary)
+    save_param_store_recovery(recovery_store, recovery)
+    _set_mtime(recovery, 1_700_000_000_000_000_000)
+    _set_mtime(primary, 1_700_000_001_000_000_000)
+
+    loaded = load_param_store_with_recovery(primary)
+
+    state = loaded.get_state(key)
+    assert state is not None
+    assert state.ui_value == pytest.approx(0.2)
+    # loader はデータを勝手に消さず、clean finalize に cleanup を任せる。
+    assert recovery.exists()
+
+
+def test_corrupt_newer_recovery_is_quarantined_and_primary_is_loaded(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    primary = tmp_path / "store.json"
+    recovery = param_store_recovery_path(primary)
+    primary_store, key = _store_with_float_value(0.3)
+    save_param_store(primary_store, primary)
+    recovery.write_text("{broken recovery", encoding="utf-8")
+    _set_mtime(primary, 1_700_000_000_000_000_000)
+    _set_mtime(recovery, 1_700_000_001_000_000_000)
+
+    with caplog.at_level(logging.WARNING):
+        loaded = load_param_store_with_recovery(primary)
+
+    state = loaded.get_state(key)
+    assert state is not None
+    assert state.ui_value == pytest.approx(0.3)
+    assert not recovery.exists()
+    backups = list(tmp_path.glob("store.session.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{broken recovery"
+    assert "session recovery を退避" in caplog.text
+
+
+def test_recovery_read_errors_are_not_misclassified_as_corruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = tmp_path / "store.json"
+    recovery = param_store_recovery_path(primary)
+    primary_store, _key = _store_with_float_value(0.3)
+    recovery_store, _ = _store_with_float_value(0.8)
+    save_param_store(primary_store, primary)
+    save_param_store_recovery(recovery_store, recovery)
+    _set_mtime(primary, 1_700_000_000_000_000_000)
+    _set_mtime(recovery, 1_700_000_001_000_000_000)
+    original_read_text = Path.read_text
+
+    def fail_recovery_read(self: Path, *, encoding: str) -> str:
+        if self == recovery:
+            raise PermissionError(self)
+        return original_read_text(self, encoding=encoding)
+
+    monkeypatch.setattr(Path, "read_text", fail_recovery_read)
+
+    with pytest.raises(PermissionError):
+        load_param_store_with_recovery(primary)
+    assert recovery.exists()
+    assert list(tmp_path.glob("store.session.json.corrupt-*")) == []
+
+
+def test_finalize_keeps_recovery_when_primary_save_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = tmp_path / "store.json"
+    recovery = param_store_recovery_path(primary)
+    store, _key = _store_with_float_value(0.8, explicit=True)
+    save_param_store_recovery(store, recovery)
+    recovery_before = recovery.read_bytes()
+
+    def fail_primary_save(_store: ParamStore, _path: Path) -> None:
+        raise OSError("primary unavailable")
+
+    monkeypatch.setattr(persistence_module, "save_param_store", fail_primary_save)
+
+    with pytest.raises(OSError, match="primary unavailable"):
+        finalize_param_store_session(store, primary)
+    assert recovery.read_bytes() == recovery_before
+    assert not primary.exists()
+
+
+def test_save_param_store_keeps_loaded_group_before_first_frame(tmp_path: Path):
+    path = tmp_path / "store.json"
+    original = ParamStore()
+    key = _merge_float_group(original, op="custom", site_id="loaded")
+    save_param_store(original, path)
+
+    loaded = load_param_store(path)
+    assert key in store_snapshot(loaded)
+
+    # run 開始後、1 frame も成功しないまま終了した場合を再現する。
+    save_param_store(loaded, path)
+
+    assert key in store_snapshot(load_param_store(path))
+
+
+def test_save_param_store_keeps_loaded_group_hidden_by_condition(tmp_path: Path):
+    path = tmp_path / "store.json"
+    original = ParamStore()
+    visible_key = _merge_float_group(original, op="branch", site_id="visible")
+    hidden_key = _merge_float_group(original, op="branch", site_id="hidden")
+    save_param_store(original, path)
+
+    loaded = load_param_store(path)
+    # この run では条件分岐の片側だけが実行された状態。
+    _merge_float_group(loaded, op="branch", site_id="visible")
+    save_param_store(loaded, path)
+
+    reloaded = load_param_store(path)
+    snapshot = store_snapshot(reloaded)
+    assert visible_key in snapshot
+    assert hidden_key in snapshot
+
+
+def test_save_param_store_keeps_loaded_groups_after_failed_frame(tmp_path: Path):
+    path = tmp_path / "store.json"
+    original = ParamStore()
+    reached_key = _merge_float_group(original, op="failed", site_id="reached")
+    later_key = _merge_float_group(original, op="failed", site_id="later")
+    save_param_store(original, path)
+
+    loaded = load_param_store(path)
+    with pytest.raises(RuntimeError, match="draw failed"):
+        with parameter_context(loaded):
+            frame_params = current_frame_params()
+            assert frame_params is not None
+            frame_params.record(
+                key=reached_key,
+                base=0.5,
+                meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                explicit=False,
+            )
+            # `later_key` を評価する前に draw が失敗した状態。
+            raise RuntimeError("draw failed")
+    save_param_store(loaded, path)
+
+    snapshot = store_snapshot(load_param_store(path))
+    assert reached_key in snapshot
+    assert later_key in snapshot
 
 
 def test_load_param_store_backs_up_broken_json(

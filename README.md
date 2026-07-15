@@ -61,9 +61,21 @@ if __name__ == "__main__":
 - `P` / `@preset`: reusable components
 - `cc`: MIDI CC(`cc[1]` -> 0..1) to control parameters with physical controllers
 - `run(draw)`: interactive rendering + Parameter GUI
+- `ResourceBudget`: per-operation vertex/line/byte limits checked before large allocations
 
 `run()` uses synchronous drawing by default (`n_worker=1`). For CPU-heavy `draw(t)`
 functions, pass `n_worker=4` explicitly to keep the window responsive with mp-draw.
+Temporary user-code/effect errors keep the last successful frame visible and appear in
+the Parameter GUI monitor bar; fixing the error lets the next successful frame recover
+without restarting the application.
+
+The Parameter GUI shows each value's effective `CODE` / `UI` / `MIDI` source. Parameter
+edits support coalesced Undo/Redo, Snapshot A/B, and debounced atomic autosave, so it is
+safe to explore alternatives and return to an earlier state. Use `Cmd/Ctrl+Z` to undo and
+`Cmd/Ctrl+Shift+Z` (or `Ctrl+Y`) to redo while the Parameter GUI is focused.
+
+Use `run(..., resource_budget=ResourceBudget(...))` to tune allocation limits for the
+machine or sketch. The defaults apply to code-provided values as well as GUI values.
 
 `G`, `E`, `L`, and `P` accept `key=str|int` when a parameter group must keep the same
 identity after moving its call within the same source file. Without `key`, Grafix derives
@@ -74,15 +86,32 @@ a cached project-relative call-site identity automatically.
 When the draw window is focused:
 
 - `S`: save SVG
-- `P`: save PNG (requires `resvg`; also saves the underlying SVG)
+- `P`: save PNG (requires `resvg`; its intermediate SVG is private and temporary)
 - `V`: start/stop MP4 recording (requires `ffmpeg`)
 - `G`: save G-code
 - `Shift+G`: save G-code per layer (when your sketch returns multiple Layers)
+- `Space`: play/pause the preview timeline
+- `Home`: reset preview time to zero
+- `Left` / `Right`: step backward/forward by one frame (and pause)
+- `[` / `]`: halve/double preview speed (0.125x to 8x)
 
 Outputs are written under `paths.output_dir` (default: `data/output`), under per-kind subdirectories (`svg/`, `png/`, `gcode/`, ...).
+Interactive captures never silently overwrite an existing artifact: Grafix reserves an
+unused numbered filename and writes a sibling `*.capture.json` manifest containing the
+capture time, canvas size, format, and artifact paths.
 PNG and G-code shortcuts enqueue an immutable frame snapshot on one bounded background
-worker, so a slow export does not stop the preview loop. Repeated shortcuts keep only
-the currently running job and the latest pending job.
+worker, so a slow export does not stop the preview loop. After the first frame, each
+shortcut is bound to the frame visible at keypress and is immediately admitted or rejected
+against both request-count and aggregate geometry-byte limits. Accepted jobs keep FIFO
+order, repeated captures of the same immutable snapshot share the retained geometry, and
+rejections are shown explicitly instead of replacing or silently dropping an older request.
+A small intent queue exists only before the first frame is available.
+
+The byte limit is a conservative process-wide estimate: Grafix accounts for the parent
+geometry, multiprocessing serialization, and the worker copy. It is a backpressure budget,
+not an exact operating-system RSS measurement. Closing the app finalizes an active video
+before draining other exports; video finalization and export drain share a bounded deadline,
+and unfinished exports are reported as cancelled when that deadline is reached.
 
 ## Examples
 

@@ -62,7 +62,7 @@
 ### 5) `merge_frame_params(store, records)`（フレーム終了時に永続化）
 
 - 実装: `src/grafix/core/parameters/merge_ops.py`
-- 呼び出し元: `src/grafix/core/parameters/context.py`（`parameter_context` の `finally`）
+- 呼び出し元: `src/grafix/core/parameters/context.py`（`parameter_context` の正常終了時）
 - 役割:
   - 観測されたキーを `ParamStore` に登録し、UI 値/override などの初期ポリシーを適用する
   - label は `src/grafix/core/parameters/labels_ops.py` の `merge_frame_labels` で保存する
@@ -76,3 +76,20 @@
 - `site_id` は「呼び出し箇所 ID」で、GUI 行の安定性に直結する:
   - 生成: `grafix.core.parameters.caller_site_id`（入口は `src/grafix/core/parameters/__init__.py` 側）
   - G/E/L/P の `key=` で同一ファイル内の明示的な安定 ID を指定できる
+
+## Undo / Redo と Snapshot A/B の境界
+
+- `memento.py` は ParamStore 全体の過去コピーではなく、次の
+  **GUI-owned 調整値**だけを保存する:
+  - `override` / `ui_value`
+  - MIDI CC 割当
+  - GUI が調整した `ui_min` / `ui_max`
+  - 既存 header の折りたたみ状態
+- 復元は whole-store 置換ではなく、現在も存在する key への merge である。
+  Snapshot 保存後に draw が発見した parameter、label、ordinal、
+  effect chain、explicit 情報、runtime 観測値は削除・巻き戻ししない。
+- code reload 後は、同じ `ParameterKey` と `meta.kind` を保つ parameter
+  にだけ保存済み GUI 値を適用する。削除された key や kind が
+  変わった key は安全にスキップする。安定的な再適用が必要な呼び出しには
+  G/E/L/P の `key=` を指定する。
+- 現在と同じ Snapshot の Load は no-op で、revision や Undo depth を増やさない。
