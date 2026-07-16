@@ -1,6 +1,8 @@
 from grafix.interactive.parameter_gui.labeling import (
     dedup_display_names_in_order,
+    format_contextual_row_label,
     format_param_row_label,
+    humanize_identifier,
     primitive_header_display_names_from_snapshot,
 )
 from grafix.core.parameters import ParameterKey
@@ -8,6 +10,15 @@ from grafix.core.parameters import ParameterKey
 
 def test_format_param_row_label():
     assert format_param_row_label("polygon", 1, "n_sides") == "polygon#1 n_sides"
+
+
+def test_human_facing_labels_keep_internal_identifiers_out_of_the_main_scan_path():
+    assert humanize_identifier("site_density_base") == "Site density base"
+    assert humanize_identifier("effect#2") == "Effect #2"
+    assert (
+        format_contextual_row_label("reaction_diffusion", 2, "auto_center")
+        == "Reaction diffusion 2 · Auto center"
+    )
 
 
 def test_dedup_display_names_in_order_only_when_conflict():

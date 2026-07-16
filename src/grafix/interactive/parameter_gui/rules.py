@@ -31,6 +31,15 @@ _DISABLE_MINMAX_KEYS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+# Style / Layer Style は geometry parameter の ``resolve_params()`` を通らず、
+# それぞれ専用 resolver で CODE/UI の値だけを解決する。現状それらの resolver は
+# ``cc_snapshot`` を参照しないため、MIDI control を表示すると「割り当てられるのに
+# 描画へ効かない」状態になる。RGB も tuple CC の実効値解決をまだ持たない。
+#
+# 非機能 control を見せないことを優先し、対応 resolver と source reporting が揃うまで
+# ここで明示的に無効化する。既存の保存済み cc_key 自体は消さない（破壊的移行を避ける）。
+_DISABLE_CC_OPS: frozenset[str] = frozenset({STYLE_OP, LAYER_STYLE_OP})
+
 
 def ui_rules_for_row(row: ParameterRow) -> RowUiRules:
     """行の UI ルールを返す。
@@ -54,8 +63,12 @@ def ui_rules_for_row(row: ParameterRow) -> RowUiRules:
     elif row.kind in {"str", "font", "choice"}:
         cc_key = "none"
         show_override = True
-    elif row.kind in {"vec3", "rgb"}:
+    elif row.kind == "vec3":
         cc_key = "int3"
+        show_override = True
+    elif row.kind == "rgb":
+        # resolve_params() の tuple CC は vec3 専用。対応するまで RGB には出さない。
+        cc_key = "none"
         show_override = True
     else:
         cc_key = "int"
@@ -64,5 +77,7 @@ def ui_rules_for_row(row: ParameterRow) -> RowUiRules:
     # --- 2) (op, arg) の例外上書き ---
     if (row.op, row.arg) in _DISABLE_MINMAX_KEYS:
         minmax = "none"
+    if row.op in _DISABLE_CC_OPS:
+        cc_key = "none"
 
     return RowUiRules(minmax=minmax, cc_key=cc_key, show_override=show_override)

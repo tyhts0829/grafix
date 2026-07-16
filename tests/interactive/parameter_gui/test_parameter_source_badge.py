@@ -3,32 +3,14 @@ from grafix.core.parameters.history import ParamStoreHistory
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.parameters.view import ParameterRow
-from grafix.interactive.parameter_gui.table import _render_label_cell, source_badge_for_row
-
-
-class _LabelImGui:
-    def __init__(self, *, click_reset: bool) -> None:
-        self.click_reset = click_reset
-        self.labels: list[str] = []
-
-    def table_set_column_index(self, _index: int) -> None:
-        pass
-
-    def text(self, value: str) -> None:
-        self.labels.append(value)
-
-    def same_line(self) -> None:
-        pass
-
-    def button(self, label: str) -> bool:
-        return self.click_reset and label.endswith("##reset_to_code")
+from grafix.interactive.parameter_gui.table import source_badge_for_row
 
 
 def _row(
     *,
     override: bool,
     kind: str = "float",
-    cc_key: int | None = None,
+    cc_key: int | tuple[int | None, int | None, int | None] | None = None,
 ) -> ParameterRow:
     return ParameterRow(
         label="1:x",
@@ -50,6 +32,15 @@ def test_source_badge_prefers_observed_effective_source() -> None:
     assert source_badge_for_row(_row(override=False), "base") == "CODE"
     assert source_badge_for_row(_row(override=True), "gui") == "UI"
     assert source_badge_for_row(_row(override=False, cc_key=17), "cc") == "MIDI"
+    # RGB MIDI is intentionally hidden until its dedicated resolver supports
+    # tuple CC input; a stale saved mapping must not be reported as effective.
+    assert (
+        source_badge_for_row(
+            _row(override=True, kind="rgb", cc_key=(10, None, 12)),
+            "cc",
+        )
+        == "UI"
+    )
 
 
 def test_source_badge_ignores_an_observation_invalidated_by_history_restore() -> None:
@@ -107,17 +98,3 @@ def test_merge_remembers_last_effective_source_without_persisting_it() -> None:
     runtime = store._runtime_ref()
     assert runtime.last_effective_by_key[key] == 0.75
     assert runtime.last_source_by_key[key] == "cc"
-
-
-def test_label_offers_an_explicit_reset_for_non_code_sources() -> None:
-    imgui = _LabelImGui(click_reset=True)
-
-    clicked = _render_label_cell(
-        imgui,
-        row_label="line#1 x",
-        source_badge="MIDI",
-        show_reset_to_code=True,
-    )
-
-    assert clicked is True
-    assert imgui.labels == ["[MIDI] line#1 x"]

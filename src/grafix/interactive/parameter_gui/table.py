@@ -23,6 +23,30 @@ from .widgets import render_value_widget
 SNIPPET_POPUP_WINDOW_SIZE_PX = (960.0, 720.0)
 SNIPPET_POPUP_VIEWPORT_MARGIN_PX = 24.0
 
+# CODE/UI の選択位置を全行で揃える。bool 行も同じ幅の固定 UI 表示にして、
+# parameter label の開始位置が kind によって揺れないようにする。
+SOURCE_CODE_SEGMENT_WIDTH_PX = 40.0
+SOURCE_UI_SEGMENT_WIDTH_PX = 24.0
+SOURCE_ACTIONS_WIDTH_PX = 14.0
+SOURCE_SEGMENT_GAP_PX = 1.0
+SOURCE_LABEL_GAP_PX = 6.0
+SOURCE_SELECTOR_TOTAL_WIDTH_PX = (
+    SOURCE_CODE_SEGMENT_WIDTH_PX
+    + SOURCE_UI_SEGMENT_WIDTH_PX
+    + SOURCE_ACTIONS_WIDTH_PX
+    + SOURCE_SEGMENT_GAP_PX * 2.0
+)
+SOURCE_SELECTOR_SHORT_BREAKPOINT_PX = 168.0
+SOURCE_CODE_SHORT_WIDTH_PX = 18.0
+SOURCE_UI_SHORT_WIDTH_PX = 18.0
+SOURCE_ACTIONS_SHORT_WIDTH_PX = 14.0
+SOURCE_SELECTOR_SHORT_TOTAL_WIDTH_PX = (
+    SOURCE_CODE_SHORT_WIDTH_PX
+    + SOURCE_UI_SHORT_WIDTH_PX
+    + SOURCE_ACTIONS_SHORT_WIDTH_PX
+    + SOURCE_SEGMENT_GAP_PX * 2.0
+)
+
 GROUP_HEADER_BASE_COLORS_RGBA: dict[str, tuple[int, int, int, int]] = {
     "style": (104, 164, 255, 94),
     "primitive": (229, 138, 125, 94),
@@ -157,55 +181,449 @@ def source_badge_for_row(row: ParameterRow, last_source: str | None) -> str:
     return "CODE"
 
 
+def _set_item_tooltip(imgui, text: str) -> None:
+    """直前の item が hover 中なら tooltip を設定する。"""
+
+    is_item_hovered = getattr(imgui, "is_item_hovered", None)
+    set_tooltip = getattr(imgui, "set_tooltip", None)
+    if callable(is_item_hovered) and callable(set_tooltip) and is_item_hovered():
+        set_tooltip(str(text))
+
+
+def _imgui_metric_scale(imgui) -> float:
+    """font atlas の座標系に合わせる寸法倍率を返す。
+
+    Retina では ImGui の content width / font が backing pixel 単位になるため、
+    固定寸法と breakpoint も同じ倍率へ揃える。通常 DPI と簡易 test double は
+    1.0 のままにする。
+    """
+
+    calc_text_size = getattr(imgui, "calc_text_size", None)
+    if not callable(calc_text_size):
+        return 1.0
+    try:
+        text_height = float(calc_text_size("CODE")[1])
+    except (IndexError, TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(text_height) or text_height <= 0.0:
+        return 1.0
+    return min(3.0, max(1.0, text_height / 14.0))
+
+
+def _midi_mapping_summary(
+    *,
+    kind: str,
+    cc_key: int | tuple[int | None, int | None, int | None] | None,
+) -> str | None:
+    """source tooltip 用に、割当済み MIDI CC を短く説明する。"""
+
+    if isinstance(cc_key, int):
+        return f"MIDI CC {int(cc_key)}"
+    if not isinstance(cc_key, tuple):
+        return None
+
+    components = ("R", "G", "B") if str(kind) == "rgb" else ("X", "Y", "Z")
+    assigned = [
+        f"{components[index]}:CC {int(cc)}"
+        for index, cc in enumerate(cc_key)
+        if cc is not None
+    ]
+    if not assigned:
+        return None
+    return "MIDI " + " / ".join(assigned)
+
+
+def _source_selector_tooltip(
+    *,
+    source: str,
+    kind: str,
+    cc_key: int | tuple[int | None, int | None, int | None] | None,
+    last_source: str | None,
+) -> str:
+    """CODE/UI selector の意味を、MIDI priority を含めて説明する。"""
+
+    source_upper = str(source).upper()
+    mapping = _midi_mapping_summary(kind=kind, cc_key=cc_key)
+    if mapping is not None:
+        activity = " is controlling now" if last_source == "cc" else " is assigned"
+        return (
+            f"{mapping}{activity}. {source_upper} is the fallback; "
+            "switching source keeps the MIDI mapping."
+        )
+    if source_upper == "UI":
+        return "Use the value edited in the Inspector."
+    return "Use the value defined in code."
+
+
+def _source_segment_style(
+    source: str,
+    *,
+    active: bool,
+) -> tuple[
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+]:
+    """source segment の (button, hover, pressed, text) 色を返す。"""
+
+    if not active:
+        return (
+            PARAMETER_GUI_PALETTE["surface"],
+            PARAMETER_GUI_PALETTE["frame_hovered"],
+            PARAMETER_GUI_PALETTE["frame_active"],
+            PARAMETER_GUI_PALETTE["text_muted"],
+        )
+
+    source_color = source_badge_color(source)
+    red, green, blue, _alpha = source_color
+    # active source は低彩度の面 + source 色の文字で示す。全行を強い青で
+    # 塗りつぶさず、inactive の暗い面との「塗り形状」の差も残す。
+    return (
+        (red, green, blue, 0.24),
+        (red, green, blue, 0.34),
+        (red, green, blue, 0.44),
+        source_color,
+    )
+
+
+def _render_source_segment_button(
+    imgui,
+    *,
+    source: str,
+    visible_label: str | None = None,
+    active: bool,
+    width: float,
+) -> bool:
+    """選択状態を面・色・文字で示す source segment button を描画する。"""
+
+    colors = _source_segment_style(source, active=bool(active))
+    color_indices = (
+        getattr(imgui, "COLOR_BUTTON", None),
+        getattr(imgui, "COLOR_BUTTON_HOVERED", None),
+        getattr(imgui, "COLOR_BUTTON_ACTIVE", None),
+        getattr(imgui, "COLOR_TEXT", None),
+    )
+    push_style_color = getattr(imgui, "push_style_color", None)
+    pop_style_color = getattr(imgui, "pop_style_color", None)
+    push_style_var = getattr(imgui, "push_style_var", None)
+    pop_style_var = getattr(imgui, "pop_style_var", None)
+    pushed_colors = 0
+    if (
+        callable(push_style_color)
+        and callable(pop_style_color)
+        and all(index is not None for index in color_indices)
+    ):
+        for color_index, color in zip(color_indices, colors, strict=True):
+            push_style_color(color_index, *color)
+        pushed_colors = len(colors)
+    pushed_frame_padding = False
+    frame_padding_index = getattr(imgui, "STYLE_FRAME_PADDING", None)
+    if (
+        callable(push_style_var)
+        and callable(pop_style_var)
+        and frame_padding_index is not None
+    ):
+        metric_scale = _imgui_metric_scale(imgui)
+        frame_padding_y = 6.0 * metric_scale
+        get_style = getattr(imgui, "get_style", None)
+        if callable(get_style):
+            try:
+                frame_padding_y = float(get_style().frame_padding[1])
+            except (AttributeError, IndexError, TypeError, ValueError):
+                pass
+        # 横paddingだけを詰め、40px CODE segmentでも文字をclipしない。
+        push_style_var(frame_padding_index, (2.0 * metric_scale, frame_padding_y))
+        pushed_frame_padding = True
+    try:
+        # ``##source_*`` を固定し、active state が変わっても ImGui ID を保つ。
+        visible = str(source) if visible_label is None else str(visible_label)
+        return bool(imgui.button(f"{visible}##source_{source.lower()}", float(width)))
+    finally:
+        if pushed_frame_padding and callable(pop_style_var):
+            pop_style_var()
+        if pushed_colors and callable(pop_style_color):
+            pop_style_color(pushed_colors)
+
+
+def _render_midi_button(
+    imgui,
+    *,
+    label: str,
+    width: float,
+    driving: bool,
+) -> bool:
+    """MIDI item を描画する。入力駆動中は amber の LIVE chip として示す。"""
+
+    warning = PARAMETER_GUI_PALETTE["source_midi"]
+    red, green, blue, _alpha = warning
+    colors = (
+        (red, green, blue, 0.28),
+        (red, green, blue, 0.38),
+        (red, green, blue, 0.48),
+        warning,
+    )
+    color_indices = (
+        getattr(imgui, "COLOR_BUTTON", None),
+        getattr(imgui, "COLOR_BUTTON_HOVERED", None),
+        getattr(imgui, "COLOR_BUTTON_ACTIVE", None),
+        getattr(imgui, "COLOR_TEXT", None),
+    )
+    push_style_color = getattr(imgui, "push_style_color", None)
+    pop_style_color = getattr(imgui, "pop_style_color", None)
+    pushed_colors = 0
+    if (
+        bool(driving)
+        and callable(push_style_color)
+        and callable(pop_style_color)
+        and all(index is not None for index in color_indices)
+    ):
+        for color_index, color in zip(color_indices, colors, strict=True):
+            push_style_color(color_index, *color)
+        pushed_colors = len(colors)
+    try:
+        return bool(imgui.button(str(label), float(width)))
+    finally:
+        if pushed_colors and callable(pop_style_color):
+            pop_style_color(pushed_colors)
+
+
+def _render_midi_live_indicator(imgui, *, compact: bool, width: float) -> None:
+    """vec3 行全体の MIDI 駆動状態を、非interactiveな amber chip で示す。"""
+
+    warning = PARAMETER_GUI_PALETTE["source_midi"]
+    red, green, blue, _alpha = warning
+    selectable = getattr(imgui, "selectable", None)
+    if callable(selectable):
+        push_style_color = getattr(imgui, "push_style_color", None)
+        pop_style_color = getattr(imgui, "pop_style_color", None)
+        color_indices = (
+            getattr(imgui, "COLOR_HEADER", None),
+            getattr(imgui, "COLOR_TEXT", None),
+        )
+        pushed_colors = 0
+        if (
+            callable(push_style_color)
+            and callable(pop_style_color)
+            and all(index is not None for index in color_indices)
+        ):
+            push_style_color(color_indices[0], red, green, blue, 0.28)
+            push_style_color(color_indices[1], *warning)
+            pushed_colors = 2
+        try:
+            selectable(
+                ("*" if compact else "LIVE") + "##midi_live",
+                True,
+                getattr(imgui, "SELECTABLE_DISABLED", 0),
+                float(width),
+                0.0,
+            )
+        finally:
+            if pushed_colors and callable(pop_style_color):
+                pop_style_color(pushed_colors)
+    else:
+        # test double / 古い backend でも状態文字は失わない。
+        imgui.button(("*" if compact else "LIVE") + "##midi_live", float(width))
+
+    _set_item_tooltip(
+        imgui,
+        "LIVE — one or more mapped components are driven by MIDI; "
+        "component-level activity is not available.",
+    )
+
+
+def _render_fixed_ui_indicator(imgui, *, width: float) -> None:
+    """bool 行用の、同幅で非 interactive な UI source 表示を描画する。"""
+
+    selectable = getattr(imgui, "selectable", None)
+    if callable(selectable):
+        header = PARAMETER_GUI_PALETTE["source_ui"]
+        red, green, blue, _alpha = header
+        push_style_color = getattr(imgui, "push_style_color", None)
+        pop_style_color = getattr(imgui, "pop_style_color", None)
+        color_indices = (
+            getattr(imgui, "COLOR_HEADER", None),
+            getattr(imgui, "COLOR_TEXT", None),
+        )
+        pushed_colors = 0
+        if (
+            callable(push_style_color)
+            and callable(pop_style_color)
+            and all(index is not None for index in color_indices)
+        ):
+            push_style_color(color_indices[0], red, green, blue, 0.20)
+            push_style_color(color_indices[1], *header)
+            pushed_colors = 2
+        try:
+            selectable(
+                "UI##source_fixed",
+                True,
+                getattr(imgui, "SELECTABLE_DISABLED", 0),
+                float(width),
+                0.0,
+            )
+        finally:
+            if pushed_colors and callable(pop_style_color):
+                pop_style_color(pushed_colors)
+    else:
+        # 古い backend/test double 向け。表示は UI のまま、label の開始位置は
+        # dummy で selector と同幅に揃える。
+        imgui.text("UI")
+        same_line = getattr(imgui, "same_line", None)
+        dummy = getattr(imgui, "dummy", None)
+        if callable(same_line) and callable(dummy):
+            same_line(0.0, 0.0)
+            dummy(max(1.0, float(width) - 16.0), 1.0)
+
+    _set_item_tooltip(imgui, "Boolean parameters always use the Inspector UI value.")
+
+
+def _render_source_actions_menu(
+    imgui,
+    *,
+    reset_available: bool,
+    width: float,
+) -> bool:
+    """visible な source menu を描画し、明示 reset が選ばれたら True を返す。"""
+
+    push_style_var = getattr(imgui, "push_style_var", None)
+    pop_style_var = getattr(imgui, "pop_style_var", None)
+    frame_padding_index = getattr(imgui, "STYLE_FRAME_PADDING", None)
+    pushed_frame_padding = False
+    if (
+        callable(push_style_var)
+        and callable(pop_style_var)
+        and frame_padding_index is not None
+    ):
+        metric_scale = _imgui_metric_scale(imgui)
+        frame_padding_y = 6.0 * metric_scale
+        get_style = getattr(imgui, "get_style", None)
+        if callable(get_style):
+            try:
+                frame_padding_y = float(get_style().frame_padding[1])
+            except (AttributeError, IndexError, TypeError, ValueError):
+                pass
+        push_style_var(frame_padding_index, (2.0 * metric_scale, frame_padding_y))
+        pushed_frame_padding = True
+    try:
+        clicked_menu = bool(imgui.button("v##source_actions", float(width)))
+    finally:
+        if pushed_frame_padding and callable(pop_style_var):
+            pop_style_var()
+    _set_item_tooltip(imgui, "Source actions")
+    if clicked_menu:
+        imgui.open_popup("Source actions##source_actions_popup")
+
+    reset_to_code = False
+    with imgui.begin_popup("Source actions##source_actions_popup") as popup:
+        if popup.opened:
+            text_disabled = getattr(imgui, "text_disabled", None)
+            if callable(text_disabled):
+                text_disabled("Source")
+                imgui.separator()
+            clicked_reset, _selected = imgui.menu_item(
+                "Reset to CODE and clear MIDI##reset_to_code",
+                None,
+                False,
+                bool(reset_available),
+            )
+            if clicked_reset:
+                reset_to_code = True
+                close_current_popup = getattr(imgui, "close_current_popup", None)
+                if callable(close_current_popup):
+                    close_current_popup()
+    return reset_to_code
+
+
 def _render_label_cell(
     imgui,
     *,
     row_label: str,
-    source_badge: str,
-    show_reset_to_code: bool = False,
-) -> bool:
-    """label 列を描画し、明示的な source reset が押されたら True を返す。"""
+    kind: str,
+    override: bool,
+    cc_key: int | tuple[int | None, int | None, int | None] | None,
+    last_source: str | None = None,
+) -> tuple[bool, bool, bool]:
+    """source + label を描画し、(source変更, override, 明示reset) を返す。"""
 
     imgui.table_set_column_index(0)
     cell_width = _content_region_available_width(imgui)
-    label_text = f"[{source_badge}] {row_label}"
-    text_colored = getattr(imgui, "text_colored", None)
-    if callable(text_colored):
-        text_colored(str(source_badge), *source_badge_color(source_badge))
-        imgui.same_line(0.0, 6.0)
-        imgui.text(str(row_label))
+    metric_scale = _imgui_metric_scale(imgui)
+    compact = cell_width is not None and cell_width < (
+        SOURCE_SELECTOR_SHORT_BREAKPOINT_PX * metric_scale
+    )
+    code_width = (
+        SOURCE_CODE_SHORT_WIDTH_PX if compact else SOURCE_CODE_SEGMENT_WIDTH_PX
+    ) * metric_scale
+    ui_width = (
+        SOURCE_UI_SHORT_WIDTH_PX if compact else SOURCE_UI_SEGMENT_WIDTH_PX
+    ) * metric_scale
+    actions_width = (
+        SOURCE_ACTIONS_SHORT_WIDTH_PX if compact else SOURCE_ACTIONS_WIDTH_PX
+    ) * metric_scale
+    selector_width = (
+        SOURCE_SELECTOR_SHORT_TOTAL_WIDTH_PX if compact else SOURCE_SELECTOR_TOTAL_WIDTH_PX
+    ) * metric_scale
+    segment_gap = SOURCE_SEGMENT_GAP_PX * metric_scale
+    label_gap = SOURCE_LABEL_GAP_PX * metric_scale
+    override_out = bool(override)
+    source_changed = False
+    reset_to_code = False
+
+    if str(kind) == "bool":
+        _render_fixed_ui_indicator(imgui, width=selector_width)
     else:
-        imgui.text(label_text)
-    if not show_reset_to_code:
-        return False
+        code_clicked = _render_source_segment_button(
+            imgui,
+            source="CODE",
+            visible_label="C" if compact else "CODE",
+            active=not override_out,
+            width=code_width,
+        )
+        _set_item_tooltip(
+            imgui,
+            _source_selector_tooltip(
+                source="CODE",
+                kind=kind,
+                cc_key=cc_key,
+                last_source=last_source,
+            ),
+        )
+        if code_clicked and override_out:
+            override_out = False
+            source_changed = True
 
-    inline = True
-    calc_text_size = getattr(imgui, "calc_text_size", None)
-    if cell_width is not None and callable(calc_text_size):
-        try:
-            label_width = float(calc_text_size(label_text)[0])
-        except (IndexError, TypeError, ValueError):
-            pass
-        else:
-            button_width = _button_width_for_cell(
-                imgui,
-                "Code##reset_to_code",
-                minimum=1.0,
-                cell_width=None,
-            )
-            if math.isfinite(label_width):
-                # same_line() の既定 item spacing を保守的に 8px と見積もる。
-                inline = label_width + 8.0 + button_width <= cell_width
+        imgui.same_line(0.0, segment_gap)
+        ui_clicked = _render_source_segment_button(
+            imgui,
+            source="UI",
+            visible_label="U" if compact else "UI",
+            active=override_out,
+            width=ui_width,
+        )
+        _set_item_tooltip(
+            imgui,
+            _source_selector_tooltip(
+                source="UI",
+                kind=kind,
+                cc_key=cc_key,
+                last_source=last_source,
+            ),
+        )
+        if ui_clicked and not override_out:
+            override_out = True
+            source_changed = True
 
-    if inline:
-        # 幅取得 API を持たない従来 backend/test double では旧配置を維持する。
-        imgui.same_line()
-    clicked = bool(imgui.button("Code##reset_to_code"))
-    is_item_hovered = getattr(imgui, "is_item_hovered", None)
-    set_tooltip = getattr(imgui, "set_tooltip", None)
-    if callable(is_item_hovered) and callable(set_tooltip) and is_item_hovered():
-        set_tooltip("Reset this parameter to the value defined in code")
-    return clicked
+        imgui.same_line(0.0, segment_gap)
+        reset_to_code = _render_source_actions_menu(
+            imgui,
+            reset_available=bool(override_out or cc_key is not None),
+            width=actions_width,
+        )
+
+    imgui.same_line(0.0, label_gap)
+    imgui.text(str(row_label))
+    return source_changed, override_out, reset_to_code
 
 
 def _render_control_cell(imgui, row: ParameterRow) -> tuple[bool, object]:
@@ -389,35 +807,6 @@ def _button_width_for_cell(
     return width
 
 
-def _checkbox_width(imgui, label: str) -> float:
-    """checkbox を同行配置できるか判断するための保守的な推定幅。"""
-
-    text_width = 36.0
-    calc_text_size = getattr(imgui, "calc_text_size", None)
-    if callable(calc_text_size):
-        try:
-            measured = float(calc_text_size(_visible_widget_text(label))[0])
-        except (IndexError, TypeError, ValueError):
-            pass
-        else:
-            if math.isfinite(measured):
-                text_width = max(0.0, measured)
-
-    frame_height = 20.0
-    get_frame_height = getattr(imgui, "get_frame_height", None)
-    if callable(get_frame_height):
-        try:
-            measured_height = float(get_frame_height())
-        except (TypeError, ValueError):
-            pass
-        else:
-            if math.isfinite(measured_height) and measured_height > 0.0:
-                frame_height = measured_height
-
-    # checkbox square + item-inner spacing（4px）+ label。
-    return frame_height + 4.0 + text_width
-
-
 def _place_responsive_item(
     imgui,
     *,
@@ -510,21 +899,27 @@ def _render_cc_cell(
     width_spacer: int,
     midi_learn_state: MidiLearnState | None,
     midi_last_cc_change: tuple[int, int] | None,
+    last_source: str | None = None,
 ) -> tuple[bool, int | tuple[int | None, int | None, int | None] | None, bool]:
-    """cc/override 列を描画し、(changed, cc_key, override) を返す。"""
+    """MIDI 列を描画し、(changed, cc_key, override) を返す。
+
+    ``override`` は source selector が担当する。ここでは互換性のある返り値を
+    維持するだけで変更せず、MIDI learn / unassign だけを扱う。
+    """
 
     imgui.table_set_column_index(3)
 
     changed_any = False
     cell_width = _content_region_available_width(imgui)
     used_width = 0.0
+    metric_scale = _imgui_metric_scale(imgui)
+    midi_spacing = float(width_spacer) * metric_scale
+    midi_key_width = float(cc_key_width) * metric_scale
 
     if rules.cc_key == "none":
-        clicked_override = False
-        if rules.show_override:
-            clicked_override, override = imgui.checkbox("Use UI##override", bool(override))
-            if clicked_override:
-                changed_any = True
+        # Unsupported MIDI is intentionally blank. The bundled font may not
+        # contain an em dash, which otherwise renders as a repeated "?" and
+        # looks like an error state throughout the table.
         return changed_any, cc_key, bool(override)
 
     def _set_scalar(current: object, value: int | None) -> int | None:
@@ -573,9 +968,36 @@ def _render_cc_cell(
         state.active_component = None
 
     key = _key_for_row(row)
+    midi_is_driving = last_source == "cc"
 
     if rules.cc_key == "int3":
+        component_names = ("R", "G", "B") if row.kind == "rgb" else ("X", "Y", "Z")
         current_tuple = cc_key if isinstance(cc_key, tuple) else (None, None, None)
+        show_live = bool(midi_is_driving and any(cc is not None for cc in current_tuple))
+        live_compact = bool(cell_width is not None and cell_width < 145.0 * metric_scale)
+        live_width = (14.0 if live_compact else 38.0) * metric_scale
+        gap_count = 3 if show_live else 2
+        reserved_live_width = live_width if show_live else 0.0
+        component_width = (
+            max(
+                1.0,
+                (
+                    float(cell_width)
+                    - reserved_live_width
+                    - midi_spacing * float(gap_count)
+                )
+                / 3.0,
+            )
+            if cell_width is not None
+            else midi_key_width * 1.6
+        )
+        compact_components = component_width < 52.0 * metric_scale
+        if show_live:
+            _render_midi_live_indicator(
+                imgui,
+                compact=live_compact,
+                width=live_width,
+            )
         for i in range(3):
             component_cc = current_tuple[i]
             active = _is_active(key=key, component=int(i))
@@ -592,27 +1014,34 @@ def _render_cc_cell(
                     active = False
 
             if active:
-                label_text = f"{chr(88 + i)} ..."
+                label_text = f"{component_names[i]}?"
             elif component_cc is None:
-                label_text = f"{chr(88 + i)} +"
+                label_text = f"{component_names[i]}+"
+            elif compact_components:
+                # 3桁 CC でも 1 行を維持し、完全な番号は tooltip に置く。
+                label_text = f"{component_names[i]}="
             else:
-                label_text = f"{chr(88 + i)} {int(component_cc)} ×"
+                label_text = f"{component_names[i]}{int(component_cc)}"
 
             button_label = f"{label_text}##cc_learn_{i}"
-            button_width = _button_width_for_cell(
+            if show_live or i > 0:
+                imgui.same_line(0.0, midi_spacing)
+            used_width = component_width * float(i + 1) + midi_spacing * float(i)
+            clicked = _render_midi_button(
                 imgui,
-                button_label,
-                minimum=float(cc_key_width * 1.6),
-                cell_width=cell_width,
+                label=button_label,
+                width=component_width,
+                driving=False,
             )
-            used_width = _place_responsive_item(
-                imgui,
-                cell_width=cell_width,
-                used_width=used_width,
-                item_width=button_width,
-                spacing=float(width_spacer),
-            )
-            clicked = imgui.button(button_label, button_width)
+            if active:
+                _set_item_tooltip(imgui, f"Waiting for {component_names[i]} MIDI CC; click to cancel")
+            elif component_cc is None:
+                _set_item_tooltip(imgui, f"Learn a MIDI CC for {component_names[i]}")
+            else:
+                _set_item_tooltip(
+                    imgui,
+                    f"Remove {component_names[i]} MIDI CC mapping; keep its effective value in UI",
+                )
             if clicked:
                 # 新規操作で learn は 1 件に限定する（別ターゲットがあればキャンセル）。
                 if (
@@ -648,6 +1077,8 @@ def _render_cc_cell(
             label_text = "MIDI..."
         elif current_cc is None:
             label_text = "MIDI +"
+        elif midi_is_driving:
+            label_text = f"LIVE {int(current_cc)}"
         else:
             label_text = f"MIDI {int(current_cc)} ×"
 
@@ -655,7 +1086,7 @@ def _render_cc_cell(
         button_width = _button_width_for_cell(
             imgui,
             button_label,
-            minimum=float(cc_key_width * 1.8) * 0.88,
+            minimum=midi_key_width * 1.8 * 0.88,
             cell_width=cell_width,
         )
         used_width = _place_responsive_item(
@@ -663,9 +1094,25 @@ def _render_cc_cell(
             cell_width=cell_width,
             used_width=used_width,
             item_width=button_width,
-            spacing=float(width_spacer),
+            spacing=midi_spacing,
         )
-        clicked = imgui.button(button_label, button_width)
+        clicked = _render_midi_button(
+            imgui,
+            label=button_label,
+            width=button_width,
+            driving=bool(midi_is_driving and current_cc is not None),
+        )
+        if active:
+            _set_item_tooltip(imgui, "Waiting for a MIDI CC; click to cancel")
+        elif current_cc is None:
+            _set_item_tooltip(imgui, "Learn a MIDI CC")
+        elif midi_is_driving:
+            _set_item_tooltip(
+                imgui,
+                f"LIVE — MIDI CC {int(current_cc)} is driving this value; click to remove",
+            )
+        else:
+            _set_item_tooltip(imgui, "Remove MIDI CC mapping; keep its effective value in UI")
         if clicked:
             if (
                 midi_learn_state is not None
@@ -682,19 +1129,6 @@ def _render_cc_cell(
             else:
                 _enter_learn(key=key, component=None)
 
-    clicked_override = False
-    if rules.show_override:
-        used_width = _place_responsive_item(
-            imgui,
-            cell_width=cell_width,
-            used_width=used_width,
-            item_width=_checkbox_width(imgui, "Use UI##override"),
-            spacing=float(width_spacer),
-        )
-        clicked_override, override = imgui.checkbox("Use UI##override", bool(override))
-        if clicked_override:
-            changed_any = True
-
     return changed_any, cc_key, bool(override)
 
 
@@ -710,10 +1144,10 @@ def render_parameter_row_4cols(
 
     Columns
     -------
-    1. label : op#ordinal
+    1. source / label : CODE/UI selector + op#ordinal
     2. control : kind に応じたウィジェット
     3. min-max : ui_min/ui_max
-    4. cc override : cc_key/override
+    4. MIDI : cc_key learn / unassign
 
     Returns
     -------
@@ -749,13 +1183,17 @@ def render_parameter_row_4cols(
         # 以降の描画は「この行」に対して行う。
         imgui.table_next_row()
 
-        # --- Column 1: label（op#ordinal のみ表示）---
-        reset_to_code = _render_label_cell(
+        # --- Column 1: source selector + label ---
+        source_changed, override, reset_to_code = _render_label_cell(
             imgui,
             row_label=row_label,
-            source_badge=source_badge_for_row(row, last_source),
-            show_reset_to_code=(row.kind != "bool" and (cc_key is not None or bool(override))),
+            kind=row.kind,
+            override=bool(override),
+            cc_key=cc_key,
+            last_source=last_source,
         )
+        if source_changed:
+            changed_any = True
         if reset_to_code:
             cc_key = None
             override = False
@@ -794,7 +1232,7 @@ def render_parameter_row_4cols(
         if changed_range:
             changed_any = True
 
-        # --- Column 4: cc override（cc_key/override）---
+        # --- Column 4: MIDI（cc_key learn / unassign のみ）---
         changed_cc, cc_key, override = _render_cc_cell(
             imgui,
             row=row,
@@ -805,6 +1243,7 @@ def render_parameter_row_4cols(
             width_spacer=width_spacer,
             midi_learn_state=midi_learn_state,
             midi_last_cc_change=midi_last_cc_change,
+            last_source=last_source,
         )
         if changed_cc:
             changed_any = True
@@ -1000,7 +1439,7 @@ def render_parameter_table(
                 # 4 列: label / control / min-max / cc
                 # それぞれ「残り幅に対する比率」で伸縮させる。
                 imgui.table_setup_column(
-                    "  Parameter",
+                    "  Source / Parameter",
                     imgui.TABLE_COLUMN_WIDTH_STRETCH,
                     float(label_weight),
                 )
@@ -1015,7 +1454,7 @@ def render_parameter_table(
                     float(range_weight),
                 )
                 imgui.table_setup_column(
-                    "  MIDI / UI",
+                    "  MIDI",
                     imgui.TABLE_COLUMN_WIDTH_STRETCH,
                     float(meta_weight),
                 )

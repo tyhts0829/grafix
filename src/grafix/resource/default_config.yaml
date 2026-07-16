@@ -35,8 +35,8 @@ ui:
     # 未指定（null/空）なら自動選択（例: Hiragino Sans GB → NotoSansJP）。
     fallback_font_japanese: null
     # Parameter テーブルの列幅（stretch 比率）。
-    # (label, control, min-max, cc/meta)
-    table_column_weights: [0.28, 0.45, 0.16, 0.23]
+    # (source / parameter, value, range, MIDI)
+    table_column_weights: [0.36, 0.35, 0.18, 0.23]
 
 export:
   # PNG 変換のスケール倍率（canvas_size に対するピクセル倍率）。

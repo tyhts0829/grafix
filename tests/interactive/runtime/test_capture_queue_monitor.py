@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from grafix.interactive.parameter_gui.monitor_bar import render_monitor_bar
+from grafix.interactive.parameter_gui.monitor_bar import (
+    monitor_alert_lines,
+    monitor_status_lines,
+    render_monitor_bar,
+)
 from grafix.interactive.runtime.monitor import RuntimeMonitor
 
 
@@ -33,8 +37,9 @@ def test_capture_queue_pressure_and_rejection_are_visible_in_monitor() -> None:
         midi_port_name=None,
     )
 
-    assert "CAPTURE QUEUE (estimated process-wide): 3/17 | 12.0/256.0 MiB" in imgui.lines
+    assert "CAPTURE QUEUE (estimated process-wide): 3/17 · 12.0/256.0 MiB" in imgui.lines
     assert "Capture rejected: PNG; reason=bytes" in imgui.lines
+    assert "CAPTURE NOTICE" in imgui.lines
 
 
 def test_transport_waiting_shows_rendered_and_target_times() -> None:
@@ -54,7 +59,10 @@ def test_transport_waiting_shows_rendered_and_target_times() -> None:
         midi_port_name=None,
     )
 
-    assert any("WAIT t=2.500s" in line and "target=0.000s" in line for line in imgui.lines)
+    assert any(
+        "WAIT — rendered 2.500s" in line and "target 0.000s" in line
+        for line in imgui.lines
+    )
 
 
 def test_normal_monitor_omits_empty_queue_and_disconnected_midi_noise() -> None:
@@ -67,10 +75,45 @@ def test_normal_monitor_omits_empty_queue_and_disconnected_midi_noise() -> None:
         midi_port_name=None,
     )
 
-    assert len(imgui.lines) == 1
-    assert imgui.lines[0].startswith("FPS ")
-    assert "CAPTURE QUEUE" not in imgui.lines[0]
-    assert "MIDI:" not in imgui.lines[0]
+    assert len(imgui.lines) == 2
+    assert "FPS" in imgui.lines[0]
+    assert all("CAPTURE QUEUE" not in line for line in imgui.lines)
+    assert all("MIDI" not in line for line in imgui.lines)
+
+
+def test_compact_status_is_one_line_and_spells_out_wait_state() -> None:
+    monitor = RuntimeMonitor()
+    monitor.set_transport(
+        t=1.25,
+        requested_t=2.0,
+        waiting=True,
+        playing=False,
+        speed=0.5,
+    )
+
+    lines = monitor_status_lines(
+        monitor.snapshot(),
+        midi_port_name=None,
+        compact=True,
+    )
+
+    assert len(lines) == 1
+    assert "FPS" in lines[0].text
+    assert "WAIT" in lines[0].text
+    assert lines[0].token == "warning"
+
+
+def test_long_frame_error_lives_in_full_width_alert_not_status_column() -> None:
+    monitor = RuntimeMonitor()
+    monitor.set_frame_error("renderer failed with a deliberately long diagnostic")
+    snapshot = monitor.snapshot()
+
+    status = monitor_status_lines(snapshot, midi_port_name=None, compact=False)
+    alerts = monitor_alert_lines(snapshot)
+
+    assert status[-1].text == "FRAME ERROR"
+    assert all("renderer failed" not in line.text for line in status)
+    assert any("renderer failed" in line.text for line in alerts)
 
 
 def test_monitor_wraps_actionable_notices_when_backend_supports_it() -> None:

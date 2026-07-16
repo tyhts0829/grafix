@@ -81,6 +81,9 @@ def _choose_value(
         # --- vec3 CC（cc_key が (a,b,c) の場合）---
         # 各成分ごとに「CC があれば CC」「なければ override に応じて GUI/base」を選ぶ。
         # ※ vec3 は成分ごとに CC を割り当てたい要望が多いので特別扱いしている。
+        # ※ RGB は Style/Layer Style の専用 resolver を通り、そこでは cc_snapshot を
+        #    解決していない。誤って非機能 UI を見せないよう rules.py 側でも MIDI を
+        #    無効にしており、この分岐を安易に RGB へ広げないこと。
         if meta.kind == "vec3" and isinstance(state.cc_key, tuple):
             lo = float(meta.ui_min) if meta.ui_min is not None else 0.0
             hi = float(meta.ui_max) if meta.ui_max is not None else 1.0

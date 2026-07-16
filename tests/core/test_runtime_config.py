@@ -31,7 +31,7 @@ def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pyt
     assert cfg.parameter_gui_window_size == (800, 1000)
     assert cfg.parameter_gui_fallback_font_japanese is None
     assert cfg.parameter_gui_font_size_base_px == 14.0
-    assert cfg.parameter_gui_table_column_weights == (0.28, 0.45, 0.16, 0.23)
+    assert cfg.parameter_gui_table_column_weights == (0.36, 0.35, 0.18, 0.23)
     assert cfg.png_scale == 8.0
     assert cfg.gcode.travel_feed == 3000.0
     assert cfg.gcode.draw_feed == 3000.0
