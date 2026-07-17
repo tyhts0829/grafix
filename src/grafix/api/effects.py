@@ -8,10 +8,13 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ._param_resolution import resolve_api_params, set_api_label
-from grafix.core.builtins import ensure_builtin_effect_registered
-from grafix.core.effect_registry import effect_registry
+from grafix.core.builtins import ensure_builtin_effect_registered, ensure_builtin_effects_registered
+from grafix.core.effect_registry import EffectFunc, effect_registry
 from grafix.core.geometry import Geometry
+from grafix.core.op_registry import OpCatalogEntry
 from grafix.core.parameters import caller_site_id
+
+from ._op_validation import validate_operation_kwargs
 
 @dataclass(frozen=True, slots=True)
 class EffectBuilder:
@@ -130,7 +133,16 @@ class EffectBuilder:
             """
 
             key = params.pop("key", None)
-            site_id = caller_site_id(skip=1, key=key)
+            instance_key = params.pop("instance_key", None)
+            shared = params.pop("shared", False)
+            spec = effect_registry[name]
+            validate_operation_kwargs(op=name, spec=spec, params=params)
+            site_id = caller_site_id(
+                skip=1,
+                key=key,
+                instance_key=instance_key,
+                shared=shared,
+            )
             new_steps = self.steps + ((name, dict(params), site_id),)
             return EffectBuilder(
                 steps=new_steps,
@@ -150,6 +162,44 @@ class EffectNamespace:
         登録済み effect 名ごとのビルダファクトリ。
         例: E.scale(scale=(2.0, 2.0, 2.0))(g) -> Geometry(op="scale", inputs=(g,), params=...)
     """
+
+    def catalog(self) -> tuple[OpCatalogEntry[EffectFunc], ...]:
+        """登録済み effect の catalog を名前順で返す。
+
+        Returns
+        -------
+        tuple[OpCatalogEntry[EffectFunc], ...]
+            名前、説明、引数、source を含む immutable entry の列。
+        """
+
+        ensure_builtin_effects_registered()
+        return effect_registry.catalog()
+
+    def describe(self, name: str) -> OpCatalogEntry[EffectFunc]:
+        """effect の catalog entry を名前で取得する。
+
+        Parameters
+        ----------
+        name : str
+            effect 名。
+
+        Returns
+        -------
+        OpCatalogEntry[EffectFunc]
+            registry の :class:`~grafix.core.op_registry.OpSpec` を参照する entry。
+
+        Raises
+        ------
+        KeyError
+            ``name`` が未登録の場合。
+        """
+
+        name_s = str(name)
+        if name_s not in effect_registry:
+            ensure_builtin_effect_registered(name_s)
+        if name_s not in effect_registry:
+            raise KeyError(f"未登録の effect: {name_s!r}")
+        return effect_registry.describe(name_s)
 
     def __getattr__(self, name: str) -> Callable[..., EffectBuilder]:
         """effect 名に対応する EffectBuilder ファクトリを返す。
@@ -192,7 +242,16 @@ class EffectNamespace:
             """
 
             key = params.pop("key", None)
-            site_id = caller_site_id(skip=1, key=key)
+            instance_key = params.pop("instance_key", None)
+            shared = params.pop("shared", False)
+            spec = effect_registry[name]
+            validate_operation_kwargs(op=name, spec=spec, params=params)
+            site_id = caller_site_id(
+                skip=1,
+                key=key,
+                instance_key=instance_key,
+                shared=shared,
+            )
             return EffectBuilder(
                 steps=((name, dict(params), site_id),),
                 chain_id=site_id,

@@ -183,6 +183,10 @@ def _is_pseudo_filename(text: str) -> bool:
 def _draw_source_path(draw: Callable[[float], object]) -> Path | None:
     """draw の定義元ファイルパスを推定して返す。推定できなければ None を返す。"""
 
+    explicit = getattr(draw, "__grafix_source_path__", None)
+    if explicit is not None and not _is_pseudo_filename(str(explicit)):
+        return Path(str(explicit))
+
     code = getattr(draw, "__code__", None)
     filename = getattr(code, "co_filename", None) if code is not None else None
     if filename and not _is_pseudo_filename(str(filename)):

@@ -5,6 +5,7 @@ import pytest
 from grafix.interactive.runtime.frame_clock import (
     RealTimeClock,
     RecordingClock,
+    TimeBookmark,
     TransportClock,
     TransportSnapshot,
 )
@@ -159,6 +160,83 @@ def test_transport_snapshot_keeps_legacy_three_positional_arguments():
     assert snapshot.is_playing is False
     assert snapshot.speed == pytest.approx(0.5)
     assert snapshot.epoch == 0
+
+
+def test_transport_loop_wraps_and_advances_epoch_once() -> None:
+    now = FakeTime()
+    clock = TransportClock(start_time=now.value, time_source=now)
+    clock.set_loop(1.0, 3.0)
+
+    now.advance(3.25)
+    assert clock.t() == pytest.approx(1.25)
+    assert clock.epoch == 1
+    assert clock.t() == pytest.approx(1.25)
+    assert clock.epoch == 1
+
+    now.advance(2.0)
+    snapshot = clock.snapshot()
+    assert snapshot.t == pytest.approx(1.25)
+    assert snapshot.epoch == 2
+    assert snapshot.loop_in == pytest.approx(1.0)
+    assert snapshot.loop_out == pytest.approx(3.0)
+
+
+def test_transport_loop_validation_and_clear() -> None:
+    clock = TransportClock(start_time=0.0, time_source=FakeTime())
+    with pytest.raises(ValueError, match="大きい"):
+        clock.set_loop(2.0, 2.0)
+    with pytest.raises(ValueError, match="有限"):
+        clock.set_loop(0.0, float("inf"))
+
+    clock.set_loop(-1.0, 1.0)
+    assert clock.loop_range == (-1.0, 1.0)
+    clock.clear_loop()
+    assert clock.loop_range is None
+
+
+def test_transport_bookmarks_are_named_immutable_seek_targets() -> None:
+    now = FakeTime()
+    clock = TransportClock(start_time=now.value, time_source=now)
+    now.advance(1.5)
+
+    assert clock.set_bookmark("intro") == TimeBookmark("intro", 1.5)
+    assert clock.set_bookmark(
+        "variation", t=4.25, variation_name="Blue orbit"
+    ) == TimeBookmark("variation", 4.25, "Blue orbit")
+    assert clock.bookmarks == (
+        TimeBookmark("intro", 1.5),
+        TimeBookmark("variation", 4.25, "Blue orbit"),
+    )
+
+    assert clock.seek_bookmark("variation") == pytest.approx(4.25)
+    assert clock.t() == pytest.approx(4.25)
+    assert clock.epoch == 1
+    assert clock.remove_bookmark("intro") is True
+    assert clock.remove_bookmark("intro") is False
+    with pytest.raises(KeyError, match="未登録"):
+        clock.seek_bookmark("missing")
+
+
+def test_transport_rejects_empty_or_nonfinite_bookmarks() -> None:
+    clock = TransportClock(start_time=0.0, time_source=FakeTime())
+    with pytest.raises(ValueError, match="空"):
+        clock.set_bookmark("  ")
+    with pytest.raises(ValueError, match="有限"):
+        clock.set_bookmark("bad", t=float("nan"))
+    with pytest.raises(ValueError, match="variation_name"):
+        clock.set_bookmark("bad variation", variation_name=" ")
+
+
+def test_loop_does_not_retime_paused_recording_synchronization() -> None:
+    now = FakeTime()
+    clock = TransportClock(start_time=now.value, time_source=now)
+    clock.set_loop(1.0, 3.0)
+    clock.pause()
+
+    clock.synchronize(5.0)
+
+    assert clock.t() == pytest.approx(5.0)
+    assert clock.epoch == 0
 
 
 def test_transport_clamps_a_regressing_time_source():

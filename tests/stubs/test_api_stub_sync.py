@@ -12,7 +12,12 @@ def test_api_stub_sync(monkeypatch) -> None:
     monkeypatch.syspath_prepend(str(repo_root / "src"))
 
     gen = importlib.import_module("grafix.devtools.generate_stub")
-    expected = gen.generate_stubs_str()
+    runtime_config = importlib.import_module("grafix.core.runtime_config")
+    packaged_config = repo_root / "src/grafix/resource/default_config.yaml"
+    # Installed stub はproject-local presetを含めない。開発者の
+    # .grafix/config.yaml の有無で同期判定が変わらないよう設定を固定する。
+    with runtime_config.runtime_config_scope(packaged_config):
+        expected = gen.generate_stubs_str()
 
     stub_path = repo_root / "src" / "grafix" / "api" / "__init__.pyi"
     actual = stub_path.read_text(encoding="utf-8")

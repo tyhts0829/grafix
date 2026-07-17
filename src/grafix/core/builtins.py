@@ -11,14 +11,20 @@ import importlib
 _BUILTIN_PRIMITIVE_MODULES = {
     name: f"grafix.core.primitives.{name}"
     for name in (
+        "arc",
         "asemic",
+        "bezier",
+        "circle",
+        "ellipse",
         "grid",
         "line",
         "lissajous",
         "laplace_field_grid",
         "lsystem",
         "polygon",
+        "polyline",
         "polyhedron",
+        "rect",
         "sphere",
         "text",
         "torus",

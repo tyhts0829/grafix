@@ -20,6 +20,7 @@
 - `draw` の通常例外は traceback 文字列を `DrawResult.error` に載せて返す。
 - worker は初期化後に ready message を返す。`SystemExit`、native crash など process 自体の
   異常終了は submit/poll 共通の health check が `MpDrawWorkerError` として通知する。
+- evaluation timeout は hung worker 世代を terminate/restart し、直近の成功結果を保持する。
 - parameter 観測（FrameParamRecord/FrameLabelRecord）は worker で収集して返し、
   メイン側で当該フレームの `FrameParamsBuffer` にマージして使う（例: SceneRunner）。
 """
@@ -33,17 +34,27 @@ import os
 import queue
 import time
 import traceback
-from dataclasses import dataclass
+from collections import OrderedDict
+from dataclasses import dataclass, replace
+from math import isfinite
 from typing import Any, Callable, cast
 
 from grafix.core.layer import Layer
+from grafix.core.operation_diagnostics import (
+    OperationDiagnostic,
+    current_operation_diagnostics,
+)
 from grafix.core.parameters import FrameLabelRecord, FrameParamRecord
 from grafix.core.parameters.context import parameter_context_from_snapshot
 from grafix.core.parameters.snapshot_ops import ParamSnapshot
+from grafix.core.parameters.source import MidiFrameSnapshot
+from grafix.core.preview_quality import PreviewQuality, preview_quality_context
 from grafix.core.scene import SceneItem, normalize_scene
 
 _WORKER_READY_TIMEOUT_S = 10.0
 _WORKER_JOIN_TIMEOUT_S = 1.0
+_WORKER_RESTART_JOIN_TIMEOUT_S = 0.05
+_MAX_SUBMITTED_TIMESTAMPS = 256
 
 
 class MpDrawWorkerError(RuntimeError):
@@ -84,8 +95,10 @@ class _DrawTask:
     frame_id: int
     t: float
     snapshot_revision: int
-    cc_snapshot: dict[int, float] | None
+    cc_snapshot: MidiFrameSnapshot | None
     epoch: int = 0
+    generation: int = 0
+    quality: PreviewQuality = "draft"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +107,7 @@ class _SnapshotUpdate:
 
     revision: int
     snapshot: ParamSnapshot
+    generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +119,7 @@ class _SnapshotAck:
     requested_revision: int
     applied_revision: int
     status: str
+    generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +132,17 @@ class _TaskRejected:
     requested_revision: int
     applied_revision: int | None
     reason: str
+    generation: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _TaskStarted:
+    """worker が evaluation を開始したことを親へ通知する。"""
+
+    frame_id: int
+    worker: str
+    pid: int
+    generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,10 +154,12 @@ class DrawResult:
     - `layers` は `draw(t)` の戻り値を `normalize_scene()` で正規化したもの。
     - `records` / `labels` は draw 実行中に観測した parameter 情報で、メイン側の
       `FrameParamsBuffer` にマージして GUI/記録に使う（メインの ParamStore は触らない）。
+    - `diagnostics` は operation の clamp/reject 等を表し、parameter 観測とは分離する。
     - `error` が非 None の場合、`layers/records/labels` は空で、`error` には
       `traceback.format_exc()` の文字列が入る。
     - `t` はこの結果を生成した task の時刻で、非同期 preview の capture metadata に使う。
-    - `epoch` は transport discontinuity の generation。現在より古い結果は親側で破棄する。
+    - `epoch` は transport discontinuity の識別子。現在より古い結果は親側で破棄する。
+    - `generation` は timeout/restart をまたぐ worker 世代。旧世代の結果は親側で破棄する。
 
     `t` と `epoch` は既存の positional/keyword constructor を壊さないよう、
     旧 field（`error` を含む）の後ろに default 付きで追加している。
@@ -144,6 +172,10 @@ class DrawResult:
     error: str | None = None
     t: float = 0.0
     epoch: int = 0
+    generation: int = 0
+    worker_pid: int | None = None
+    diagnostics: tuple[OperationDiagnostic, ...] = ()
+    worker_lag_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,9 +184,12 @@ class _WorkerReady:
 
     worker: str
     pid: int
+    generation: int = 0
 
 
-_WorkerMessage = DrawResult | _WorkerReady | _SnapshotAck | _TaskRejected
+_WorkerMessage = (
+    DrawResult | _WorkerReady | _SnapshotAck | _TaskRejected | _TaskStarted
+)
 
 
 def _draw_worker_main(
@@ -162,6 +197,7 @@ def _draw_worker_main(
     control_q: mp_queues.Queue[_SnapshotUpdate],
     result_q: mp_queues.Queue[_WorkerMessage],
     draw: Callable[[float], SceneItem],
+    generation: int,
 ) -> None:
     """worker プロセスのエントリポイント。
 
@@ -177,7 +213,10 @@ def _draw_worker_main(
     current = mp.current_process()
     worker = str(current.name)
     pid = os.getpid()
-    result_q.put(_WorkerReady(worker=worker, pid=pid))
+    worker_generation = int(generation)
+    result_q.put(
+        _WorkerReady(worker=worker, pid=pid, generation=worker_generation)
+    )
 
     snapshot: ParamSnapshot | None = None
     snapshot_revision: int | None = None
@@ -186,6 +225,8 @@ def _draw_worker_main(
         """新しい snapshot だけを適用し、処理結果を必ず ack する。"""
 
         nonlocal snapshot, snapshot_revision
+        if int(update.generation) != worker_generation:
+            return
         requested = int(update.revision)
         if snapshot_revision is None or requested > snapshot_revision:
             snapshot = update.snapshot
@@ -203,6 +244,7 @@ def _draw_worker_main(
                 requested_revision=requested,
                 applied_revision=int(snapshot_revision),
                 status=status,
+                generation=worker_generation,
             )
         )
 
@@ -223,6 +265,8 @@ def _draw_worker_main(
                 continue
             if task is None:
                 return
+            if int(task.generation) != worker_generation:
+                continue
             drain_snapshot_updates()
             requested_revision = int(task.snapshot_revision)
             if snapshot_revision != requested_revision or snapshot is None:
@@ -239,17 +283,33 @@ def _draw_worker_main(
                         requested_revision=requested_revision,
                         applied_revision=snapshot_revision,
                         reason=reason,
+                        generation=worker_generation,
                     )
                 )
                 continue
+            result_q.put(
+                _TaskStarted(
+                    frame_id=int(task.frame_id),
+                    worker=worker,
+                    pid=pid,
+                    generation=worker_generation,
+                )
+            )
+            frame_operation_diagnostics: tuple[OperationDiagnostic, ...] = ()
             try:
                 # snapshot を固定したコンテキスト内で draw を実行することで、
                 # GUI の状態（ParamStore）と独立に「このフレームで解決すべき値」を決定できる。
-                with parameter_context_from_snapshot(
-                    snapshot, cc_snapshot=task.cc_snapshot
-                ) as frame_params:
-                    scene = draw(float(task.t))
-                    layers = normalize_scene(scene)
+                with preview_quality_context(task.quality):
+                    with parameter_context_from_snapshot(
+                        snapshot, cc_snapshot=task.cc_snapshot
+                    ) as frame_params:
+                        try:
+                            scene = draw(float(task.t))
+                            layers = normalize_scene(scene)
+                        finally:
+                            frame_operation_diagnostics = (
+                                current_operation_diagnostics()
+                            )
                 result_q.put(
                     DrawResult(
                         frame_id=int(task.frame_id),
@@ -260,6 +320,9 @@ def _draw_worker_main(
                         error=None,
                         t=float(task.t),
                         epoch=int(task.epoch),
+                        generation=worker_generation,
+                        worker_pid=pid,
+                        diagnostics=frame_operation_diagnostics,
                     )
                 )
             except Exception:
@@ -274,6 +337,9 @@ def _draw_worker_main(
                         error=traceback.format_exc(),
                         t=float(task.t),
                         epoch=int(task.epoch),
+                        generation=worker_generation,
+                        worker_pid=pid,
+                        diagnostics=frame_operation_diagnostics,
                     )
                 )
     finally:
@@ -299,7 +365,13 @@ class MpDraw:
     - `latest_layers()` は後続 frame が失敗しても直近成功結果の `layers` を保持する。
     """
 
-    def __init__(self, draw: Callable[[float], SceneItem], *, n_worker: int) -> None:
+    def __init__(
+        self,
+        draw: Callable[[float], SceneItem],
+        *,
+        n_worker: int,
+        evaluation_timeout: float | None = 5.0,
+    ) -> None:
         """worker 群を起動して mp-draw を開始する。
 
         Parameters
@@ -307,38 +379,42 @@ class MpDraw:
         draw : Callable[[float], SceneItem]
             スケッチの描画関数。`spawn` で渡すため picklable である必要がある。
         n_worker : int
-            worker 数。2 以上。
+            worker 数。1 以上。
+        evaluation_timeout : float | None
+            1 回の `draw(t)` を待つ秒数。超過した worker 世代を破棄して再起動する。
+            `None` の場合は timeout を無効にする。
 
         Raises
         ------
         ValueError
-            `n_worker < 2` の場合。
+            `n_worker < 1` の場合。
         MpDrawWorkerError
             ready message より前に worker が終了した場合。
         RuntimeError
             process 自体の起動に失敗した場合。
         """
 
-        if int(n_worker) < 2:
-            raise ValueError("n_worker は 2 以上である必要がある")
+        if int(n_worker) < 1:
+            raise ValueError("n_worker は 1 以上である必要がある")
+        if evaluation_timeout is None:
+            timeout = None
+        else:
+            timeout = float(evaluation_timeout)
+            if not isfinite(timeout) or timeout <= 0.0:
+                raise ValueError(
+                    "evaluation_timeout は有限の正数または None である必要がある"
+                )
 
         # `spawn` は macOS での安全側（fork しない）として選ぶ。
         # 代わりに、worker へ渡す `draw` は picklable である必要がある。
         self._ctx = mp.get_context("spawn")
-        # タスクが詰まりすぎるとリアルタイム性が落ちるため、キューは小さく保つ。
-        self._task_q: mp.Queue[_DrawTask | None] = self._ctx.Queue(maxsize=int(n_worker))
-        # snapshot は全 worker が同じ revision を持つ必要があるため、worker ごとの
-        # control queue へ broadcast する。共有 queue では 1 worker しか受け取れない。
-        self._control_qs: list[mp.Queue[_SnapshotUpdate]] = [
-            self._ctx.Queue(maxsize=1) for _ in range(int(n_worker))
-        ]
-        self._result_q: mp.Queue[_WorkerMessage] = self._ctx.Queue()
-        self._procs: list[mp_process.BaseProcess] = []
-        self._ready_worker_pids: set[int] = set()
-        self._worker_snapshot_revisions: dict[int, int] = {}
-        self._control_index_by_pid: dict[int, int] = {}
-        self._pending_snapshot_updates: dict[int, _SnapshotUpdate] = {}
-        self._queued_snapshot_revisions: dict[int, int] = {}
+        self._draw = draw
+        self._n_worker = int(n_worker)
+        self._evaluation_timeout = timeout
+        self._generation = 0
+        self._restart_count = 0
+        self._last_restart_reason: str | None = None
+        self._retired_procs: list[mp_process.BaseProcess] = []
         self._closed = False
 
         self._next_frame_id = 0
@@ -351,28 +427,22 @@ class MpDraw:
         self._completed_result_count = 0
         self._stale_result_count = 0
         self._last_stale_result: tuple[int, int, int] | None = None
-        self._pending_task: _DrawTask | None = None
-        self._snapshot_broadcast_revision: int | None = None
+        self._stale_generation_result_count = 0
+        self._last_stale_generation_result: tuple[int, int, int] | None = None
         self._snapshot_broadcast_count = 0
         self._snapshot_ack_count = 0
         self._last_snapshot_ack: _SnapshotAck | None = None
         self._rejected_task_count = 0
         self._last_rejection: _TaskRejected | None = None
+        # latest-wins queue で結果が返らない task もあるため、submit 時刻は明示的に
+        # bounded とする。worker lag はこの時刻から result 到着までを測る。
+        self._submitted_at_by_frame: OrderedDict[int, float] = OrderedDict()
         # `poll_latest()` の「同じ結果を二度返さない」ためのブックキーピング。
         self._last_published_frame_id = 0
 
         try:
-            for i, control_q in enumerate(self._control_qs):
-                proc = self._ctx.Process(
-                    target=_draw_worker_main,
-                    args=(self._task_q, control_q, self._result_q, draw),
-                    name=f"grafix-mp-draw-{i}",
-                )
-                proc.start()
-                self._procs.append(proc)
-                if proc.pid is not None:
-                    self._control_index_by_pid[int(proc.pid)] = int(i)
-            self._await_workers_ready()
+            self._create_generation_resources()
+            self._start_generation(wait_ready=True)
         except MpDrawWorkerError:
             self.close()
             raise
@@ -384,6 +454,146 @@ class MpDraw:
                 "draw がモジュールトップレベル定義で picklable か、"
                 "スケッチ側が __main__ ガードを持つか確認してください。"
             ) from exc
+
+    def _create_generation_resources(self) -> None:
+        """現在世代専用の Queue と bookkeeping を作る。"""
+
+        # 世代ごとに Queue を分離することで、terminate 済み worker が遅れて
+        # 書き込んだ message を新世代が誤って採用する経路そのものを断つ。
+        self._task_q: mp.Queue[_DrawTask | None] = self._ctx.Queue(
+            maxsize=self._n_worker
+        )
+        self._control_qs: list[mp.Queue[_SnapshotUpdate]] = [
+            self._ctx.Queue(maxsize=1) for _ in range(self._n_worker)
+        ]
+        self._result_q: mp.Queue[_WorkerMessage] = self._ctx.Queue()
+        self._procs: list[mp_process.BaseProcess] = []
+        self._ready_worker_pids: set[int] = set()
+        self._worker_snapshot_revisions: dict[int, int] = {}
+        self._control_index_by_pid: dict[int, int] = {}
+        self._pending_snapshot_updates: dict[int, _SnapshotUpdate] = {}
+        self._queued_snapshot_revisions: dict[int, int] = {}
+        self._active_tasks_by_pid: dict[int, tuple[int, float]] = {}
+        self._pending_task: _DrawTask | None = None
+        self._snapshot_broadcast_revision: int | None = None
+
+    def _start_generation(self, *, wait_ready: bool) -> None:
+        """現在世代の worker を起動する。restart 時は ready を待たない。"""
+
+        generation = int(self._generation)
+        for i, control_q in enumerate(self._control_qs):
+            proc = self._ctx.Process(
+                target=_draw_worker_main,
+                args=(
+                    self._task_q,
+                    control_q,
+                    self._result_q,
+                    self._draw,
+                    generation,
+                ),
+                name=f"grafix-mp-draw-g{generation}-{i}",
+            )
+            proc.start()
+            self._procs.append(proc)
+            if proc.pid is not None:
+                self._control_index_by_pid[int(proc.pid)] = int(i)
+        if wait_ready:
+            self._await_workers_ready()
+
+    def _reap_retired_processes(self) -> None:
+        """restart 済み process の終了状態を非ブロッキングで回収する。"""
+
+        remaining: list[mp_process.BaseProcess] = []
+        for proc in getattr(self, "_retired_procs", []):
+            try:
+                proc.join(timeout=0.0)
+            except (AssertionError, OSError, ValueError):
+                pass
+            if proc.is_alive():
+                remaining.append(proc)
+        self._retired_procs = remaining
+
+    def _stop_current_generation(self) -> None:
+        """現在世代を有界時間で強制停止し、その Queue を閉じる。"""
+
+        procs = list(self._procs)
+        task_q = self._task_q
+        control_qs = list(self._control_qs)
+        result_q = self._result_q
+
+        # hang 中の user draw は sentinel を読めないため、restart では最初から
+        # terminate する。join の合計時間は短く固定し、UI event loop を塞がない。
+        for proc in procs:
+            if proc.is_alive():
+                try:
+                    proc.terminate()
+                except (AttributeError, OSError, ValueError):
+                    pass
+        self._join_processes(procs, timeout=_WORKER_RESTART_JOIN_TIMEOUT_S)
+        for proc in procs:
+            if proc.is_alive():
+                try:
+                    proc.kill()
+                except (AttributeError, OSError, ValueError):
+                    pass
+        self._join_processes(procs, timeout=_WORKER_RESTART_JOIN_TIMEOUT_S)
+        self._retired_procs.extend(proc for proc in procs if proc.is_alive())
+
+        self._procs.clear()
+        self._close_queue(task_q, cancel_pending=True)
+        for control_q in control_qs:
+            self._close_queue(control_q, cancel_pending=True)
+        self._close_queue(result_q, cancel_pending=True)
+
+    def restart(self, reason: str) -> int:
+        """worker 世代を破棄して非同期に再起動し、新しい世代番号を返す。
+
+        直近の成功結果は preview fallback として保持する。一方、旧世代の未完了
+        task/result/snapshot 状態は引き継がない。新 worker の ready 待ちは後続の
+        `submit()` / `poll_latest()` に委ね、restart 自体を有界時間に保つ。
+        """
+
+        if self._closed:
+            raise RuntimeError("MpDraw は close 済みです")
+        normalized_reason = str(reason).strip()
+        if not normalized_reason:
+            raise ValueError("restart reason は空にできません")
+
+        self._stop_current_generation()
+        self._generation += 1
+        self._restart_count += 1
+        self._last_restart_reason = normalized_reason
+        self._latest_received = None
+        self._submitted_at_by_frame.clear()
+
+        try:
+            self._create_generation_resources()
+            self._start_generation(wait_ready=False)
+        except Exception as exc:
+            self.close()
+            raise RuntimeError("mp-draw の worker 再起動に失敗しました") from exc
+        return int(self._generation)
+
+    def _restart_if_timed_out(self) -> bool:
+        """実行中 task が deadline を超えた場合に世代を再起動する。"""
+
+        timeout = getattr(self, "_evaluation_timeout", None)
+        if timeout is None:
+            return False
+        now = time.monotonic()
+        for pid, (frame_id, started_at) in tuple(
+            getattr(self, "_active_tasks_by_pid", {}).items()
+        ):
+            elapsed = now - float(started_at)
+            if elapsed < float(timeout):
+                continue
+            self.restart(
+                "evaluation timeout: "
+                f"frame_id={int(frame_id)}, pid={int(pid)}, "
+                f"limit={float(timeout):.3f}s"
+            )
+            return True
+        return False
 
     def _await_workers_ready(self) -> None:
         """全 worker の初期化完了を待ち、起動直後の異常終了を検知する。"""
@@ -414,7 +624,11 @@ class MpDraw:
             except queue.Empty:
                 continue
 
-            if isinstance(message, _WorkerReady) and message.pid in expected:
+            if (
+                isinstance(message, _WorkerReady)
+                and int(message.generation) == int(self._generation)
+                and message.pid in expected
+            ):
                 self._ready_worker_pids.add(int(message.pid))
 
         self._check_health()
@@ -424,6 +638,8 @@ class MpDraw:
 
         if self._closed:
             raise RuntimeError("MpDraw は close 済みです")
+
+        self._reap_retired_processes()
 
         for proc in self._procs:
             exitcode = proc.exitcode
@@ -448,6 +664,35 @@ class MpDraw:
             except queue.Empty:
                 return
 
+            if isinstance(message, DrawResult):
+                submitted_at = getattr(
+                    self,
+                    "_submitted_at_by_frame",
+                    {},
+                ).pop(int(message.frame_id), None)
+                if submitted_at is not None:
+                    message = replace(
+                        message,
+                        worker_lag_ms=max(
+                            0.0,
+                            (time.monotonic() - float(submitted_at)) * 1_000.0,
+                        ),
+                    )
+
+            current_generation = int(getattr(self, "_generation", 0))
+            message_generation = int(getattr(message, "generation", 0))
+            if message_generation != current_generation:
+                if isinstance(message, DrawResult):
+                    self._stale_generation_result_count = int(
+                        getattr(self, "_stale_generation_result_count", 0)
+                    ) + 1
+                    self._last_stale_generation_result = (
+                        int(message.frame_id),
+                        message_generation,
+                        current_generation,
+                    )
+                continue
+
             if isinstance(message, _WorkerReady):
                 self._ready_worker_pids.add(int(message.pid))
             elif isinstance(message, _SnapshotAck):
@@ -469,7 +714,17 @@ class MpDraw:
             elif isinstance(message, _TaskRejected):
                 self._rejected_task_count += 1
                 self._last_rejection = message
+            elif isinstance(message, _TaskStarted):
+                self._active_tasks_by_pid[int(message.pid)] = (
+                    int(message.frame_id),
+                    time.monotonic(),
+                )
             else:
+                worker_pid = message.worker_pid
+                if worker_pid is not None:
+                    active = self._active_tasks_by_pid.get(int(worker_pid))
+                    if active is not None and int(active[0]) == int(message.frame_id):
+                        self._active_tasks_by_pid.pop(int(worker_pid), None)
                 self._completed_result_count += 1
                 current_epoch = int(getattr(self, "_current_epoch", 0))
                 result_epoch = int(message.epoch)
@@ -503,7 +758,11 @@ class MpDraw:
 
         # store snapshot は外側を read-only にしているため、そのままでは spawn Queue で
         # pickle できない。revision 変更時だけ plain dict へ 1 回コピーして配信する。
-        update = _SnapshotUpdate(revision=int(revision), snapshot=dict(snapshot))
+        update = _SnapshotUpdate(
+            revision=int(revision),
+            snapshot=dict(snapshot),
+            generation=int(getattr(self, "_generation", 0)),
+        )
         # worker ごとに「queue 内 1 件 + 親側 latest 1 件」だけを保持する。
         # 既に古い update が queue にある場合は、それが ack された後に latest を送る。
         for index in range(len(self._control_qs)):
@@ -531,27 +790,33 @@ class MpDraw:
             self._worker_snapshot_revisions.get(pid) == int(revision) for pid in expected
         )
 
-    def _enqueue_latest(self, task: _DrawTask) -> None:
-        """有限 task queue へ latest-wins で投入する。"""
+    def _enqueue_latest(self, task: _DrawTask) -> bool:
+        """有限 task queue へ latest-wins で投入し、成功したかを返す。"""
 
         try:
             self._task_q.put_nowait(task)
+            return True
         except queue.Full:
             try:
                 _ = self._task_q.get_nowait()
             except queue.Empty:
-                return
+                # multiprocessing.Queue は feeder thread が pipe へ反映するまで、
+                # `full()` 相当の semaphore と `get_nowait()` の可視性が一瞬ずれる。
+                # 呼び出し側が task を pending latest として保持し、次の poll/submit
+                # で再試行できるよう失敗を返す。
+                return False
             try:
                 self._task_q.put_nowait(task)
+                return True
             except queue.Full:
-                return
+                return False
 
     def _enqueue_pending_if_ready(self) -> None:
         task = self._pending_task
         if task is None or not self._workers_have_revision(task.snapshot_revision):
             return
-        self._pending_task = None
-        self._enqueue_latest(task)
+        if self._enqueue_latest(task):
+            self._pending_task = None
 
     def begin_epoch(self, epoch: int | None = None) -> int:
         """新しい transport epoch へ進み、旧結果を表示候補から外す。
@@ -611,8 +876,9 @@ class MpDraw:
         t: float,
         snapshot_revision: int,
         snapshot: ParamSnapshot,
-        cc_snapshot: dict[int, float] | None = None,
+        cc_snapshot: MidiFrameSnapshot | None = None,
         epoch: int | None = None,
+        quality: PreviewQuality = "draft",
     ) -> None:
         """このフレームの draw を worker に依頼する（ノンブロッキング）。
 
@@ -631,6 +897,8 @@ class MpDraw:
 
         self._check_health()
         try:
+            if quality not in {"draft", "final"}:
+                raise ValueError(f"unknown preview quality: {quality!r}")
             requested_epoch = self._current_epoch if epoch is None else int(epoch)
             if requested_epoch < self._current_epoch:
                 raise ValueError(
@@ -641,6 +909,7 @@ class MpDraw:
                 self.begin_epoch(requested_epoch)
             # 前フレームまでの ack を先に反映し、この submit の最新 task だけを残す。
             self._drain_result_queue()
+            self._restart_if_timed_out()
             self._flush_snapshot_updates()
             self._next_frame_id += 1
             task = _DrawTask(
@@ -648,8 +917,14 @@ class MpDraw:
                 t=float(t),
                 snapshot_revision=int(snapshot_revision),
                 cc_snapshot=cc_snapshot,
+                quality=quality,
                 epoch=int(requested_epoch),
+                generation=int(getattr(self, "_generation", 0)),
             )
+            submitted_at = self._submitted_at_by_frame
+            submitted_at[int(task.frame_id)] = time.monotonic()
+            while len(submitted_at) > _MAX_SUBMITTED_TIMESTAMPS:
+                submitted_at.popitem(last=False)
             if self._snapshot_broadcast_revision != int(snapshot_revision):
                 self._broadcast_snapshot(
                     revision=int(snapshot_revision),
@@ -657,8 +932,10 @@ class MpDraw:
                 )
 
             if self._workers_have_revision(int(snapshot_revision)):
-                self._pending_task = None
-                self._enqueue_latest(task)
+                # queue の feeder race で即時投入できなくても、最新 task を親側に
+                # 1 件だけ保持し、次の submit/poll で再試行する。
+                self._pending_task = task
+                self._enqueue_pending_if_ready()
             else:
                 # ack 待ちの間に複数 submit されても、実行するのは最新だけ。
                 self._pending_task = task
@@ -691,6 +968,7 @@ class MpDraw:
         self._check_health()
 
         self._drain_result_queue()
+        self._restart_if_timed_out()
         self._flush_snapshot_updates()
         self._enqueue_pending_if_ready()
 
@@ -751,6 +1029,30 @@ class MpDraw:
         return int(self._current_epoch)
 
     @property
+    def generation(self) -> int:
+        """現在の worker 世代番号を返す。"""
+
+        return int(self._generation)
+
+    @property
+    def restart_count(self) -> int:
+        """worker 世代を再起動した回数を返す。"""
+
+        return int(self._restart_count)
+
+    @property
+    def last_restart_reason(self) -> str | None:
+        """直近の worker 再起動理由を返す。"""
+
+        return self._last_restart_reason
+
+    @property
+    def evaluation_timeout(self) -> float | None:
+        """現在設定されている evaluation timeout（秒）を返す。"""
+
+        return self._evaluation_timeout
+
+    @property
     def stale_result_count(self) -> int:
         """旧/未知 epoch のため表示候補から破棄した result 数を返す。"""
 
@@ -761,6 +1063,18 @@ class MpDraw:
         """直近 stale result の `(frame_id, result_epoch, current_epoch)`。"""
 
         return self._last_stale_result
+
+    @property
+    def stale_generation_result_count(self) -> int:
+        """旧 worker 世代のため破棄した result 数を返す。"""
+
+        return int(self._stale_generation_result_count)
+
+    @property
+    def last_stale_generation_result(self) -> tuple[int, int, int] | None:
+        """直近の `(frame_id, result_generation, current_generation)`。"""
+
+        return self._last_stale_generation_result
 
     @property
     def pending_snapshot_update_count(self) -> int:
@@ -868,30 +1182,34 @@ class MpDraw:
         self._closed = True
 
         procs = list(self._procs)
+        retired_procs = list(getattr(self, "_retired_procs", []))
+        all_procs = procs + retired_procs
         self._send_stop_tokens(sum(proc.is_alive() for proc in procs))
         self._join_processes(procs, timeout=_WORKER_JOIN_TIMEOUT_S)
 
         # draw が停止しない worker だけを強制終了する。
-        for proc in procs:
+        for proc in all_procs:
             if proc.is_alive():
                 try:
                     proc.terminate()
                 except (AttributeError, OSError, ValueError):
                     pass
-        self._join_processes(procs, timeout=_WORKER_JOIN_TIMEOUT_S)
+        self._join_processes(all_procs, timeout=_WORKER_JOIN_TIMEOUT_S)
 
         # terminate にも反応しない場合を残さない。kill 後は timeout 無し join を避け、
         # close 自体が UI thread を永久に止めないようにする。
-        for proc in procs:
+        for proc in all_procs:
             if proc.is_alive():
                 try:
                     proc.kill()
                 except (AttributeError, OSError, ValueError):
                     pass
-        self._join_processes(procs, timeout=_WORKER_JOIN_TIMEOUT_S)
+        self._join_processes(all_procs, timeout=_WORKER_JOIN_TIMEOUT_S)
 
         clean_shutdown = all(proc.exitcode == 0 for proc in procs)
         self._procs.clear()
+        if hasattr(self, "_retired_procs"):
+            self._retired_procs.clear()
         self._close_queue(self._task_q, cancel_pending=not clean_shutdown)
         for control_q in self._control_qs:
             self._close_queue(control_q, cancel_pending=not clean_shutdown)
@@ -899,7 +1217,7 @@ class MpDraw:
         self._pending_snapshot_updates.clear()
         self._queued_snapshot_revisions.clear()
         self._control_index_by_pid.clear()
-        self._close_queue(self._result_q)
+        self._close_queue(self._result_q, cancel_pending=not clean_shutdown)
 
 
 __all__ = ["DrawResult", "MpDraw", "MpDrawWorkerError"]

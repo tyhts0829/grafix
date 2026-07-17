@@ -136,6 +136,8 @@ def test_autosave_failure_is_retried_after_debounce(tmp_path: Path) -> None:
     now[0] = 1.0
     with pytest.raises(OSError, match="disk busy"):
         autosave.tick()
+    assert autosave.status == "failed"
+    assert autosave.last_error == "OSError: disk busy"
 
     now[0] = 1.5
     assert autosave.tick() is False
@@ -143,6 +145,8 @@ def test_autosave_failure_is_retried_after_debounce(tmp_path: Path) -> None:
     assert autosave.tick() is True
     assert attempts[0] == 2
     assert autosave.dirty is False
+    assert autosave.status == "clean"
+    assert autosave.last_error is None
 
 
 def test_mark_clean_acknowledges_an_external_save(tmp_path: Path) -> None:
@@ -155,6 +159,30 @@ def test_mark_clean_acknowledges_an_external_save(tmp_path: Path) -> None:
 
     assert autosave.dirty is False
     assert autosave.flush() is False
+    assert autosave.status == "clean"
+
+
+def test_autosave_exposes_dirty_and_saving_states(tmp_path: Path) -> None:
+    store = ParamStore()
+    observed_statuses: list[str] = []
+    autosave: ParamStoreAutosave
+
+    def save(_store: ParamStore, _path: Path) -> None:
+        observed_statuses.append(autosave.status)
+
+    autosave = ParamStoreAutosave(
+        store,
+        tmp_path / "store.json",
+        debounce_seconds=1.0,
+        save=save,
+    )
+    _touch_with_parameter(store)
+
+    assert autosave.tick(now=-1.0) is False
+    assert autosave.status == "dirty"
+    assert autosave.tick(now=0.0) is True
+    assert observed_statuses == ["saving"]
+    assert autosave.status == "clean"
 
 
 def test_autosave_validates_max_interval(tmp_path: Path) -> None:

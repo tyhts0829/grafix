@@ -11,7 +11,7 @@ def test_close_event_is_handled_until_runner_teardown(
     monkeypatch: Any,
 ) -> None:
     handlers: dict[str, object] = {}
-    exit_calls: list[str] = []
+    close_calls: list[str] = []
 
     class Window:
         def push_handlers(self, **kwargs: object) -> None:
@@ -19,10 +19,15 @@ def test_close_event_is_handled_until_runner_teardown(
 
     window = cast(Any, Window())
     loop = MultiWindowLoop(
-        [WindowTask(window=window, draw_frame=lambda: None)],
+        [
+            WindowTask(
+                window=window,
+                draw_frame=lambda: None,
+                on_close=lambda: close_calls.append("close"),
+            )
+        ],
         fps=60.0,
     )
-    monkeypatch.setattr(pyglet.app, "exit", lambda: exit_calls.append("exit"))
     monkeypatch.setattr(pyglet.app, "run", lambda **_kwargs: None)
     monkeypatch.setattr(pyglet.clock, "schedule_interval", lambda *_args: None)
     monkeypatch.setattr(pyglet.clock, "unschedule", lambda *_args: None)
@@ -31,4 +36,97 @@ def test_close_event_is_handled_until_runner_teardown(
 
     on_close = cast(Any, handlers["on_close"])
     assert on_close() is pyglet.event.EVENT_HANDLED
-    assert exit_calls == ["exit"]
+    assert close_calls == ["close"]
+
+
+def test_each_window_uses_its_own_close_policy(monkeypatch: Any) -> None:
+    handlers: dict[str, dict[str, object]] = {}
+    calls: list[str] = []
+
+    class Window:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.visible = True
+
+        def push_handlers(self, **kwargs: object) -> None:
+            handlers.setdefault(self.name, {}).update(kwargs)
+
+        def set_visible(self, visible: bool) -> None:
+            self.visible = bool(visible)
+
+    preview = cast(Any, Window("preview"))
+    inspector = cast(Any, Window("inspector"))
+    monkeypatch.setattr(pyglet.app, "exit", lambda: calls.append("exit"))
+    loop = MultiWindowLoop(
+        [
+            WindowTask(
+                window=preview,
+                draw_frame=lambda: None,
+                on_close=pyglet.app.exit,
+            ),
+            WindowTask(
+                window=inspector,
+                draw_frame=lambda: None,
+                on_close=lambda: inspector.set_visible(False),
+            ),
+        ],
+        fps=60.0,
+    )
+    monkeypatch.setattr(pyglet.app, "run", lambda **_kwargs: None)
+    monkeypatch.setattr(pyglet.clock, "schedule_interval", lambda *_args: None)
+    monkeypatch.setattr(pyglet.clock, "unschedule", lambda *_args: None)
+
+    loop.run()
+
+    assert cast(Any, handlers["inspector"]["on_close"])() is pyglet.event.EVENT_HANDLED
+    assert inspector.visible is False
+    assert calls == []
+    assert cast(Any, handlers["preview"]["on_close"])() is pyglet.event.EVENT_HANDLED
+    assert calls == ["exit"]
+
+
+def test_hidden_window_is_skipped_by_draw_loop(monkeypatch: Any) -> None:
+    scheduled: list[Any] = []
+    drawn: list[str] = []
+
+    class Window:
+        def __init__(self, name: str, *, visible: bool) -> None:
+            self.name = name
+            self.visible = visible
+
+        def push_handlers(self, **_kwargs: object) -> None:
+            pass
+
+        def draw(self, _dt: float) -> None:
+            drawn.append(self.name)
+
+    preview = cast(Any, Window("preview", visible=True))
+    inspector = cast(Any, Window("inspector", visible=False))
+    loop = MultiWindowLoop(
+        [
+            WindowTask(
+                window=preview,
+                draw_frame=lambda: None,
+                on_close=lambda: None,
+            ),
+            WindowTask(
+                window=inspector,
+                draw_frame=lambda: None,
+                on_close=lambda: None,
+            ),
+        ],
+        fps=60.0,
+    )
+    monkeypatch.setattr(pyglet.app, "windows", {preview, inspector})
+    monkeypatch.setattr(pyglet.app, "run", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        pyglet.clock,
+        "schedule_interval",
+        lambda callback, _interval: scheduled.append(callback),
+    )
+    monkeypatch.setattr(pyglet.clock, "unschedule", lambda *_args: None)
+
+    loop.run()
+    scheduled[0](1.0 / 60.0)
+
+    assert drawn == ["preview"]

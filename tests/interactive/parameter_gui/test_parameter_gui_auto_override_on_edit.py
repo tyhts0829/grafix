@@ -34,11 +34,11 @@ def test_auto_enable_override_on_value_edit_enables_for_float() -> None:
     )
 
 
-def test_auto_enable_override_on_value_edit_is_disabled_for_bool() -> None:
+def test_auto_enable_override_on_checkbox_edit_enables_for_bool() -> None:
     row = _row(kind="bool", ui_value=False)
     assert (
         _should_auto_enable_override(row, before_ui_value=row.ui_value, after_ui_value=True)
-        is False
+        is True
     )
 
 
@@ -64,4 +64,3 @@ def test_auto_enable_override_choice_valid_value_change_enables() -> None:
         _should_auto_enable_override(row, before_ui_value=row.ui_value, after_ui_value="b")
         is True
     )
-

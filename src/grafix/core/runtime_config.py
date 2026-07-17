@@ -8,6 +8,8 @@
 
 - `config.yaml` を「同梱デフォルト → ユーザー設定（任意）」の順に適用して `RuntimeConfig` を構築
 - 探索パス（CWD / HOME）と、明示指定（`set_config_path()`）の両方に対応
+- merge 前の unknown key 検証と、値・range・MIDI mode の strict validation
+- ユーザー config 内の相対 path を config file の親基準に解決
 - 1 回ロードした結果をプロセス内でキャッシュ（設定を切り替える場合は `set_config_path()` で破棄）
 
 入出力 / 副作用
@@ -23,7 +25,12 @@
 
 from __future__ import annotations
 
+import difflib
+import math
 import os
+import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -34,6 +41,31 @@ from typing import Any
 _PARAMETER_GUI_FONT_SIZE_BASE_PX_DEFAULT = 14.0
 # 重みは合計 1.0 を要求しない（ここでは正の値であることだけを検証する）。
 _PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT = (0.36, 0.35, 0.18, 0.23)
+_PARAMETER_GUI_SHORTCUT_ACTIONS = (
+    "play_pause",
+    "reset_time",
+    "step_backward",
+    "step_forward",
+    "slower",
+    "faster",
+    "range_shift",
+    "range_min",
+    "range_max",
+    "cancel",
+    "undo",
+    "redo",
+)
+_PACKAGED_CONFIG_SOURCE = "grafix/resource/default_config.yaml"
+_MIDI_MODES = ("7bit", "14bit")
+_PATH_KEYS = frozenset(
+    {
+        "paths.output_dir",
+        "paths.sketch_dir",
+        "paths.preset_module_dirs",
+        "paths.font_dirs",
+    }
+)
+_PATH_LIST_KEYS = frozenset({"paths.preset_module_dirs", "paths.font_dirs"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +141,39 @@ class RuntimeConfig:
     parameter_gui_fallback_font_japanese: str | None
     parameter_gui_font_size_base_px: float
     parameter_gui_table_column_weights: tuple[float, float, float, float]
+    parameter_gui_shortcuts: tuple[tuple[str, str], ...]
     png_scale: float
     gcode: GCodeExportConfig
     midi_inputs: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfigValue:
+    """1 つの effective config leaf と出典・path 解決結果。"""
+
+    key: str
+    source: str
+    effective_value: object
+    is_path: bool
+    resolved_path: Path | tuple[Path, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfigReport:
+    """strict validation 後の config と leaf ごとの provenance。"""
+
+    config: RuntimeConfig
+    active_source: str
+    values: tuple[RuntimeConfigValue, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfigFallback:
+    """user config失敗後にpackaged defaultへ退避した事実。"""
+
+    summary: str
+    details: str
+    source: Path | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +192,7 @@ class _UiSection:
     parameter_gui_fallback_font_japanese: str | None
     parameter_gui_font_size_base_px: float
     parameter_gui_table_column_weights: tuple[float, float, float, float]
+    parameter_gui_shortcuts: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +206,7 @@ class _ExportSection:
 _EXPLICIT_CONFIG_PATH: Path | None = None
 # `runtime_config()` のプロセス内キャッシュ。設定を切り替える場合は破棄する。
 _CONFIG_CACHE: RuntimeConfig | None = None
+_CONFIG_REPORT_CACHE: RuntimeConfigReport | None = None
 
 
 def set_config_path(path: str | Path | None) -> None:
@@ -156,18 +220,48 @@ def set_config_path(path: str | Path | None) -> None:
     Notes
     -----
     - `path` を None にすると明示指定を解除し、既定の探索に戻る。
-    - `path` は `~` を展開して保持する（環境変数の展開はしない）。
+    - `path` は `~` を展開し、呼び出し時の CWD で絶対化して保持する。
     - 設定が変わるため、`runtime_config()` のキャッシュを破棄する。
     """
 
-    global _EXPLICIT_CONFIG_PATH, _CONFIG_CACHE
+    global _EXPLICIT_CONFIG_PATH, _CONFIG_CACHE, _CONFIG_REPORT_CACHE
     if path is None:
         _EXPLICIT_CONFIG_PATH = None
         _CONFIG_CACHE = None
+        _CONFIG_REPORT_CACHE = None
         return
-    p = Path(str(path)).expanduser()
+    p = Path(str(path)).expanduser().resolve(strict=False)
     _EXPLICIT_CONFIG_PATH = p
     _CONFIG_CACHE = None
+    _CONFIG_REPORT_CACHE = None
+
+
+@contextmanager
+def runtime_config_scope(path: str | Path | None) -> Iterator[RuntimeConfig]:
+    """明示 config と cache を scope 内だけ切り替える。
+
+    ``RenderSession`` のように評価期間全体で同じ effective config を使う呼び出し元向けの
+    process-global scope である。終了時は呼び出し前の明示 path と cache/report をそのまま
+    復元する。並列 session の調停は行わず、通常の context manager と同じ LIFO で使う。
+
+    Parameters
+    ----------
+    path:
+        scope 内で使う明示 config path。None は明示指定を解除した探索モード。
+
+    Yields
+    ------
+    RuntimeConfig
+        scope 開始時に一度だけロードし、その期間中 cache に固定する effective config。
+    """
+
+    global _EXPLICIT_CONFIG_PATH, _CONFIG_CACHE, _CONFIG_REPORT_CACHE
+    previous = (_EXPLICIT_CONFIG_PATH, _CONFIG_CACHE, _CONFIG_REPORT_CACHE)
+    try:
+        set_config_path(path)
+        yield runtime_config()
+    finally:
+        _EXPLICIT_CONFIG_PATH, _CONFIG_CACHE, _CONFIG_REPORT_CACHE = previous
 
 
 def _default_config_candidates() -> tuple[Path, ...]:
@@ -257,17 +351,15 @@ def _as_int_pair(value: Any, *, key: str) -> tuple[int, int] | None:
 
     if value is None:
         return None
-    try:
-        seq = list(value)
-    except Exception as exc:
-        raise RuntimeError(f"{key} は [x, y] の配列である必要があります: got={value!r}") from exc
+    if not isinstance(value, list):
+        raise RuntimeError(f"{key} は [x, y] の配列である必要があります: got={value!r}")
+    seq = value
     if len(seq) != 2:
         raise RuntimeError(f"{key} は [x, y] の配列である必要があります: got={value!r}")
-    try:
-        x = int(seq[0])
-        y = int(seq[1])
-    except Exception as exc:
-        raise RuntimeError(f"{key} は [x, y] の整数配列である必要があります: got={value!r}") from exc
+    x = _as_int(seq[0], key=f"{key}[0]")
+    y = _as_int(seq[1], key=f"{key}[1]")
+    if x is None or y is None:
+        raise RuntimeError(f"{key} は [x, y] の整数配列である必要があります: got={value!r}")
     return (x, y)
 
 
@@ -276,18 +368,16 @@ def _as_float_pair(value: Any, *, key: str) -> tuple[float, float] | None:
 
     if value is None:
         return None
-    try:
-        seq = list(value)
-    except Exception as exc:
-        raise RuntimeError(f"{key} は [x, y] の配列である必要があります: got={value!r}") from exc
+    if not isinstance(value, list):
+        raise RuntimeError(f"{key} は [x, y] の配列である必要があります: got={value!r}")
+    seq = value
     if len(seq) != 2:
         raise RuntimeError(f"{key} は [x, y] の配列である必要があります: got={value!r}")
-    try:
-        x = float(seq[0])
-        y = float(seq[1])
-    except Exception as exc:
-        raise RuntimeError(f"{key} は [x, y] の数値配列である必要があります: got={value!r}") from exc
-    return (float(x), float(y))
+    x = _as_float(seq[0], key=f"{key}[0]")
+    y = _as_float(seq[1], key=f"{key}[1]")
+    if x is None or y is None:
+        raise RuntimeError(f"{key} は [x, y] の数値配列である必要があります: got={value!r}")
+    return (x, y)
 
 
 def _as_int(value: Any, *, key: str) -> int | None:
@@ -295,6 +385,11 @@ def _as_int(value: Any, *, key: str) -> int | None:
 
     if value is None:
         return None
+    if isinstance(value, bool):
+        raise RuntimeError(f"{key} は整数である必要があります: got={value!r}")
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise RuntimeError(f"{key} は整数である必要があります: got={value!r}")
     try:
         return int(value)
     except Exception as exc:
@@ -318,10 +413,15 @@ def _as_float(value: Any, *, key: str) -> float | None:
 
     if value is None:
         return None
+    if isinstance(value, bool):
+        raise RuntimeError(f"{key} は数値である必要があります: got={value!r}")
     try:
-        return float(value)
+        number = float(value)
     except Exception as exc:
         raise RuntimeError(f"{key} は数値である必要があります: got={value!r}") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{key} は finite な数値である必要があります: got={value!r}")
+    return number
 
 
 def _as_midi_inputs(value: Any) -> list[tuple[str, str]]:
@@ -330,30 +430,39 @@ def _as_midi_inputs(value: Any) -> list[tuple[str, str]]:
     期待する形:
     - `[{port_name: "...", mode: "..."}, ...]`
 
-    パース方針:
-    - 不正な要素（dict でない / key が不足 / 空文字）は無視する
-    - mode の妥当性チェックはこの層では行わない（上位層で解釈する前提）
+    不正な要素は無視せず、index を含むエラーとして報告する。
     """
 
     if value is None:
         return []
-    try:
-        seq = list(value)
-    except Exception:
-        return []
+    if not isinstance(value, list):
+        raise RuntimeError(f"midi.inputs は mapping の配列である必要があります: got={value!r}")
 
     out: list[tuple[str, str]] = []
-    for item in seq:
+    for index, item in enumerate(value):
         if not isinstance(item, dict):
-            continue
+            raise RuntimeError(f"midi.inputs[{index}] は mapping である必要があります")
         port_name = item.get("port_name")
         mode = item.get("mode")
         if port_name is None or mode is None:
-            continue
-        port_s = str(port_name).strip()
-        mode_s = str(mode).strip()
+            raise RuntimeError(
+                f"midi.inputs[{index}] に port_name と mode が必要です"
+            )
+        if not isinstance(port_name, str) or not isinstance(mode, str):
+            raise RuntimeError(
+                f"midi.inputs[{index}].port_name/mode は文字列である必要があります"
+            )
+        port_s = port_name.strip()
+        mode_s = mode.strip()
         if not port_s or not mode_s:
-            continue
+            raise RuntimeError(
+                f"midi.inputs[{index}].port_name/mode に空文字は使えません"
+            )
+        if mode_s not in _MIDI_MODES:
+            raise ValueError(
+                f"midi.inputs[{index}].mode は {_MIDI_MODES} のいずれかである必要があります"
+                f": got={mode_s!r}"
+            )
         out.append((port_s, mode_s))
     return out
 
@@ -367,20 +476,19 @@ def _as_float_quad(
 
     if value is None:
         return None
-    try:
-        seq = list(value)
-    except Exception as exc:
-        raise RuntimeError(f"{key} は [a, b, c, d] の配列である必要があります: got={value!r}") from exc
+    if not isinstance(value, list):
+        raise RuntimeError(f"{key} は [a, b, c, d] の配列である必要があります: got={value!r}")
+    seq = value
     if len(seq) != 4:
         raise RuntimeError(f"{key} は [a, b, c, d] の配列である必要があります: got={value!r}")
-    try:
-        a = float(seq[0])
-        b = float(seq[1])
-        c = float(seq[2])
-        d = float(seq[3])
-    except Exception as exc:
-        raise RuntimeError(f"{key} は [a, b, c, d] の数値配列である必要があります: got={value!r}") from exc
-    return (float(a), float(b), float(c), float(d))
+    numbers = tuple(_as_float(item, key=f"{key}[{index}]") for index, item in enumerate(seq))
+    if any(number is None for number in numbers):
+        raise RuntimeError(
+            f"{key} は [a, b, c, d] の数値配列である必要があります: got={value!r}"
+        )
+    a, b, c, d = numbers
+    assert a is not None and b is not None and c is not None and d is not None
+    return (a, b, c, d)
 
 
 def _load_yaml_text(text: str, *, source: str) -> dict[str, Any]:
@@ -447,6 +555,181 @@ def _load_packaged_default_config() -> dict[str, Any]:
     return _load_yaml_text(blob, source="grafix/resource/default_config.yaml")
 
 
+def _unknown_key_message(
+    *,
+    key: object,
+    parent: tuple[str, ...],
+    known_keys: tuple[str, ...],
+    source: str,
+) -> str:
+    """unknown key と同じ階層の近似候補を含むエラー文を作る。"""
+
+    key_s = str(key)
+    full_key = ".".join((*parent, key_s))
+    matches = difflib.get_close_matches(key_s, known_keys, n=1, cutoff=0.55)
+    suggestion = ""
+    if matches:
+        suggested_key = ".".join((*parent, matches[0]))
+        suggestion = f"; 候補: {suggested_key!r}"
+    return f"未定義の config key: {full_key!r} (source={source}){suggestion}"
+
+
+def _validate_midi_item_keys(value: Any, *, source: str) -> None:
+    """``midi.inputs`` の item key を merge 前に検証する。"""
+
+    if not isinstance(value, list):
+        return
+    known_keys = ("port_name", "mode")
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        for key in item:
+            if key not in known_keys:
+                raise RuntimeError(
+                    _unknown_key_message(
+                        key=key,
+                        parent=("midi", "inputs", str(index)),
+                        known_keys=known_keys,
+                        source=source,
+                    )
+                )
+
+
+def _validate_known_key_tree(
+    payload: dict[str, Any],
+    *,
+    schema: dict[str, Any],
+    source: str,
+    parent: tuple[str, ...] = (),
+) -> None:
+    """override の key が packaged default の既知 tree 内にあるか検証する。"""
+
+    known_keys = tuple(str(key) for key in schema)
+    for key, value in payload.items():
+        if key not in schema:
+            raise RuntimeError(
+                _unknown_key_message(
+                    key=key,
+                    parent=parent,
+                    known_keys=known_keys,
+                    source=source,
+                )
+            )
+
+        key_s = str(key)
+        path = (*parent, key_s)
+        schema_value = schema[key]
+        if isinstance(value, dict) and isinstance(schema_value, dict):
+            _validate_known_key_tree(
+                value,
+                schema=schema_value,
+                source=source,
+                parent=path,
+            )
+        elif path == ("midi", "inputs"):
+            _validate_midi_item_keys(value, source=source)
+
+
+def _resolve_path_text(value: Any, *, base_dir: Path, key: str) -> str | None:
+    """config path 文字列を ``base_dir`` 基準の絶対 path にする。"""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError(f"{key} は path 文字列である必要があります: got={value!r}")
+    text = value.strip()
+    if not text:
+        return ""
+    path = Path(_expand_path_text(text))
+    if not path.is_absolute():
+        path = base_dir / path
+    return str(path.resolve(strict=False))
+
+
+def _resolve_path_list(value: Any, *, base_dir: Path, key: str) -> list[str]:
+    """config path 配列を ``base_dir`` 基準の絶対 path 配列にする。"""
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items: list[Any] = [part for part in value.split(os.pathsep) if part]
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise RuntimeError(f"{key} は path 文字列の配列である必要があります: got={value!r}")
+
+    resolved: list[str] = []
+    for index, item in enumerate(items):
+        path = _resolve_path_text(item, base_dir=base_dir, key=f"{key}[{index}]")
+        if path:
+            resolved.append(path)
+    return resolved
+
+
+def _resolve_layer_paths(
+    payload: dict[str, Any],
+    *,
+    base_dir: Path,
+    parent: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """1 config file に含まれる path leaf だけを絶対化する。"""
+
+    resolved: dict[str, Any] = {}
+    for key, value in payload.items():
+        path = (*parent, str(key))
+        dotted = ".".join(path)
+        if dotted in _PATH_LIST_KEYS:
+            resolved[key] = _resolve_path_list(value, base_dir=base_dir, key=dotted)
+        elif dotted in _PATH_KEYS:
+            resolved[key] = _resolve_path_text(value, base_dir=base_dir, key=dotted)
+        elif isinstance(value, dict):
+            resolved[key] = _resolve_layer_paths(value, base_dir=base_dir, parent=path)
+        else:
+            resolved[key] = value
+    return resolved
+
+
+def _flatten_config_leaves(
+    payload: dict[str, Any],
+    *,
+    parent: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """nested config mapping を dotted leaf mapping にする。"""
+
+    leaves: dict[str, Any] = {}
+    for key, value in payload.items():
+        path = (*parent, str(key))
+        if isinstance(value, dict):
+            leaves.update(_flatten_config_leaves(value, parent=path))
+        else:
+            leaves[".".join(path)] = value
+    return leaves
+
+
+def _freeze_report_value(value: Any) -> object:
+    """report が mutable YAML 値を保持しないようにする。"""
+
+    if isinstance(value, dict):
+        return tuple((str(key), _freeze_report_value(item)) for key, item in value.items())
+    if isinstance(value, list):
+        return tuple(_freeze_report_value(item) for item in value)
+    return value
+
+
+def _resolved_report_path(
+    *,
+    key: str,
+    value: Any,
+    base_dir: Path,
+) -> Path | tuple[Path, ...] | None:
+    """raw effective path を show 用に絶対化する。"""
+
+    if key in _PATH_LIST_KEYS:
+        return tuple(Path(path) for path in _resolve_path_list(value, base_dir=base_dir, key=key))
+    resolved = _resolve_path_text(value, base_dir=base_dir, key=key)
+    return None if not resolved else Path(resolved)
+
+
 def _merge_mappings(
     base: dict[str, Any],
     override: dict[str, Any],
@@ -471,12 +754,8 @@ def _validate_version(payload: dict[str, Any]) -> None:
         raise RuntimeError(
             "config.yaml の version が未設定です（同梱 default_config.yaml を確認してください）"
         )
-    try:
-        version_i = int(version)
-    except Exception as exc:
-        raise RuntimeError(
-            f"config.yaml の version は整数である必要があります: got={version!r}"
-        ) from exc
+    version_i = _as_int(version, key="config.yaml.version")
+    assert version_i is not None
     if version_i != 1:
         raise RuntimeError(f"未対応の config.yaml version です: got={version_i}")
 
@@ -533,6 +812,11 @@ def _parse_ui_section(payload: dict[str, Any]) -> _UiSection:
             "ui.parameter_gui.window_size が未設定です"
             "（同梱 default_config.yaml を確認してください）"
         )
+    if window_size[0] <= 0 or window_size[1] <= 0:
+        raise ValueError(
+            "ui.parameter_gui.window_size は正の整数ペアである必要があります"
+            f": got={window_size}"
+        )
 
     font_size = _as_float(
         parameter_gui.get("font_size_base_px"),
@@ -558,6 +842,19 @@ def _parse_ui_section(payload: dict[str, Any]) -> _UiSection:
             f": got={column_weights}"
         )
 
+    shortcut_values = _as_mapping(
+        parameter_gui.get("shortcuts"),
+        key="ui.parameter_gui.shortcuts",
+    )
+    shortcuts: list[tuple[str, str]] = []
+    for action in _PARAMETER_GUI_SHORTCUT_ACTIONS:
+        key_name = str(shortcut_values.get(action, "")).strip().upper()
+        if not key_name or not key_name.replace("_", "").isalnum():
+            raise ValueError(
+                f"ui.parameter_gui.shortcuts.{action} はpyglet key名である必要があります"
+            )
+        shortcuts.append((action, key_name))
+
     return _UiSection(
         window_pos_draw=window_pos_draw,
         window_pos_parameter_gui=window_pos_parameter_gui,
@@ -567,6 +864,7 @@ def _parse_ui_section(payload: dict[str, Any]) -> _UiSection:
         ),
         parameter_gui_font_size_base_px=float(font_size),
         parameter_gui_table_column_weights=column_weights,
+        parameter_gui_shortcuts=tuple(shortcuts),
     )
 
 
@@ -608,6 +906,16 @@ def _parse_gcode_section(gcode: dict[str, Any]) -> GCodeExportConfig:
         raise RuntimeError(
             "export.gcode.draw_feed が未設定です"
             "（同梱 default_config.yaml を確認してください）"
+        )
+    if travel_feed <= 0.0:
+        raise ValueError(
+            "export.gcode.travel_feed は正の値である必要があります"
+            f": got={travel_feed}"
+        )
+    if draw_feed <= 0.0:
+        raise ValueError(
+            "export.gcode.draw_feed は正の値である必要があります"
+            f": got={draw_feed}"
         )
     z_up = _as_float(gcode.get("z_up"), key="export.gcode.z_up")
     if z_up is None:
@@ -662,6 +970,35 @@ def _parse_gcode_section(gcode: dict[str, Any]) -> GCodeExportConfig:
             f": got={bridge_draw_distance}"
         )
 
+    bed_x_range = _as_float_pair(
+        gcode.get("bed_x_range"),
+        key="export.gcode.bed_x_range",
+    )
+    if bed_x_range is not None and bed_x_range[0] >= bed_x_range[1]:
+        raise ValueError(
+            "export.gcode.bed_x_range は [min, max] の昇順である必要があります"
+            f": got={bed_x_range}"
+        )
+    bed_y_range = _as_float_pair(
+        gcode.get("bed_y_range"),
+        key="export.gcode.bed_y_range",
+    )
+    if bed_y_range is not None and bed_y_range[0] >= bed_y_range[1]:
+        raise ValueError(
+            "export.gcode.bed_y_range は [min, max] の昇順である必要があります"
+            f": got={bed_y_range}"
+        )
+
+    canvas_height_mm = _as_float(
+        gcode.get("canvas_height_mm"),
+        key="export.gcode.canvas_height_mm",
+    )
+    if canvas_height_mm is not None and canvas_height_mm <= 0.0:
+        raise ValueError(
+            "export.gcode.canvas_height_mm は正の値である必要があります"
+            f": got={canvas_height_mm}"
+        )
+
     optimize_travel = _as_bool(
         gcode.get("optimize_travel"),
         key="export.gcode.optimize_travel",
@@ -690,21 +1027,12 @@ def _parse_gcode_section(gcode: dict[str, Any]) -> GCodeExportConfig:
         origin=(float(origin[0]), float(origin[1])),
         decimals=int(decimals),
         paper_margin_mm=float(paper_margin_mm),
-        bed_x_range=_as_float_pair(
-            gcode.get("bed_x_range"),
-            key="export.gcode.bed_x_range",
-        ),
-        bed_y_range=_as_float_pair(
-            gcode.get("bed_y_range"),
-            key="export.gcode.bed_y_range",
-        ),
+        bed_x_range=bed_x_range,
+        bed_y_range=bed_y_range,
         bridge_draw_distance=bridge_draw_distance,
         optimize_travel=bool(optimize_travel),
         allow_reverse=bool(allow_reverse),
-        canvas_height_mm=_as_float(
-            gcode.get("canvas_height_mm"),
-            key="export.gcode.canvas_height_mm",
-        ),
+        canvas_height_mm=canvas_height_mm,
     )
 
 
@@ -748,9 +1076,10 @@ def runtime_config() -> RuntimeConfig:
     - 一度ロードした結果はモジュール内にキャッシュされる。
       `set_config_path()` はキャッシュを破棄するため、次回呼び出しで再ロードされる。
     - ユーザー設定は mapping を再帰的にマージし、未指定の同梱既定値を維持する。
+    - ユーザー設定の key tree は merge 前に検証され、unknown key は近似候補とともに拒否される。
     """
 
-    global _CONFIG_CACHE
+    global _CONFIG_CACHE, _CONFIG_REPORT_CACHE
     # キャッシュがあれば即返す。設定の切り替えは `set_config_path()` で行う。
     if _CONFIG_CACHE is not None:
         return _CONFIG_CACHE
@@ -766,12 +1095,59 @@ def runtime_config() -> RuntimeConfig:
             discovered_path = p
             break
 
-    # 同梱デフォルトをベースにし、ユーザー設定で指定された leaf だけを上書きする。
-    payload = _load_packaged_default_config()
+    # 各 layer を merge する前に key tree を検証し、user config 内の path は
+    # その config file の親を基準に絶対化する。packaged default は従来どおり
+    # project CWD 相対を維持する。
+    packaged_payload = _load_packaged_default_config()
+    layers: list[tuple[dict[str, Any], str, Path, bool]] = [
+        (packaged_payload, _PACKAGED_CONFIG_SOURCE, Path.cwd().resolve(), False)
+    ]
     if discovered_path is not None:
-        payload = _merge_mappings(payload, _load_yaml_config(discovered_path))
+        discovered_payload = _load_yaml_config(discovered_path)
+        discovered_source = str(discovered_path.resolve(strict=False))
+        _validate_known_key_tree(
+            discovered_payload,
+            schema=packaged_payload,
+            source=discovered_source,
+        )
+        layers.append(
+            (
+                discovered_payload,
+                discovered_source,
+                discovered_path.resolve(strict=False).parent,
+                True,
+            )
+        )
     if explicit_path is not None:
-        payload = _merge_mappings(payload, _load_yaml_config(explicit_path))
+        explicit_payload = _load_yaml_config(explicit_path)
+        explicit_source = str(explicit_path.resolve(strict=False))
+        _validate_known_key_tree(
+            explicit_payload,
+            schema=packaged_payload,
+            source=explicit_source,
+        )
+        layers.append(
+            (
+                explicit_payload,
+                explicit_source,
+                explicit_path.resolve(strict=False).parent,
+                True,
+            )
+        )
+
+    raw_effective: dict[str, Any] = {}
+    payload: dict[str, Any] = {}
+    source_by_key: dict[str, str] = {}
+    base_dir_by_key: dict[str, Path] = {}
+    for layer, source, base_dir, resolve_paths in layers:
+        raw_effective = _merge_mappings(raw_effective, layer)
+        runtime_layer = (
+            _resolve_layer_paths(layer, base_dir=base_dir) if resolve_paths else layer
+        )
+        payload = _merge_mappings(payload, runtime_layer)
+        for key in _flatten_config_leaves(layer):
+            source_by_key[key] = source
+            base_dir_by_key[key] = base_dir
 
     _validate_version(payload)
     paths = _parse_paths_section(payload)
@@ -792,12 +1168,128 @@ def runtime_config() -> RuntimeConfig:
         parameter_gui_fallback_font_japanese=ui.parameter_gui_fallback_font_japanese,
         parameter_gui_font_size_base_px=ui.parameter_gui_font_size_base_px,
         parameter_gui_table_column_weights=ui.parameter_gui_table_column_weights,
+        parameter_gui_shortcuts=ui.parameter_gui_shortcuts,
         png_scale=export.png_scale,
         gcode=export.gcode,
         midi_inputs=midi_inputs,
     )
+    raw_leaves = _flatten_config_leaves(raw_effective)
+    report_values: list[RuntimeConfigValue] = []
+    for key in sorted(raw_leaves):
+        is_path = key in _PATH_KEYS
+        resolved_path = None
+        if is_path:
+            resolved_path = _resolved_report_path(
+                key=key,
+                value=raw_leaves[key],
+                base_dir=base_dir_by_key[key],
+            )
+        report_values.append(
+            RuntimeConfigValue(
+                key=key,
+                source=source_by_key[key],
+                effective_value=_freeze_report_value(raw_leaves[key]),
+                is_path=is_path,
+                resolved_path=resolved_path,
+            )
+        )
+
     _CONFIG_CACHE = cfg
+    _CONFIG_REPORT_CACHE = RuntimeConfigReport(
+        config=cfg,
+        active_source=str(cfg.config_path) if cfg.config_path is not None else _PACKAGED_CONFIG_SOURCE,
+        values=tuple(report_values),
+    )
     return cfg
+
+
+def runtime_config_report() -> RuntimeConfigReport:
+    """strict validation 後の config と leaf ごとの出典を返す（キャッシュ）。"""
+
+    if _CONFIG_REPORT_CACHE is None:
+        runtime_config()
+    assert _CONFIG_REPORT_CACHE is not None
+    return _CONFIG_REPORT_CACHE
+
+
+def _packaged_runtime_config_report() -> RuntimeConfigReport:
+    """user layerを読まず、同梱defaultだけからstrict configを構築する。"""
+
+    payload = _load_packaged_default_config()
+    _validate_version(payload)
+    paths = _parse_paths_section(payload)
+    ui = _parse_ui_section(payload)
+    export = _parse_export_section(payload)
+    midi_inputs = _parse_midi_section(payload)
+    cfg = RuntimeConfig(
+        config_path=None,
+        output_dir=paths.output_dir,
+        sketch_dir=paths.sketch_dir,
+        preset_module_dirs=paths.preset_module_dirs,
+        font_dirs=paths.font_dirs,
+        window_pos_draw=ui.window_pos_draw,
+        window_pos_parameter_gui=ui.window_pos_parameter_gui,
+        parameter_gui_window_size=ui.parameter_gui_window_size,
+        parameter_gui_fallback_font_japanese=ui.parameter_gui_fallback_font_japanese,
+        parameter_gui_font_size_base_px=ui.parameter_gui_font_size_base_px,
+        parameter_gui_table_column_weights=ui.parameter_gui_table_column_weights,
+        parameter_gui_shortcuts=ui.parameter_gui_shortcuts,
+        png_scale=export.png_scale,
+        gcode=export.gcode,
+        midi_inputs=midi_inputs,
+    )
+    values: list[RuntimeConfigValue] = []
+    base_dir = Path.cwd().resolve()
+    for key, value in sorted(_flatten_config_leaves(payload).items()):
+        is_path = key in _PATH_KEYS
+        values.append(
+            RuntimeConfigValue(
+                key=key,
+                source=_PACKAGED_CONFIG_SOURCE,
+                effective_value=_freeze_report_value(value),
+                is_path=is_path,
+                resolved_path=(
+                    _resolved_report_path(key=key, value=value, base_dir=base_dir)
+                    if is_path
+                    else None
+                ),
+            )
+        )
+    return RuntimeConfigReport(
+        config=cfg,
+        active_source=_PACKAGED_CONFIG_SOURCE,
+        values=tuple(values),
+    )
+
+
+def runtime_config_with_fallback() -> tuple[RuntimeConfig, RuntimeConfigFallback | None]:
+    """strict user configを試し、失敗時だけ通知情報付きでdefaultへ退避する。
+
+    CLI validationは従来どおり :func:`runtime_config_report` を直接呼び、失敗を
+    exit codeへ変換する。interactive runnerだけがこの明示fallbackを使用する。
+    fallback後は同一session内の全consumerが同じconfigを見るようcacheへ固定する。
+    """
+
+    global _CONFIG_CACHE, _CONFIG_REPORT_CACHE
+    try:
+        return runtime_config(), None
+    except (OSError, RuntimeError, ValueError) as exc:
+        source = _EXPLICIT_CONFIG_PATH
+        if source is None:
+            source = next(
+                (path for path in _default_config_candidates() if path.is_file()),
+                None,
+            )
+        report = _packaged_runtime_config_report()
+        _CONFIG_CACHE = report.config
+        _CONFIG_REPORT_CACHE = report
+        return report.config, RuntimeConfigFallback(
+            summary=f"{type(exc).__name__}: {exc}",
+            details="".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            ),
+            source=None if source is None else source.resolve(strict=False),
+        )
 
 
 def output_root_dir() -> Path:
@@ -814,7 +1306,13 @@ def output_root_dir() -> Path:
 __all__ = [
     "GCodeExportConfig",
     "RuntimeConfig",
+    "RuntimeConfigReport",
+    "RuntimeConfigFallback",
+    "RuntimeConfigValue",
     "output_root_dir",
     "runtime_config",
+    "runtime_config_report",
+    "runtime_config_scope",
+    "runtime_config_with_fallback",
     "set_config_path",
 ]

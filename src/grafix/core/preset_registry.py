@@ -69,6 +69,22 @@ class PresetRegistry:
     def __contains__(self, op: object) -> bool:
         return str(op) in self._items
 
+    def items(self) -> ItemsView[str, PresetSpec]:
+        """登録済みpreset specのviewを返す。"""
+
+        return self._items.items()
+
+    def replace_all(self, specs: Mapping[str, PresetSpec]) -> None:
+        """candidate preset spec集合へ一括置換する。"""
+
+        normalized: dict[str, PresetSpec] = {}
+        for op, spec in specs.items():
+            if not isinstance(spec, PresetSpec):
+                raise TypeError("preset spec は PresetSpec である必要があります")
+            normalized[str(op)] = spec
+        self._items = normalized
+        self._revision += 1
+
     def get_meta(self, op: str) -> dict[str, ParamMeta]:
         """op 名に対応する ParamMeta 辞書を取得する。"""
 
@@ -117,6 +133,16 @@ class PresetFuncRegistry:
         """登録済みエントリの (name, func) ビューを返す。"""
 
         return self._items.items()
+
+    def replace_all(self, funcs: Mapping[str, Callable[..., SceneItem]]) -> None:
+        """candidate preset callable集合へ一括置換する。"""
+
+        normalized: dict[str, Callable[..., SceneItem]] = {}
+        for name, func in funcs.items():
+            if not callable(func):
+                raise TypeError("preset func は callable である必要があります")
+            normalized[str(name)] = func
+        self._items = normalized
 
     def get(self, name: str) -> Callable[..., SceneItem] | None:
         """name に対応する callable preset を返す。未登録なら None を返す。"""

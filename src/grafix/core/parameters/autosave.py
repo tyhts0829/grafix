@@ -8,11 +8,13 @@ import time
 from collections.abc import Callable
 from math import isfinite
 from pathlib import Path
+from typing import Literal
 
 from .persistence import save_param_store
 from .store import ParamStore
 
 SaveParamStore = Callable[[ParamStore, Path], None]
+AutosaveStatus = Literal["clean", "dirty", "saving", "failed"]
 
 
 class ParamStoreAutosave:
@@ -42,6 +44,8 @@ class ParamStoreAutosave:
         self._saved_revision = store.revision
         self._dirty_since: float | None = None
         self._first_dirty_at: float | None = None
+        self._status: AutosaveStatus = "clean"
+        self._last_error: str | None = None
 
     @property
     def path(self) -> Path:
@@ -54,6 +58,18 @@ class ParamStoreAutosave:
     @property
     def last_saved_revision(self) -> int:
         return self._saved_revision
+
+    @property
+    def status(self) -> AutosaveStatus:
+        """現在の保存状態を返す。"""
+
+        return self._status
+
+    @property
+    def last_error(self) -> str | None:
+        """直近の保存失敗を返す。成功後は None。"""
+
+        return self._last_error
 
     def tick(self, *, now: float | None = None) -> bool:
         """変更を観測し、debounce または最大間隔到達時に保存する。"""
@@ -87,6 +103,8 @@ class ParamStoreAutosave:
         self._saved_revision = self._store.revision
         self._dirty_since = None
         self._first_dirty_at = None
+        self._status = "clean"
+        self._last_error = None
 
     def _observe(self, now: float) -> None:
         revision = self._store.revision
@@ -96,22 +114,30 @@ class ParamStoreAutosave:
         if self._first_dirty_at is None:
             self._first_dirty_at = now
         self._dirty_since = now
+        if self._status != "failed":
+            self._status = "dirty"
 
     def _save_now(self, *, retry_from: float) -> bool:
+        self._status = "saving"
+        self._last_error = None
         try:
             # 既存 save_param_store が atomic write と保存前 cleanup を担当する。
             self._save(self._store, self._path)
-        except Exception:
+        except Exception as exc:
             # 毎 frame リトライする hot loop を避け、次の debounce 後に再試行する。
             self._observed_revision = self._store.revision
             self._dirty_since = retry_from
             self._first_dirty_at = retry_from
+            self._status = "failed"
+            self._last_error = f"{type(exc).__name__}: {exc}"
             raise
         self._observed_revision = self._store.revision
         self._saved_revision = self._store.revision
         self._dirty_since = None
         self._first_dirty_at = None
+        self._status = "clean"
+        self._last_error = None
         return True
 
 
-__all__ = ["ParamStoreAutosave", "SaveParamStore"]
+__all__ = ["AutosaveStatus", "ParamStoreAutosave", "SaveParamStore"]

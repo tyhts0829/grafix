@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
 from .effects import EffectChainIndex
 from .key import ParameterKey
@@ -82,6 +83,31 @@ class ParamStoreMemento:
 
         # 従来コンストラクタ API は保つが、code-owned 値は保存しない。
         _ = explicit_by_key, labels, ordinals
+
+    @classmethod
+    def _from_gui_owned_parts(
+        cls,
+        *,
+        states: dict[ParameterKey, ParamState],
+        meta: dict[ParameterKey, ParamMeta],
+        collapsed_by_header: dict[str, bool],
+    ) -> ParamStoreMemento:
+        """永続化済み GUI-owned 部分から memento を再構築する。
+
+        Notes
+        -----
+        named variation の codec 向けの package-private constructor。
+        通常の capture は ``capture_param_store_memento`` を使う。
+        """
+
+        memento = cls.__new__(cls)
+        memento._states = deepcopy(states)
+        memento._meta = deepcopy(meta)
+        memento._collapsed_by_header = {
+            str(header): bool(collapsed)
+            for header, collapsed in collapsed_by_header.items()
+        }
+        return memento
 
 
 def capture_param_store_memento(store: ParamStore) -> ParamStoreMemento:
@@ -183,11 +209,10 @@ def restore_param_store_memento(
         if current_meta.ui_min != saved_meta.ui_min or current_meta.ui_max != saved_meta.ui_max:
             # kind/choices は現在の code-owned metadata を保持し、GUI が
             # 編集する range だけを復元する。
-            store._meta[_key] = ParamMeta(
-                kind=str(current_meta.kind),
+            store._meta[_key] = replace(
+                current_meta,
                 ui_min=deepcopy(saved_meta.ui_min),
                 ui_max=deepcopy(saved_meta.ui_max),
-                choices=current_meta.choices,
             )
             changed = True
 

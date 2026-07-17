@@ -32,6 +32,16 @@ def assert_invariants(store: ParamStore) -> None:
         assert isinstance(key, ParameterKey)
         assert isinstance(value, bool)
 
+    for key in store._locked_keys_ref():
+        assert isinstance(key, ParameterKey)
+        assert key in store._states
+        assert key in store._meta
+
+    for key in store._favorite_keys_ref():
+        assert isinstance(key, ParameterKey)
+        assert key in store._states
+        assert key in store._meta
+
     labels = store._labels_ref().as_dict()
     for (op, site_id), label in labels.items():
         assert isinstance(op, str)
@@ -77,6 +87,16 @@ def assert_invariants(store: ParamStore) -> None:
     for op, site_id in runtime.observed_groups:
         assert isinstance(op, str)
         assert isinstance(site_id, str)
+    for new_group, orphan in runtime.reconcile_orphans.items():
+        assert new_group == orphan.new_group
+        assert orphan.candidate_old_groups
+        assert all(
+            old_group[0] == new_group[0]
+            for old_group in orphan.candidate_old_groups
+        )
+        assert all(
+            old_group != new_group for old_group in orphan.candidate_old_groups
+        )
 
     # snapshot は pure 前提（= 不足補完をしない）なので、ここで例外が出るのは不変条件違反。
     snapshot = store_snapshot(store)

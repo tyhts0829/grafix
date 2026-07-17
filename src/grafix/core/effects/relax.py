@@ -6,6 +6,7 @@ import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
@@ -183,14 +184,30 @@ def relax(
     if coords.shape[0] == 0:
         return coords, offsets
 
-    iterations = int(relaxation_iterations)
+    requested_iterations = int(relaxation_iterations)
+    iterations = requested_iterations
     iterations = max(0, min(MAX_RELAXATION_ITERATIONS, iterations))
+    if iterations != requested_iterations:
+        emit_operation_diagnostic(
+            op="relax.relaxation_iterations",
+            original_value=requested_iterations,
+            effective_value=iterations,
+            reason="relaxation iterations was clamped to the supported range",
+        )
 
-    step_size = float(step)
+    requested_step = float(step)
+    step_size = requested_step
     if step_size < 0.0:
         step_size = 0.0
     if step_size > MAX_STEP:
         step_size = MAX_STEP
+    if step_size != requested_step:
+        emit_operation_diagnostic(
+            op="relax.step",
+            original_value=requested_step,
+            effective_value=step_size,
+            reason="relaxation step was clamped to the supported range",
+        )
 
     if iterations == 0 or step_size == 0.0:
         return coords, offsets
@@ -198,6 +215,12 @@ def relax(
     nodes, vertex_to_node = _build_nodes(coords)
     edges = _build_edges(offsets, vertex_to_node)
     if edges.shape[0] == 0 or nodes.shape[0] == 0:
+        emit_operation_diagnostic(
+            op="relax.input",
+            original_value="no_graph_edges",
+            effective_value="input_unchanged",
+            reason="relax requires a graph with at least one edge",
+        )
         return coords, offsets
 
     fixed = _compute_fixed(nodes, edges)

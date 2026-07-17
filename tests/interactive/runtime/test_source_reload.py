@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+import os
+import time
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from grafix.core.preset_registry import preset_func_registry, preset_registry
+from grafix.core.primitive_registry import primitive_registry
+from grafix.core.realize import realize
+from grafix.interactive.runtime.mp_draw import MpDraw
+from grafix.interactive.runtime.source_reload import ReloadedDraw, SourceReloadController
+
+
+def _write_source(path: Path, source: str) -> None:
+    path.write_text(source, encoding="utf-8")
+    stat_result = path.stat()
+    os.utime(
+        path,
+        ns=(stat_result.st_atime_ns, stat_result.st_mtime_ns + 1_000_000),
+    )
+
+
+def _primitive_source(*, x: float, fail: bool = False) -> str:
+    failure = "raise RuntimeError('candidate failed')" if fail else ""
+    return f"""
+import numpy as np
+from grafix import G, primitive
+
+@primitive
+def watch_reload_shape():
+    coords = np.asarray([[{x}, 0.0, 0.0], [{x + 1.0}, 0.0, 0.0]], dtype=np.float32)
+    return coords, np.asarray([0, 2], dtype=np.int32)
+
+{failure}
+
+def draw(t):
+    return G.watch_reload_shape()
+"""
+
+
+def test_reload_swaps_draw_and_registry_only_after_candidate_success(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=1.0))
+
+    with SourceReloadController(source_path) as controller:
+        first_draw = controller.draw
+        assert isinstance(first_draw, ReloadedDraw)
+        assert first_draw.__grafix_source_path__ == source_path.resolve()
+        assert first_draw.__grafix_source_bytes__ == source_path.read_bytes()
+        np.testing.assert_allclose(realize(first_draw(0.0)).coords[:, 0], [1.0, 2.0])
+
+        _write_source(source_path, _primitive_source(x=20.0, fail=True))
+        failed = controller.poll(force=True)
+        assert failed.status == "failed"
+        assert failed.generation == 0
+        assert failed.draw is first_draw
+        assert failed.source is not None and str(source_path) in failed.source
+        np.testing.assert_allclose(realize(controller.draw(0.0)).coords[:, 0], [1.0, 2.0])
+
+        _write_source(source_path, _primitive_source(x=3.0))
+        reloaded = controller.poll(force=True)
+        assert reloaded.status == "reloaded"
+        assert reloaded.generation == 1
+        assert controller.draw is not first_draw
+        np.testing.assert_allclose(realize(controller.draw(0.0)).coords[:, 0], [3.0, 4.0])
+
+    assert "watch_reload_shape" not in primitive_registry
+
+
+def test_unchanged_source_does_not_reload(tmp_path: Path) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=1.0))
+
+    with SourceReloadController(source_path) as controller:
+        draw = controller.draw
+        result = controller.poll()
+
+        assert result.status == "unchanged"
+        assert result.generation == 0
+        assert result.draw is draw
+
+
+def test_validated_source_snapshot_runs_in_spawn_worker(tmp_path: Path) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=7.0))
+
+    with SourceReloadController(source_path) as controller:
+        worker = MpDraw(controller.draw, n_worker=1)
+        try:
+            worker.submit(t=0.0, snapshot_revision=0, snapshot={})
+            deadline = time.monotonic() + 5.0
+            result = None
+            while result is None and time.monotonic() < deadline:
+                result = worker.poll_latest()
+                if result is None:
+                    time.sleep(0.01)
+            assert result is not None
+            assert result.error is None
+            assert result.layers[0].geometry.op == "watch_reload_shape"
+            np.testing.assert_allclose(
+                realize(result.layers[0].geometry).coords[:, 0],
+                [7.0, 8.0],
+            )
+        finally:
+            worker.close()
+
+
+def test_reload_removes_presets_deleted_from_source(tmp_path: Path) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(
+        source_path,
+        """
+from grafix import G, P, preset
+
+@preset(meta={"length": {"kind": "float"}})
+def watch_reload_preset(length=2.0):
+    return G.line(length=length)
+
+def draw(t):
+    return P.watch_reload_preset()
+""",
+    )
+
+    with SourceReloadController(source_path) as controller:
+        assert preset_func_registry.get("watch_reload_preset") is not None
+        assert "preset.watch_reload_preset" in preset_registry
+
+        _write_source(
+            source_path,
+            """
+from grafix import G
+
+def draw(t):
+    return G.line(length=4.0)
+""",
+        )
+        result = controller.poll(force=True)
+
+        assert result.status == "reloaded"
+        assert preset_func_registry.get("watch_reload_preset") is None
+        assert "preset.watch_reload_preset" not in preset_registry
+
+    assert preset_func_registry.get("watch_reload_preset") is None
+
+
+def test_transactional_reload_can_rollback_registry_and_draw(tmp_path: Path) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=1.0))
+
+    with SourceReloadController(source_path) as controller:
+        first_draw = controller.draw
+        _write_source(source_path, _primitive_source(x=9.0))
+        result = controller.poll(force=True, retain_rollback=True)
+
+        assert result.status == "reloaded"
+        np.testing.assert_allclose(realize(controller.draw(0.0)).coords[:, 0], [9.0, 10.0])
+
+        restored = controller.rollback_generation(result.generation)
+
+        assert restored is first_draw
+        assert controller.generation == 0
+        np.testing.assert_allclose(realize(controller.draw(0.0)).coords[:, 0], [1.0, 2.0])
+
+
+def test_runtime_error_then_source_fix_uses_new_generation(tmp_path: Path) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=4.0))
+
+    with SourceReloadController(source_path) as controller:
+        last_good = realize(controller.draw(0.0))
+        _write_source(
+            source_path,
+            "from grafix import G\n\ndef draw(t):\n    raise RuntimeError('bad frame')\n",
+        )
+        bad = controller.poll(force=True)
+        assert bad.status == "reloaded"
+        with pytest.raises(RuntimeError, match="bad frame"):
+            controller.draw(0.0)
+        np.testing.assert_allclose(last_good.coords[:, 0], [4.0, 5.0])
+
+        _write_source(source_path, _primitive_source(x=6.0))
+        fixed = controller.poll(force=True)
+        assert fixed.status == "reloaded"
+        np.testing.assert_allclose(realize(controller.draw(0.0)).coords[:, 0], [6.0, 7.0])
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "value = 1\n",
+        "def draw():\n    return None\n",
+        "async def draw(t):\n    return None\n",
+    ],
+)
+def test_initial_load_rejects_missing_or_invalid_draw_signature(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    source_path = tmp_path / "invalid.py"
+    _write_source(source_path, source)
+
+    with pytest.raises(RuntimeError, match="draw|callable"):
+        SourceReloadController(source_path)

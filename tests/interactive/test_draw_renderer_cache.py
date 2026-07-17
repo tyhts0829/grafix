@@ -8,8 +8,10 @@ import pytest
 
 from grafix.core.realize import GeometryCacheKey
 from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.runtime_limits import RuntimeLimits
 from grafix.interactive.gl import draw_renderer as renderer_module
 from grafix.interactive.gl.draw_renderer import DrawRenderer
+from grafix.interactive.runtime.diagnostics import DiagnosticCenter
 
 
 class _FakeMesh:
@@ -125,3 +127,28 @@ def test_renderer_cache_separates_registry_revisions(
     renderer.prepare_layer_mesh(geometry, cache_key=new_key)
 
     assert list(renderer._mesh_candidates) == [old_key, new_key]
+
+
+def test_renderer_applies_gpu_cache_runtime_limit() -> None:
+    renderer = _renderer()
+
+    renderer.apply_runtime_limits(RuntimeLimits(gpu_cache_bytes=12_000))
+
+    assert renderer.mesh_cache_max_bytes == 12_000
+    assert renderer.mesh_candidate_cache_max_bytes == 3_000
+
+
+def test_renderer_publishes_gpu_cache_limit_to_common_center() -> None:
+    renderer = _renderer()
+    center = DiagnosticCenter()
+    renderer._diagnostic_center = center
+    renderer.apply_runtime_limits(RuntimeLimits(gpu_cache_bytes=0))
+
+    renderer.prepare_layer_mesh(
+        _geometry(),
+        cache_key=_cache_key("gpu-limit"),
+    )
+
+    event = center.snapshot()[0]
+    assert event.category == "resource"
+    assert event.summary.startswith("GPU cache limit reached")

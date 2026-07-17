@@ -100,27 +100,61 @@ def ensure_geometry_output(
             f"vertices={vertices_i}, lines={lines_i}, scratch_bytes={scratch_i}"
         )
 
-    budget = current_resource_budget()
     estimated_bytes = _estimated_geometry_bytes(
         vertices=vertices_i,
         lines=lines_i,
         scratch_bytes=scratch_i,
     )
 
+    ensure_resource_usage(
+        op,
+        vertices=vertices_i,
+        lines=lines_i,
+        byte_size=estimated_bytes,
+        hint=hint,
+    )
+
+
+def ensure_resource_usage(
+    op: str,
+    *,
+    vertices: int,
+    lines: int,
+    byte_size: int,
+    hint: str | None = None,
+    budget: ResourceBudget | None = None,
+) -> None:
+    """operation または scene の実測 aggregate 使用量を検査する。"""
+
+    vertices_i = int(vertices)
+    lines_i = int(lines)
+    byte_size_i = int(byte_size)
+    if vertices_i < 0 or lines_i < 0 or byte_size_i < 0:
+        raise ValueError(
+            f"{op}: resource usage は 0 以上である必要があります: "
+            f"vertices={vertices_i}, lines={lines_i}, bytes={byte_size_i}"
+        )
+    active_budget = current_resource_budget() if budget is None else budget
+    if not isinstance(active_budget, ResourceBudget):
+        raise TypeError("budget は ResourceBudget である必要があります")
+
     exceeded: list[str] = []
     if vertices_i > _MAX_INT32:
         exceeded.append(f"vertices={vertices_i:,} > int32 capacity {_MAX_INT32:,}")
     if lines_i + 1 > _MAX_INT32:
         exceeded.append(f"offsets={lines_i + 1:,} > int32 capacity {_MAX_INT32:,}")
-    if vertices_i > int(budget.max_output_vertices):
+    if vertices_i > int(active_budget.max_output_vertices):
         exceeded.append(
-            f"vertices={vertices_i:,} > {int(budget.max_output_vertices):,}"
+            f"vertices={vertices_i:,} > {int(active_budget.max_output_vertices):,}"
         )
-    if lines_i > int(budget.max_output_lines):
-        exceeded.append(f"lines={lines_i:,} > {int(budget.max_output_lines):,}")
-    if estimated_bytes > int(budget.max_output_bytes):
+    if lines_i > int(active_budget.max_output_lines):
         exceeded.append(
-            f"estimated_bytes={estimated_bytes:,} > {int(budget.max_output_bytes):,}"
+            f"lines={lines_i:,} > {int(active_budget.max_output_lines):,}"
+        )
+    if byte_size_i > int(active_budget.max_output_bytes):
+        exceeded.append(
+            f"estimated_bytes={byte_size_i:,} > "
+            f"{int(active_budget.max_output_bytes):,}"
         )
     if not exceeded:
         return
@@ -142,5 +176,6 @@ __all__ = [
     "ResourceLimitError",
     "current_resource_budget",
     "ensure_geometry_output",
+    "ensure_resource_usage",
     "resource_budget_context",
 ]

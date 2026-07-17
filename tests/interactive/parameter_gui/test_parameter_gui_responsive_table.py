@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from grafix.core.parameters.view import ParameterRow
+from grafix.core.parameters.source import ValueSource
 from grafix.interactive.parameter_gui.rules import ui_rules_for_row
 from grafix.interactive.parameter_gui.table import (
     SOURCE_SELECTOR_TOTAL_WIDTH_PX,
@@ -175,7 +176,12 @@ def _row(
     )
 
 
-def _render(imgui: LayoutImGui, row: ParameterRow, *, last_source: str | None = None) -> None:
+def _render(
+    imgui: LayoutImGui,
+    row: ParameterRow,
+    *,
+    last_source: ValueSource | None = None,
+) -> None:
     changed, cc_key, override = _render_cc_cell(
         imgui,
         row=row,
@@ -235,9 +241,21 @@ def test_vec3_midi_controls_stay_on_one_row_at_very_narrow_width() -> None:
 
 def test_current_midi_input_uses_an_amber_live_chip_with_text() -> None:
     imgui = LayoutImGui(cell_width=120.0)
-    _render(imgui, _row(kind="float", cc_key=12), last_source="cc")
+    _render(imgui, _row(kind="float", cc_key=12), last_source="midi_live")
 
     assert imgui.buttons[0][0].startswith("LIVE 12##")
+    assert len(imgui.style_colors) == 4
+
+
+def test_saved_midi_input_is_labeled_frozen_instead_of_live() -> None:
+    imgui = LayoutImGui(cell_width=160.0)
+    _render(
+        imgui,
+        _row(kind="float", cc_key=12),
+        last_source="midi_frozen",
+    )
+
+    assert imgui.buttons[0][0].startswith("FROZEN 12##")
     assert len(imgui.style_colors) == 4
 
 
@@ -250,7 +268,7 @@ def test_source_segments_switch_only_override_and_keep_midi_mapping() -> None:
         kind="float",
         override=True,
         cc_key=12,
-        last_source="cc",
+        last_source="midi_live",
     )
 
     assert (changed, override, reset) == (True, False, False)
@@ -314,7 +332,7 @@ def test_visible_source_menu_keeps_explicit_reset_to_code_reachable() -> None:
     assert imgui.popup_open is False
 
 
-def test_bool_uses_noninteractive_fixed_width_ui_indicator() -> None:
+def test_bool_uses_the_same_code_ui_selector_as_other_parameters() -> None:
     imgui = SourceLayoutImGui()
 
     changed, override, reset = _render_label_cell(
@@ -326,10 +344,12 @@ def test_bool_uses_noninteractive_fixed_width_ui_indicator() -> None:
     )
 
     assert (changed, override, reset) == (False, False, False)
-    assert imgui.buttons == []
-    assert imgui.selectables == [
-        ("UI##source_fixed", True, imgui.SELECTABLE_DISABLED, SOURCE_SELECTOR_TOTAL_WIDTH_PX, 0.0)
+    assert [label for label, _width in imgui.buttons] == [
+        "CODE##source_code",
+        "UI##source_ui",
+        "v##source_actions",
     ]
+    assert imgui.selectables == []
     assert imgui.texts == ["Visible"]
 
 
@@ -338,13 +358,21 @@ def test_midi_mapping_tooltip_explains_that_source_is_a_fallback() -> None:
         source="UI",
         kind="vec3",
         cc_key=(10, None, 12),
-        last_source="cc",
+        last_source="midi_live",
     )
 
     assert "X:CC 10" in tooltip
     assert "Z:CC 12" in tooltip
     assert "UI is the fallback" in tooltip
     assert "keeps the MIDI mapping" in tooltip
+
+    frozen_tooltip = _source_selector_tooltip(
+        source="CODE",
+        kind="float",
+        cc_key=10,
+        last_source="midi_frozen",
+    )
+    assert "frozen saved MIDI value" in frozen_tooltip
 
 
 def test_active_source_segment_has_a_distinct_filled_style() -> None:

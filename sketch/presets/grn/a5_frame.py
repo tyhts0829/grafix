@@ -180,4 +180,4 @@ def grn_a5_frame(
         ],
         color=_rgb255_to_rgb01(template_color_rgb255),
     )
-    return layout + template
+    return layout, template

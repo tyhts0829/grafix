@@ -8,6 +8,7 @@ import pytest
 from grafix.core.capture_manifest import (
     CAPTURE_MANIFEST_SCHEMA_VERSION,
     CaptureManifest,
+    RecordingManifest,
     capture_manifest_path_for,
     publish_capture_generation,
     write_capture_manifest,
@@ -22,12 +23,68 @@ def test_capture_manifest_normalizes_and_serializes_minimum_provenance() -> None
         artifact_paths=(Path("output/capture.png"),),
     )
 
-    assert manifest.as_dict() == {
-        "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
+    payload = manifest.as_dict()
+
+    assert payload["schema_version"] == CAPTURE_MANIFEST_SCHEMA_VERSION == 2
+    assert payload["t"] == 1.25
+    assert payload["canvas_size"] == {"width": 800, "height": 600}
+    assert payload["format"] == "png"
+    assert payload["artifact_paths"] == ["output/capture.png"]
+    assert payload["grafix"] == {"version": payload["grafix"]["version"]}
+    assert payload["source"]["available"] is False
+    assert payload["source"]["unavailable_reason"]
+    assert payload["git"]["available"] is False
+    assert payload["config"]["effective"] == {}
+    assert payload["parameters"]["source"] == "unavailable"
+    assert payload["parameters"]["snapshot_hash"]["algorithm"] == "sha256"
+    assert payload["seed"] is None
+    assert payload["frame"] == {
         "t": 1.25,
-        "canvas_size": {"width": 800, "height": 600},
+        "index": None,
+        "quality": "final",
+        "origin": "headless",
+    }
+    assert payload["output"] == {
         "format": "png",
         "artifact_paths": ["output/capture.png"],
+        "canvas_size": {"width": 800, "height": 600},
+        "size": None,
+    }
+    assert payload["recording"] is None
+
+
+def test_recording_manifest_serializes_pause_policy_and_counts() -> None:
+    recording = RecordingManifest(
+        fps=30.0,
+        frame_count=12,
+        dropped_frame_count=2,
+        duplicated_frame_count=0,
+        error_count=2,
+        stop_reason="user_stop",
+        last_error="ValueError: broken scene",
+    )
+    manifest = CaptureManifest(
+        t=1.25,
+        canvas_size=(800, 600),
+        format="mp4",
+        artifact_paths=(Path("output/capture.mp4"),),
+        output_size=(1600, 1200),
+        recording=recording,
+    )
+
+    payload = manifest.as_dict()
+
+    assert payload["output"]["size"] == {"width": 1600, "height": 1200}
+    assert payload["recording"] == {
+        "fps": 30.0,
+        "frame_count": 12,
+        "dropped_frame_count": 2,
+        "duplicated_frame_count": 0,
+        "error_count": 2,
+        "error_policy": "pause",
+        "stop_reason": "user_stop",
+        "abort_reason": None,
+        "last_error": "ValueError: broken scene",
     }
 
 
@@ -127,6 +184,78 @@ def test_capture_generation_publishes_all_artifacts_and_manifest(tmp_path: Path)
     assert published.manifest_path == manifest_path
     assert [path.read_bytes() for path in artifacts] == [b"layer 1", b"layer 2"]
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest.as_dict()
+
+
+def test_capture_generation_overwrite_replaces_complete_generation(tmp_path: Path) -> None:
+    staged = tmp_path / ".staged.svg"
+    staged.write_bytes(b"new artifact")
+    artifact = tmp_path / "capture.svg"
+    artifact.write_bytes(b"old artifact")
+    manifest_path = capture_manifest_path_for(artifact)
+    manifest_path.write_bytes(b"old manifest")
+    manifest = CaptureManifest(
+        t=1.5,
+        canvas_size=(100, 80),
+        format="svg",
+        artifact_paths=(artifact,),
+    )
+
+    published = publish_capture_generation(
+        staged_artifact_paths=(staged,),
+        artifact_paths=(artifact,),
+        manifest_path=manifest_path,
+        manifest=manifest,
+        overwrite=True,
+    )
+
+    assert published.artifact_paths == (artifact,)
+    assert artifact.read_bytes() == b"new artifact"
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest.as_dict()
+    assert list(tmp_path.glob(".grafix-capture-backup-*")) == []
+
+
+def test_capture_generation_overwrite_rolls_back_both_files_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import grafix.core.capture_manifest as capture_module
+
+    staged = tmp_path / ".staged.svg"
+    staged.write_bytes(b"new artifact")
+    artifact = tmp_path / "capture.svg"
+    artifact.write_bytes(b"old artifact")
+    manifest_path = capture_manifest_path_for(artifact)
+    manifest_path.write_bytes(b"old manifest")
+    manifest = CaptureManifest(
+        t=1.5,
+        canvas_size=(100, 80),
+        format="svg",
+        artifact_paths=(artifact,),
+    )
+    real_link = capture_module.os.link
+    link_calls = 0
+
+    def fail_manifest_link(source, target, *, follow_symlinks=True):
+        nonlocal link_calls
+        link_calls += 1
+        if link_calls == 2:
+            raise OSError("manifest publish failed")
+        return real_link(source, target, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(capture_module.os, "link", fail_manifest_link)
+
+    with pytest.raises(OSError, match="manifest publish failed"):
+        publish_capture_generation(
+            staged_artifact_paths=(staged,),
+            artifact_paths=(artifact,),
+            manifest_path=manifest_path,
+            manifest=manifest,
+            overwrite=True,
+        )
+
+    assert artifact.read_bytes() == b"old artifact"
+    assert manifest_path.read_bytes() == b"old manifest"
+    assert list(tmp_path.glob(".grafix-capture-backup-*")) == []
 
 
 @pytest.mark.parametrize(

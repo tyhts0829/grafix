@@ -51,6 +51,7 @@ include = ["grafix*"]
 grafix = [
   "py.typed",
   "resource/default_config.yaml",
+  "resource/examples/*.py",
   "resource/regular_polyhedron/*.npz",
   "resource/font/Google_Sans/static/*.ttf",
   "resource/font/Google_Sans/OFL.txt",

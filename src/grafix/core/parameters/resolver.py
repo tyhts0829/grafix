@@ -1,5 +1,5 @@
 # どこで: `src/grafix/core/parameters/resolver.py`。
-# 何を: base/GUI/CC から最終値を決定し、frame_params に記録する。
+# 何を: CODE/UI/MIDI から最終値を決定し、frame_params に記録する。
 # なぜ: Geometry 生成時点で決定値を一意にし、GUI と署名を整合させるため。
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from .context import current_cc_snapshot, current_frame_params, current_param_sn
 from .frame_params import FrameParamsBuffer
 from .key import ParameterKey
 from .meta import ParamMeta
+from .source import ValueSource
 from .state import ParamState, ParamStateSnapshot
 
 DEFAULT_QUANT_STEP = 1e-3
@@ -46,12 +47,12 @@ def _quantize(value: Any, meta: ParamMeta) -> Any:
 
 def _choose_value(
     base_value: Any, state: ParamState | ParamStateSnapshot, meta: ParamMeta
-) -> tuple[Any, str]:
-    """base/GUI/CC から effective 値を選び、(値, source) を返す。
+) -> tuple[Any, ValueSource]:
+    """CODE/UI/MIDI から effective 値を選び、(値, source) を返す。
 
     Notes
     -----
-    優先順位は概ね CC > GUI > base（ただし kind=bool は常に GUI 値）。
+    優先順位は MIDI > UI > CODE。全 kind で UI/CODE は ``override`` に従う。
     ここでは「どの値を採用するか」だけを決め、量子化は `_quantize()` が担う。
     """
 
@@ -67,7 +68,7 @@ def _choose_value(
                 lo = float(meta.ui_min) if meta.ui_min is not None else 0.0
                 hi = float(meta.ui_max) if meta.ui_max is not None else 1.0
                 effective = lo + (hi - lo) * v
-                return effective, "cc"
+                return effective, cc_snapshot.source
             if (
                 meta.kind == "choice"
                 and meta.choices is not None
@@ -76,7 +77,7 @@ def _choose_value(
                 # 0..1 を choices の index に写像
                 choices = list(meta.choices)
                 idx = min(len(choices) - 1, int(v * len(choices)))
-                return str(choices[int(idx)]), "cc"
+                return str(choices[int(idx)]), cc_snapshot.source
 
         # --- vec3 CC（cc_key が (a,b,c) の場合）---
         # 各成分ごとに「CC があれば CC」「なければ override に応じて GUI/base」を選ぶ。
@@ -112,21 +113,17 @@ def _choose_value(
                 # vec3 は「1 成分でも CC が使われたら source=cc」とする。
                 # そうでなければ override の有無で gui/base に分岐する。
                 if used_cc:
-                    return tuple(out), "cc"
+                    return tuple(out), cc_snapshot.source
                 if state.override:
-                    return tuple(out), "gui"
-                return tuple(out), "base"
+                    return tuple(out), "ui"
+                return tuple(out), "code"
 
     # --- CC を使わない通常経路 ---
-    if meta.kind == "bool":
-        # bool は override トグルを持たない。ui_value を常に採用する。
-        # ui_value は初期状態では base_value と一致するため、実質的に base を踏襲する。
-        return bool(state.ui_value), "gui"
     if state.override:
-        # override=True のときだけ GUI 値を採用する（bool 以外）。
-        return state.ui_value, "gui"
+        # override=True のときだけ UI 値を採用する。
+        return state.ui_value, "ui"
     # override=False のときはコードが与えた base を採用する。
-    return base_value, "base"
+    return base_value, "code"
 
 
 def resolve_params(
@@ -180,7 +177,7 @@ def resolve_params(
             # override の初期値は store 側（フレーム境界のマージ）で explicit/implicit を見て決める。
             state = ParamState(ui_value=base_value)
 
-        # base/GUI/CC を統合して effective を決める（source は "base"/"gui"/"cc"）。
+        # CODE/UI/MIDI を統合して effective 値と接続由来を決める。
         effective, source = _choose_value(base_value, state, arg_meta)
         # 量子化は「署名に入る値」と「実際に使う値」を一致させるため、ここで一元的に行う。
         effective = _quantize(effective, arg_meta)

@@ -65,8 +65,8 @@ def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> No
         #       その場合はキャッシュを更新しない（直近値を保持）。
         if rec.effective is not None:
             runtime.last_effective_by_key[rec.key] = rec.effective
-        if rec.source in {"base", "gui", "cc"}:
-            runtime.last_source_by_key[rec.key] = str(rec.source)
+        if rec.source in {"code", "ui", "midi_live", "midi_frozen"}:
+            runtime.last_source_by_key[rec.key] = rec.source
 
         # --- 4) group ordinal を確保 ---
         ordinal_before = ordinals.get(rec.key.op, rec.key.site_id)

@@ -16,10 +16,11 @@ import pyglet
 pyglet.options["shadow_window"] = False
 
 from grafix.core.layer import LayerStyleDefaults
-from grafix.core.capture_manifest import capture_manifest_path_for
+from grafix.core.capture_manifest import RecordingManifest, capture_manifest_path_for
 from grafix.core.output_paths import VersionedPathAllocator
 from grafix.core.parameters import ParamStore
 from grafix.core.pipeline import RealizedLayer
+from grafix.interactive.midi import MidiSession
 from grafix.interactive.runtime.draw_window_system import DrawWindowSystem
 import grafix.interactive.runtime.draw_window_system as draw_window_module
 from grafix.interactive.runtime.export_job_system import (
@@ -29,19 +30,79 @@ from grafix.interactive.runtime.export_job_system import (
     FrameExportSnapshot,
 )
 from grafix.interactive.runtime.frame_clock import TransportClock
+from grafix.interactive.runtime.monitor import RuntimeMonitor
 from grafix.interactive.runtime.perf import PerfCollector
+from grafix.interactive.runtime.source_reload import SourceReloadResult
 from grafix.interactive.render_settings import RenderSettings
+from grafix.export import capture as capture_module
+from grafix.export.capture import CaptureService
 
 
 _DEFAULTS = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
 
 
+def test_source_reload_rolls_back_when_worker_swap_fails() -> None:
+    def replacement_draw(_t: float) -> list[object]:
+        return []
+
+    result = SourceReloadResult(
+        status="reloaded",
+        generation=3,
+        draw=replacement_draw,
+        source="/tmp/sketch.py",
+    )
+
+    class _Controller:
+        def __init__(self) -> None:
+            self.rollback_calls: list[int] = []
+
+        def poll(self, *, force: bool, retain_rollback: bool) -> SourceReloadResult:
+            assert force is True
+            assert retain_rollback is True
+            return result
+
+        def rollback_generation(self, generation: int) -> object:
+            self.rollback_calls.append(int(generation))
+            return replacement_draw
+
+    class _RejectingRunner:
+        def replace_draw(self, draw: object) -> None:
+            assert draw is replacement_draw
+            raise RuntimeError("worker did not start")
+
+    controller = _Controller()
+    monitor = RuntimeMonitor()
+    system = object.__new__(DrawWindowSystem)
+    system._source_reload = cast(Any, controller)
+    system._scene_runner = cast(Any, _RejectingRunner())
+    system._monitor = monitor
+
+    assert system._poll_source_reload(force=True) is False
+    assert controller.rollback_calls == [3]
+    diagnostics = monitor.diagnostic_center.snapshot()
+    assert len(diagnostics) == 1
+    assert diagnostics[0].category == "reload"
+    assert {action.action_id for action in diagnostics[0].actions} == {
+        "copy",
+        "open",
+        "retry",
+    }
+
+
 class _FakeMonitor:
     def __init__(self) -> None:
         self.frame_errors: list[str | None] = []
+        self.frame_error_details: list[tuple[str, str | None]] = []
 
-    def set_frame_error(self, message: str | None) -> None:
+    def set_frame_error(
+        self,
+        message: str | None,
+        *,
+        details: str = "",
+        source: str | None = None,
+    ) -> None:
         self.frame_errors.append(message)
+        self.frame_error_details.append((details, source))
 
 
 class _FakeSceneRunner:
@@ -100,6 +161,8 @@ def test_scene_error_renders_last_good_until_a_new_success(caplog: pytest.LogCap
     assert system._last_realized_layers is last_good
     assert system._last_frame_error == "ValueError: broken sketch"
     assert monitor.frame_errors == ["ValueError: broken sketch"]
+    assert "ValueError: broken sketch" in monitor.frame_error_details[0][0]
+    assert monitor.frame_error_details[0][1] is not None
     assert "rendering the last successful frame" in caplog.text
 
     pending_frame = system._evaluate_scene(
@@ -247,6 +310,74 @@ def test_scene_evaluation_passes_current_transport_epoch() -> None:
     assert runner.run_kwargs[-1]["transport_epoch"] == system._clock.epoch
 
 
+def test_midi_frame_snapshot_distinguishes_live_frozen_and_disabled() -> None:
+    class Midi:
+        def __init__(self) -> None:
+            self.poll_calls = 0
+
+        def poll_pending(self) -> int:
+            self.poll_calls += 1
+            return 0
+
+        def snapshot(self) -> dict[int, float]:
+            return {7: 0.75}
+
+    system = object.__new__(DrawWindowSystem)
+    midi = Midi()
+    system._midi_session = MidiSession(
+        controller=cast(Any, midi),
+        frozen_values={7: 0.25},
+    )
+
+    live = system._midi_frame_snapshot()
+    assert live is not None
+    assert live.source == "midi_live"
+    assert live[7] == pytest.approx(0.75)
+    assert midi.poll_calls == 1
+
+    system._midi_session = MidiSession(
+        controller=None,
+        frozen_values={7: 0.25},
+    )
+    frozen = system._midi_frame_snapshot()
+    assert frozen is not None
+    assert frozen.source == "midi_frozen"
+    assert frozen[7] == pytest.approx(0.25)
+
+    system._midi_session = None
+    assert system._midi_frame_snapshot() is None
+
+
+def test_capture_snapshot_re_evaluates_with_final_quality() -> None:
+    runner = _FakeSceneRunner([([], True)])
+    system = _make_scene_only_system(
+        runner=runner,
+        monitor=_FakeMonitor(),
+        last_good=[],
+    )
+    system._midi_session = None
+    system._clock = cast(Any, SimpleNamespace(t=lambda: 1.25, epoch=0))
+    system._recording = cast(Any, SimpleNamespace(is_recording=False))
+    system._settings = cast(Any, SimpleNamespace(canvas_size=(100, 80)))
+    system._style = cast(
+        Any,
+        SimpleNamespace(
+            resolve=lambda: SimpleNamespace(
+                bg_color_rgb01=(1.0, 1.0, 1.0),
+                global_line_color_rgb01=(0.0, 0.0, 0.0),
+                global_thickness=0.01,
+            )
+        ),
+    )
+    system._last_frame_t = 0.0
+
+    snapshot = system._final_capture_snapshot()
+
+    assert runner.run_kwargs[-1]["quality"] == "final"
+    assert snapshot.t == pytest.approx(1.25)
+    assert snapshot.canvas_size == (100, 80)
+
+
 class _RenderFailure(RuntimeError):
     pass
 
@@ -292,8 +423,7 @@ def test_gl_render_error_is_not_swallowed_by_scene_error_boundary() -> None:
     system = object.__new__(DrawWindowSystem)
     system._perf = PerfCollector(enabled=False)
     system._poll_export_results = lambda: None
-    system._midi_controller = None
-    system._frozen_cc_snapshot = {}
+    system._midi_session = None
     system._renderer = cast(Any, _FakeRenderer())
     system._framebuffer_size = lambda: (100, 100)
     system._style = cast(Any, _FakeStyleResolver())
@@ -339,8 +469,7 @@ def test_recording_frame_mirrors_time_without_advancing_transport_epoch() -> Non
     system = object.__new__(DrawWindowSystem)
     system._perf = PerfCollector(enabled=False)
     system._poll_export_results = lambda: None
-    system._midi_controller = None
-    system._frozen_cc_snapshot = {}
+    system._midi_session = None
     system._renderer = cast(Any, _FakeRenderer())
     system._framebuffer_size = lambda: (100, 100)
     system._style = cast(Any, _FakeStyleResolver())
@@ -359,6 +488,66 @@ def test_recording_frame_mirrors_time_without_advancing_transport_epoch() -> Non
 
     assert clock.synchronized == [2.25]
     assert runner.run_kwargs[-1]["transport_epoch"] == 7
+
+
+def test_recording_scene_error_pauses_without_writing_last_good_frame() -> None:
+    class Clock:
+        epoch = 3
+        is_playing = False
+        speed = 1.0
+
+        def synchronize(self, _t: float) -> None:
+            return
+
+    class Recording:
+        is_recording = True
+
+        def __init__(self) -> None:
+            self.write_calls = 0
+            self.paused_errors: list[str] = []
+
+        def t(self) -> float:
+            return 4.0
+
+        def write_frame(self, _screen: object) -> None:
+            self.write_calls += 1
+
+        def pause_frame(self, error: str) -> None:
+            self.paused_errors.append(error)
+
+    previous_snapshot = FrameExportSnapshot(
+        layers=(),
+        canvas_size=(100, 100),
+        background_color_rgb01=(1.0, 1.0, 1.0),
+        t=3.5,
+    )
+    recording = Recording()
+    runner = _FakeSceneRunner([ValueError("broken recording scene")])
+    system = object.__new__(DrawWindowSystem)
+    system._perf = PerfCollector(enabled=False)
+    system._poll_export_results = lambda: None
+    system._midi_session = None
+    system._renderer = cast(Any, _FakeRenderer())
+    system._framebuffer_size = lambda: (100, 100)
+    system._style = cast(Any, _FakeStyleResolver())
+    system._recording = cast(Any, recording)
+    system._clock = cast(Any, Clock())
+    system._scene_runner = cast(Any, runner)
+    system._store = ParamStore()
+    system._settings = SimpleNamespace(canvas_size=(100, 100))
+    system._last_realized_layers = []
+    system._last_frame_t = 3.5
+    system._last_export_snapshot = previous_snapshot
+    system._last_frame_error = None
+    system._monitor = None
+    system._pending_export_requests = deque()
+
+    system.draw_frame()
+
+    assert recording.write_calls == 0
+    assert recording.paused_errors == ["ValueError: broken recording scene"]
+    assert recording.t() == pytest.approx(4.0)
+    assert system._last_export_snapshot is previous_snapshot
 
 
 def test_transport_shortcuts_pause_step_reset_and_change_speed() -> None:
@@ -400,13 +589,20 @@ def test_svg_captures_are_versioned_and_write_a_manifest(
         path.write_text("<svg/>", encoding="utf-8")
         return path
 
-    monkeypatch.setattr(draw_window_module, "export_svg", fake_export_svg)
+    monkeypatch.setattr(capture_module, "export_svg", fake_export_svg)
     system = object.__new__(DrawWindowSystem)
     system._settings = SimpleNamespace(canvas_size=(320, 240))
     system._capture_paths = VersionedPathAllocator()
+    system._capture_service = CaptureService(path_allocator=system._capture_paths)
     system._svg_output_path = tmp_path / "piece.svg"
     system._last_realized_layers = []
     system._last_frame_t = 1.25
+    system._last_export_snapshot = FrameExportSnapshot(
+        layers=(),
+        canvas_size=(320, 240),
+        background_color_rgb01=(1.0, 1.0, 1.0),
+        t=1.25,
+    )
 
     first = system.save_svg()
     second = system.save_svg()
@@ -435,11 +631,12 @@ def test_svg_request_before_first_draw_uses_first_visible_frame(
         path.write_text("<svg>visible</svg>", encoding="utf-8")
         return path
 
-    monkeypatch.setattr(draw_window_module, "export_svg", fake_export_svg)
+    monkeypatch.setattr(capture_module, "export_svg", fake_export_svg)
     monitor_updates: list[dict[str, object]] = []
     system = object.__new__(DrawWindowSystem)
     system._settings = SimpleNamespace(canvas_size=(999, 999))
     system._capture_paths = VersionedPathAllocator()
+    system._capture_service = CaptureService(path_allocator=system._capture_paths)
     system._svg_output_path = tmp_path / "piece.svg"
     system._last_realized_layers = []
     system._last_frame_t = -1.0
@@ -496,7 +693,7 @@ def test_svg_key_after_first_draw_saves_keypress_snapshot_immediately(
         path.write_text("<svg/>", encoding="utf-8")
         return path
 
-    monkeypatch.setattr(draw_window_module, "export_svg", fake_export_svg)
+    monkeypatch.setattr(capture_module, "export_svg", fake_export_svg)
     visible_layer = cast(RealizedLayer, object())
     visible = FrameExportSnapshot(
         layers=(visible_layer,),
@@ -507,6 +704,7 @@ def test_svg_key_after_first_draw_saves_keypress_snapshot_immediately(
     system = object.__new__(DrawWindowSystem)
     system._settings = SimpleNamespace(canvas_size=(999, 999))
     system._capture_paths = VersionedPathAllocator()
+    system._capture_service = CaptureService(path_allocator=system._capture_paths)
     system._svg_output_path = tmp_path / "piece.svg"
     system._last_export_snapshot = visible
     system._last_capture_queue_notice = None
@@ -540,7 +738,7 @@ def test_svg_late_collision_preserves_external_file_and_retries_next_version(
         path.write_bytes(b"new svg")
         return path
 
-    real_publish = draw_window_module.publish_capture_generation
+    real_publish = capture_module.publish_capture_generation
     collided_path: Path | None = None
     first_call = True
 
@@ -557,15 +755,16 @@ def test_svg_late_collision_preserves_external_file_and_retries_next_version(
             collided_path.write_bytes(b"external")
         return real_publish(**kwargs)
 
-    monkeypatch.setattr(draw_window_module, "export_svg", fake_export_svg)
+    monkeypatch.setattr(capture_module, "export_svg", fake_export_svg)
     monkeypatch.setattr(
-        draw_window_module,
+        capture_module,
         "publish_capture_generation",
         publish_with_late_collision,
     )
     system = object.__new__(DrawWindowSystem)
     system._settings = SimpleNamespace(canvas_size=(320, 240))
     system._capture_paths = VersionedPathAllocator()
+    system._capture_service = CaptureService(path_allocator=system._capture_paths)
     system._svg_output_path = tmp_path / "piece.svg"
     system._last_realized_layers = []
     system._last_frame_t = 4.5
@@ -692,6 +891,40 @@ def test_async_capture_reservations_do_not_collide_before_files_exist(
     system._poll_export_results()
     # Production ExportJobSystem は artifact + manifest を親側 transaction で
     # 公開する。この fake は path reservation/FIFO だけを検査する。
+
+
+def test_async_export_failure_is_published_to_shared_diagnostic_center(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "piece.png"
+    jobs = _FakeExportJobs()
+    jobs.results.append(
+        ExportJobResult(
+            job_id=1,
+            kind=ExportKind.PNG,
+            status=ExportJobStatus.ERROR,
+            output_path=output_path,
+            paths=(),
+            error="resvg failed",
+        )
+    )
+    system = object.__new__(DrawWindowSystem)
+    system._export_jobs = cast(Any, jobs)
+    system._pending_capture_by_job = {1: (0.0, "png")}
+    system._pending_export_requests = deque()
+    system._capture_request_limit = 17
+    system._last_capture_queue_notice = None
+    system._monitor = RuntimeMonitor()
+
+    system._poll_export_results()
+
+    diagnostics = system._monitor.diagnostic_center.snapshot()
+    assert len(diagnostics) == 1
+    event = diagnostics[0]
+    assert event.category == "export"
+    assert event.source == str(output_path)
+    assert event.details == "resvg failed"
+    assert tuple(action.action_id for action in event.actions) == ("copy",)
 
 
 def test_each_rapid_capture_key_press_becomes_a_fifo_submission(
@@ -900,7 +1133,7 @@ def test_close_drains_bound_and_unbound_capture_requests_in_fifo_order(
     system._queue_export_request(ExportKind.GCODE)
     system._last_export_snapshot = last_displayed_snapshot
     system._recording = cast(Any, SimpleNamespace(is_recording=False))
-    system._midi_controller = None
+    system._midi_session = None
     system._scene_runner = cast(Any, SimpleNamespace(close=lambda: None))
     system._renderer = cast(Any, SimpleNamespace(release=lambda: None))
     system.window = cast(Any, SimpleNamespace(close=lambda: None))
@@ -943,7 +1176,8 @@ def test_close_releases_remaining_resources_and_raises_first_cleanup_error() -> 
         def close(self) -> None:
             calls.append("close midi")
 
-    def stop_recording(*, timeout_s: float) -> None:
+    def stop_recording(*, timeout_s: float, stop_reason: str) -> None:
+        assert stop_reason == "shutdown"
         calls.append("stop recording")
 
     def close_scene() -> None:
@@ -956,7 +1190,10 @@ def test_close_releases_remaining_resources_and_raises_first_cleanup_error() -> 
     system._export_jobs = cast(Any, FaultyExportJobs())
     system._recording = cast(Any, SimpleNamespace(is_recording=True))
     system.stop_video_recording = stop_recording
-    system._midi_controller = cast(Any, Midi())
+    system._midi_session = MidiSession(
+        controller=cast(Any, Midi()),
+        frozen_values=None,
+    )
     system._scene_runner = cast(Any, SimpleNamespace(close=close_scene))
     system._renderer = cast(
         Any,
@@ -1044,7 +1281,8 @@ def test_close_shares_capture_deadline_and_cancels_exports_after_video_timeout(
     timeout_error = TimeoutError("video encoder timed out")
     video_timeouts: list[float] = []
 
-    def stop_recording(*, timeout_s: float) -> None:
+    def stop_recording(*, timeout_s: float, stop_reason: str) -> None:
+        assert stop_reason == "shutdown"
         video_timeouts.append(float(timeout_s))
         # ffmpeg finalize が capture 全体 budget を使い切った想定。
         now[0] = 15.0
@@ -1059,7 +1297,7 @@ def test_close_shares_capture_deadline_and_cancels_exports_after_video_timeout(
     system._export_jobs = cast(Any, jobs)
     system._recording = cast(Any, SimpleNamespace(is_recording=True))
     system.stop_video_recording = stop_recording
-    system._midi_controller = None
+    system._midi_session = None
     system._scene_runner = cast(Any, SimpleNamespace(close=lambda: None))
     system._renderer = cast(Any, SimpleNamespace(release=lambda: None))
     system.window = cast(Any, SimpleNamespace(close=lambda: None))
@@ -1088,7 +1326,7 @@ def test_close_switches_to_draw_context_before_renderer_release() -> None:
         ),
     )
     system._recording = cast(Any, SimpleNamespace(is_recording=False))
-    system._midi_controller = None
+    system._midi_session = None
     system._scene_runner = cast(
         Any, SimpleNamespace(close=lambda: calls.append("close scene"))
     )
@@ -1125,7 +1363,7 @@ def test_partial_draw_window_initialization_releases_acquired_resources(
             calls.append("close window")
 
     class Renderer:
-        def __init__(self, *_args: object) -> None:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
             calls.append("create renderer")
 
         def release(self) -> None:
@@ -1214,7 +1452,13 @@ class _FakeVideoRecording:
     def t(self) -> float:
         return self.current_t
 
-    def stop_to_staging(self, *, timeout_s: float) -> object | None:
+    def stop_to_staging(
+        self,
+        *,
+        timeout_s: float,
+        stop_reason: str,
+        abort_reason: str | None,
+    ) -> object | None:
         self.stop_timeout_s = float(timeout_s)
         self.is_recording = False
         if self.path is None:
@@ -1224,6 +1468,12 @@ class _FakeVideoRecording:
         return SimpleNamespace(
             staging_path=staging_path,
             output_path=self.path,
+            recording=RecordingManifest(
+                fps=60.0,
+                frame_count=0,
+                stop_reason=stop_reason,
+                abort_reason=abort_reason,
+            ),
         )
 
 
@@ -1335,7 +1585,14 @@ def test_video_recording_stop_failure_still_restores_window_constraints(
     tmp_path: Path,
 ) -> None:
     class FailingStopRecording(_FakeVideoRecording):
-        def stop_to_staging(self, *, timeout_s: float) -> object | None:
+        def stop_to_staging(
+            self,
+            *,
+            timeout_s: float,
+            stop_reason: str,
+            abort_reason: str | None,
+        ) -> object | None:
+            del stop_reason, abort_reason
             self.stop_timeout_s = float(timeout_s)
             self.is_recording = False
             raise TimeoutError("encoder stop failed")
@@ -1392,8 +1649,21 @@ def test_video_capture_uses_a_versioned_path_and_manifest(tmp_path: Path) -> Non
             encoding="utf-8"
         )
     )
+    assert payload["schema_version"] == 2
     assert payload["t"] == pytest.approx(4.25)
     assert payload["format"] == "mp4"
+    assert payload["output"]["size"] == {"width": 200, "height": 160}
+    assert payload["recording"] == {
+        "fps": 60.0,
+        "frame_count": 0,
+        "dropped_frame_count": 0,
+        "duplicated_frame_count": 0,
+        "error_count": 0,
+        "error_policy": "pause",
+        "stop_reason": "user_stop",
+        "abort_reason": None,
+        "last_error": None,
+    }
     assert system.transport.t() == pytest.approx(4.75)
     assert system.transport.is_playing is False
     assert system.transport.epoch == 2

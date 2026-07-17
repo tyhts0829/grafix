@@ -48,8 +48,18 @@ def make_site_id(
     frame: FrameType | None = None,
     *,
     key: str | int | None = None,
+    instance_key: str | int | None = None,
+    shared: bool = False,
 ) -> str:
-    """frame から project-relative site ID または明示 key ID を生成する。"""
+    """semantic site と任意の反復 instance から site ID を生成する。
+
+    ``key`` はコード移動に強い semantic site、``instance_key`` は同じ site を
+    loop/comprehension で反復したときの個別 instance を表す。``shared=True`` は
+    instance suffix を持たない semantic site を意図的に共有する指定であり、
+    ``instance_key`` との同時指定は曖昧なので拒否する。
+    """
+
+    validate_parameter_identity(key=key, instance_key=instance_key, shared=shared)
 
     if frame is None:
         frame = inspect.currentframe()
@@ -61,18 +71,24 @@ def make_site_id(
     code = frame.f_code
     module_name = str(frame.f_globals.get("__name__", ""))
     if key is not None:
-        if not isinstance(key, (str, int)):
-            raise TypeError("parameter key は str|int|None である必要がある")
-        return f"{_code_file_id(code, module_name)}|{key}"
-    return _automatic_site_id(code, frame.f_lasti, module_name)
+        semantic_site_id = f"{_code_file_id(code, module_name)}|{key}"
+    else:
+        semantic_site_id = _automatic_site_id(code, frame.f_lasti, module_name)
+    if instance_key is None:
+        return semantic_site_id
+    return f"{semantic_site_id}|instance:{instance_key}"
 
 
 def caller_site_id(
     skip: int = 1,
     *,
     key: str | int | None = None,
+    instance_key: str | int | None = None,
+    shared: bool = False,
 ) -> str:
-    """呼び出し元 stack から site ID を取得する。"""
+    """呼び出し元 stack から semantic/instance site ID を取得する。"""
+
+    validate_parameter_identity(key=key, instance_key=instance_key, shared=shared)
 
     frame: FrameType | None = inspect.currentframe()
     for _ in range(skip + 1):
@@ -81,4 +97,27 @@ def caller_site_id(
         frame = frame.f_back
     if frame is None:
         return "<unknown>:0:0"
-    return make_site_id(frame, key=key)
+    return make_site_id(
+        frame,
+        key=key,
+        instance_key=instance_key,
+        shared=shared,
+    )
+
+
+def validate_parameter_identity(
+    *,
+    key: str | int | None,
+    instance_key: str | int | None,
+    shared: bool,
+) -> None:
+    """parameter identity の型と排他条件を検証する。"""
+
+    if key is not None and not isinstance(key, (str, int)):
+        raise TypeError("parameter key は str|int|None である必要がある")
+    if instance_key is not None and not isinstance(instance_key, (str, int)):
+        raise TypeError("instance_key は str|int|None である必要がある")
+    if not isinstance(shared, bool):
+        raise TypeError("shared は bool である必要がある")
+    if shared and instance_key is not None:
+        raise ValueError("instance_key と shared=True は同時に指定できません")

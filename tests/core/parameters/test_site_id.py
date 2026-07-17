@@ -44,6 +44,17 @@ def test_explicit_key_rejects_unsupported_types() -> None:
         caller_site_id(skip=1, key=object())  # type: ignore[arg-type]
 
 
+def test_instance_key_is_appended_to_semantic_key() -> None:
+    site_id = caller_site_id(skip=1, key="petal", instance_key=7)
+
+    assert site_id.endswith("|petal|instance:7")
+
+
+def test_shared_semantic_site_rejects_instance_key() -> None:
+    with pytest.raises(ValueError, match="instance_key"):
+        caller_site_id(skip=1, key="petals", instance_key=0, shared=True)
+
+
 def test_automatic_site_id_uses_location_cache() -> None:
     key_module._automatic_site_id.cache_clear()
 

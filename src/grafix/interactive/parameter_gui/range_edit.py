@@ -4,9 +4,39 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Literal
+
+from grafix.core.parameters.key import ParameterKey
+from grafix.core.parameters.meta_ops import set_meta
+from grafix.core.parameters.snapshot_ops import store_snapshot_for_gui
+from grafix.core.parameters.store import ParamStore
+
+if TYPE_CHECKING:
+    from grafix.core.parameters.history import ParamStoreHistory
 
 RangeEditMode = Literal["shift", "min", "max"]
+
+
+@dataclass(frozen=True, slots=True)
+class RangeEditTarget:
+    """明示Range Edit modeでpreviewする一つのparameter。"""
+
+    key: ParameterKey
+    label: str
+    kind: str
+    original_range: tuple[float | int, float | int]
+    pending_range: tuple[float | int, float | int]
+
+
+@dataclass(frozen=True, slots=True)
+class RangeEditSession:
+    """storeへ未commitのlinked range編集preview。"""
+
+    mode: RangeEditMode
+    cc: int
+    targets: tuple[RangeEditTarget, ...]
 
 
 def apply_range_shift(
@@ -85,5 +115,119 @@ def apply_range_shift(
     return float(lo_f), float(hi_f)
 
 
-__all__ = ["RangeEditMode", "apply_range_shift"]
+def range_edit_session_for_store(
+    store: ParamStore,
+    *,
+    cc: int,
+    mode: RangeEditMode,
+) -> RangeEditSession | None:
+    """指定CCへlinkした編集可能parameterからpreview sessionを作る。"""
 
+    if mode not in ("shift", "min", "max"):
+        raise ValueError(f"unknown mode: {mode!r}")
+    cc_i = int(cc)
+    targets: list[RangeEditTarget] = []
+    disabled = {
+        ("__style__", "global_thickness"),
+        ("__layer_style__", "line_thickness"),
+    }
+    for key, (meta, state, ordinal, label) in store_snapshot_for_gui(store).items():
+        assigned = state.cc_key
+        if isinstance(assigned, int):
+            matches = int(assigned) == cc_i
+        elif assigned is None:
+            matches = False
+        else:
+            matches = cc_i in {int(value) for value in assigned if value is not None}
+        if not matches or (str(key.op), str(key.arg)) in disabled:
+            continue
+        if meta.kind not in {"float", "int", "vec3"}:
+            continue
+        if meta.ui_min is None or meta.ui_max is None:
+            continue
+        value_range = (meta.ui_min, meta.ui_max)
+        targets.append(
+            RangeEditTarget(
+                key=key,
+                label=(
+                    f"{key.op} {ordinal} · {meta.display_name or key.arg}"
+                    if not label
+                    else f"{label} · {meta.display_name or key.arg}"
+                ),
+                kind=str(meta.kind),
+                original_range=value_range,
+                pending_range=value_range,
+            )
+        )
+    if not targets:
+        return None
+    targets.sort(key=lambda target: (target.key.op, target.key.site_id, target.key.arg))
+    return RangeEditSession(mode=mode, cc=cc_i, targets=tuple(targets))
+
+
+def preview_range_edit(
+    session: RangeEditSession,
+    *,
+    delta: float,
+) -> RangeEditSession:
+    """deltaを現在previewへ適用し、storeを変えず新sessionを返す。"""
+
+    targets = tuple(
+        replace(
+            target,
+            pending_range=apply_range_shift(
+                kind=target.kind,
+                ui_min=target.pending_range[0],
+                ui_max=target.pending_range[1],
+                delta=float(delta),
+                mode=session.mode,
+            ),
+        )
+        for target in session.targets
+    )
+    return replace(session, targets=targets)
+
+
+def apply_range_edit_session(
+    store: ParamStore,
+    session: RangeEditSession,
+    *,
+    history: ParamStoreHistory | None = None,
+) -> tuple[ParameterKey, ...]:
+    """previewの差分だけを一つのhistory transactionでcommitする。"""
+
+    changed_targets = tuple(
+        target
+        for target in session.targets
+        if target.pending_range != target.original_range
+    )
+    if not changed_targets:
+        return ()
+    if history is not None:
+        history.break_coalescing()
+    transaction = (
+        history.transaction(source="midi_range_edit")
+        if history is not None
+        else nullcontext()
+    )
+    changed: list[ParameterKey] = []
+    with transaction:
+        for target in changed_targets:
+            meta = store.get_meta(target.key)
+            if meta is None or str(meta.kind) != target.kind:
+                continue
+            lo, hi = target.pending_range
+            set_meta(store, target.key, replace(meta, ui_min=lo, ui_max=hi))
+            changed.append(target.key)
+    return tuple(changed)
+
+
+__all__ = [
+    "RangeEditMode",
+    "RangeEditSession",
+    "RangeEditTarget",
+    "apply_range_edit_session",
+    "apply_range_shift",
+    "preview_range_edit",
+    "range_edit_session_for_store",
+]

@@ -5,8 +5,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from dataclasses import replace
+from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from weakref import WeakKeyDictionary
 
@@ -17,6 +17,7 @@ from grafix.core.builtins import (
 from grafix.core.effect_registry import effect_registry
 from grafix.core.primitive_registry import primitive_registry
 from grafix.core.parameters.key import ParameterKey
+from grafix.core.parameters.favorites import set_parameters_favorite
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_ops import set_meta
@@ -32,8 +33,18 @@ from .labeling import (
     effect_chain_header_display_names_from_snapshot,
     effect_step_ordinals_by_site,
 )
+from .grouping import group_info_for_row
 from .midi_learn import MidiLearnState
-from .table import render_parameter_table
+from .parameter_filter import (
+    ParameterFilterRecord,
+    ParameterFilterState,
+    filter_parameter_records,
+)
+from .table import (
+    parameter_group_collapse_keys,
+    render_parameter_table,
+    source_badge_for_row,
+)
 from .table_model import (
     ParameterTableCacheKey,
     ParameterTableModel,
@@ -45,6 +56,22 @@ from .visibility import active_mask_for_rows
 _logger = logging.getLogger(__name__)
 _TABLE_MODEL_CACHE = ParameterTableModelCache()
 _ENSURED_OPS_BY_STORE_REVISION: WeakKeyDictionary[ParamStore, int] = WeakKeyDictionary()
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterTableView:
+    """1 GUI frame の filter 合成結果。"""
+
+    model: ParameterTableModel
+    visible_mask: tuple[bool, ...]
+    filtered_count: int
+    total_count: int
+
+    @property
+    def hidden_count(self) -> int:
+        """visibility/filter により現在表示されない行数を返す。"""
+
+        return max(0, int(self.total_count) - int(self.filtered_count))
 
 
 def _row_identity(row: ParameterRow) -> tuple[str, int, str]:
@@ -322,6 +349,8 @@ def _build_parameter_table_model(
     for row in rows_from_snapshot(snapshot):
         op = str(row.op)
         arg = str(row.arg)
+        key = ParameterKey(op=op, site_id=str(row.site_id), arg=arg)
+        row = replace(row, favorite=key in store._favorite_keys_ref())
 
         if op in primitive_registry:
             known_args = primitive_known_args_by_op.get(op)
@@ -425,14 +454,23 @@ def _visible_mask_for_model(
     rows: list[ParameterRow],
     *,
     show_inactive: bool,
+    activity_mask: Sequence[bool] | None = None,
 ) -> list[bool]:
     """静的 rows に active/loaded などフレーム動的な可視性を合成する。"""
 
     runtime = store._runtime_ref()
-    active_mask = active_mask_for_rows(
-        rows,
-        show_inactive=bool(show_inactive),
-        last_effective_by_key=runtime.last_effective_by_key,
+    if activity_mask is None:
+        activity_mask = active_mask_for_rows(
+            rows,
+            show_inactive=False,
+            last_effective_by_key=runtime.last_effective_by_key,
+        )
+    if len(activity_mask) != len(rows):
+        raise ValueError("activity_mask は rows と同じ長さである必要があります")
+    active_mask = (
+        [True] * len(rows)
+        if bool(show_inactive)
+        else [bool(active) for active in activity_mask]
     )
     if not runtime.loaded_groups:
         return active_mask
@@ -454,6 +492,101 @@ def _visible_mask_for_model(
         visible and (str(row.op), str(row.site_id)) not in hidden_groups
         for row, visible in zip(rows, active_mask, strict=True)
     ]
+
+
+def _search_label_for_row(row: ParameterRow, model: ParameterTableModel) -> str:
+    """表示 label/header/raw label を検索用の 1 文字列へまとめる。"""
+
+    info = group_info_for_row(
+        row,
+        primitive_header_by_group=model.primitive_header_by_group,
+        layer_style_name_by_site_id=model.layer_style_name_by_site_id,
+        effect_chain_header_by_id=model.effect_chain_header_by_id,
+        step_info_by_site=model.step_info_by_site,
+        effect_step_ordinal_by_site=model.effect_step_ordinal_by_site,
+    )
+    raw_label = model.raw_label_by_site.get((str(row.op), str(row.site_id)), "")
+    return " ".join(
+        part
+        for part in (str(info.visible_label), str(info.header or ""), str(raw_label))
+        if part
+    )
+
+
+def parameter_table_view_for_store(
+    store: ParamStore,
+    *,
+    show_inactive_params: bool,
+    filter_state: ParameterFilterState | None = None,
+    error_keys: AbstractSet[ParameterKey] = frozenset(),
+    favorite_keys: AbstractSet[ParameterKey] | None = None,
+) -> ParameterTableView:
+    """既存 visibility と検索/filter を合成した immutable view を返す。"""
+
+    state = ParameterFilterState() if filter_state is None else filter_state
+    favorites = (
+        store._favorite_keys_ref()
+        if favorite_keys is None
+        else favorite_keys
+    )
+    model = _parameter_table_model_for_store(store)
+    rows = list(model.rows)
+    runtime = store._runtime_ref()
+    activity_mask = active_mask_for_rows(
+        rows,
+        show_inactive=False,
+        last_effective_by_key=runtime.last_effective_by_key,
+    )
+    base_visible_mask = _visible_mask_for_model(
+        store,
+        rows,
+        show_inactive=bool(show_inactive_params),
+        activity_mask=activity_mask,
+    )
+
+    # 通常時（検索/filter 無し）は静的 search label/source record を組み立てない。
+    # 大規模 scene の既定フレームコストを、従来の visibility 判定と同程度に保つ。
+    if state == ParameterFilterState():
+        visible_mask = tuple(bool(visible) for visible in base_visible_mask)
+        return ParameterTableView(
+            model=model,
+            visible_mask=visible_mask,
+            filtered_count=sum(visible_mask),
+            total_count=len(rows),
+        )
+
+    records: list[ParameterFilterRecord] = []
+    for row, active in zip(rows, activity_mask, strict=True):
+        key = ParameterKey(op=str(row.op), site_id=str(row.site_id), arg=str(row.arg))
+        records.append(
+            ParameterFilterRecord(
+                row=row,
+                label=_search_label_for_row(row, model),
+                source=source_badge_for_row(
+                    row,
+                    runtime.last_source_by_key.get(key),
+                ),
+                active=bool(active),
+                has_error=key in error_keys,
+                favorite=key in favorites,
+            )
+        )
+
+    filtered = filter_parameter_records(records, state)
+    visible_mask = tuple(
+        bool(base_visible and matches_filter)
+        for base_visible, matches_filter in zip(
+            base_visible_mask,
+            filtered.mask,
+            strict=True,
+        )
+    )
+    return ParameterTableView(
+        model=model,
+        visible_mask=visible_mask,
+        filtered_count=sum(visible_mask),
+        total_count=len(rows),
+    )
 
 
 def _apply_updated_rows_to_store(
@@ -497,13 +630,19 @@ def _apply_updated_rows_to_store(
         effective_meta = meta
 
         if after.ui_min != before.ui_min or after.ui_max != before.ui_max:
-            effective_meta = ParamMeta(
-                kind=meta.kind,
+            effective_meta = replace(
+                meta,
                 ui_min=after.ui_min,
                 ui_max=after.ui_max,
-                choices=meta.choices,
             )
             set_meta(store, key, effective_meta)
+
+        if after.favorite != before.favorite:
+            set_parameters_favorite(
+                store,
+                (key,),
+                favorite=bool(after.favorite),
+            )
 
         if (
             after.ui_value != before.ui_value
@@ -564,6 +703,38 @@ def _apply_updated_rows_to_store(
         )
 
 
+def set_all_parameter_groups_collapsed(
+    store: ParamStore,
+    table_view: ParameterTableView,
+    *,
+    collapsed: bool,
+) -> bool:
+    """現在の parameter group を一括で折りたたみ、または展開する。"""
+
+    if not isinstance(collapsed, bool):
+        raise TypeError("collapsed must be a bool")
+
+    model = table_view.model
+    collapse_keys = parameter_group_collapse_keys(
+        list(model.rows),
+        primitive_header_by_group=model.primitive_header_by_group,
+        layer_style_name_by_site_id=model.layer_style_name_by_site_id,
+        effect_chain_header_by_id=model.effect_chain_header_by_id,
+        step_info_by_site=model.step_info_by_site,
+        effect_step_ordinal_by_site=model.effect_step_ordinal_by_site,
+    )
+    headers = store._collapsed_headers_ref()
+    before = frozenset(headers)
+    if collapsed:
+        headers.update(collapse_keys)
+    else:
+        headers.difference_update(collapse_keys)
+    if before == headers:
+        return False
+    store._touch()
+    return True
+
+
 def clear_all_midi_assignments(store: ParamStore) -> bool:
     """すべてのパラメータの MIDI CC 割当（cc_key）を解除する。"""
 
@@ -584,20 +755,30 @@ def render_store_parameter_table(
     *,
     column_weights: tuple[float, float, float, float] | None = None,
     show_inactive_params: bool = True,
+    filter_state: ParameterFilterState | None = None,
+    error_keys: AbstractSet[ParameterKey] = frozenset(),
+    favorite_keys: AbstractSet[ParameterKey] | None = None,
+    table_view: ParameterTableView | None = None,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
+    on_help_row: Callable[[ParameterRow, bool], None] | None = None,
 ) -> bool:
     """ParamStore を 4 列テーブルとして描画し、変更を store に反映する。"""
 
     # 行・ヘッダ・順序は (store revision, registry revision) 内で不変。
     # effective/MIDI/active/loaded はモデル外に置き、描画直前にだけ合成する。
     model = _parameter_table_model_for_store(store)
+    if table_view is None or table_view.model.cache_key != model.cache_key:
+        table_view = parameter_table_view_for_store(
+            store,
+            show_inactive_params=bool(show_inactive_params),
+            filter_state=filter_state,
+            error_keys=error_keys,
+            favorite_keys=favorite_keys,
+        )
+        model = table_view.model
     rows_before = list(model.rows)
-    visible_mask = _visible_mask_for_model(
-        store,
-        rows_before,
-        show_inactive=bool(show_inactive_params),
-    )
+    visible_mask = list(table_view.visible_mask)
     view_rows = [
         row for row, visible in zip(rows_before, visible_mask, strict=True) if visible
     ]
@@ -618,6 +799,7 @@ def render_store_parameter_table(
         midi_learn_state=midi_learn_state,
         midi_last_cc_change=midi_last_cc_change,
         collapsed_headers=store._collapsed_headers_ref(),
+        on_help_row=on_help_row,
     )
     collapsed_changed = collapsed_before != store._collapsed_headers_ref()
     if collapsed_changed:

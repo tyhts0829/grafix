@@ -8,6 +8,8 @@ from typing import Literal
 import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
+
 DEFAULT_MAX_GRID_CELLS = 4_000_000
 RESAMPLE_CLOSED_DISTANCE_EPS = 0.01
 
@@ -109,6 +111,13 @@ class GridSpec:
             or pad < 0.0
             or limit < 4
         ):
+            emit_operation_diagnostic(
+                op="GridSpec.from_bbox",
+                original_value=(requested_pitch, pad, limit, overflow),
+                effective_value=None,
+                reason="invalid grid pitch, padding, or cell limit was rejected",
+                severity="warning",
+            )
             return None
 
         min_x = float(mins[0])
@@ -116,8 +125,22 @@ class GridSpec:
         max_x = float(maxs[0])
         max_y = float(maxs[1])
         if not all(math.isfinite(v) for v in (min_x, min_y, max_x, max_y)):
+            emit_operation_diagnostic(
+                op="GridSpec.from_bbox",
+                original_value=(requested_pitch, pad, limit, overflow),
+                effective_value=None,
+                reason="non-finite bounding box was rejected",
+                severity="warning",
+            )
             return None
         if max_x < min_x or max_y < min_y:
+            emit_operation_diagnostic(
+                op="GridSpec.from_bbox",
+                original_value=(requested_pitch, pad, limit, overflow),
+                effective_value=None,
+                reason="inverted bounding box was rejected",
+                severity="warning",
+            )
             return None
 
         origin_x = min_x - pad
@@ -129,6 +152,13 @@ class GridSpec:
             or span_x <= 0.0
             or span_y <= 0.0
         ):
+            emit_operation_diagnostic(
+                op="GridSpec.from_bbox",
+                original_value=(requested_pitch, pad, limit, overflow),
+                effective_value=None,
+                reason="degenerate grid bounds were rejected",
+                severity="warning",
+            )
             return None
 
         def shape_for(candidate_pitch: float) -> tuple[int, int, int]:
@@ -140,6 +170,13 @@ class GridSpec:
         nx, ny, cells = shape_for(effective_pitch)
         if cells > limit:
             if overflow == "reject":
+                emit_operation_diagnostic(
+                    op="GridSpec.from_bbox",
+                    original_value=(requested_pitch, cells, limit, overflow),
+                    effective_value=None,
+                    reason="requested grid exceeded the cell limit and was rejected",
+                    severity="warning",
+                )
                 return None
 
             low = effective_pitch
@@ -147,6 +184,13 @@ class GridSpec:
             while True:
                 high *= 2.0
                 if not math.isfinite(high):
+                    emit_operation_diagnostic(
+                        op="GridSpec.from_bbox",
+                        original_value=(requested_pitch, cells, limit, overflow),
+                        effective_value=None,
+                        reason="grid could not be coarsened to a finite pitch",
+                        severity="error",
+                    )
                     return None
                 nx_high, ny_high, cells_high = shape_for(high)
                 if cells_high <= limit:
@@ -165,7 +209,22 @@ class GridSpec:
             effective_pitch = high
             nx, ny, cells = shape_for(effective_pitch)
             if cells > limit:
+                emit_operation_diagnostic(
+                    op="GridSpec.from_bbox",
+                    original_value=(requested_pitch, cells, limit, overflow),
+                    effective_value=None,
+                    reason="grid coarsening did not satisfy the cell limit",
+                    severity="error",
+                )
                 return None
+
+            emit_operation_diagnostic(
+                op="GridSpec.from_bbox",
+                original_value=requested_pitch,
+                effective_value=effective_pitch,
+                reason="grid pitch was coarsened to satisfy the cell limit",
+                severity="warning",
+            )
 
         return cls(
             origin_x=float(origin_x),

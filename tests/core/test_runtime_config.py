@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from grafix.core.runtime_config import output_root_dir, runtime_config, set_config_path
+from grafix.core.runtime_config import (
+    output_root_dir,
+    runtime_config,
+    runtime_config_report,
+    runtime_config_with_fallback,
+    set_config_path,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +38,7 @@ def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pyt
     assert cfg.parameter_gui_fallback_font_japanese is None
     assert cfg.parameter_gui_font_size_base_px == 14.0
     assert cfg.parameter_gui_table_column_weights == (0.36, 0.35, 0.18, 0.23)
+    assert dict(cfg.parameter_gui_shortcuts)["play_pause"] == "SPACE"
     assert cfg.png_scale == 8.0
     assert cfg.gcode.travel_feed == 3000.0
     assert cfg.gcode.draw_feed == 3000.0
@@ -62,12 +69,12 @@ def test_discovered_config_overrides_packaged_defaults(
         encoding="utf-8",
     )
 
-    assert output_root_dir() == Path("out_discovered")
+    assert output_root_dir() == discovered.parent / "out_discovered"
     cfg = runtime_config()
     assert cfg.config_path == discovered
-    assert cfg.output_dir == Path("out_discovered")
+    assert cfg.output_dir == discovered.parent / "out_discovered"
     assert cfg.sketch_dir == Path("sketch")
-    assert cfg.font_dirs == (Path("fonts_discovered"),)
+    assert cfg.font_dirs == (discovered.parent / "fonts_discovered",)
 
 
 def test_discovered_sketch_dir_is_loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -81,7 +88,7 @@ def test_discovered_sketch_dir_is_loaded(tmp_path: Path, monkeypatch: pytest.Mon
     )
 
     cfg = runtime_config()
-    assert cfg.sketch_dir == Path("sketch")
+    assert cfg.sketch_dir == discovered.parent / "sketch"
 
 
 def test_discovered_midi_inputs_are_loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -117,6 +124,8 @@ def test_parameter_gui_config_values_are_loaded(tmp_path: Path, monkeypatch: pyt
                 "    fallback_font_japanese: null",
                 "    font_size_base_px: 15.0",
                 "    table_column_weights: [0.10, 0.20, 0.30, 0.40]",
+                "    shortcuts:",
+                "      play_pause: P",
                 "",
             ]
         ),
@@ -126,6 +135,7 @@ def test_parameter_gui_config_values_are_loaded(tmp_path: Path, monkeypatch: pyt
     cfg = runtime_config()
     assert cfg.parameter_gui_font_size_base_px == 15.0
     assert cfg.parameter_gui_table_column_weights == (0.10, 0.20, 0.30, 0.40)
+    assert dict(cfg.parameter_gui_shortcuts)["play_pause"] == "P"
 
 
 def test_explicit_config_overrides_discovered_config(
@@ -147,12 +157,12 @@ def test_explicit_config_overrides_discovered_config(
     )
     set_config_path(explicit)
 
-    assert output_root_dir() == Path("out_explicit")
+    assert output_root_dir() == explicit.parent / "out_explicit"
     cfg = runtime_config()
     assert cfg.config_path == explicit
-    assert cfg.output_dir == Path("out_explicit")
+    assert cfg.output_dir == explicit.parent / "out_explicit"
     assert cfg.sketch_dir == Path("sketch")
-    assert cfg.font_dirs == (Path("fonts_discovered"),)
+    assert cfg.font_dirs == (explicit.parent / "fonts_discovered",)
 
 
 def test_environment_variables_are_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -239,3 +249,136 @@ def test_missing_gcode_error_matches_recursive_merge_contract(
         runtime_config()
 
     assert "浅い上書き" not in str(exc_info.value)
+
+
+def test_unknown_key_is_rejected_before_merge_with_nearest_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "paths:\n  outpt_dir: ./renders\n",
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+
+    with pytest.raises(RuntimeError, match="paths\\.outpt_dir") as exc_info:
+        runtime_config()
+
+    assert "paths.output_dir" in str(exc_info.value)
+    assert str(config_path) in str(exc_info.value)
+
+
+def test_interactive_fallback_is_explicit_and_cached_for_all_consumers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("paths:\n  outpt_dir: ./renders\n", encoding="utf-8")
+    set_config_path(config_path)
+
+    cfg, fallback = runtime_config_with_fallback()
+
+    assert fallback is not None
+    assert fallback.source == config_path
+    assert "paths.outpt_dir" in fallback.summary
+    assert "paths.output_dir" in fallback.details
+    assert cfg.config_path is None
+    assert cfg.output_dir == Path("data") / "output"
+    assert runtime_config() is cfg
+    assert runtime_config_report().active_source == "grafix/resource/default_config.yaml"
+
+
+@pytest.mark.parametrize("value", (".nan", ".inf", "-.inf"))
+def test_non_finite_float_is_rejected(
+    value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"export:\n  png:\n    scale: {value}\n",
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+
+    with pytest.raises(ValueError, match="finite"):
+        runtime_config()
+
+
+def test_gcode_range_must_be_in_ascending_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "export:\n  gcode:\n    bed_x_range: [200.0, 10.0]\n",
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+
+    with pytest.raises(ValueError, match="bed_x_range.*昇順"):
+        runtime_config()
+
+
+def test_positive_float_and_midi_mode_are_strictly_validated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "export:\n  gcode:\n    travel_feed: 0.0\n",
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+    with pytest.raises(ValueError, match="travel_feed.*正"):
+        runtime_config()
+
+    config_path.write_text(
+        "midi:\n  inputs:\n    - port_name: Grid\n      mode: 16bit\n",
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+    with pytest.raises(ValueError, match="midi\\.inputs\\[0\\]\\.mode"):
+        runtime_config()
+
+
+def test_config_relative_paths_are_resolved_against_config_parent_not_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_dir = tmp_path / "project" / "settings"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.yaml"
+    config_path.write_text(
+        "paths:\n"
+        "  output_dir: ../renders\n"
+        "  sketch_dir: ./sketches\n"
+        "  preset_module_dirs: [./presets]\n"
+        "  font_dirs: [./fonts]\n",
+        encoding="utf-8",
+    )
+
+    set_config_path(config_path)
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    cfg = runtime_config()
+
+    assert cfg.output_dir == config_dir.parent / "renders"
+    assert cfg.sketch_dir == config_dir / "sketches"
+    assert cfg.preset_module_dirs == (config_dir / "presets",)
+    assert cfg.font_dirs == (config_dir / "fonts",)
+
+    output_value = next(
+        value for value in runtime_config_report().values if value.key == "paths.output_dir"
+    )
+    assert output_value.source == str(config_path)
+    assert output_value.effective_value == "../renders"
+    assert output_value.resolved_path == config_dir.parent / "renders"

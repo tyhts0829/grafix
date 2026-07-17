@@ -4,15 +4,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .effects import EffectChainIndex
 from .key import ParameterKey
 from .labels import ParamLabels
 from .meta import ParamMeta
 from .ordinals import GroupOrdinals
-from .runtime import ParamStoreRuntime
+from .runtime import LoadProvenance, ParamStoreLoadDiagnostic, ParamStoreRuntime
 from .state import ParamState
+
+if TYPE_CHECKING:
+    from .variations import Variation
 
 
 class ParamStore:
@@ -21,6 +24,7 @@ class ParamStore:
     Notes
     -----
     - このクラスは「永続データの入れ物」に寄せる。
+    - parameter lock / favorite は永続 UI state として保持する。
     - 外部へはミュータブルな参照（ParamState）を渡さない。
       変更は ops 経由で行う想定とする。
     """
@@ -34,6 +38,9 @@ class ParamStore:
         self._ordinals = GroupOrdinals()
         self._effects = EffectChainIndex()
         self._collapsed_headers: set[str] = set()
+        self._locked_keys: set[ParameterKey] = set()
+        self._favorite_keys: set[ParameterKey] = set()
+        self._variations: dict[str, Variation] = {}
 
         # 永続化しない実行時情報（loaded/observed/reconcile-applied）。
         self._runtime = ParamStoreRuntime()
@@ -46,6 +53,18 @@ class ParamStore:
         """snapshot/model に影響する永続状態の変更時だけ増える単調 revision。"""
 
         return self._revision
+
+    @property
+    def load_provenance(self) -> LoadProvenance:
+        """現在のデータを復元した load 経路を返す。"""
+
+        return self._runtime.load_provenance
+
+    @property
+    def load_diagnostics(self) -> tuple[ParamStoreLoadDiagnostic, ...]:
+        """load 中の migration/quarantine 診断を返す。"""
+
+        return self._runtime.load_diagnostics
 
     def get_state(self, key: ParameterKey) -> ParamState | None:
         """登録済みの ParamState を返す。未登録なら None。"""
@@ -139,6 +158,15 @@ class ParamStore:
 
     def _collapsed_headers_ref(self) -> set[str]:
         return self._collapsed_headers
+
+    def _locked_keys_ref(self) -> set[ParameterKey]:
+        return self._locked_keys
+
+    def _favorite_keys_ref(self) -> set[ParameterKey]:
+        return self._favorite_keys
+
+    def _variations_ref(self) -> dict[str, Variation]:
+        return self._variations
 
     def _runtime_ref(self) -> ParamStoreRuntime:
         return self._runtime

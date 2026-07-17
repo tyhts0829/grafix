@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from typing import Literal
 
 from .key import ParameterKey
 from .meta import ParamMeta
@@ -21,6 +22,37 @@ class GroupFingerprint:
     args: frozenset[str]
     kind_by_arg: Mapping[str, str]
     label: str | None
+
+
+ReconcileOrphanReason = Literal["tie", "claimed"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcileOrphan:
+    """自動対応を確定できなかった fresh group と旧候補を表す。
+
+    ``new_group`` は現在のコードで観測された group、
+    ``candidate_old_groups`` は保存データ側の候補である。候補は fresh 側の
+    同点首位、または同じ stale を同点首位にした fresh 間の競合に限定する。
+    """
+
+    new_group: GroupKey
+    candidate_old_groups: tuple[GroupKey, ...]
+    score: int
+    reason: ReconcileOrphanReason
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcilePlan:
+    """自動 migrate と手動判断待ち orphan をまとめた再リンク計画。"""
+
+    matches: tuple[tuple[GroupKey, GroupKey], ...]
+    orphans: tuple[ReconcileOrphan, ...]
+
+    def mapping(self) -> dict[GroupKey, GroupKey]:
+        """``old_group -> new_group`` のコピーを返す。"""
+
+        return dict(self.matches)
 
 
 def build_group_fingerprints(
@@ -77,19 +109,21 @@ def _match_score(a: GroupFingerprint, b: GroupFingerprint) -> int:
     return score
 
 
-def match_groups(
+def plan_group_reconciliation(
     *,
     stale: Sequence[GroupKey],
     fresh: Sequence[GroupKey],
     fingerprints: Mapping[GroupKey, GroupFingerprint],
     min_score: int = 15,
-) -> dict[GroupKey, GroupKey]:
-    """stale -> fresh の 1:1 対応を作って返す（曖昧なら対応付けない）。
+) -> ReconcilePlan:
+    """stale/fresh の安全な 1:1 対応と未確定候補を返す。
 
     Notes
     -----
     - 対応付けは op 単位で行う（op が異なるものは候補にしない）。
-    - 誤マッチを避けるため、同点首位が複数ある場合は採用しない。
+    - 同点首位は誤マッチを避けて orphan とし、候補を失わない。
+    - 同じ stale を複数 fresh が首位に選んだ場合は、最高点が一意なときだけ
+      自動採用する。最高点も同点なら該当 fresh を orphan とする。
     """
 
     stale_list = sorted([(str(op), str(site_id)) for op, site_id in stale])
@@ -99,18 +133,15 @@ def match_groups(
     for op, site_id in stale_list:
         stale_by_op.setdefault(op, []).append((op, site_id))
 
-    candidates: list[tuple[tuple[int, str, str], GroupKey, GroupKey]] = []
-    # (rank, stale_group, fresh_group)
-    # rank はソート用。score が主、文字列は順序安定化のダミー。
+    candidates: list[tuple[int, GroupKey, GroupKey]] = []
+    orphans: list[ReconcileOrphan] = []
 
     for fresh_group in fresh_list:
         fresh_fp = fingerprints.get(fresh_group)
         if fresh_fp is None:
             continue
 
-        best_score: int | None = None
-        best_stale: GroupKey | None = None
-        tied = False
+        scored: list[tuple[int, GroupKey]] = []
 
         for stale_group in stale_by_op.get(fresh_fp.op, []):
             stale_fp = fingerprints.get(stale_group)
@@ -121,28 +152,121 @@ def match_groups(
             if score < int(min_score):
                 continue
 
-            if best_score is None or score > best_score:
-                best_score = score
-                best_stale = stale_group
-                tied = False
-            elif score == best_score:
-                tied = True
+            scored.append((int(score), stale_group))
 
-        if best_stale is None or best_score is None or tied:
+        if not scored:
             continue
 
-        rank = (int(best_score), fresh_group[0], fresh_group[1])
-        candidates.append((rank, best_stale, fresh_group))
+        best_score = max(score for score, _group in scored)
+        best_stale = tuple(
+            sorted(group for score, group in scored if score == best_score)
+        )
+        if len(best_stale) != 1:
+            orphans.append(
+                ReconcileOrphan(
+                    new_group=fresh_group,
+                    candidate_old_groups=best_stale,
+                    score=best_score,
+                    reason="tie",
+                )
+            )
+            continue
 
-    # score が高いものから確定させる（1:1 を守る）。
-    candidates.sort(reverse=True)
-    out: dict[GroupKey, GroupKey] = {}
+        candidates.append((best_score, best_stale[0], fresh_group))
+
+    # 同じ stale を複数 fresh が選んだ場合、最高点が一意なときだけ確定する。
+    # 最高点まで同点なら、文字列順で勝者を決めず全件を手動判断へ回す。
+    candidates_by_stale: dict[GroupKey, list[tuple[int, GroupKey]]] = {}
+    for score, stale_group, fresh_group in candidates:
+        candidates_by_stale.setdefault(stale_group, []).append((score, fresh_group))
+
+    matches: list[tuple[GroupKey, GroupKey]] = []
     used_stale: set[GroupKey] = set()
     used_fresh: set[GroupKey] = set()
-    for _rank, stale_group, fresh_group in candidates:
-        if stale_group in used_stale or fresh_group in used_fresh:
+    for stale_group in sorted(candidates_by_stale):
+        proposals = candidates_by_stale[stale_group]
+        best_score = max(score for score, _fresh_group in proposals)
+        best_fresh = tuple(
+            sorted(
+                fresh_group
+                for score, fresh_group in proposals
+                if score == best_score
+            )
+        )
+        if len(best_fresh) != 1:
+            for fresh_group in best_fresh:
+                orphans.append(
+                    ReconcileOrphan(
+                        new_group=fresh_group,
+                        candidate_old_groups=(stale_group,),
+                        score=best_score,
+                        reason="claimed",
+                    )
+                )
             continue
-        out[stale_group] = fresh_group
+
+        fresh_group = best_fresh[0]
+        if fresh_group in used_fresh:
+            orphans.append(
+                ReconcileOrphan(
+                    new_group=fresh_group,
+                    candidate_old_groups=(stale_group,),
+                    score=best_score,
+                    reason="claimed",
+                )
+            )
+            continue
+        matches.append((stale_group, fresh_group))
         used_stale.add(stale_group)
         used_fresh.add(fresh_group)
-    return out
+
+    # 自動採用済み stale は手動候補として再利用できない。候補を 1:1 に絞り、
+    # 全候補が使用済みになった orphan は一覧から外す。
+    available_orphans: list[ReconcileOrphan] = []
+    for orphan in orphans:
+        available = tuple(
+            group
+            for group in orphan.candidate_old_groups
+            if group not in used_stale
+        )
+        if available:
+            available_orphans.append(
+                ReconcileOrphan(
+                    new_group=orphan.new_group,
+                    candidate_old_groups=available,
+                    score=orphan.score,
+                    reason=orphan.reason,
+                )
+            )
+    matches.sort()
+    available_orphans.sort(key=lambda orphan: orphan.new_group)
+    return ReconcilePlan(matches=tuple(matches), orphans=tuple(available_orphans))
+
+
+def match_groups(
+    *,
+    stale: Sequence[GroupKey],
+    fresh: Sequence[GroupKey],
+    fingerprints: Mapping[GroupKey, GroupFingerprint],
+    min_score: int = 15,
+) -> dict[GroupKey, GroupKey]:
+    """曖昧候補を除いた ``stale -> fresh`` の 1:1 対応を返す。"""
+
+    return plan_group_reconciliation(
+        stale=stale,
+        fresh=fresh,
+        fingerprints=fingerprints,
+        min_score=min_score,
+    ).mapping()
+
+
+__all__ = [
+    "GroupFingerprint",
+    "GroupKey",
+    "ReconcileOrphan",
+    "ReconcileOrphanReason",
+    "ReconcilePlan",
+    "build_group_fingerprints",
+    "match_groups",
+    "plan_group_reconciliation",
+]

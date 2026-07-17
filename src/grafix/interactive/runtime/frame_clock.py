@@ -14,6 +14,15 @@ TimeSource = Callable[[], float]
 
 
 @dataclass(frozen=True, slots=True)
+class TimeBookmark:
+    """名前付きtimeline時刻。"""
+
+    name: str
+    t: float
+    variation_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TransportSnapshot:
     """プレビューの transport 状態。"""
 
@@ -21,6 +30,9 @@ class TransportSnapshot:
     is_playing: bool
     speed: float
     epoch: int = 0
+    loop_in: float | None = None
+    loop_out: float | None = None
+    bookmarks: tuple[TimeBookmark, ...] = ()
 
 
 class TransportClock:
@@ -61,6 +73,8 @@ class TransportClock:
         # 非同期 draw の結果が timeline の不連続をまたいで採用されないよう、
         # seek/reset/step ごとに単調増加させる generation。
         self._epoch = 0
+        self._loop: tuple[float, float] | None = None
+        self._bookmarks: dict[str, TimeBookmark] = {}
 
     @property
     def is_playing(self) -> bool:
@@ -85,22 +99,103 @@ class TransportClock:
 
         return int(self._epoch)
 
+    @property
+    def loop_range(self) -> tuple[float, float] | None:
+        """有効なloop in/outを返す。"""
+
+        return self._loop
+
+    @property
+    def bookmarks(self) -> tuple[TimeBookmark, ...]:
+        """登録順のimmutable bookmark列を返す。"""
+
+        return tuple(self._bookmarks.values())
+
     def t(self) -> float:
         """現在のフレーム時刻 `t`（秒）を返す。"""
 
         if not self._is_playing:
             return float(self._anchor_t)
-        return float(self._timeline_at(self._read_source_time()))
+        source_time = self._read_source_time()
+        timeline_t = self._timeline_at(source_time)
+        loop = self._loop
+        if loop is None or timeline_t < loop[1]:
+            return float(timeline_t)
+
+        loop_in, loop_out = loop
+        wrapped = loop_in + ((timeline_t - loop_in) % (loop_out - loop_in))
+        self._anchor_t = wrapped
+        self._anchor_source_time = source_time
+        self.mark_discontinuity()
+        return float(wrapped)
 
     def snapshot(self) -> TransportSnapshot:
         """時刻と再生状態を同じ観測点の snapshot として返す。"""
 
+        t = self.t()
+        loop = self._loop
         return TransportSnapshot(
-            t=self.t(),
+            t=t,
             is_playing=self.is_playing,
             speed=self.speed,
             epoch=self.epoch,
+            loop_in=None if loop is None else loop[0],
+            loop_out=None if loop is None else loop[1],
+            bookmarks=self.bookmarks,
         )
+
+    def set_loop(self, loop_in: float, loop_out: float) -> None:
+        """再生loopの半開区間 ``[loop_in, loop_out)`` を設定する。"""
+
+        start = float(loop_in)
+        end = float(loop_out)
+        self._require_finite(start, name="loop_in")
+        self._require_finite(end, name="loop_out")
+        if end <= start:
+            raise ValueError("loop_out は loop_in より大きい必要がある")
+        self._loop = (start, end)
+
+    def clear_loop(self) -> None:
+        """再生loopを解除する。"""
+
+        self._loop = None
+
+    def set_bookmark(
+        self,
+        name: str,
+        *,
+        t: float | None = None,
+        variation_name: str | None = None,
+    ) -> TimeBookmark:
+        """時刻へbookmarkを保存し、任意でnamed variationと関連付ける。"""
+
+        name_s = str(name).strip()
+        if not name_s:
+            raise ValueError("bookmark name は空にできない")
+        bookmark_t = self.t() if t is None else float(t)
+        self._require_finite(bookmark_t, name="bookmark t")
+        variation = None if variation_name is None else str(variation_name).strip()
+        if variation_name is not None and not variation:
+            raise ValueError("variation_name は空にできない")
+        bookmark = TimeBookmark(name=name_s, t=bookmark_t, variation_name=variation)
+        self._bookmarks[name_s] = bookmark
+        return bookmark
+
+    def remove_bookmark(self, name: str) -> bool:
+        """bookmarkを削除し、存在したかを返す。"""
+
+        return self._bookmarks.pop(str(name), None) is not None
+
+    def seek_bookmark(self, name: str) -> float:
+        """bookmarkへseekし、移動後の時刻を返す。"""
+
+        name_s = str(name)
+        try:
+            target = self._bookmarks[name_s].t
+        except KeyError as exc:
+            raise KeyError(f"未登録の bookmark: {name_s!r}") from exc
+        self.seek(target)
+        return float(target)
 
     def play(self) -> None:
         """現在の `t` から再生を開始する。"""

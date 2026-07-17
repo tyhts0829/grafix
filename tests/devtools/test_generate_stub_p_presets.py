@@ -58,7 +58,8 @@ def test_generate_stub_lists_user_presets_on_p(tmp_path: Path) -> None:
 
     assert (
         "def stubgen_path(self, *, activate: bool = ..., out: Path = ..., "
-        "name: str | None = ..., key: str | int | None = ...) -> SceneItem:"
+        "name: str | None = ..., key: str | int | None = ..., "
+        "instance_key: str | int | None = ..., shared: bool = ...) -> SceneItem:"
         in stub
     )
     assert "def __getattr__(self, name: str) -> Callable[..., SceneItem]:" in stub

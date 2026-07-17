@@ -10,6 +10,7 @@ from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.view import ParameterRow
 from grafix.interactive.parameter_gui import store_bridge
+from grafix.interactive.parameter_gui.parameter_filter import ParameterFilterState
 from grafix.interactive.parameter_gui.visibility import active_mask_for_rows
 
 
@@ -203,6 +204,74 @@ def test_render_store_parameter_table_filters_rows_passed_to_renderer(monkeypatc
 
     store_bridge.render_store_parameter_table(store, show_inactive_params=True)
     assert captured_args == ["base", "cell_size", "ratio"]
+
+
+def test_search_filter_composes_with_existing_show_inactive_visibility(
+    monkeypatch,
+) -> None:
+    store = ParamStore()
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=ParameterKey("preset._vis_preset", "s:filter", "base"),
+                base="square",
+                effective="square",
+                meta=ParamMeta(kind="choice"),
+                explicit=False,
+            ),
+            FrameParamRecord(
+                key=ParameterKey("preset._vis_preset", "s:filter", "cell_size"),
+                base=10.0,
+                effective=10.0,
+                meta=ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
+                explicit=False,
+            ),
+            FrameParamRecord(
+                key=ParameterKey("preset._vis_preset", "s:filter", "ratio"),
+                base=1.618,
+                effective=1.618,
+                meta=ParamMeta(kind="float", ui_min=1.01, ui_max=10.0),
+                explicit=False,
+            ),
+        ],
+    )
+    state = ParameterFilterState(query="RATIO", activity="inactive")
+    captured_args: list[str] = []
+
+    def fake_render(rows, **_kwargs):
+        captured_args[:] = [str(row.arg) for row in rows]
+        return False, list(rows)
+
+    monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
+
+    hidden_view = store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=False,
+        filter_state=state,
+    )
+    assert (hidden_view.filtered_count, hidden_view.total_count) == (0, 3)
+    store_bridge.render_store_parameter_table(
+        store,
+        show_inactive_params=False,
+        filter_state=state,
+        table_view=hidden_view,
+    )
+    assert captured_args == []
+
+    shown_view = store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=True,
+        filter_state=state,
+    )
+    assert (shown_view.filtered_count, shown_view.total_count) == (1, 3)
+    store_bridge.render_store_parameter_table(
+        store,
+        show_inactive_params=True,
+        filter_state=state,
+        table_view=shown_view,
+    )
+    assert captured_args == ["ratio"]
 
 
 def _text_row(*, arg: str, value: object) -> ParameterRow:

@@ -123,8 +123,14 @@ def test_parameter_gui_draw_keeps_requested_logical_width_on_retina(
     gui._transport = None
     gui._history = None
     gui._snapshot_slots = None
-    gui._midi_controller = None
+    gui._midi_session = None
+    gui._range_edit_mode = None
+    gui._range_edit_session = None
     gui._store = ParamStore()
+    gui._parameter_filter_state = gui_module.ParameterFilterState()
+    gui._parameter_error_keys = frozenset()
+    gui._favorite_parameter_keys = frozenset()
+    gui._parameter_table_view = None
     gui._midi_learn_state = cast(
         Any,
         SimpleNamespace(

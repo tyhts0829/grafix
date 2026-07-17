@@ -7,7 +7,13 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from grafix.core.layer import LayerStyleDefaults
+from grafix.core.operation_diagnostics import (
+    OperationDiagnostic,
+    OperationDiagnosticBuffer,
+    extend_operation_diagnostics,
+)
 from grafix.core.parameters import (
+    MidiFrameSnapshot,
     ParamStore,
     current_frame_params,
     current_param_snapshot,
@@ -15,10 +21,20 @@ from grafix.core.parameters import (
 )
 from grafix.core.pipeline import RealizedLayer, realize_scene
 from grafix.core.realize import RealizeSession
-from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET, ResourceBudget
+from grafix.core.preview_quality import PreviewQuality, preview_quality_context
+from grafix.core.resource_budget import (
+    DEFAULT_RESOURCE_BUDGET,
+    ResourceBudget,
+    ResourceLimitError,
+)
+from grafix.core.runtime_limits import (
+    RuntimeLimitProfiles,
+    profiles_for_resource_budget,
+)
 from grafix.core.scene import SceneItem
 from grafix.interactive.runtime.mp_draw import MpDraw
 from grafix.interactive.runtime.perf import PerfCollector
+from grafix.interactive.runtime.diagnostics import DiagnosticCenter, DiagnosticEvent
 
 
 class SceneRunner:
@@ -30,13 +46,46 @@ class SceneRunner:
         *,
         perf: PerfCollector,
         n_worker: int,
+        evaluation_timeout: float | None = 5.0,
         resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
+        runtime_limit_profiles: RuntimeLimitProfiles | None = None,
+        diagnostic_center: DiagnosticCenter | None = None,
     ) -> None:
+        worker_count = int(n_worker)
+        if worker_count < 0:
+            raise ValueError("n_worker は 0 以上である必要があります")
+
+        profiles = (
+            profiles_for_resource_budget(resource_budget)
+            if runtime_limit_profiles is None
+            else runtime_limit_profiles
+        )
+        if not isinstance(profiles, RuntimeLimitProfiles):
+            raise TypeError(
+                "runtime_limit_profiles は RuntimeLimitProfiles である必要があります"
+            )
+
         self._draw = draw
         self._perf = perf
-        self._realize_session = RealizeSession(resource_budget=resource_budget)
+        self._worker_count = worker_count
+        self._evaluation_timeout = evaluation_timeout
+        self._runtime_limit_profiles = profiles
+        self._realize_sessions = {
+            "draft": RealizeSession(runtime_limits=profiles.preview, profiler=perf),
+            "final": RealizeSession(runtime_limits=profiles.final, profiler=perf),
+        }
+        # 既存の計測・test が参照する preview session alias。
+        self._realize_session = self._realize_sessions["draft"]
+        self._diagnostic_center = diagnostic_center
+        self._last_operation_diagnostics: tuple[OperationDiagnostic, ...] = ()
         self._mp_draw: MpDraw | None = (
-            MpDraw(draw, n_worker=int(n_worker)) if int(n_worker) > 1 else None
+            MpDraw(
+                draw,
+                n_worker=worker_count,
+                evaluation_timeout=evaluation_timeout,
+            )
+            if worker_count >= 1
+            else None
         )
         # mp-draw は結果未到着の frame でも前回 scene を再利用して返すため、単なる
         # run() の正常 return だけでは user draw の回復を判定できない。None は
@@ -58,6 +107,63 @@ class SceneRunner:
         self._mp_epoch = 0
         self._last_transport_epoch: int | None = None
         self._last_recording: bool | None = None
+        self._last_quality: PreviewQuality | None = None
+
+    def replace_draw(self, draw: Callable[[float], SceneItem]) -> None:
+        """draw callable と background worker 世代を一つの境界で交換する。
+
+        新 worker の構築に失敗した場合は現在の callable/worker/last-good frame を
+        変更しない。成功時は旧 worker の結果を無効化し、次の fresh result までは
+        直近の表示を維持する。ParamStore と realize cache の寿命は変えない。
+        """
+
+        if not callable(draw):
+            raise TypeError("draw は callable である必要があります")
+
+        next_epoch = self._mp_epoch + 1
+        replacement: MpDraw | None = None
+        if self._worker_count >= 1:
+            replacement = MpDraw(
+                draw,
+                n_worker=self._worker_count,
+                evaluation_timeout=self._evaluation_timeout,
+            )
+            try:
+                replacement.begin_epoch(next_epoch)
+            except BaseException:
+                replacement.close()
+                raise
+
+        previous = self._mp_draw
+        self._draw = draw
+        self._mp_draw = replacement
+        self._mp_epoch = next_epoch
+        self._last_merged_mp_success_frame_id = None
+        self._last_merged_mp_success_epoch = None
+        self._last_evaluation_succeeded = None
+        self._last_evaluation_t = None
+        self._last_realized_t = self._retained_realized_t
+        self._waiting_for_fresh_result = replacement is not None
+
+        if previous is None:
+            return
+        try:
+            previous.close()
+        except Exception as exc:
+            center = self._diagnostic_center
+            if center is not None:
+                center.publish(
+                    DiagnosticEvent(
+                        category="reload",
+                        severity="warning",
+                        summary="旧 draw worker の終了に失敗しました",
+                        details=f"{type(exc).__name__}: {exc}",
+                        dedupe_key=(
+                            "reload-old-worker-close:"
+                            f"{type(exc).__name__}:{exc}"
+                        ),
+                    )
+                )
 
     @property
     def last_evaluation_succeeded(self) -> bool | None:
@@ -93,15 +199,72 @@ class SceneRunner:
 
         return bool(self._waiting_for_fresh_result)
 
+    @property
+    def last_operation_diagnostics(self) -> tuple[OperationDiagnostic, ...]:
+        """直近 evaluation で収集した immutable operation 診断を返す。"""
+
+        return self._last_operation_diagnostics
+
+    def _commit_operation_diagnostics(
+        self,
+        buffer: OperationDiagnosticBuffer | None,
+    ) -> None:
+        diagnostics = () if buffer is None else buffer.snapshot()
+        self._last_operation_diagnostics = diagnostics
+        center = self._diagnostic_center
+        if center is None:
+            return
+        for diagnostic in diagnostics:
+            center.publish(
+                DiagnosticEvent(
+                    category="operation",
+                    severity=diagnostic.severity,
+                    summary=f"{diagnostic.op}: {diagnostic.reason}",
+                    details=(
+                        f"original={diagnostic.original_value!r}\n"
+                        f"effective={diagnostic.effective_value!r}\n"
+                        f"reason={diagnostic.reason}"
+                    ),
+                    dedupe_key=f"operation:{diagnostic.identity()!r}",
+                )
+            )
+
+    def _publish_resource_limit(self, error: Exception) -> None:
+        center = self._diagnostic_center
+        if center is None:
+            return
+        current: BaseException | None = error
+        seen: set[int] = set()
+        resource_error: ResourceLimitError | None = None
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, ResourceLimitError):
+                resource_error = current
+                break
+            current = current.__cause__
+        if resource_error is None:
+            return
+        message = str(resource_error)
+        center.publish(
+            DiagnosticEvent(
+                category="resource",
+                severity="error",
+                summary=message,
+                details=message,
+                dedupe_key=f"resource-limit:{message}",
+            )
+        )
+
     def run(
         self,
         t: float,
         *,
         store: ParamStore,
-        cc_snapshot: dict[int, float] | None,
+        cc_snapshot: MidiFrameSnapshot | None,
         defaults: LayerStyleDefaults,
         recording: bool,
         transport_epoch: int | None = None,
+        quality: PreviewQuality = "draft",
     ) -> list[RealizedLayer]:
         """シーンを実行して realized_layers を返す。
 
@@ -111,39 +274,56 @@ class SceneRunner:
             mp-draw worker が予期せず終了した場合。同期実行には切り替えない。
         """
 
+        if quality not in {"draft", "final"}:
+            raise ValueError(f"unknown preview quality: {quality!r}")
         self._last_evaluation_succeeded = None
         self._last_evaluation_t = None
         self._last_realized_t = None
         self._waiting_for_fresh_result = False
+        operation_diagnostics: OperationDiagnosticBuffer | None = None
+        effective_quality: PreviewQuality = "final" if recording else quality
         try:
             self._update_epoch(
                 recording=bool(recording),
                 transport_epoch=transport_epoch,
+                quality=effective_quality,
             )
-            with parameter_context(store, cc_snapshot=cc_snapshot):
-                if recording or self._mp_draw is None:
-                    realized_layers = self._run_sync(t, defaults=defaults)
-                    self._last_evaluation_succeeded = True
-                    self._last_evaluation_t = float(t)
-                    self._last_realized_t = float(t)
-                    self._retain_output(realized_layers, t=float(t))
-                    return realized_layers
-                return self._run_mp(
-                    t,
-                    snapshot_revision=store.revision,
-                    cc_snapshot=cc_snapshot,
-                    defaults=defaults,
-                )
-        except Exception:
+            with preview_quality_context(effective_quality):
+                with parameter_context(
+                    store, cc_snapshot=cc_snapshot
+                ) as operation_diagnostics:
+                    if effective_quality == "final" or self._mp_draw is None:
+                        realized_layers = self._run_sync(
+                            t,
+                            defaults=defaults,
+                            quality=effective_quality,
+                        )
+                        self._last_evaluation_succeeded = True
+                        self._last_evaluation_t = float(t)
+                        self._last_realized_t = float(t)
+                        self._retain_output(realized_layers, t=float(t))
+                        return realized_layers
+                    return self._run_mp(
+                        t,
+                        snapshot_revision=store.revision,
+                        cc_snapshot=cc_snapshot,
+                        defaults=defaults,
+                        quality=effective_quality,
+                    )
+        except Exception as exc:
             self._last_evaluation_succeeded = False
             self._last_evaluation_t = None
+            self._publish_resource_limit(exc)
             raise
+        finally:
+            self._commit_operation_diagnostics(operation_diagnostics)
 
     def _update_epoch(
         self,
         *,
         recording: bool,
         transport_epoch: int | None,
+        quality: PreviewQuality,
     ) -> None:
         """transport/recording の不連続を mp generation へ写像する。"""
 
@@ -173,6 +353,11 @@ class SceneRunner:
             discontinuity = True
         self._last_recording = bool(recording)
 
+        previous_quality = self._last_quality
+        if previous_quality is not None and quality != previous_quality:
+            discontinuity = True
+        self._last_quality = quality
+
         if not discontinuity or self._mp_draw is None:
             return
         self._mp_epoch += 1
@@ -193,7 +378,13 @@ class SceneRunner:
         self._last_realized_t = self._retained_realized_t
         return list(self._retained_realized_layers)
 
-    def _run_sync(self, t: float, *, defaults: LayerStyleDefaults) -> list[RealizedLayer]:
+    def _run_sync(
+        self,
+        t: float,
+        *,
+        defaults: LayerStyleDefaults,
+        quality: PreviewQuality,
+    ) -> list[RealizedLayer]:
         perf = self._perf
 
         draw_fn = self._draw
@@ -210,7 +401,7 @@ class SceneRunner:
                 draw_fn,
                 t,
                 defaults,
-                session=self._realize_session,
+                session=self._realize_sessions[quality],
             )
 
     def _run_mp(
@@ -218,8 +409,9 @@ class SceneRunner:
         t: float,
         *,
         snapshot_revision: int,
-        cc_snapshot: dict[int, float] | None,
+        cc_snapshot: MidiFrameSnapshot | None,
         defaults: LayerStyleDefaults,
+        quality: PreviewQuality,
     ) -> list[RealizedLayer]:
         perf = self._perf
         mp_draw = self._mp_draw
@@ -234,11 +426,15 @@ class SceneRunner:
             snapshot=current_param_snapshot(),
             cc_snapshot=cc_snapshot,
             epoch=int(self._mp_epoch),
+            quality=quality,
         )
 
         new_result = mp_draw.poll_latest()
         if new_result is not None:
+            if new_result.worker_lag_ms is not None:
+                perf.record_worker_lag(new_result.worker_lag_ms)
             if new_result.error is not None:
+                extend_operation_diagnostics(new_result.diagnostics)
                 raise RuntimeError(f"mp-draw worker で例外が発生しました:\n{new_result.error}")
 
         latest_successful = mp_draw.latest_successful_result()
@@ -260,6 +456,7 @@ class SceneRunner:
             if frame_params is not None:
                 frame_params.records.extend(latest_successful.records)
                 frame_params.labels.extend(latest_successful.labels)
+            extend_operation_diagnostics(latest_successful.diagnostics)
 
         # 2) realize（main 側）: 最新の layers を通常パイプラインへ流して表示/出力する。
         def draw_from_mp(_t_arg: float) -> SceneItem:
@@ -270,7 +467,7 @@ class SceneRunner:
                 draw_from_mp,
                 t,
                 defaults,
-                session=self._realize_session,
+                session=self._realize_sessions[quality],
             )
         # worker 成功だけではなく、main 側の realize が成功した後にだけ
         # output time を更新する。error result や realize 失敗の t を manifest へ
@@ -295,8 +492,10 @@ class SceneRunner:
 
         mp_draw = self._mp_draw
         self._mp_draw = None
+        sessions = tuple(dict.fromkeys(self._realize_sessions.values()))
         try:
             if mp_draw is not None:
                 mp_draw.close()
         finally:
-            self._realize_session.close()
+            for session in sessions:
+                session.close()

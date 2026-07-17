@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from grafix.core.runtime_config import set_config_path
 from grafix.interactive.runtime import video_recorder
 from grafix.interactive.runtime.video_recorder import (
     VideoPublishError,
@@ -15,16 +16,25 @@ from grafix.interactive.runtime.video_recorder import (
 )
 
 
-def test_default_video_output_path_uses_data_dir_and_script_stem():
+def test_default_video_output_path_uses_data_dir_and_script_stem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    set_config_path(None)
+
     def draw(t: float) -> None:
         return None
 
-    path = default_video_output_path(draw)
-    assert path.parts[0] == "data"
-    assert path.parts[1] == "output"
-    assert path.parts[2] == "video"
-    assert path.name == f"{Path(__file__).stem}.mp4"
-    assert path.suffix == ".mp4"
+    try:
+        path = default_video_output_path(draw)
+        assert path.parts[0] == "data"
+        assert path.parts[1] == "output"
+        assert path.parts[2] == "video"
+        assert path.name == f"{Path(__file__).stem}.mp4"
+        assert path.suffix == ".mp4"
+    finally:
+        set_config_path(None)
 
 
 def test_ffmpeg_command_contains_expected_rawvideo_args():

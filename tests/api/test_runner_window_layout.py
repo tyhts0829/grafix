@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,6 +12,10 @@ pyglet.options["shadow_window"] = False
 
 import grafix.api.runner as runner_module
 from grafix.interactive.runtime.window_layout import WindowRect
+from grafix.interactive.runtime.workspace_state import (
+    WorkspaceState,
+    load_workspace_state,
+)
 
 
 class _Window:
@@ -206,6 +211,19 @@ def test_activate_initial_windows_leaves_parameter_gui_in_front() -> None:
     assert calls == ["preview", "gui"]
 
 
+def test_activate_initial_windows_does_not_reactivate_hidden_inspector() -> None:
+    calls: list[str] = []
+    preview = SimpleNamespace(activate=lambda: calls.append("preview"))
+    gui = SimpleNamespace(
+        visible=False,
+        activate=lambda: calls.append("gui"),
+    )
+
+    runner_module._activate_initial_windows(preview, gui)
+
+    assert calls == ["preview"]
+
+
 def test_apply_initial_layout_preserves_stub_compatible_fallback() -> None:
     class StubWindow:
         width = 900
@@ -222,3 +240,182 @@ def test_apply_initial_layout_preserves_stub_compatible_fallback() -> None:
     )
 
     assert applied is False
+
+
+class _ShortcutWindow:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.visible = True
+        self.handlers: dict[str, object] = {}
+        self.calls: list[tuple[str, object]] = []
+
+    def push_handlers(self, **kwargs: object) -> None:
+        self.handlers.update(kwargs)
+
+    def set_visible(self, visible: bool) -> None:
+        self.visible = bool(visible)
+        self.calls.append(("visible", self.visible))
+
+    def activate(self) -> None:
+        self.calls.append(("activate", self.name))
+
+
+def test_inspector_close_hides_it_and_returns_focus_to_preview() -> None:
+    preview = _ShortcutWindow("preview")
+    inspector = _ShortcutWindow("inspector")
+
+    runner_module._set_inspector_visible(
+        preview_window=preview,
+        inspector_window=inspector,
+        visible=False,
+    )
+
+    assert inspector.visible is False
+    assert inspector.calls == [("visible", False)]
+    assert preview.calls == [("activate", "preview")]
+
+
+def test_cmd_or_ctrl_i_toggles_and_reactivates_inspector() -> None:
+    preview = _ShortcutWindow("preview")
+    inspector = _ShortcutWindow("inspector")
+    runner_module._install_inspector_visibility_shortcut(
+        preview_window=preview,
+        inspector_window=inspector,
+    )
+    preview_handler = preview.handlers["on_key_press"]
+    inspector_handler = inspector.handlers["on_key_press"]
+
+    assert callable(preview_handler)
+    assert callable(inspector_handler)
+    assert preview_handler(pyglet.window.key.I, 0) is None
+
+    assert (
+        preview_handler(pyglet.window.key.I, pyglet.window.key.MOD_COMMAND)
+        is pyglet.event.EVENT_HANDLED
+    )
+    assert inspector.visible is False
+    assert preview.calls == [("activate", "preview")]
+
+    assert (
+        inspector_handler(pyglet.window.key.I, pyglet.window.key.MOD_CTRL)
+        is pyglet.event.EVENT_HANDLED
+    )
+    assert inspector.visible is True
+    assert inspector.calls == [
+        ("visible", False),
+        ("visible", True),
+        ("activate", "inspector"),
+    ]
+
+
+class _WorkspaceWindow:
+    def __init__(self, *, rect: WindowRect, screen: Any) -> None:
+        self.x = rect.x
+        self.y = rect.y
+        self.width = rect.width
+        self.height = rect.height
+        self.visible = True
+        self.screen = screen
+        self.display = SimpleNamespace(get_screens=lambda: [screen])
+        self.calls: list[tuple[object, ...]] = []
+
+    def get_location(self) -> tuple[int, int]:
+        return self.x, self.y
+
+    def set_location(self, x: int, y: int) -> None:
+        self.x = int(x)
+        self.y = int(y)
+        self.calls.append(("location", self.x, self.y))
+
+    def set_size(self, width: int, height: int) -> None:
+        self.width = int(width)
+        self.height = int(height)
+        self.calls.append(("size", self.width, self.height))
+
+    def set_visible(self, visible: bool) -> None:
+        self.visible = bool(visible)
+        self.calls.append(("visible", self.visible))
+
+
+def test_saved_workspace_is_clamped_to_current_screen_and_restores_visibility() -> None:
+    screen = SimpleNamespace(x=0, y=0, width=1440, height=900)
+    preview = _WorkspaceWindow(rect=WindowRect(0, 0, 800, 700), screen=screen)
+    inspector = _WorkspaceWindow(rect=WindowRect(800, 0, 500, 700), screen=screen)
+    saved = WorkspaceState(
+        preview_rect=WindowRect(2000, -100, 900, 900),
+        inspector_rect=WindowRect(3000, 100, 1000, 1200),
+        inspector_visible=False,
+        ui_scale=1.5,
+    )
+
+    assert runner_module._apply_workspace_layout(
+        preview_window=preview,
+        inspector_window=inspector,
+        state=saved,
+    )
+
+    safe = WindowRect(32, 32, 1376, 836)
+    preview_rect = runner_module._window_rect(preview)
+    inspector_rect = runner_module._window_rect(inspector)
+    assert preview_rect is not None
+    assert inspector_rect is not None
+    assert runner_module._rect_is_inside(preview_rect, safe)
+    assert runner_module._rect_is_inside(inspector_rect, safe)
+    assert inspector.visible is False
+    assert inspector.calls[-1] == ("visible", False)
+
+
+def test_workspace_snapshot_keeps_loaded_ui_scale_and_hidden_inspector() -> None:
+    screen = SimpleNamespace(x=0, y=0, width=1440, height=900)
+    preview = _WorkspaceWindow(rect=WindowRect(40, 50, 700, 700), screen=screen)
+    inspector = _WorkspaceWindow(rect=WindowRect(760, 50, 500, 800), screen=screen)
+    inspector.visible = False
+    previous = WorkspaceState(
+        preview_rect=WindowRect(0, 0, 1, 1),
+        inspector_rect=None,
+        inspector_visible=True,
+        ui_scale=1.75,
+    )
+
+    state = runner_module._workspace_state_from_windows(
+        preview_window=preview,
+        inspector_window=inspector,
+        previous=previous,
+    )
+
+    assert state == WorkspaceState(
+        preview_rect=WindowRect(40, 50, 700, 700),
+        inspector_rect=WindowRect(760, 50, 500, 800),
+        inspector_visible=False,
+        ui_scale=1.75,
+    )
+
+
+def test_shutdown_persists_current_workspace(tmp_path: Path) -> None:
+    screen = SimpleNamespace(x=0, y=0, width=1440, height=900)
+    preview = _WorkspaceWindow(rect=WindowRect(40, 50, 700, 700), screen=screen)
+    inspector = _WorkspaceWindow(rect=WindowRect(760, 50, 500, 800), screen=screen)
+    inspector.visible = False
+    previous = WorkspaceState(
+        preview_rect=WindowRect(0, 0, 1, 1),
+        inspector_rect=None,
+        inspector_visible=True,
+        ui_scale=1.75,
+    )
+    path = tmp_path / "workspace.json"
+
+    runner_module._persist_workspace_state_on_shutdown(
+        path=path,
+        preview_window=preview,
+        inspector_window=inspector,
+        previous=previous,
+    )
+
+    result = load_workspace_state(path, fallback=previous)
+    assert result.restored
+    assert result.state == WorkspaceState(
+        preview_rect=WindowRect(40, 50, 700, 700),
+        inspector_rect=WindowRect(760, 50, 500, 800),
+        inspector_visible=False,
+        ui_scale=1.75,
+    )

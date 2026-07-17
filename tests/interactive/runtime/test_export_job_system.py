@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import json
 import time
 import weakref
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -12,6 +13,10 @@ from typing import Any, cast
 import pytest
 
 from grafix.core.capture_manifest import capture_manifest_path_for
+from grafix.core.capture_provenance import CaptureProvenanceBuilder
+from grafix.core.parameters import ParamStore
+from grafix.core.runtime_config import runtime_config
+from grafix.export import capture as capture_module
 from grafix.interactive.runtime import export_job_system
 from grafix.interactive.runtime.export_job_system import (
     ExportJob,
@@ -230,6 +235,62 @@ def test_export_messages_are_immutable() -> None:
         result.status = ExportJobStatus.ERROR  # type: ignore[misc]
 
 
+def test_default_backend_delegates_encode_and_publish_to_capture_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = _snapshot()
+    output_path = tmp_path / "frame.gcode"
+    staging_dir = tmp_path / ".capture.export-1-test"
+    staged_path = staging_dir / output_path.name
+    manifest_path = capture_manifest_path_for(output_path)
+    calls: list[tuple[str, object]] = []
+
+    class CaptureServiceSpy:
+        def encode(self, frame: object, path: object, **kwargs: object) -> tuple[Path, ...]:
+            assert frame is snapshot
+            assert Path(cast(Any, path)) == staged_path
+            assert kwargs["mode"] == ExportKind.GCODE.value
+            calls.append(("encode", path))
+            return (staged_path,)
+
+        def publish_staged(
+            self,
+            frame: object,
+            path: object,
+            staged_paths: object,
+            **kwargs: object,
+        ) -> SimpleNamespace:
+            assert frame is snapshot
+            assert Path(cast(Any, path)) == output_path
+            assert tuple(cast(Any, staged_paths)) == (staged_path,)
+            assert kwargs == {
+                "mode": ExportKind.GCODE.value,
+                "output_size": None,
+            }
+            calls.append(("publish", path))
+            return SimpleNamespace(
+                artifact_paths=(output_path,),
+                manifest_path=manifest_path,
+            )
+
+    monkeypatch.setattr(export_job_system, "_CAPTURE_SERVICE", CaptureServiceSpy())
+    job = ExportJob(
+        job_id=1,
+        kind=ExportKind.GCODE,
+        snapshot=snapshot,
+        output_path=output_path,
+        timeout_s=1.0,
+        staging_dir=staging_dir,
+    )
+
+    staged = export_job_system._execute_export_job(job)
+    committed = export_job_system._commit_staged_outputs(job, staged)
+
+    assert committed == ((output_path,), manifest_path)
+    assert calls == [("encode", staged_path), ("publish", output_path)]
+
+
 def test_two_second_backend_does_not_block_frame_polling(tmp_path: Path) -> None:
     system = ExportJobSystem(backend=_two_second_backend, default_timeout_s=5.0)
     try:
@@ -425,6 +486,63 @@ def test_default_worker_exports_gcode(tmp_path: Path) -> None:
         system.close()
 
 
+def test_default_worker_uses_parent_gcode_config_recorded_in_manifest(
+    tmp_path: Path,
+) -> None:
+    """spawn worker が独自 config を再探索せず、親 snapshot の設定を使う。"""
+
+    gcode_config = replace(
+        runtime_config().gcode,
+        z_up=17.0,
+        decimals=1,
+    )
+    effective_config = replace(runtime_config(), gcode=gcode_config)
+
+    def draw(_t: float) -> tuple[object, ...]:
+        return ()
+
+    store = ParamStore()
+    provenance = CaptureProvenanceBuilder(
+        draw,
+        config=effective_config,
+        parameter_source="code",
+        parameter_store_path=None,
+        parameter_load_provenance=store.load_provenance,
+    ).frame(
+        store,
+        t=0.0,
+        frame_index=0,
+        quality="final",
+        origin="interactive",
+    )
+    snapshot = FrameExportSnapshot(
+        layers=(),
+        canvas_size=(100, 80),
+        background_color_rgb01=(1.0, 1.0, 1.0),
+        provenance=provenance,
+        gcode_config=gcode_config,
+    )
+    system = ExportJobSystem()
+    try:
+        output_path = tmp_path / "parent-config.gcode"
+        job = system.submit(
+            kind=ExportKind.GCODE,
+            snapshot=snapshot,
+            output_path=output_path,
+        )
+
+        result = _wait_for_job(system, job.job_id)
+
+        assert result.status is ExportJobStatus.SUCCESS
+        assert "G1 Z37.0" in output_path.read_text(encoding="utf-8")
+        assert result.manifest_path is not None
+        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+        assert manifest["config"]["effective"]["gcode"]["z_up"] == 17.0
+        assert manifest["config"]["effective"]["gcode"]["decimals"] == 1
+    finally:
+        system.close()
+
+
 def test_default_worker_reports_png_backend_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -473,8 +591,8 @@ def test_png_job_uses_private_svg_and_always_cleans_it(
         Path(png_path).write_bytes(b"png")
         return Path(png_path)
 
-    monkeypatch.setattr(export_job_system, "export_svg", fake_export_svg)
-    monkeypatch.setattr(export_job_system, "rasterize_svg_to_png", fake_rasterize)
+    monkeypatch.setattr(capture_module, "export_svg", fake_export_svg)
+    monkeypatch.setattr(capture_module, "rasterize_svg_to_png", fake_rasterize)
     job = ExportJob(
         job_id=1,
         kind=ExportKind.PNG,

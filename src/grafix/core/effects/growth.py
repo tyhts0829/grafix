@@ -16,6 +16,7 @@ import numpy as np
 from numba import njit, prange  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
 
@@ -941,10 +942,30 @@ def growth(
     """
     mask_coords, mask_offsets = mask
     if mask_coords.shape[0] == 0:
+        emit_operation_diagnostic(
+            op="growth.mask",
+            original_value="empty",
+            effective_value="empty_output",
+            reason="growth requires a non-empty closed planar mask",
+        )
         return empty_geom()
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
+    if not frame.valid:
+        emit_operation_diagnostic(
+            op="growth.mask",
+            original_value="invalid_planar_frame",
+            effective_value="empty_output",
+            reason="growth requires a closed mask with a well-defined plane",
+        )
+        return empty_geom()
     if not frame.is_planar(_planarity_threshold(mask_coords)):
+        emit_operation_diagnostic(
+            op="growth.mask",
+            original_value="nonplanar",
+            effective_value="empty_output",
+            reason="growth requires a planar mask",
+        )
         return empty_geom()
 
     aligned_mask = frame.to_local(mask_coords)
@@ -955,10 +976,22 @@ def growth(
         auto_close_threshold=float(_AUTO_CLOSE_THRESHOLD_DEFAULT),
     )
     if not rings:
+        emit_operation_diagnostic(
+            op="growth.mask",
+            original_value="no_closed_rings",
+            effective_value="empty_output",
+            reason="growth could not extract a closed ring from the mask",
+        )
         return empty_geom()
 
     spacing = float(target_spacing)
     if not np.isfinite(spacing) or spacing <= 0.0:
+        emit_operation_diagnostic(
+            op="growth.target_spacing",
+            original_value=spacing,
+            effective_value="empty_output",
+            reason="target spacing must be finite and positive",
+        )
         return empty_geom()
 
     step_sdf = max(spacing, 0.5)
@@ -980,13 +1013,53 @@ def growth(
     bbox_min = np.min(ring_mins, axis=0)
     bbox_max = np.max(ring_maxs, axis=0)
 
-    seed_count_i = int(seed_count)
+    requested_seed_count = int(seed_count)
+    seed_count_i = requested_seed_count
     if seed_count_i < 0:
         seed_count_i = 0
+    if seed_count_i != requested_seed_count:
+        emit_operation_diagnostic(
+            op="growth.seed_count",
+            original_value=requested_seed_count,
+            effective_value=seed_count_i,
+            reason="seed count was clamped to zero",
+        )
 
-    iters_i = int(iters)
+    requested_iters = int(iters)
+    iters_i = requested_iters
     if iters_i < 0:
         iters_i = 0
+    if iters_i > _MAX_ITERS:
+        iters_i = _MAX_ITERS
+    if iters_i != requested_iters:
+        emit_operation_diagnostic(
+            op="growth.iters",
+            original_value=requested_iters,
+            effective_value=iters_i,
+            reason="growth iterations was clamped to the supported range",
+        )
+
+    requested_boundary_avoid = float(boundary_avoid)
+    effective_boundary_avoid = requested_boundary_avoid
+    if not np.isfinite(effective_boundary_avoid) or effective_boundary_avoid < 0.0:
+        effective_boundary_avoid = 0.0
+    if effective_boundary_avoid != requested_boundary_avoid:
+        emit_operation_diagnostic(
+            op="growth.boundary_avoid",
+            original_value=requested_boundary_avoid,
+            effective_value=effective_boundary_avoid,
+            reason="boundary avoidance was clamped to a finite non-negative value",
+        )
+
+    boundary_mode_s = str(boundary_mode)
+    if boundary_mode_s not in {"slide", "bounce"}:
+        emit_operation_diagnostic(
+            op="growth.boundary_mode",
+            original_value=boundary_mode_s,
+            effective_value="empty_output",
+            reason="unsupported boundary mode rejected the growth simulation",
+        )
+        return empty_geom()
 
     if seed_count_i == 0 or iters_i == 0:
         out = empty_geom()
@@ -1018,6 +1091,13 @@ def growth(
                 min_margin=0.0,
             )
         )
+    if len(centers) < seed_count_i:
+        emit_operation_diagnostic(
+            op="growth.seed_count",
+            original_value=seed_count_i,
+            effective_value=len(centers),
+            reason="the mask could not accommodate every requested seed",
+        )
 
     rings_xy: list[np.ndarray] = []
     for c in centers:
@@ -1026,8 +1106,8 @@ def growth(
     out_rings_xy = _simulate_growth_in_mask_xy(
         rings_xy,
         target_spacing=spacing,
-        boundary_avoid=float(boundary_avoid),
-        boundary_mode=str(boundary_mode),
+        boundary_avoid=effective_boundary_avoid,
+        boundary_mode=boundary_mode_s,
         iters=iters_i,
         sdf=sdf,
         sdf_origin_x=sdf_origin_x,
@@ -1045,6 +1125,14 @@ def growth(
         back = frame.to_world(pts3)
         closed = np.concatenate([back, back[:1]], axis=0)
         lines_out.append(closed.astype(np.float32, copy=False))
+
+    if len(lines_out) < len(out_rings_xy):
+        emit_operation_diagnostic(
+            op="growth.output",
+            original_value=len(out_rings_xy),
+            effective_value=len(lines_out),
+            reason="degenerate grown rings were omitted from the output",
+        )
 
     out = pack_polylines(lines_out)
     if bool(show_mask):

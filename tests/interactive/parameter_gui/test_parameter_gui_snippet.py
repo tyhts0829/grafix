@@ -190,6 +190,30 @@ def test_snippet_primitive_does_not_include_name_without_raw_label() -> None:
     assert "G(name=" not in out
 
 
+def test_snippet_can_emit_explicit_key_for_important_or_loop_group() -> None:
+    row = _row(
+        op="text",
+        site_id="loop-site",
+        ordinal=1,
+        arg="text",
+        kind="str",
+        ui_value="Hello",
+    )
+    block = GroupBlock(
+        group_id=("primitive", ("text", 1)),
+        header_id="primitive:text#1",
+        header="text",
+        items=[GroupBlockItem(row=row, visible_label="")],
+    )
+
+    out = snippet_for_block(
+        block,
+        explicit_key_by_site={("text", "loop-site"): "title-loop"},
+    )
+
+    assert "key='title-loop'" in out
+
+
 def test_snippet_effect_chain_includes_name_when_raw_label_exists() -> None:
     rows = [
         _row(op="scale", site_id="e:1", ordinal=1, arg="scale", ui_value=(2.0, 2.0, 2.0)),

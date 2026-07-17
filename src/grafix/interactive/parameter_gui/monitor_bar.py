@@ -27,7 +27,7 @@ def _fmt_int(n: int) -> str:
 def monitor_status_lines(
     snapshot: Any,
     *,
-    midi_port_name: str | None,
+    midi_status: str | None,
     compact: bool,
 ) -> tuple[MonitorLine, ...]:
     """通常 telemetry と重要状態を、幅に応じた短い読み取り専用行へ整形する。"""
@@ -43,6 +43,8 @@ def monitor_status_lines(
     frame_error = getattr(snapshot, "frame_error", None)
     capture_count = int(getattr(snapshot, "capture_request_count", 0))
     capture_notice = getattr(snapshot, "capture_notice", None)
+    autosave_status = str(getattr(snapshot, "autosave_status", "clean"))
+    recovered_session = bool(getattr(snapshot, "recovered_session", False))
 
     if frame_error:
         state = MonitorLine("FRAME ERROR", "error")
@@ -54,23 +56,42 @@ def monitor_status_lines(
         state = MonitorLine("CAPTURE NOTICE", "warning")
     elif capture_count > 0:
         state = MonitorLine(f"CAPTURE  ·  {capture_count} queued", "warning")
+    elif autosave_status == "failed":
+        state = MonitorLine("SAVE FAILED", "error")
+    elif autosave_status == "saving":
+        state = MonitorLine("SAVING")
+    elif autosave_status == "dirty":
+        state = MonitorLine("UNSAVED", "warning")
     else:
         state = None
 
+    if recovered_session:
+        state = MonitorLine(
+            "RECOVERED SESSION"
+            + ("" if state is None else f"  ·  {state.text}"),
+            "warning" if state is None or state.token == "muted" else state.token,
+        )
+
+    midi_suffix = "" if midi_status is None else f"  ·  {midi_status}"
+
     if compact:
         if state is not None:
-            return (MonitorLine(f"{fps:.0f} FPS  ·  {state.text}", state.token),)
-        return (MonitorLine(f"{fps:.0f} FPS  ·  OK"),)
+            return (
+                MonitorLine(
+                    f"{fps:.0f} FPS  ·  {state.text}{midi_suffix}",
+                    state.token,
+                ),
+            )
+        return (MonitorLine(f"{fps:.0f} FPS  ·  OK{midi_suffix}"),)
 
     telemetry = MonitorLine(
         f"{fps:.0f} FPS  ·  CPU {cpu_percent:.0f}%  ·  {rss_mb:,.0f} MB"
     )
     if state is not None:
-        return telemetry, state
+        return telemetry, MonitorLine(f"{state.text}{midi_suffix}", state.token)
 
     geometry = f"{_fmt_int(vertices)} vtx  ·  {_fmt_int(lines)} lines"
-    if midi_port_name is not None:
-        geometry += f"  ·  MIDI {midi_port_name}"
+    geometry += midi_suffix
     return telemetry, MonitorLine(geometry)
 
 
@@ -118,6 +139,16 @@ def monitor_alert_lines(snapshot: Any) -> tuple[MonitorLine, ...]:
                 "error",
             )
         )
+    autosave_status = str(getattr(snapshot, "autosave_status", "clean"))
+    autosave_error = getattr(snapshot, "autosave_error", None)
+    if autosave_status == "failed":
+        result.append(
+            MonitorLine(
+                "SAVE FAILED"
+                + ("" if not autosave_error else f" — {autosave_error}"),
+                "error",
+            )
+        )
     return tuple(result)
 
 
@@ -125,14 +156,14 @@ def render_monitor_status(
     imgui: Any,
     snapshot: Any,
     *,
-    midi_port_name: str | None,
+    midi_status: str | None,
     compact: bool = False,
 ) -> None:
     """Status surface 内へ短い telemetry / state だけを描画する。"""
 
     for line in monitor_status_lines(
         snapshot,
-        midi_port_name=midi_port_name,
+        midi_status=midi_status,
         compact=bool(compact),
     ):
         if line.token == "muted":
@@ -151,13 +182,13 @@ def render_monitor_alerts(imgui: Any, snapshot: Any) -> None:
             _text_semantic(imgui, line.text, token=line.token, wrapped=True)
 
 
-def render_monitor_bar(imgui: Any, snapshot: Any, *, midi_port_name: str | None) -> None:
-    """互換 API: 通常 status の後に actionable alert を描画する。"""
+def render_monitor_bar(imgui: Any, snapshot: Any, *, midi_status: str | None) -> None:
+    """通常 status の後に actionable alert を描画する。"""
 
     render_monitor_status(
         imgui,
         snapshot,
-        midi_port_name=midi_port_name,
+        midi_status=midi_status,
         compact=False,
     )
     render_monitor_alerts(imgui, snapshot)

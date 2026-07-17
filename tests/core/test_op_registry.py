@@ -122,6 +122,36 @@ def test_registry_rejects_spec_from_other_kind() -> None:
 def test_public_decorators_disable_overwrite_by_default() -> None:
     assert signature(primitive).parameters["overwrite"].default is False
     assert signature(effect).parameters["overwrite"].default is False
+    assert signature(primitive).parameters["cache_policy"].default == "content"
+    assert signature(effect).parameters["cache_policy"].default == "content"
+
+
+def test_op_spec_rejects_unknown_cache_policy() -> None:
+    with pytest.raises(ValueError, match="cache_policy"):
+        OpSpec(
+            evaluator=_evaluator,
+            meta={},
+            defaults={},
+            param_order=(),
+            ui_visible={},
+            n_inputs=0,
+            kind="primitive",
+            cache_policy="frame",  # type: ignore[arg-type]
+        )
+
+
+def test_primitive_decorator_records_none_cache_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
+    monkeypatch.setattr(primitive_registry_module, "primitive_registry", registry)
+
+    @primitive_registry_module.primitive(cache_policy="none")
+    def live_shape() -> GeomTuple:
+        return _empty_geometry()
+
+    assert registry["live_shape"].cache_policy == "none"
+    assert registry.describe("live_shape").cache_policy == "none"
 
 
 def test_primitive_replace_clears_stale_metadata_and_default_is_no_overwrite(

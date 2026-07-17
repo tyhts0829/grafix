@@ -8,6 +8,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from grafix.core.capture_manifest import RecordingManifest
 from grafix.interactive.runtime.frame_clock import RecordingClock
 from grafix.interactive.runtime.video_recorder import (
     DEFAULT_VIDEO_FINALIZE_TIMEOUT_S,
@@ -21,6 +22,8 @@ class StagedVideoCapture:
 
     staging_path: Path
     output_path: Path
+    framebuffer_size: tuple[int, int]
+    recording: RecordingManifest
 
 
 class VideoRecordingSystem:
@@ -32,6 +35,10 @@ class VideoRecordingSystem:
         self._recorder: VideoRecorder | None = None
         self._clock: RecordingClock | None = None
         self._size = (0, 0)
+        self._dropped_frame_count = 0
+        self._duplicated_frame_count = 0
+        self._error_count = 0
+        self._last_error: str | None = None
 
     @property
     def is_recording(self) -> bool:
@@ -46,6 +53,13 @@ class VideoRecordingSystem:
         if clock is None:
             raise RuntimeError("録画は開始されていません")
         return float(clock.t())
+
+    @property
+    def frame_index(self) -> int:
+        """正常に encoder へ渡した frame 数を返す。"""
+
+        clock = self._clock
+        return 0 if clock is None else int(clock.frame_index)
 
     def start(
         self,
@@ -80,6 +94,10 @@ class VideoRecordingSystem:
         self._size = size
         self._clock = clock
         self._recorder = recorder
+        self._dropped_frame_count = 0
+        self._duplicated_frame_count = 0
+        self._error_count = 0
+        self._last_error = None
         # user-visible notification も acquisition transaction に含める。stdout error/
         # KeyboardInterrupt がここで起きても、呼び出し側から見えない encoder を残さない。
         try:
@@ -88,6 +106,7 @@ class VideoRecordingSystem:
             self._recorder = None
             self._clock = None
             self._size = (0, 0)
+            self._reset_statistics()
             recorder.abort()
             raise
 
@@ -100,18 +119,60 @@ class VideoRecordingSystem:
             return
 
         w, h = self._size
-        frame = screen.read(  # type: ignore[attr-defined]
-            viewport=(0, 0, int(w), int(h)),
-            components=3,
-            alignment=1,
-        )
-        recorder.write_frame_rgb24(frame)
+        try:
+            frame = screen.read(  # type: ignore[attr-defined]
+                viewport=(0, 0, int(w), int(h)),
+                components=3,
+                alignment=1,
+            )
+            recorder.write_frame_rgb24(frame)
+        except Exception as exc:
+            self.pause_frame(f"{type(exc).__name__}: {exc}")
+            raise
         clock.tick()
+
+    def pause_frame(self, error: str) -> None:
+        """失敗した scene を動画へ書かず、録画 clock も進めずに記録する。"""
+
+        if self._recorder is None or self._clock is None:
+            return
+        detail = str(error).strip() or "unknown recording frame error"
+        self._dropped_frame_count += 1
+        self._error_count += 1
+        self._last_error = detail
+
+    def _manifest(
+        self,
+        *,
+        frame_count: int,
+        stop_reason: str,
+        abort_reason: str | None = None,
+    ) -> RecordingManifest:
+        """現在の統計を immutable manifest payload へ固定する。"""
+
+        return RecordingManifest(
+            fps=self._fps,
+            frame_count=int(frame_count),
+            dropped_frame_count=self._dropped_frame_count,
+            duplicated_frame_count=self._duplicated_frame_count,
+            error_count=self._error_count,
+            error_policy="pause",
+            stop_reason=str(stop_reason),
+            abort_reason=abort_reason,
+            last_error=self._last_error,
+        )
+
+    def _reset_statistics(self) -> None:
+        self._dropped_frame_count = 0
+        self._duplicated_frame_count = 0
+        self._error_count = 0
+        self._last_error = None
 
     def stop(
         self,
         *,
         timeout_s: float = DEFAULT_VIDEO_FINALIZE_TIMEOUT_S,
+        stop_reason: str = "user_stop",
     ) -> Path | None:
         """録画を終了し、正常に確定した動画 path を返す。"""
 
@@ -121,23 +182,31 @@ class VideoRecordingSystem:
             # invariant が壊れて clock だけ残っていても次回 start を汚さない。
             self._clock = None
             self._size = (0, 0)
+            self._reset_statistics()
             return None
 
         self._recorder = None
         frames = 0 if clock is None else int(clock.frame_index)
+        manifest = self._manifest(frame_count=frames, stop_reason=stop_reason)
         seconds = frames / float(self._fps) if self._fps > 0 else 0.0
         try:
             recorder.close(timeout_s=timeout_s)
         finally:
             self._clock = None
             self._size = (0, 0)
-        print(f"Saved video: {recorder.path} (frames={frames}, seconds={seconds:.3f})")
+            self._reset_statistics()
+        print(
+            f"Saved video: {recorder.path} (frames={frames}, seconds={seconds:.3f}, "
+            f"dropped={manifest.dropped_frame_count}, errors={manifest.error_count})"
+        )
         return Path(recorder.path)
 
     def stop_to_staging(
         self,
         *,
         timeout_s: float = DEFAULT_VIDEO_FINALIZE_TIMEOUT_S,
+        stop_reason: str = "user_stop",
+        abort_reason: str | None = None,
     ) -> StagedVideoCapture | None:
         """録画を終了し、artifact+manifest transaction 用の staging を返す。"""
 
@@ -145,19 +214,31 @@ class VideoRecordingSystem:
         if recorder is None:
             self._clock = None
             self._size = (0, 0)
+            self._reset_statistics()
             return None
 
         self._recorder = None
+        clock = self._clock
+        frame_count = 0 if clock is None else int(clock.frame_index)
+        size = self._size
+        manifest = self._manifest(
+            frame_count=frame_count,
+            stop_reason=stop_reason,
+            abort_reason=abort_reason,
+        )
         try:
             staging_path = recorder.close_to_staging(timeout_s=timeout_s)
         finally:
             self._clock = None
             self._size = (0, 0)
+            self._reset_statistics()
         if staging_path is None:
             return None
         return StagedVideoCapture(
             staging_path=Path(staging_path),
             output_path=Path(recorder.path),
+            framebuffer_size=size,
+            recording=manifest,
         )
 
 

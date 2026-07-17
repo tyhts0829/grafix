@@ -14,24 +14,70 @@
 ---------------
 - `encode_param_store()` / `dumps_param_store()`: 保存側（store -> dict/JSON）
 - `decode_param_store()` / `loads_param_store()`: 復元側（dict/JSON -> store）
+- `decode_param_store_result()` / `loads_param_store_result()`: migration/部分破損診断付き復元
 
 Notes
 -----
 - codec は永続化仕様を 1 箇所へ閉じるため、ParamStore の private な参照へアクセスする。
-- decode は壊れた/古い/部分的な JSON を想定し、可能な範囲で復元して不正な要素は捨てる。
-  例外で落とすのは「payload が dict ではない」ケースに限定する。
+- version 無しは legacy として現行 schema へ移行する。future version は原本保護のため拒否する。
+- 部分的に壊れた entry は可能な範囲で復元し、result API が破棄内容を返す。
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from .key import ParameterKey
-from .meta import ParamMeta
+from .meta_spec import meta_from_record, meta_to_spec
 from .state import ParamState
 from .store import ParamStore
+from .variations import _decode_variation, _encode_variation
 from .view import canonicalize_ui_value
+
+PARAM_STORE_SCHEMA_VERSION = 1
+
+
+class ParamStoreSchemaError(ValueError):
+    """ParamStore payload の schema version が無効な場合の例外。"""
+
+
+class UnsupportedParamStoreSchemaError(ParamStoreSchemaError):
+    """現在の Grafix より新しい schema を読もうとした場合の例外。"""
+
+    def __init__(self, found_version: int) -> None:
+        self.found_version = int(found_version)
+        self.supported_version = PARAM_STORE_SCHEMA_VERSION
+        super().__init__(
+            "ParamStore schema_version "
+            f"{self.found_version} is newer than supported version "
+            f"{self.supported_version}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ParamStoreDecodeIssue:
+    """部分復元のために破棄した 1 entry の診断。"""
+
+    section: str
+    index: int | None
+    reason: str
+
+    def describe(self) -> str:
+        """log/診断表示用の安定文字列を返す。"""
+
+        location = self.section if self.index is None else f"{self.section}[{self.index}]"
+        return f"{location}: {self.reason}"
+
+
+@dataclass(frozen=True, slots=True)
+class ParamStoreDecodeResult:
+    """codec の復元結果と migration/部分破損情報。"""
+
+    store: ParamStore
+    issues: tuple[ParamStoreDecodeIssue, ...] = ()
+    migrated_legacy: bool = False
 
 
 def encode_param_store(
@@ -60,6 +106,7 @@ def encode_param_store(
     effects = store._effects_ref()
 
     return {
+        "schema_version": PARAM_STORE_SCHEMA_VERSION,
         "states": [
             {
                 "op": k.op,
@@ -90,10 +137,7 @@ def encode_param_store(
                 "op": k.op,
                 "site_id": k.site_id,
                 "arg": k.arg,
-                "kind": m.kind,
-                "ui_min": m.ui_min,
-                "ui_max": m.ui_max,
-                "choices": list(m.choices) if m.choices is not None else None,
+                **meta_to_spec(m),
             }
             for k, m in store._meta.items()
         ],
@@ -123,7 +167,25 @@ def encode_param_store(
         ],
         "ui": {
             "collapsed_headers": sorted(store._collapsed_headers_ref()),
+            "locked_parameters": [
+                {"op": key.op, "site_id": key.site_id, "arg": key.arg}
+                for key in sorted(
+                    store._locked_keys_ref(),
+                    key=lambda item: (item.op, item.site_id, item.arg),
+                )
+            ],
+            "favorite_parameters": [
+                {"op": key.op, "site_id": key.site_id, "arg": key.arg}
+                for key in sorted(
+                    store._favorite_keys_ref(),
+                    key=lambda item: (item.op, item.site_id, item.arg),
+                )
+            ],
         },
+        "variations": [
+            _encode_variation(variation)
+            for variation in store._variations_ref().values()
+        ],
     }
 
 
@@ -148,12 +210,12 @@ def dumps_param_store(
     )
 
 
-def decode_param_store(
+def _decode_param_store_current(
     obj: object,
     *,
     preserve_explicit_overrides: bool = False,
 ) -> ParamStore:
-    """JSON 由来の dict から ParamStore を復元して返す。
+    """schema 確認済みの dict から ParamStore を復元する。
 
     Parameters
     ----------
@@ -236,12 +298,7 @@ def decode_param_store(
             continue
         try:
             key = ParameterKey(op=str(item["op"]), site_id=str(item["site_id"]), arg=str(item["arg"]))
-            meta = ParamMeta(
-                kind=str(item["kind"]),
-                ui_min=item.get("ui_min"),
-                ui_max=item.get("ui_max"),
-                choices=item.get("choices"),
-            )
+            meta = meta_from_record(item)
         except Exception:
             continue
         store._meta[key] = meta
@@ -294,6 +351,48 @@ def decode_param_store(
                     store._collapsed_headers_ref().add(str(item))
                 except Exception:
                     continue
+        locked_parameters = ui_obj.get("locked_parameters", [])
+        if isinstance(locked_parameters, list):
+            for item in locked_parameters:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    key = ParameterKey(
+                        op=str(item["op"]),
+                        site_id=str(item["site_id"]),
+                        arg=str(item["arg"]),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                # 壊れた/古い UI entry だけを残さない。通常の stale site は
+                # states/meta も一緒にロードされるため reconcile 可能である。
+                if key in store._states and key in store._meta:
+                    store._locked_keys_ref().add(key)
+
+        favorite_parameters = ui_obj.get("favorite_parameters", [])
+        if isinstance(favorite_parameters, list):
+            for item in favorite_parameters:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    key = ParameterKey(
+                        op=str(item["op"]),
+                        site_id=str(item["site_id"]),
+                        arg=str(item["arg"]),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                # UI state 単独の孤児を作らず、reconcile 可能な parameter だけ残す。
+                if key in store._states and key in store._meta:
+                    store._favorite_keys_ref().add(key)
+
+    variations_obj = obj.get("variations", [])
+    if isinstance(variations_obj, list):
+        for item in variations_obj:
+            variation = _decode_variation(item)
+            if variation is None or variation.name in store._variations_ref():
+                continue
+            store._variations_ref()[variation.name] = variation
 
     # 通常ロードでは explicit key のコード値を優先する。
     # recovery ロードでは未完了 session の実効状態を復元するため触らない。
@@ -319,6 +418,247 @@ def decode_param_store(
     return store
 
 
+def param_store_schema_version(obj: object) -> int | None:
+    """payload の schema version を返し、version 無しは None とする。"""
+
+    if not isinstance(obj, dict):
+        raise TypeError("ParamStore payload must be a dict")
+    if "schema_version" not in obj:
+        return None
+
+    raw_version = obj["schema_version"]
+    if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+        raise ParamStoreSchemaError("schema_version must be an int")
+    if raw_version > PARAM_STORE_SCHEMA_VERSION:
+        raise UnsupportedParamStoreSchemaError(raw_version)
+    if raw_version != PARAM_STORE_SCHEMA_VERSION:
+        raise ParamStoreSchemaError(
+            f"unsupported ParamStore schema_version: {raw_version}"
+        )
+    return raw_version
+
+
+def _migrate_param_store_payload(obj: object) -> tuple[dict[str, Any], bool]:
+    """legacy payload を現行 schema へ明示的に移行する。"""
+
+    version = param_store_schema_version(obj)
+    assert isinstance(obj, dict)
+    if version is None:
+        migrated = dict(obj)
+        migrated["schema_version"] = PARAM_STORE_SCHEMA_VERSION
+        return migrated, True
+    return obj, False
+
+
+def _find_decode_issues(obj: dict[str, Any]) -> tuple[ParamStoreDecodeIssue, ...]:
+    """現行 decoder が破棄・空値化する不正 entry を列挙する。"""
+
+    issues: list[ParamStoreDecodeIssue] = []
+    required_by_section = {
+        "states": ("op", "site_id", "arg"),
+        "meta": ("op", "site_id", "arg", "kind"),
+        "labels": ("op", "site_id", "label"),
+        "effect_steps": ("op", "site_id", "chain_id", "step_index"),
+        "explicit": ("op", "site_id", "arg"),
+        "variations": ("name", "created_at", "parameter_snapshot"),
+    }
+    entries_by_section: dict[str, list[object]] = {}
+    variation_names: set[str] = set()
+    for section, required_fields in required_by_section.items():
+        raw_entries = obj.get(section, [])
+        if not isinstance(raw_entries, list):
+            issues.append(ParamStoreDecodeIssue(section, None, "expected a list"))
+            entries_by_section[section] = []
+            continue
+        entries_by_section[section] = raw_entries
+        for index, item in enumerate(raw_entries):
+            if not isinstance(item, dict):
+                issues.append(
+                    ParamStoreDecodeIssue(section, index, "expected an object")
+                )
+                continue
+            missing = [field for field in required_fields if field not in item]
+            if missing:
+                issues.append(
+                    ParamStoreDecodeIssue(
+                        section,
+                        index,
+                        f"missing fields: {', '.join(missing)}",
+                    )
+                )
+                continue
+            try:
+                if section == "meta":
+                    meta_from_record(item)
+                elif section == "effect_steps":
+                    int(item["step_index"])
+                elif section == "variations":
+                    variation = _decode_variation(item)
+                    if variation is None or variation.name in variation_names:
+                        raise ValueError
+                    variation_names.add(variation.name)
+                    snapshot = item["parameter_snapshot"]
+                    assert isinstance(snapshot, dict)
+                    for nested in _find_decode_issues(
+                        {
+                            "states": snapshot.get("states", []),
+                            "meta": snapshot.get("meta", []),
+                        }
+                    ):
+                        location = nested.section
+                        if nested.index is not None:
+                            location += f"[{nested.index}]"
+                        issues.append(
+                            ParamStoreDecodeIssue(
+                                section,
+                                index,
+                                f"parameter_snapshot.{location}: {nested.reason}",
+                            )
+                        )
+                    if not isinstance(snapshot.get("collapsed_by_header", {}), dict):
+                        issues.append(
+                            ParamStoreDecodeIssue(
+                                section,
+                                index,
+                                "parameter_snapshot.collapsed_by_header "
+                                "must be an object",
+                            )
+                        )
+            except Exception:
+                issues.append(
+                    ParamStoreDecodeIssue(section, index, "invalid entry")
+                )
+
+    def entry_key(item: object) -> tuple[str, str, str] | None:
+        if not isinstance(item, dict):
+            return None
+        if not all(field in item for field in ("op", "site_id", "arg")):
+            return None
+        return str(item["op"]), str(item["site_id"]), str(item["arg"])
+
+    meta_keys = {
+        key
+        for item in entries_by_section["meta"]
+        if (key := entry_key(item)) is not None
+    }
+    state_keys = {
+        key
+        for item in entries_by_section["states"]
+        if (key := entry_key(item)) is not None
+    }
+    for index, item in enumerate(entries_by_section["states"]):
+        key = entry_key(item)
+        if key is not None and key not in meta_keys:
+            issues.append(
+                ParamStoreDecodeIssue("states", index, "matching meta is missing")
+            )
+
+    for section, is_nested in (("ordinals", True), ("chain_ordinals", False)):
+        raw_mapping = obj.get(section, {})
+        if not isinstance(raw_mapping, dict):
+            issues.append(ParamStoreDecodeIssue(section, None, "expected an object"))
+            continue
+        values: list[object] = []
+        for index, value in enumerate(raw_mapping.values()):
+            if is_nested:
+                if not isinstance(value, dict):
+                    issues.append(
+                        ParamStoreDecodeIssue(section, index, "expected an object")
+                    )
+                    continue
+                values.extend(value.values())
+            else:
+                values.append(value)
+        for index, value in enumerate(values):
+            try:
+                int(value)  # type: ignore[call-overload]
+            except Exception:
+                issues.append(
+                    ParamStoreDecodeIssue(section, index, "ordinal must be an int")
+                )
+
+    ui_obj = obj.get("ui", {})
+    if not isinstance(ui_obj, dict):
+        issues.append(ParamStoreDecodeIssue("ui", None, "expected an object"))
+    else:
+        if not isinstance(ui_obj.get("collapsed_headers", []), list):
+            issues.append(
+                ParamStoreDecodeIssue(
+                    "ui.collapsed_headers",
+                    None,
+                    "expected a list",
+                )
+            )
+        for field in ("locked_parameters", "favorite_parameters"):
+            entries = ui_obj.get(field, [])
+            section = f"ui.{field}"
+            if not isinstance(entries, list):
+                issues.append(
+                    ParamStoreDecodeIssue(
+                        section,
+                        None,
+                        "expected a list",
+                    )
+                )
+                continue
+            for index, item in enumerate(entries):
+                key = entry_key(item)
+                if key is None:
+                    issues.append(
+                        ParamStoreDecodeIssue(
+                            section,
+                            index,
+                            "expected op/site_id/arg object",
+                        )
+                    )
+                elif key not in state_keys or key not in meta_keys:
+                    issues.append(
+                        ParamStoreDecodeIssue(
+                            section,
+                            index,
+                            "matching state/meta is missing",
+                        )
+                    )
+    return tuple(issues)
+
+
+def decode_param_store_result(
+    obj: object,
+    *,
+    preserve_explicit_overrides: bool = False,
+) -> ParamStoreDecodeResult:
+    """JSON 由来 payload を schema migration/診断付きで復元する。"""
+
+    migrated, migrated_legacy = _migrate_param_store_payload(obj)
+    issues = _find_decode_issues(migrated)
+    decodable = dict(migrated)
+    for section in ("states", "meta", "labels", "effect_steps", "explicit", "variations"):
+        if not isinstance(decodable.get(section, []), list):
+            decodable[section] = []
+    store = _decode_param_store_current(
+        decodable,
+        preserve_explicit_overrides=preserve_explicit_overrides,
+    )
+    return ParamStoreDecodeResult(
+        store=store,
+        issues=issues,
+        migrated_legacy=migrated_legacy,
+    )
+
+
+def decode_param_store(
+    obj: object,
+    *,
+    preserve_explicit_overrides: bool = False,
+) -> ParamStore:
+    """JSON 由来 payload を復元し、読み取れた store を返す。"""
+
+    return decode_param_store_result(
+        obj,
+        preserve_explicit_overrides=preserve_explicit_overrides,
+    ).store
+
+
 def loads_param_store(
     payload: str,
     *,
@@ -338,9 +678,30 @@ def loads_param_store(
     )
 
 
+def loads_param_store_result(
+    payload: str,
+    *,
+    preserve_explicit_overrides: bool = False,
+) -> ParamStoreDecodeResult:
+    """JSON 文字列を migration/部分破損情報付きで復元する。"""
+
+    return decode_param_store_result(
+        json.loads(payload),
+        preserve_explicit_overrides=preserve_explicit_overrides,
+    )
+
+
 __all__ = [
+    "PARAM_STORE_SCHEMA_VERSION",
+    "ParamStoreDecodeIssue",
+    "ParamStoreDecodeResult",
+    "ParamStoreSchemaError",
+    "UnsupportedParamStoreSchemaError",
     "encode_param_store",
     "decode_param_store",
+    "decode_param_store_result",
     "dumps_param_store",
     "loads_param_store",
+    "loads_param_store_result",
+    "param_store_schema_version",
 ]

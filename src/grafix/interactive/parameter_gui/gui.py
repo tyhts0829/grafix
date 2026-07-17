@@ -5,36 +5,82 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
 from grafix.core.font_resolver import default_font_path, resolve_font_path
-from grafix.core.parameters.layer_style import LAYER_STYLE_OP
+from grafix.core.parameters.key import ParameterKey
+from grafix.core.parameters.favorites import favorite_parameter_keys
 from grafix.core.parameters.history import (
     ParamSnapshotSlots,
     ParamStoreHistory,
-    SnapshotSlot,
 )
-from grafix.core.parameters.meta import ParamMeta
-from grafix.core.parameters.meta_ops import set_meta
-from grafix.core.parameters.snapshot_ops import store_snapshot, store_snapshot_for_gui
+from grafix.core.parameters.reconcile_ops import (
+    list_reconcile_orphans,
+    manual_migrate_orphan,
+)
+from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.store import ParamStore
-from grafix.core.parameters.style import STYLE_OP
+from grafix.core.parameters.variations import (
+    create_variation,
+    delete_variation,
+    duplicate_variation,
+    morph_variations,
+    randomize_parameters,
+    rename_variation,
+    restore_variation,
+    set_parameters_locked,
+)
+from grafix.core.parameters.view import ParameterRow
 from grafix.core.runtime_config import runtime_config
-from grafix.interactive.midi import MidiController
+from grafix.interactive.midi import MidiSession
 from grafix.interactive.runtime.frame_clock import TransportClock
 
 from .midi_learn import MidiLearnState
 from .monitor_bar import render_monitor_alerts, render_monitor_status
+from .diagnostics_panel import render_diagnostics_panel
+from .help_pane import render_parameter_help_pane
+from .profiler_panel import render_profiler_panel
+from .parameter_filter import ParameterActivityFilter, ParameterFilterState
 from .pyglet_backend import (
     _create_imgui_pyglet_renderer,
     _install_imgui_clipboard_callbacks,
     _sync_imgui_io_for_window,
 )
-from .range_edit import RangeEditMode, apply_range_shift
-from .store_bridge import clear_all_midi_assignments, render_store_parameter_table
+from .range_edit import (
+    RangeEditMode,
+    RangeEditSession,
+    apply_range_edit_session,
+    preview_range_edit,
+    range_edit_session_for_store,
+)
+from .reconcile_panel import (
+    ReconcileOrphanPanelModel,
+    reconcile_orphan_panel_model,
+    render_reconcile_orphan_popup,
+)
+from .shortcuts import resolve_shortcut_keys, shortcut_help_lines
+from .store_bridge import (
+    ParameterTableView,
+    clear_all_midi_assignments,
+    parameter_table_view_for_store,
+    render_store_parameter_table,
+    set_all_parameter_groups_collapsed,
+)
 from .theme import PARAMETER_GUI_PALETTE, apply_parameter_gui_theme
+from .variation_panel import (
+    VariationPanelState,
+    VariationScopeSummary,
+    VariationThumbnailCapture,
+    VariationThumbnailPreview,
+    normalize_variation_selection,
+    variation_panel_model,
+    variation_scope_summary,
+)
+
+
+_VARIATION_DELETE_POPUP_ID = "Delete variation##variation_delete_confirmation"
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,12 +214,27 @@ def _button_with_width(imgui: Any, label: str, width: float) -> bool:
 
 
 def _item_tooltip(imgui: Any, text: str) -> None:
-    """hover tooltipを利用可能なbackendでだけ表示する。"""
+    """hoverまたはkeyboard focus中のitemへtooltipを表示する。"""
 
     hovered = getattr(imgui, "is_item_hovered", None)
+    focused = getattr(imgui, "is_item_focused", None)
     tooltip = getattr(imgui, "set_tooltip", None)
-    if callable(hovered) and callable(tooltip) and bool(hovered()):
+    visible = (callable(hovered) and bool(hovered())) or (
+        callable(focused) and bool(focused())
+    )
+    if callable(tooltip) and visible:
         tooltip(str(text))
+
+
+def _enable_keyboard_navigation(imgui: Any) -> bool:
+    """ImGuiのTab/Enter navigation flagを有効化できたらTrueを返す。"""
+
+    keyboard_nav = int(getattr(imgui, "CONFIG_NAV_ENABLE_KEYBOARD", 0))
+    if keyboard_nav == 0:
+        return False
+    io = imgui.get_io()
+    io.config_flags = int(io.config_flags) | keyboard_nav
+    return True
 
 
 def _begin_toolbar_surface(imgui: Any, label: str, width: float, height: float) -> bool:
@@ -274,13 +335,16 @@ class ParameterGUI:
         gui_window: Any,
         *,
         store: ParamStore,
-        midi_controller: MidiController | None = None,
+        midi_session: MidiSession | None = None,
         monitor: Any | None = None,
         transport: TransportClock | None = None,
         transport_fps: float = 60.0,
         history: ParamStoreHistory | None = None,
         snapshot_slots: ParamSnapshotSlots | None = None,
         is_recording: Callable[[], bool] | None = None,
+        variation_thumbnail_capture: VariationThumbnailCapture | None = None,
+        variation_thumbnail_preview: VariationThumbnailPreview | None = None,
+        ui_scale: float = 1.0,
         title: str = "Parameters",
         column_weights: tuple[float, float, float, float] | None = None,
     ) -> None:
@@ -295,13 +359,16 @@ class ParameterGUI:
             self._initialize(
                 gui_window,
                 store=store,
-                midi_controller=midi_controller,
+                midi_session=midi_session,
                 monitor=monitor,
                 transport=transport,
                 transport_fps=transport_fps,
                 history=history,
                 snapshot_slots=snapshot_slots,
                 is_recording=is_recording,
+                variation_thumbnail_capture=variation_thumbnail_capture,
+                variation_thumbnail_preview=variation_thumbnail_preview,
+                ui_scale=ui_scale,
                 title=title,
                 column_weights=column_weights,
             )
@@ -318,13 +385,16 @@ class ParameterGUI:
         gui_window: Any,
         *,
         store: ParamStore,
-        midi_controller: MidiController | None = None,
+        midi_session: MidiSession | None = None,
         monitor: Any | None = None,
         transport: TransportClock | None = None,
         transport_fps: float = 60.0,
         history: ParamStoreHistory | None = None,
         snapshot_slots: ParamSnapshotSlots | None = None,
         is_recording: Callable[[], bool] | None = None,
+        variation_thumbnail_capture: VariationThumbnailCapture | None = None,
+        variation_thumbnail_preview: VariationThumbnailPreview | None = None,
+        ui_scale: float = 1.0,
         title: str = "Parameters",
         column_weights: tuple[float, float, float, float] | None = None,
     ) -> None:
@@ -343,22 +413,25 @@ class ParameterGUI:
         # GUI の描画対象となるウィンドウと、編集対象の ParamStore を保持する。
         self._window = gui_window
         self._store = store
-        self._midi_controller = midi_controller
+        self._midi_session = midi_session
         self._monitor = monitor
         self._transport = transport
         self._transport_fps = float(transport_fps) if float(transport_fps) > 0.0 else 60.0
         self._history = history
         self._snapshot_slots = snapshot_slots
         self._is_recording = is_recording
+        self._variation_thumbnail_capture = variation_thumbnail_capture
+        self._variation_thumbnail_preview = variation_thumbnail_preview
+        self._variation_panel_state = VariationPanelState()
         self._midi_learn_state = MidiLearnState()
         self._range_edit_last_seen_cc_seq = 0
         self._range_edit_prev_value_by_cc: dict[int, float] = {}
-        self._range_edit_r_down = False
-        self._range_edit_e_down = False
-        self._range_edit_t_down = False
+        self._range_edit_mode: RangeEditMode | None = None
+        self._range_edit_session: RangeEditSession | None = None
         self._range_edit_key_r = 0
         self._range_edit_key_e = 0
         self._range_edit_key_t = 0
+        self._range_edit_key_escape = 0
         self._transport_key_space = 0
         self._transport_key_home = 0
         self._transport_key_left = 0
@@ -370,11 +443,24 @@ class ParameterGUI:
         self._shortcut_modifier_mask = 0
         self._shortcut_shift_mask = 0
         self._show_inactive_params = False
+        self._parameter_filter_state = ParameterFilterState()
+        self._parameter_table_view: ParameterTableView | None = None
+        self._favorite_parameter_keys = frozenset(favorite_parameter_keys(store))
+        self._parameter_error_keys: frozenset[ParameterKey] = frozenset()
+        self._parameter_help_row: ParameterRow | None = None
+        self._reconcile_orphan_model: ReconcileOrphanPanelModel = reconcile_orphan_panel_model(
+            list_reconcile_orphans(store)
+        )
+        self._reconcile_error: str | None = None
         self._midi_clear_notice: str | None = None
         self._midi_clear_notice_token: tuple[int, int] | None = None
         self._title = str(title)
         cfg = runtime_config()
-        self._font_size_base_px = float(cfg.parameter_gui_font_size_base_px)
+        self._ui_scale = float(ui_scale)
+        self._font_size_base_px = (
+            float(cfg.parameter_gui_font_size_base_px) * self._ui_scale
+        )
+        self._shortcut_bindings = cfg.parameter_gui_shortcuts
         self._column_weights = (
             cfg.parameter_gui_table_column_weights if column_weights is None else column_weights
         )
@@ -383,13 +469,15 @@ class ParameterGUI:
         self._imgui = imgui
         self._context = imgui.create_context()
         imgui.style_colors_dark()
-        apply_parameter_gui_theme(imgui)
+        apply_parameter_gui_theme(imgui, ui_scale=self._ui_scale)
         imgui.set_current_context(self._context)
         _install_imgui_clipboard_callbacks(imgui)
 
         # pyglet は環境によって「座標系が backing pixel」になり得る。
         # その場合、Retina では物理サイズが小さく見えるため、フォント生成 px を DPI で補正する。
-        imgui.get_io().font_global_scale = 1.0
+        io = imgui.get_io()
+        io.font_global_scale = 1.0
+        _enable_keyboard_navigation(imgui)
 
         # ImGui の draw_data を実際に OpenGL へ流す renderer を作る。
         # ここで作られた renderer は内部に GL リソースを保持する。
@@ -397,17 +485,22 @@ class ParameterGUI:
 
         from pyglet.window import key as pyglet_key
 
-        self._range_edit_key_r = int(pyglet_key.R)
-        self._range_edit_key_e = int(pyglet_key.E)
-        self._range_edit_key_t = int(pyglet_key.T)
-        self._transport_key_space = int(pyglet_key.SPACE)
-        self._transport_key_home = int(pyglet_key.HOME)
-        self._transport_key_left = int(pyglet_key.LEFT)
-        self._transport_key_right = int(pyglet_key.RIGHT)
-        self._transport_key_slower = int(pyglet_key.BRACKETLEFT)
-        self._transport_key_faster = int(pyglet_key.BRACKETRIGHT)
-        self._history_key_z = int(pyglet_key.Z)
-        self._history_key_y = int(pyglet_key.Y)
+        shortcut_keys = resolve_shortcut_keys(
+            self._shortcut_bindings,
+            key_namespace=pyglet_key,
+        )
+        self._range_edit_key_r = shortcut_keys["range_shift"]
+        self._range_edit_key_e = shortcut_keys["range_min"]
+        self._range_edit_key_t = shortcut_keys["range_max"]
+        self._range_edit_key_escape = shortcut_keys["cancel"]
+        self._transport_key_space = shortcut_keys["play_pause"]
+        self._transport_key_home = shortcut_keys["reset_time"]
+        self._transport_key_left = shortcut_keys["step_backward"]
+        self._transport_key_right = shortcut_keys["step_forward"]
+        self._transport_key_slower = shortcut_keys["slower"]
+        self._transport_key_faster = shortcut_keys["faster"]
+        self._history_key_z = shortcut_keys["undo"]
+        self._history_key_y = shortcut_keys["redo"]
         self._shortcut_modifier_mask = int(pyglet_key.MOD_CTRL) | int(pyglet_key.MOD_COMMAND)
         self._shortcut_shift_mask = int(pyglet_key.MOD_SHIFT)
         self._window.push_handlers(
@@ -487,12 +580,494 @@ class ParameterGUI:
             transport.pause()
             transport.seek(float(next_t))
 
+    def _variation_state(self) -> VariationPanelState:
+        state = getattr(self, "_variation_panel_state", None)
+        if isinstance(state, VariationPanelState):
+            return state
+        state = VariationPanelState()
+        self._variation_panel_state = state
+        return state
+
+    def _variation_scope_summary(self) -> VariationScopeSummary:
+        """現在の favorite/filter selection から探索 scope を返す。"""
+
+        state = self._variation_state()
+        view = parameter_table_view_for_store(
+            self._store,
+            show_inactive_params=bool(getattr(self, "_show_inactive_params", False)),
+            filter_state=getattr(self, "_parameter_filter_state", ParameterFilterState()),
+            error_keys=getattr(self, "_parameter_error_keys", frozenset()),
+            favorite_keys=frozenset(favorite_parameter_keys(self._store)),
+        )
+        return variation_scope_summary(self._store, view, state.scope)
+
+    def _save_named_variation(self) -> bool:
+        state = self._variation_state()
+        name = state.new_name.strip()
+        if not name:
+            state.notice = "Enter a variation name before saving."
+            return False
+        if name in variation_panel_model(self._store).names:
+            state.notice = f"Variation already exists: {name}."
+            return False
+
+        thumbnail_path: str | Path | None = None
+        thumbnail_error: str | None = None
+        capture = getattr(self, "_variation_thumbnail_capture", None)
+        if callable(capture):
+            try:
+                thumbnail_path = capture(name)
+            except Exception as exc:
+                # CaptureService boundary の失敗で parameter snapshot 自体を失わない。
+                thumbnail_error = str(exc)
+
+        transport = getattr(self, "_transport", None)
+        t = None if transport is None else float(transport.snapshot().t)
+        try:
+            variation = create_variation(
+                self._store,
+                name,
+                note=state.new_note,
+                seed=int(state.random_seed) if state.include_seed else None,
+                t=t,
+                thumbnail_path=thumbnail_path,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            state.notice = f"Could not save variation: {exc}"
+            return False
+
+        state.selected_name = variation.name
+        state.target_name = variation.name
+        state.duplicate_name = f"{variation.name} copy"
+        state.morph_a = normalize_variation_selection(
+            variation_panel_model(self._store).names,
+            state.morph_a,
+        )
+        state.new_name = ""
+        state.new_note = ""
+        state.notice = (
+            f"Saved {variation.name}; thumbnail failed: {thumbnail_error}"
+            if thumbnail_error
+            else f"Saved {variation.name}."
+        )
+        return True
+
+    def _load_named_variation(self, name: str) -> bool:
+        state = self._variation_state()
+        try:
+            changed = restore_variation(
+                self._store,
+                name,
+                history=getattr(self, "_history", None),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            state.notice = f"Could not load variation: {exc}"
+            return False
+        self._parameter_table_view = None
+        state.notice = (
+            f"Loaded {name}." if changed else f"{name} already matches the current values."
+        )
+        return changed
+
+    def _rename_selected_variation(self) -> bool:
+        state = self._variation_state()
+        if state.selected_name is None:
+            state.notice = "Select a variation to rename."
+            return False
+        previous = state.selected_name
+        try:
+            renamed = rename_variation(self._store, previous, state.target_name)
+        except (KeyError, TypeError, ValueError) as exc:
+            state.notice = f"Could not rename variation: {exc}"
+            return False
+        state.selected_name = renamed.name
+        state.target_name = renamed.name
+        state.duplicate_name = f"{renamed.name} copy"
+        if state.morph_a == previous:
+            state.morph_a = renamed.name
+        if state.morph_b == previous:
+            state.morph_b = renamed.name
+        state.notice = f"Renamed {previous} to {renamed.name}."
+        return renamed.name != previous
+
+    def _duplicate_selected_variation(self) -> bool:
+        state = self._variation_state()
+        if state.selected_name is None:
+            state.notice = "Select a variation to duplicate."
+            return False
+        try:
+            duplicate = duplicate_variation(
+                self._store,
+                state.selected_name,
+                state.duplicate_name,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            state.notice = f"Could not duplicate variation: {exc}"
+            return False
+        state.selected_name = duplicate.name
+        state.target_name = duplicate.name
+        state.duplicate_name = f"{duplicate.name} copy"
+        state.notice = f"Duplicated as {duplicate.name}."
+        return True
+
+    def _request_delete_selected_variation(self) -> bool:
+        """選択中 variation を確認対象へ固定し、まだ削除は行わない。"""
+
+        state = self._variation_state()
+        name = state.selected_name
+        if name is None:
+            state.notice = "Select a variation to delete."
+            return False
+        state.pending_delete_name = name
+        return True
+
+    def _confirm_delete_pending_variation(self) -> bool:
+        """確認 modal が固定した variation だけを削除する。"""
+
+        state = self._variation_state()
+        name = state.pending_delete_name
+        state.pending_delete_name = None
+        if name is None:
+            state.notice = "No variation is awaiting deletion."
+            return False
+        if not delete_variation(self._store, name):
+            state.notice = f"Variation no longer exists: {name}."
+            return False
+        names = variation_panel_model(self._store).names
+        state.selected_name = normalize_variation_selection(names, None)
+        state.target_name = "" if state.selected_name is None else state.selected_name
+        state.duplicate_name = (
+            "" if state.selected_name is None else f"{state.selected_name} copy"
+        )
+        state.morph_a = normalize_variation_selection(names, state.morph_a)
+        state.morph_b = normalize_variation_selection(names, state.morph_b)
+        state.notice = f"Deleted {name}."
+        return True
+
+    def _render_variation_delete_confirmation(self) -> bool:
+        """削除対象名と不可逆性を示す modal を描画する。"""
+
+        imgui = self._imgui
+        state = self._variation_state()
+        changed = False
+        with imgui.begin_popup_modal(_VARIATION_DELETE_POPUP_ID) as popup:
+            if not bool(getattr(popup, "opened", popup)):
+                return False
+            name = state.pending_delete_name
+            if name is None:
+                imgui.text_disabled("The selected variation is no longer available.")
+                if imgui.button("Close##variation_delete_missing"):
+                    imgui.close_current_popup()
+                return False
+
+            imgui.text_wrapped(f'Delete variation "{name}"?')
+            imgui.text_disabled("This cannot be undone.")
+            if imgui.button("Cancel##variation_delete_cancel"):
+                state.pending_delete_name = None
+                imgui.close_current_popup()
+            imgui.same_line()
+            if imgui.button("Delete permanently##variation_delete_confirm"):
+                changed = self._confirm_delete_pending_variation()
+                imgui.close_current_popup()
+        return changed
+
+    def _randomize_variation_scope(self) -> bool:
+        state = self._variation_state()
+        scope = self._variation_scope_summary()
+        if not scope.keys:
+            state.notice = f"No parameters in {scope.scope} scope."
+            return False
+        if scope.locked_count == scope.parameter_count:
+            state.notice = (
+                f"All {scope.parameter_count} parameters in {scope.scope} scope are locked; "
+                "nothing was randomized."
+            )
+            return False
+        changed = randomize_parameters(
+            self._store,
+            scope.keys,
+            seed=int(state.random_seed),
+            history=getattr(self, "_history", None),
+        )
+        self._parameter_table_view = None
+        if changed:
+            state.notice = (
+                f"Randomized {len(changed)} / {scope.parameter_count} parameters "
+                f"with seed {state.random_seed}."
+            )
+        else:
+            state.notice = (
+                f"No eligible unlocked numeric parameters in {scope.scope} scope; "
+                "nothing was randomized."
+            )
+        return bool(changed)
+
+    def _set_variation_scope_locked(self, *, locked: bool) -> bool:
+        state = self._variation_state()
+        scope = self._variation_scope_summary()
+        if not scope.keys:
+            state.notice = f"No parameters in {scope.scope} scope."
+            return False
+        if locked and scope.locked_count == scope.parameter_count:
+            state.notice = (
+                f"All {scope.parameter_count} parameters in {scope.scope} scope "
+                "are already locked."
+            )
+            return False
+        if not locked and scope.locked_count == 0:
+            state.notice = f"No parameters in {scope.scope} scope are locked."
+            return False
+        changed = set_parameters_locked(
+            self._store,
+            scope.keys,
+            locked=bool(locked),
+        )
+        self._parameter_table_view = None
+        if changed:
+            state.notice = (
+                f"{'Locked' if locked else 'Unlocked'} {len(changed)} parameters "
+                f"in {scope.scope} scope."
+            )
+        else:
+            state.notice = f"No lock state changed in {scope.scope} scope."
+        return bool(changed)
+
+    def _morph_variation_scope(self) -> bool:
+        state = self._variation_state()
+        if state.morph_a is None or state.morph_b is None:
+            state.notice = "Save and select two variations before morphing."
+            return False
+        if state.morph_a == state.morph_b:
+            state.notice = "Choose two different variations to morph."
+            return False
+        scope = self._variation_scope_summary()
+        if not scope.keys:
+            state.notice = f"No parameters in {scope.scope} scope; nothing was morphed."
+            return False
+        if scope.locked_count == scope.parameter_count:
+            state.notice = (
+                f"All {scope.parameter_count} parameters in {scope.scope} scope are locked; "
+                "nothing was morphed."
+            )
+            return False
+        try:
+            changed = morph_variations(
+                self._store,
+                state.morph_a,
+                state.morph_b,
+                float(state.morph_amount),
+                keys=scope.keys,
+                history=getattr(self, "_history", None),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            state.notice = f"Could not morph variations: {exc}"
+            return False
+        self._parameter_table_view = None
+        if changed:
+            state.notice = (
+                f"Morphed {len(changed)} parameters at {state.morph_amount:.2f}."
+            )
+        else:
+            state.notice = (
+                f"No compatible unlocked parameters in {scope.scope} scope; "
+                "nothing was morphed."
+            )
+        return bool(changed)
+
+    def _render_variation_combo(
+        self,
+        label: str,
+        names: tuple[str, ...],
+        selected: str | None,
+    ) -> str | None:
+        imgui = self._imgui
+        selection = normalize_variation_selection(names, selected)
+        begin_combo = getattr(imgui, "begin_combo", None)
+        if not callable(begin_combo):
+            return selection
+        if begin_combo(label, selection or "(none)"):
+            try:
+                for name in names:
+                    clicked, _selected = imgui.selectable(
+                        f"{name}##{label}_{name}",
+                        name == selection,
+                    )
+                    if clicked:
+                        selection = name
+                    if name == selection:
+                        set_default_focus = getattr(imgui, "set_item_default_focus", None)
+                        if callable(set_default_focus):
+                            set_default_focus()
+            finally:
+                imgui.end_combo()
+        return selection
+
+    def _render_variation_popup(self) -> bool:
+        """named variation と探索操作を一つの popup に描画する。"""
+
+        imgui = self._imgui
+        state = self._variation_state()
+        model = variation_panel_model(self._store)
+        names = model.names
+        previous_selection = state.selected_name
+        state.selected_name = normalize_variation_selection(names, state.selected_name)
+        if state.selected_name is not None and (
+            state.selected_name != previous_selection or not state.target_name
+        ):
+            state.target_name = state.selected_name
+        if state.selected_name is not None and (
+            state.selected_name != previous_selection or not state.duplicate_name
+        ):
+            state.duplicate_name = f"{state.selected_name} copy"
+        state.morph_a = normalize_variation_selection(names, state.morph_a)
+        state.morph_b = normalize_variation_selection(names, state.morph_b)
+        if len(names) > 1 and state.morph_b == state.morph_a:
+            state.morph_b = names[1] if names[0] == state.morph_a else names[0]
+
+        changed = False
+        imgui.text("Save current variation")
+        _name_changed, state.new_name = imgui.input_text(
+            "Name##variation_new_name",
+            state.new_name,
+        )
+        _note_changed, state.new_note = imgui.input_text(
+            "Note##variation_new_note",
+            state.new_note,
+        )
+        _seed_enabled_changed, state.include_seed = imgui.checkbox(
+            "Store seed##variation_include_seed",
+            state.include_seed,
+        )
+        imgui.same_line()
+        _seed_changed, state.random_seed = imgui.input_int(
+            "Seed##variation_seed",
+            int(state.random_seed),
+        )
+        if imgui.button("Save current##variation_save"):
+            changed = self._save_named_variation() or changed
+
+        imgui.separator()
+        imgui.text("Explore scope")
+        if imgui.button(
+            ("[Filtered]" if state.scope == "filtered" else "Filtered")
+            + "##variation_scope_filtered"
+        ):
+            state.scope = "filtered"
+        imgui.same_line()
+        if imgui.button(
+            ("[Favorites]" if state.scope == "favorites" else "Favorites")
+            + "##variation_scope_favorites"
+        ):
+            state.scope = "favorites"
+        scope = self._variation_scope_summary()
+        imgui.same_line()
+        imgui.text_disabled(
+            f"{scope.parameter_count} parameters  ·  {scope.locked_count} locked"
+        )
+        _random_seed_changed, state.random_seed = imgui.input_int(
+            "Random seed##variation_random_seed",
+            int(state.random_seed),
+        )
+        if imgui.button("Randomize##variation_randomize"):
+            changed = self._randomize_variation_scope() or changed
+        imgui.same_line()
+        if imgui.button("Lock scope##variation_lock_scope"):
+            changed = self._set_variation_scope_locked(locked=True) or changed
+        imgui.same_line()
+        if imgui.button("Unlock scope##variation_unlock_scope"):
+            changed = self._set_variation_scope_locked(locked=False) or changed
+
+        imgui.separator()
+        imgui.text("Morph named variations")
+        state.morph_a = self._render_variation_combo(
+            "A##variation_morph_a",
+            names,
+            state.morph_a,
+        )
+        imgui.same_line()
+        state.morph_b = self._render_variation_combo(
+            "B##variation_morph_b",
+            names,
+            state.morph_b,
+        )
+        _amount_changed, state.morph_amount = imgui.slider_float(
+            "Amount##variation_morph_amount",
+            float(state.morph_amount),
+            0.0,
+            1.0,
+        )
+        if imgui.button("Apply morph##variation_morph_apply"):
+            changed = self._morph_variation_scope() or changed
+
+        imgui.separator()
+        imgui.text(f"Saved variations ({model.count})")
+        if not model.items:
+            imgui.text_disabled(model.empty_message)
+        for index, item in enumerate(model.items):
+            selected = item.name == state.selected_name
+            if imgui.button(
+                f"{'>' if selected else ' '} {item.name}##variation_select_{index}"
+            ):
+                state.selected_name = item.name
+                state.target_name = item.name
+                state.duplicate_name = f"{item.name} copy"
+            imgui.same_line()
+            seed_label = "none" if item.seed is None else str(item.seed)
+            imgui.text_disabled(
+                f"{item.timestamp}  ·  seed {seed_label}  ·  {item.diff_count} diffs"
+            )
+            if item.note:
+                text_wrapped = getattr(imgui, "text_wrapped", None)
+                if callable(text_wrapped):
+                    text_wrapped(item.note)
+                else:
+                    imgui.text(item.note)
+            if item.thumbnail_path is not None:
+                preview = getattr(self, "_variation_thumbnail_preview", None)
+                if callable(preview):
+                    try:
+                        preview(imgui, item.thumbnail_path)
+                    except Exception as exc:
+                        imgui.text_disabled(f"Thumbnail unavailable: {exc}")
+                else:
+                    imgui.text_disabled(f"Thumbnail: {item.thumbnail_path}")
+
+        if state.selected_name is not None:
+            imgui.separator()
+            imgui.text(f"Selected: {state.selected_name}")
+            _target_changed, state.target_name = imgui.input_text(
+                "Rename to##variation_target_name",
+                state.target_name,
+            )
+            _duplicate_changed, state.duplicate_name = imgui.input_text(
+                "Duplicate as##variation_duplicate_name",
+                state.duplicate_name,
+            )
+            if imgui.button("Load##variation_load"):
+                changed = self._load_named_variation(state.selected_name) or changed
+            imgui.same_line()
+            if imgui.button("Rename##variation_rename"):
+                changed = self._rename_selected_variation() or changed
+            imgui.same_line()
+            if imgui.button("Duplicate##variation_duplicate"):
+                changed = self._duplicate_selected_variation() or changed
+            imgui.same_line()
+            if imgui.button("Delete##variation_delete"):
+                if self._request_delete_selected_variation():
+                    imgui.open_popup(_VARIATION_DELETE_POPUP_ID)
+
+        changed = self._render_variation_delete_confirmation() or changed
+
+        if state.notice:
+            imgui.separator()
+            imgui.text_disabled(state.notice)
+        return changed
+
     def _render_history_toolbar(self) -> bool:
-        """Undo/Redo と Snapshot A/B を描画し、store が変われば True を返す。"""
+        """Undo/Redo と named variation popup を描画する。"""
 
         history = getattr(self, "_history", None)
-        slots = self._snapshot_slots
-        if history is None or slots is None:
+        if history is None:
             return False
 
         imgui = self._imgui
@@ -506,18 +1081,18 @@ class ParameterGUI:
         imgui.text_disabled(f"{history.undo_depth} / {history.redo_depth}")
         imgui.same_line()
 
-        snapshot_slots: tuple[SnapshotSlot, SnapshotSlot] = ("A", "B")
-        for index, slot in enumerate(snapshot_slots):
-            if index > 0:
-                imgui.same_line()
-            if imgui.button(f"Save {slot}##snapshot_set_{slot}"):
-                slots.capture(slot)
-            imgui.same_line()
-            slot_available = slots.has(slot)
-            load_clicked = imgui.button(f"Load {slot}##snapshot_load_{slot}")
-            if load_clicked and slot_available:
-                with history.transaction(source=("snapshot", slot)):
-                    changed = slots.restore(slot) or changed
+        store = getattr(self, "_store", None)
+        variation_count = 0 if store is None else len(store._variations_ref())
+        if imgui.button(f"Variations {variation_count}##variation_popup_button"):
+            open_popup = getattr(imgui, "open_popup", None)
+            if callable(open_popup):
+                open_popup("Named variations##variation_popup")
+        begin_popup = getattr(imgui, "begin_popup", None)
+        if store is None or not callable(begin_popup):
+            return changed
+        with begin_popup("Named variations##variation_popup") as popup:
+            if bool(getattr(popup, "opened", popup)):
+                changed = self._render_variation_popup() or changed
         return changed
 
     def _render_controls_surface(
@@ -541,7 +1116,7 @@ class ParameterGUI:
                 timeline_width=geometry.timeline_width,
                 coordinate_scale=float(coordinate_scale),
             )
-        if self._history is not None and self._snapshot_slots is not None:
+        if self._history is not None:
             imgui.text_disabled("HISTORY")
             imgui.same_line()
             changed = self._render_history_toolbar() or changed
@@ -551,7 +1126,9 @@ class ParameterGUI:
         """通常幅は Controls / Status 2列、狭幅は compact status を下へ積む。"""
 
         imgui = self._imgui
-        coordinate_scale = _window_content_coordinate_scale(getattr(self, "_window", None))
+        coordinate_scale = _window_content_coordinate_scale(
+            getattr(self, "_window", None)
+        ) * float(getattr(self, "_ui_scale", 1.0))
         layout = compute_toolbar_layout(
             float(content_width),
             coordinate_scale=coordinate_scale,
@@ -592,11 +1169,11 @@ class ParameterGUI:
             if layout.stacked:
                 imgui.same_line()
             if monitor_snapshot is not None:
-                midi = self._midi_controller
+                midi = self._midi_session
                 render_monitor_status(
                     imgui,
                     monitor_snapshot,
-                    midi_port_name=None if midi is None else str(midi.port_name),
+                    midi_status=None if midi is None else midi.status_label,
                     compact=layout.stacked,
                 )
             else:
@@ -604,6 +1181,27 @@ class ParameterGUI:
         finally:
             _end_toolbar_surface(imgui, color_pushed=status_color)
         return changed
+
+    def _render_shortcut_help(self) -> None:
+        """configから読んだParameter GUI shortcut一覧をpopup表示する。"""
+
+        imgui = self._imgui
+        if not imgui.button("Shortcuts##shortcut_help"):
+            pass
+        else:
+            open_popup = getattr(imgui, "open_popup", None)
+            if callable(open_popup):
+                open_popup("Parameter GUI shortcuts##shortcut_help_popup")
+        begin_popup = getattr(imgui, "begin_popup", None)
+        if not callable(begin_popup):
+            return
+        with begin_popup("Parameter GUI shortcuts##shortcut_help_popup") as popup:
+            if not bool(getattr(popup, "opened", popup)):
+                return
+            for line in shortcut_help_lines(
+                getattr(self, "_shortcut_bindings", ())
+            ):
+                imgui.text(str(line))
 
     def _render_midi_clear_notice(self) -> bool:
         """全mapping解除後に、明示的な Undo 導線を全幅で表示する。"""
@@ -650,12 +1248,152 @@ class ParameterGUI:
         """Table固有のfilterとMIDI global commandをtable直上へ配置する。"""
 
         imgui = self._imgui
+        self._favorite_parameter_keys = frozenset(
+            favorite_parameter_keys(self._store)
+        )
+        state = getattr(self, "_parameter_filter_state", ParameterFilterState())
         imgui.text_disabled("PARAMETERS")
+        imgui.same_line()
+        self._render_shortcut_help()
+
+        input_text = getattr(imgui, "input_text", None)
+        input_text_with_hint = getattr(imgui, "input_text_with_hint", None)
+        if callable(input_text) or callable(input_text_with_hint):
+            imgui.same_line()
+            set_next_item_width = getattr(imgui, "set_next_item_width", None)
+            if callable(set_next_item_width):
+                coordinate_scale = _window_content_coordinate_scale(
+                    getattr(self, "_window", None)
+                ) * float(getattr(self, "_ui_scale", 1.0))
+                set_next_item_width(190.0 * coordinate_scale)
+            if callable(input_text_with_hint):
+                query_changed, query = input_text_with_hint(
+                    "##parameter_search",
+                    "Search label, op, arg, source, MIDI CC",
+                    str(state.query),
+                )
+            else:
+                assert callable(input_text)
+                query_changed, query = input_text(
+                    "Search##parameter_search",
+                    str(state.query),
+                )
+            if query_changed:
+                state = replace(state, query=str(query))
+
         imgui.same_line()
         _clicked, self._show_inactive_params = imgui.checkbox(
             "Show inactive##show_inactive_params",
             bool(self._show_inactive_params),
         )
+
+        # 詳細 filter は popup にまとめ、検索欄と MIDI command の幅を確保する。
+        imgui.same_line()
+        enabled_filter_count = sum(
+            (
+                state.activity != "all",
+                bool(state.ui_override_only),
+                bool(state.midi_mapped_only),
+                bool(state.error_only),
+                bool(state.favorite_only),
+            )
+        )
+        filter_button = (
+            "Filters"
+            if enabled_filter_count == 0
+            else f"Filters {enabled_filter_count}"
+        )
+        if imgui.button(f"{filter_button}##parameter_filter_menu"):
+            open_popup = getattr(imgui, "open_popup", None)
+            if callable(open_popup):
+                open_popup("Parameter filters##parameter_filter_popup")
+
+        begin_popup = getattr(imgui, "begin_popup", None)
+        menu_item = getattr(imgui, "menu_item", None)
+        if callable(begin_popup) and callable(menu_item):
+
+            def menu_clicked(
+                label: str,
+                *,
+                selected: bool,
+                enabled: bool = True,
+            ) -> bool:
+                try:
+                    result = menu_item(label, None, bool(selected), bool(enabled))
+                except TypeError:
+                    try:
+                        result = menu_item(
+                            label,
+                            selected=bool(selected),
+                            enabled=bool(enabled),
+                        )
+                    except TypeError:
+                        result = menu_item(label, enabled=bool(enabled))
+                if isinstance(result, tuple):
+                    return bool(result[0])
+                return bool(result)
+
+            with begin_popup("Parameter filters##parameter_filter_popup") as popup:
+                if bool(getattr(popup, "opened", popup)):
+                    activity_options: tuple[
+                        tuple[str, ParameterActivityFilter], ...
+                    ] = (
+                        ("All activity##filter_activity_all", "all"),
+                        ("Active only##filter_activity_active", "active"),
+                        ("Inactive only##filter_activity_inactive", "inactive"),
+                    )
+                    for label, activity in activity_options:
+                        if menu_clicked(
+                            label,
+                            selected=state.activity == activity,
+                        ):
+                            state = replace(state, activity=activity)
+                            if activity == "inactive":
+                                # 選択直後に空結果に見えないよう、既存 visibility gate も開く。
+                                self._show_inactive_params = True
+                    separator = getattr(imgui, "separator", None)
+                    if callable(separator):
+                        separator()
+                    boolean_filters = (
+                        ("UI override##filter_ui_override", "ui_override_only"),
+                        ("MIDI mapped##filter_midi_mapped", "midi_mapped_only"),
+                        ("Error##filter_error", "error_only"),
+                        ("Favorite##filter_favorite", "favorite_only"),
+                    )
+                    for label, field in boolean_filters:
+                        selected = bool(getattr(state, field))
+                        if menu_clicked(label, selected=selected):
+                            state = replace(state, **{field: not selected})
+
+        self._parameter_filter_state = state
+
+        view = parameter_table_view_for_store(
+            self._store,
+            show_inactive_params=bool(self._show_inactive_params),
+            filter_state=state,
+            error_keys=getattr(self, "_parameter_error_keys", frozenset()),
+            favorite_keys=getattr(self, "_favorite_parameter_keys", frozenset()),
+        )
+        self._parameter_table_view = view
+        changed = False
+        imgui.same_line()
+        imgui.text_disabled(f"{view.filtered_count} / {view.total_count} parameters")
+        imgui.same_line()
+        imgui.text_disabled(f"{view.hidden_count} hidden")
+        imgui.same_line()
+        if imgui.button("Expand all##parameter_groups_expand_all"):
+            changed = set_all_parameter_groups_collapsed(
+                self._store,
+                view,
+                collapsed=False,
+            ) or changed
+        imgui.same_line()
+        if imgui.button("Collapse all##parameter_groups_collapse_all"):
+            changed = set_all_parameter_groups_collapsed(
+                self._store,
+                view,
+                collapsed=True,
+            ) or changed
 
         # MIDI は status へ混ぜず、assignment文脈の popup に閉じ込める。
         imgui.same_line()
@@ -667,7 +1405,9 @@ class ParameterGUI:
             and callable(get_cursor_x)
             and callable(set_cursor_x)
         ):
-            coordinate_scale = _window_content_coordinate_scale(getattr(self, "_window", None))
+            coordinate_scale = _window_content_coordinate_scale(
+                getattr(self, "_window", None)
+            ) * float(getattr(self, "_ui_scale", 1.0))
             set_cursor_x(
                 float(get_cursor_x())
                 + max(0.0, available_width - 56.0 * coordinate_scale)
@@ -678,43 +1418,137 @@ class ParameterGUI:
             if callable(open_popup):
                 open_popup("MIDI mappings##midi_menu_popup")
 
-        begin_popup = getattr(imgui, "begin_popup", None)
-        menu_item = getattr(imgui, "menu_item", None)
-        if not callable(begin_popup) or not callable(menu_item):
+        if callable(begin_popup) and callable(menu_item):
+            with begin_popup("MIDI mappings##midi_menu_popup") as popup:
+                if bool(getattr(popup, "opened", popup)):
+                    assignment_count = _midi_assignment_count(self._store)
+                    session = getattr(self, "_midi_session", None)
+                    status = "MIDI OFF" if session is None else session.status_label
+                    imgui.text_disabled(f"{status}  ·  {assignment_count} mappings")
+                    separator = getattr(imgui, "separator", None)
+                    if callable(separator):
+                        separator()
+                    reconnect_clicked, _selected = menu_item(
+                        "Reconnect##midi_reconnect",
+                        enabled=session is not None and session.state != "live",
+                    )
+                    if reconnect_clicked and session is not None:
+                        session.reconnect()
+                    clear_frozen_clicked, _selected = menu_item(
+                        "Clear frozen snapshot##midi_clear_frozen",
+                        enabled=session is not None and session.state == "frozen",
+                    )
+                    if clear_frozen_clicked and session is not None:
+                        session.clear_frozen_snapshot()
+                    clear_clicked, _selected = menu_item(
+                        "Clear all mappings##clear_midi_assigns",
+                        enabled=assignment_count > 0,
+                    )
+                    if clear_clicked and assignment_count > 0:
+                        self._midi_learn_state.active_target = None
+                        self._midi_learn_state.active_component = None
+                        history = getattr(self, "_history", None)
+                        transaction = (
+                            history.transaction(source="clear_all_midi")
+                            if history is not None
+                            else nullcontext()
+                        )
+                        with transaction:
+                            changed = bool(clear_all_midi_assignments(self._store))
+                        if changed:
+                            self._midi_clear_notice = "MIDI mappings cleared"
+                            self._midi_clear_notice_token = (
+                                None
+                                if history is None
+                                else (int(history.undo_depth), int(self._store.revision))
+                            )
+
+        if changed:
+            # MIDI mapped filter を同じ frame の table へ反映する。
+            self._parameter_table_view = parameter_table_view_for_store(
+                self._store,
+                show_inactive_params=bool(self._show_inactive_params),
+                filter_state=state,
+                error_keys=getattr(self, "_parameter_error_keys", frozenset()),
+                favorite_keys=getattr(self, "_favorite_parameter_keys", frozenset()),
+            )
+        return changed
+
+    def _remember_parameter_help_row(
+        self,
+        row: ParameterRow,
+        _selected: bool,
+    ) -> None:
+        """row の hover/focus/select を次 frame の Help pane へ保持する。"""
+
+        self._parameter_help_row = row
+
+    def _render_reconcile_orphan_control(self) -> bool:
+        """曖昧な parameter group の明示 1:1 relink 導線を描画する。"""
+
+        imgui = self._imgui
+        model = reconcile_orphan_panel_model(list_reconcile_orphans(self._store))
+        self._reconcile_orphan_model = model
+
+        imgui.text_disabled("RELINK")
+        imgui.same_line()
+        if model.orphan_count == 0:
+            imgui.text_disabled(model.empty_message)
             return False
 
-        changed = False
-        with begin_popup("MIDI mappings##midi_menu_popup") as popup:
-            if not bool(getattr(popup, "opened", popup)):
-                return False
-            assignment_count = _midi_assignment_count(self._store)
-            imgui.text_disabled(f"{assignment_count} mappings")
-            separator = getattr(imgui, "separator", None)
-            if callable(separator):
-                separator()
-            clear_clicked, _selected = menu_item(
-                "Clear all mappings##clear_midi_assigns",
-                enabled=assignment_count > 0,
-            )
-            if clear_clicked and assignment_count > 0:
-                self._midi_learn_state.active_target = None
-                self._midi_learn_state.active_component = None
-                history = getattr(self, "_history", None)
-                transaction = (
-                    history.transaction(source="clear_all_midi")
-                    if history is not None
-                    else nullcontext()
+        imgui.text_disabled(
+            f"{model.orphan_count} ambiguous groups  ·  "
+            f"{model.candidate_count} saved candidates"
+        )
+        imgui.same_line()
+        if imgui.button("Review##reconcile_orphan_review"):
+            open_popup = getattr(imgui, "open_popup", None)
+            if callable(open_popup):
+                open_popup("Parameter relink##reconcile_orphan_popup")
+
+        begin_popup = getattr(imgui, "begin_popup", None)
+        if not callable(begin_popup):
+            return False
+
+        request = None
+        with begin_popup("Parameter relink##reconcile_orphan_popup") as popup:
+            if bool(getattr(popup, "opened", popup)):
+                request = render_reconcile_orphan_popup(
+                    imgui,
+                    model,
+                    error_message=getattr(self, "_reconcile_error", None),
                 )
-                with transaction:
-                    changed = bool(clear_all_midi_assignments(self._store))
-                if changed:
-                    self._midi_clear_notice = "MIDI mappings cleared"
-                    self._midi_clear_notice_token = (
-                        None
-                        if history is None
-                        else (int(history.undo_depth), int(self._store.revision))
-                    )
-        return changed
+        if request is None:
+            return False
+
+        try:
+            manual_migrate_orphan(
+                self._store,
+                request.old_group,
+                request.new_group,
+                history=getattr(self, "_history", None),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            # 候補が code reload と同時に変わった場合は自動選択せず、
+            # popup に理由を残して次 frame の最新一覧を再表示する。
+            self._reconcile_error = str(exc)
+            self._reconcile_orphan_model = reconcile_orphan_panel_model(
+                list_reconcile_orphans(self._store)
+            )
+            return False
+
+        self._reconcile_error = None
+        self._reconcile_orphan_model = reconcile_orphan_panel_model(
+            list_reconcile_orphans(self._store)
+        )
+        self._favorite_parameter_keys = frozenset(
+            favorite_parameter_keys(self._store)
+        )
+        self._parameter_table_view = None
+        close_popup = getattr(imgui, "close_current_popup", None)
+        if callable(close_popup):
+            close_popup()
+        return True
 
     def _on_key_press(self, symbol: int | None, modifiers: int) -> None:
         if symbol is None:
@@ -728,15 +1562,22 @@ class ParameterGUI:
         except Exception:
             pass
 
-        # ImGui が text/control 入力を所有する間は R/E/T をテキスト
-        # として扱う。capture 判定より前にこの flag を立てると、
-        # focused input への入力が MIDI range edit も同時に起動してしまう。
+        # R/E/T は押下中だけ直接commitせず、明示preview modeを開始する。
+        # Applyまでstoreは変えず、Esc/Cancelはpreviewを捨てるだけにする。
+        mode: RangeEditMode | None = None
         if symbol_i == int(self._range_edit_key_r):
-            self._range_edit_r_down = True
-        if symbol_i == int(self._range_edit_key_e):
-            self._range_edit_e_down = True
-        if symbol_i == int(self._range_edit_key_t):
-            self._range_edit_t_down = True
+            mode = "shift"
+        elif symbol_i == int(self._range_edit_key_e):
+            mode = "min"
+        elif symbol_i == int(self._range_edit_key_t):
+            mode = "max"
+        elif symbol_i == int(getattr(self, "_range_edit_key_escape", 0)):
+            self._cancel_range_edit()
+            return
+        if mode is not None:
+            self._range_edit_mode = mode
+            self._range_edit_session = None
+            return
 
         modifier_i = int(modifiers)
         shortcut_mask = int(getattr(self, "_shortcut_modifier_mask", 0))
@@ -773,29 +1614,25 @@ class ParameterGUI:
             transport.set_speed(min(8.0, transport.speed * 2.0))
 
     def _on_key_release(self, symbol: int | None, _modifiers: int) -> None:
-        if symbol is None:
-            return
-        symbol_i = int(symbol)
-        if symbol_i == int(self._range_edit_key_r):
-            self._range_edit_r_down = False
-        if symbol_i == int(self._range_edit_key_e):
-            self._range_edit_e_down = False
-        if symbol_i == int(self._range_edit_key_t):
-            self._range_edit_t_down = False
+        del symbol, _modifiers
 
     def _on_deactivate(self) -> None:
-        self._range_edit_r_down = False
-        self._range_edit_e_down = False
-        self._range_edit_t_down = False
+        self._cancel_range_edit()
 
-    def _maybe_apply_range_edit_by_midi(self) -> bool:
-        """R キー + CC 入力で ui_min/ui_max を更新したら True を返す。"""
+    def _cancel_range_edit(self) -> None:
+        """未commit previewを破棄し、通常modeへ戻る。"""
 
-        midi = self._midi_controller
-        if midi is None:
+        self._range_edit_mode = None
+        self._range_edit_session = None
+
+    def _maybe_preview_range_edit_by_midi(self) -> bool:
+        """新しいCC差分をstore非破壊のRange Edit previewへ反映する。"""
+
+        session = self._midi_session
+        if session is None:
             return False
 
-        last = midi.last_cc_change
+        last = session.last_cc_change
         if last is None:
             return False
 
@@ -806,7 +1643,7 @@ class ParameterGUI:
             return False
         self._range_edit_last_seen_cc_seq = int(seq_i)
 
-        current = midi.cc.get(int(cc_i))
+        current = session.value_for_cc(int(cc_i))
         if current is None:
             return False
 
@@ -820,69 +1657,64 @@ class ParameterGUI:
         if self._midi_learn_state.active_target is not None:
             return False
 
-        mode: RangeEditMode
-        if self._range_edit_e_down:
-            mode = "min"
-        elif self._range_edit_t_down:
-            mode = "max"
-        elif self._range_edit_r_down:
-            mode = "shift"
-        else:
+        mode = self._range_edit_mode
+        if mode is None:
             return False
-
-        updated_any = False
-
-        disable_keys = {
-            (STYLE_OP, "global_thickness"),
-            (LAYER_STYLE_OP, "line_thickness"),
-        }
-
-        snapshot = store_snapshot_for_gui(self._store)
-        for key, (meta, state, _ordinal, _label) in snapshot.items():
-            cc_key = state.cc_key
-            if cc_key is None:
-                continue
-            if isinstance(cc_key, int):
-                if int(cc_key) != int(cc_i):
-                    continue
-            else:
-                if int(cc_i) not in {int(v) for v in cc_key if v is not None}:
-                    continue
-
-            if (str(key.op), str(key.arg)) in disable_keys:
-                continue
-
-            kind = str(meta.kind)
-            if kind not in {"float", "int", "vec3"}:
-                continue
-
-            if meta.ui_min is None or meta.ui_max is None:
-                continue
-
-            ui_min_new, ui_max_new = apply_range_shift(
-                kind=kind,
-                ui_min=meta.ui_min,
-                ui_max=meta.ui_max,
-                delta=float(delta),
-                mode=mode,
-                sensitivity=1.0,
-            )
-            if ui_min_new == meta.ui_min and ui_max_new == meta.ui_max:
-                continue
-
-            set_meta(
+        edit = self._range_edit_session
+        if edit is None:
+            edit = range_edit_session_for_store(
                 self._store,
-                key,
-                ParamMeta(
-                    kind=str(meta.kind),
-                    ui_min=ui_min_new,
-                    ui_max=ui_max_new,
-                    choices=meta.choices,
-                ),
+                cc=cc_i,
+                mode=mode,
             )
-            updated_any = True
+            if edit is None:
+                return False
+        elif edit.cc != cc_i:
+            return False
+        updated = preview_range_edit(edit, delta=float(delta))
+        if updated == edit:
+            return False
+        self._range_edit_session = updated
+        return True
 
-        return bool(updated_any)
+    def _render_range_edit_mode(self) -> bool:
+        """明示Range Edit modeの対象、preview、Apply/Cancelを描画する。"""
+
+        mode = self._range_edit_mode
+        if mode is None:
+            return False
+        imgui = self._imgui
+        mode_label = {"shift": "SHIFT", "min": "MIN", "max": "MAX"}[mode]
+        imgui.text(f"RANGE EDIT · {mode_label}")
+        edit = self._range_edit_session
+        if edit is None:
+            imgui.text_disabled("Move a mapped MIDI control to choose linked parameters.")
+        else:
+            imgui.text_disabled(
+                f"CC {edit.cc} · {len(edit.targets)} linked parameter"
+                + ("s" if len(edit.targets) != 1 else "")
+            )
+            for target in edit.targets[:4]:
+                lo, hi = target.pending_range
+                imgui.text_disabled(f"{target.label}: {lo:g} .. {hi:g}")
+            if len(edit.targets) > 4:
+                imgui.text_disabled(f"+ {len(edit.targets) - 4} more")
+
+        applied = False
+        if imgui.button("Apply##range_edit_apply") and edit is not None:
+            applied = bool(
+                apply_range_edit_session(
+                    self._store,
+                    edit,
+                    history=self._history,
+                )
+            )
+            self._cancel_range_edit()
+        imgui.same_line()
+        if imgui.button("Cancel##range_edit_cancel"):
+            self._cancel_range_edit()
+        _section_separator(imgui)
+        return applied
 
     def _sync_font_for_window(self) -> None:
         """ウィンドウの backing scale に合わせてフォントを同期する。"""
@@ -1009,16 +1841,28 @@ class ParameterGUI:
         changed_any = self._render_midi_clear_notice() or changed_any
         if monitor_snapshot is not None:
             render_monitor_alerts(imgui, monitor_snapshot)
+            render_profiler_panel(imgui, monitor_snapshot.profiler)
+            render_diagnostics_panel(
+                imgui,
+                monitor_snapshot.diagnostics,
+                center=None if monitor is None else monitor.diagnostic_center,
+            )
 
         # MIDI global command は独立した履歴単位にし、通常のparameter editと
         # coalesceさせない。filter自体はstoreを変更しない。
         changed_any = self._render_parameter_table_toolbar() or changed_any
+        changed_any = self._render_reconcile_orphan_control() or changed_any
+        self._maybe_preview_range_edit_by_midi()
+        changed_any = self._render_range_edit_mode() or changed_any
+        render_parameter_help_pane(
+            imgui,
+            getattr(self, "_parameter_help_row", None),
+        )
         history = self._history
         transaction = (
             history.transaction(source="parameter_gui") if history is not None else nullcontext()
         )
         with transaction:
-            changed_any = self._maybe_apply_range_edit_by_midi() or changed_any
             _section_separator(imgui)
 
             # ParamStore の表だけをスクロール領域に閉じ込め、監視バーは常に見えるようにする。
@@ -1031,12 +1875,17 @@ class ParameterGUI:
                             self._store,
                             column_weights=self._column_weights,
                             show_inactive_params=bool(self._show_inactive_params),
+                            filter_state=self._parameter_filter_state,
+                            error_keys=self._parameter_error_keys,
+                            favorite_keys=self._favorite_parameter_keys,
+                            table_view=self._parameter_table_view,
                             midi_learn_state=self._midi_learn_state,
                             midi_last_cc_change=(
                                 None
-                                if self._midi_controller is None
-                                else self._midi_controller.last_cc_change
+                                if self._midi_session is None
+                                else self._midi_session.last_cc_change
                             ),
+                            on_help_row=self._remember_parameter_help_row,
                         )
                     )
                     or changed_any

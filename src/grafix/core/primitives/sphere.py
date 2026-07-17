@@ -10,6 +10,7 @@ import math
 
 import numpy as np
 
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
@@ -18,22 +19,21 @@ _RADIUS = 0.5
 _MIN_SUBDIVISIONS = 0
 _MAX_SUBDIVISIONS = 5
 
-_STYLE_ORDER = ["latlon", "zigzag", "icosphere", "rings"]
+_STYLE_ORDER = ("latlon", "zigzag", "icosphere", "rings")
+_LINE_MODE_ORDER = ("horizontal", "vertical", "both")
 
 sphere_meta = {
     "subdivisions": ParamMeta(
         kind="int", ui_min=_MIN_SUBDIVISIONS, ui_max=_MAX_SUBDIVISIONS
     ),
-    "type_index": ParamMeta(kind="int", ui_min=0, ui_max=len(_STYLE_ORDER) - 1),
-    # mode は latlon / rings スタイル専用（0: 横/緯度のみ, 1: 縦/経度のみ, 2: 両方）
-    "mode": ParamMeta(kind="int", ui_min=0, ui_max=2),
+    "style": ParamMeta(kind="choice", choices=_STYLE_ORDER),
+    "line_mode": ParamMeta(kind="choice", choices=_LINE_MODE_ORDER),
     "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
     "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
 }
 
 SPHERE_UI_VISIBLE = {
-    # mode は latlon / rings スタイル専用（0: 横/緯度のみ, 1: 縦/経度のみ, 2: 両方）
-    "mode": lambda v: int(v.get("type_index", 0)) in {0, 3},
+    "line_mode": lambda v: str(v.get("style", "latlon")) in {"latlon", "rings"},
 }
 
 
@@ -353,8 +353,8 @@ def _sphere_rings(subdivisions: int, mode: int) -> list[np.ndarray]:
 def sphere(
     *,
     subdivisions: int | float = 1,
-    type_index: int | float = 0,
-    mode: int | float = 2,
+    style: str = "latlon",
+    line_mode: str = "both",
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
 ) -> GeomTuple:
@@ -364,11 +364,11 @@ def sphere(
     ----------
     subdivisions : int | float, optional
         細分化レベル（0..5 にクランプ）。
-    type_index : int | float, optional
-        スタイル選択（0..3 にクランプ）。
-        0=latlon, 1=zigzag, 2=icosphere, 3=rings。
-    mode : int | float, optional
-        latlon/rings 用の線種（0: 横/緯度のみ, 1: 縦/経度のみ, 2: 両方）。範囲外はクランプ。
+    style : str, optional
+        生成方式。``latlon``, ``zigzag``, ``icosphere``, ``rings`` から選ぶ。
+    line_mode : str, optional
+        ``latlon`` / ``rings`` の線種。``horizontal``, ``vertical``, ``both``
+        から選ぶ。他の style では使用しない。
     center : tuple[float, float, float], optional
         平行移動ベクトル (cx, cy, cz)。
     scale : float, optional
@@ -378,10 +378,29 @@ def sphere(
     -------
     tuple[np.ndarray, np.ndarray]
         球ワイヤーフレームの実体ジオメトリ（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        ``style`` または ``line_mode`` が未登録の場合。
     """
-    s = _clamp_int(subdivisions, _MIN_SUBDIVISIONS, _MAX_SUBDIVISIONS)
-    idx = _clamp_int(type_index, 0, len(_STYLE_ORDER) - 1)
-    m = _clamp_int(mode, 0, 2)
+    requested_subdivisions = float(subdivisions)
+    s = _clamp_int(requested_subdivisions, _MIN_SUBDIVISIONS, _MAX_SUBDIVISIONS)
+    if float(s) != requested_subdivisions:
+        emit_operation_diagnostic(
+            op="sphere.subdivisions",
+            original_value=requested_subdivisions,
+            effective_value=s,
+            reason="subdivisions was rounded and clamped to the supported range",
+        )
+    if style not in _STYLE_ORDER:
+        raise ValueError(f"sphere.style must be one of {_STYLE_ORDER}; got {style!r}")
+    if line_mode not in _LINE_MODE_ORDER:
+        raise ValueError(
+            "sphere.line_mode must be one of "
+            f"{_LINE_MODE_ORDER}; got {line_mode!r}"
+        )
+    m = _LINE_MODE_ORDER.index(line_mode)
 
     try:
         cx, cy, cz = center
@@ -394,11 +413,11 @@ def sphere(
     except Exception as exc:
         raise ValueError("sphere の scale は float である必要がある") from exc
 
-    if idx == 0:
+    if style == "latlon":
         polylines = _sphere_latlon(s, m)
-    elif idx == 1:
+    elif style == "zigzag":
         polylines = _sphere_zigzag(s)
-    elif idx == 2:
+    elif style == "icosphere":
         polylines = _sphere_icosphere(s)
     else:
         polylines = _sphere_rings(s, m)

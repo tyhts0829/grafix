@@ -25,7 +25,8 @@
 - `src/grafix/api/layers.py`（`L.*`）
 - `src/grafix/api/presets.py` / `src/grafix/api/preset.py`（`P.*` / `@preset`）
 - `src/grafix/api/runner.py`（`run(draw)` の interactive 実装）
-- `src/grafix/api/export.py`（`Export(draw, t, fmt, path, ...)` の headless 導線）
+- `src/grafix/api/render.py`（`RenderSession` / `render(draw, t) -> Frame`）
+- `src/grafix/api/export.py`（`export(frame, path) -> ExportResult` の headless 導線）
 
 ### コア（変更の中心になる層）
 
@@ -66,14 +67,32 @@
 
 ### Export（headless 出力）を触りたい
 
+- render/store/config/cache: `src/grafix/api/render.py`
+- encode/no-clobber/manifest: `src/grafix/export/capture.py`
 - 入口 API: `src/grafix/api/export.py`
 - フォーマット別: `src/grafix/export/svg.py` / `src/grafix/export/image.py` / `src/grafix/export/gcode.py`
 - 共通パイプライン: `src/grafix/core/pipeline.py`
 
+### Interactive runtime / reload / diagnostics を触りたい
+
+- frame評価とworker世代: `src/grafix/interactive/runtime/scene_runner.py` / `mp_draw.py`
+- transactional source watch: `src/grafix/interactive/runtime/source_reload.py`
+- capture/recording配線: `src/grafix/interactive/runtime/draw_window_system.py`
+- 共通診断stream: `src/grafix/interactive/runtime/diagnostics.py`
+- resource/profiler表示: `src/grafix/interactive/runtime/perf.py` / `parameter_gui/profiler_panel.py`
+- window状態復元: `src/grafix/interactive/runtime/workspace_state.py`
+
+reload candidateは必ずstaging registryで構築し、draw signatureと全registryを検証してから
+callable/worker世代と同じframe境界で交換する。失敗時にlive registryだけを先行更新したり、
+last-good workerを閉じたりしない。
+
 ## 関連ツール（CLI）
 
 - `python -m grafix list`（組み込み effect/primitive の一覧）
+- `python -m grafix describe primitive|effect NAME`（catalog詳細）
+- `python -m grafix run sketch.py --watch`（transactional live reload）
+- `python -m grafix config validate|show [PATH]`（strict config検証）
+- `python -m grafix init` / `doctor` / `examples`（onboarding）
 - `python -m grafix stub`（`grafix.api` のスタブ再生成）
 - `python -m grafix export --callable module:attr --t ...`（headless export。詳細は `python -m grafix export -- --help`）
 - `python -m grafix benchmark -- --help`（ベンチ/レポート生成）
-

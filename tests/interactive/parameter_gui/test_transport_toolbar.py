@@ -90,14 +90,12 @@ def test_range_edit_shortcuts_ignore_captured_keyboard() -> None:
     gui._range_edit_key_r = 82
     gui._range_edit_key_e = 69
     gui._range_edit_key_t = 84
-    gui._range_edit_r_down = False
-    gui._range_edit_e_down = False
-    gui._range_edit_t_down = False
+    gui._range_edit_mode = None
+    gui._range_edit_session = None
 
     gui._on_key_press(82, 0)
     gui._on_key_press(69, 0)
     gui._on_key_press(84, 0)
 
-    assert gui._range_edit_r_down is False
-    assert gui._range_edit_e_down is False
-    assert gui._range_edit_t_down is False
+    assert gui._range_edit_mode is None
+    assert gui._range_edit_session is None

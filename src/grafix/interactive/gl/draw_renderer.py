@@ -14,11 +14,13 @@ import numpy as np
 from grafix.core.parameters.style import line_width_for_short_side
 from grafix.core.realize import GeometryCacheKey
 from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.runtime_limits import RuntimeLimits
 from grafix.interactive.gl import utils as render_utils
 from grafix.interactive.gl.index_buffer import LineIndexStats, build_line_indices_and_stats
 from grafix.interactive.gl.line_mesh import LineMesh
 from grafix.interactive.render_settings import RenderSettings
 from grafix.interactive.gl.shader import Shader
+from grafix.interactive.runtime.diagnostics import DiagnosticCenter, DiagnosticEvent
 
 if TYPE_CHECKING:
     from pyglet.window import Window
@@ -64,7 +66,14 @@ def _aspect_fit_viewport(
 class DrawRenderer:
     """リアルタイム描画を担うシンプルなレンダラー。"""
 
-    def __init__(self, window: Window, settings: RenderSettings) -> None:
+    def __init__(
+        self,
+        window: Window,
+        settings: RenderSettings,
+        *,
+        runtime_limits: RuntimeLimits | None = None,
+        diagnostic_center: DiagnosticCenter | None = None,
+    ) -> None:
         window.switch_to()
         self.ctx = moderngl.create_context(require=410)
         self.program = Shader.create_shader(self.ctx)
@@ -77,8 +86,12 @@ class DrawRenderer:
         self._mesh_candidates: OrderedDict[GeometryCacheKey, _IndexCandidate] = OrderedDict()
         self._mesh_cache_bytes = 0
         self._mesh_candidates_bytes = 0
-        self._mesh_cache_max_bytes = 256 * 1024 * 1024
-        self._mesh_candidates_max_bytes = 64 * 1024 * 1024
+        limits = RuntimeLimits() if runtime_limits is None else runtime_limits
+        if not isinstance(limits, RuntimeLimits):
+            raise TypeError("runtime_limits は RuntimeLimits である必要があります")
+        self._diagnostic_center = diagnostic_center
+        self._mesh_cache_max_bytes = int(limits.gpu_cache_bytes)
+        self._mesh_candidates_max_bytes = int(limits.gpu_candidate_cache_bytes)
         self._canvas_w, self._canvas_h = settings.canvas_size
         self._framebuffer_size = (1, 1)
         self._viewport = (0, 0, 1, 1)
@@ -90,6 +103,53 @@ class DrawRenderer:
             float(self._canvas_h),
         )
         self.program["projection"].write(projection.tobytes())
+
+    @property
+    def mesh_cache_max_bytes(self) -> int:
+        """GPU mesh cache の byte 上限を返す。"""
+
+        return int(self._mesh_cache_max_bytes)
+
+    @property
+    def mesh_candidate_cache_max_bytes(self) -> int:
+        """index candidate cache の byte 上限を返す。"""
+
+        return int(self._mesh_candidates_max_bytes)
+
+    def apply_runtime_limits(self, limits: RuntimeLimits) -> None:
+        """quality 切替時に GPU cache 上限を適用する。"""
+
+        if not isinstance(limits, RuntimeLimits):
+            raise TypeError("limits は RuntimeLimits である必要があります")
+        self._mesh_cache_max_bytes = int(limits.gpu_cache_bytes)
+        self._mesh_candidates_max_bytes = int(limits.gpu_candidate_cache_bytes)
+        self._evict_meshes_to_budget()
+        self._evict_candidates_to_budget()
+
+    def _publish_gpu_cache_limit(
+        self,
+        *,
+        requested_bytes: int,
+        limit_bytes: int,
+        reason: str,
+    ) -> None:
+        center = getattr(self, "_diagnostic_center", None)
+        if center is None:
+            return
+        center.publish(
+            DiagnosticEvent(
+                category="resource",
+                severity="warning",
+                summary=f"GPU cache limit reached: {reason}",
+                details=(
+                    f"requested_bytes={int(requested_bytes)}\n"
+                    f"limit_bytes={int(limit_bytes)}"
+                ),
+                dedupe_key=(
+                    f"gpu-cache:{reason}:{int(requested_bytes)}:{int(limit_bytes)}"
+                ),
+            )
+        )
 
     def viewport(self, width: int, height: int) -> None:
         """canvas 比率を保った viewport を framebuffer 中央へ設定する。"""
@@ -169,6 +229,11 @@ class DrawRenderer:
                 self._evict_meshes_to_budget()
                 return mesh, stats
 
+            self._publish_gpu_cache_limit(
+                requested_bytes=byte_size,
+                limit_bytes=self._mesh_cache_max_bytes,
+                reason="mesh was not cached",
+            )
             mesh.release()
             self._scratch_mesh.upload(vertices=realized.coords, indices=indices)
             return self._scratch_mesh, stats
@@ -186,23 +251,47 @@ class DrawRenderer:
             self._mesh_candidates[cache_key] = candidate
             self._mesh_candidates_bytes += candidate.byte_size
             self._evict_candidates_to_budget()
+        else:
+            self._publish_gpu_cache_limit(
+                requested_bytes=candidate.byte_size,
+                limit_bytes=self._mesh_candidates_max_bytes,
+                reason="index candidate was not cached",
+            )
 
         self._scratch_mesh.upload(vertices=realized.coords, indices=indices)
         return self._scratch_mesh, stats
 
     def _evict_meshes_to_budget(self) -> None:
+        requested_bytes = self._mesh_cache_bytes
+        evicted = 0
         while self._mesh_cache_bytes > self._mesh_cache_max_bytes and self._mesh_cache:
             _, entry = self._mesh_cache.popitem(last=False)
             self._mesh_cache_bytes -= entry.byte_size
             entry.mesh.release()
+            evicted += 1
+        if evicted:
+            self._publish_gpu_cache_limit(
+                requested_bytes=requested_bytes,
+                limit_bytes=self._mesh_cache_max_bytes,
+                reason=f"evicted {evicted} mesh entrie(s)",
+            )
 
     def _evict_candidates_to_budget(self) -> None:
+        requested_bytes = self._mesh_candidates_bytes
+        evicted = 0
         while (
             self._mesh_candidates_bytes > self._mesh_candidates_max_bytes
             and self._mesh_candidates
         ):
             _, candidate = self._mesh_candidates.popitem(last=False)
             self._mesh_candidates_bytes -= candidate.byte_size
+            evicted += 1
+        if evicted:
+            self._publish_gpu_cache_limit(
+                requested_bytes=requested_bytes,
+                limit_bytes=self._mesh_candidates_max_bytes,
+                reason=f"evicted {evicted} index candidate entrie(s)",
+            )
 
     def draw_prepared_mesh(
         self,

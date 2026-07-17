@@ -7,13 +7,23 @@
 from __future__ import annotations
 
 import logging
+import re
+import subprocess
+import sys
+import traceback
 from pathlib import Path
 from typing import Any, Callable
 
 import pyglet
+from pyglet.window import key
 
 from grafix.core.layer import LayerStyleDefaults
-from grafix.core.runtime_config import runtime_config, set_config_path
+from grafix.core.runtime_config import (
+    RuntimeConfigFallback,
+    runtime_config,
+    runtime_config_with_fallback,
+    set_config_path,
+)
 from grafix.core.parameters import (
     ParamSnapshotSlots,
     ParamStore,
@@ -29,23 +39,67 @@ from grafix.core.parameters.persistence import (
 )
 from grafix.core.output_paths import output_path_for_draw
 from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET, ResourceBudget
+from grafix.core.runtime_limits import RuntimeLimitProfiles
 from grafix.core.scene import SceneItem
 from grafix.interactive.midi.factory import create_midi_controller
+from grafix.interactive.midi import MidiSession
 from grafix.interactive.midi.midi_controller import (
     MidiController,
     maybe_load_frozen_cc_snapshot,
+    save_cc_snapshot,
 )
 from grafix.interactive.render_settings import RenderSettings
 from grafix.interactive.runtime.draw_window_system import DrawWindowSystem
+from grafix.interactive.runtime.diagnostics import DiagnosticAction, DiagnosticEvent
+from grafix.interactive.runtime.parameter_recovery import (
+    ParamStoreRecoverySession,
+    param_store_load_diagnostic_events,
+    recovered_session_diagnostic,
+)
 from grafix.interactive.runtime.window_layout import (
     DEFAULT_SCREEN_MARGIN,
     WindowRect,
     layout_window_pair,
 )
 from grafix.interactive.runtime.window_loop import MultiWindowLoop, WindowTask
+from grafix.interactive.runtime.workspace_state import (
+    WorkspaceState,
+    WorkspaceStateLoadResult,
+    clamp_workspace_state,
+    load_workspace_state,
+    save_workspace_state,
+)
 
 _logger = logging.getLogger(__name__)
 
+
+def _variation_thumbnail_output_path(base_path: Path, name: str) -> Path:
+    """variation名をpath componentとして安全にしたPNG保存先を返す。"""
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name).strip()).strip("._")
+    if not safe_name:
+        safe_name = "variation"
+    safe_name = safe_name[:64].rstrip("._") or "variation"
+    return base_path.with_name(f"{base_path.stem}_{safe_name}{base_path.suffix}")
+
+
+def _variation_thumbnail_size(canvas_size: tuple[int, int]) -> tuple[int, int]:
+    """canvas比率を保ち、長辺320pxのthumbnail寸法を返す。"""
+
+    width, height = int(canvas_size[0]), int(canvas_size[1])
+    scale = 320.0 / float(max(width, height))
+    return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
+
+
+def _draw_variation_thumbnail_status(imgui: object, path: Path) -> None:
+    """texture backend未接続時もmissing/存在済みを区別して表示する。"""
+
+    text_disabled = getattr(imgui, "text_disabled")
+    thumbnail_path = Path(path)
+    if thumbnail_path.is_file():
+        text_disabled(f"Thumbnail: {thumbnail_path.name}")
+    else:
+        text_disabled(f"Thumbnail unavailable (missing): {thumbnail_path}")
 
 def _run_cleanup_steps(
     steps: list[tuple[str, Callable[[], None]]],
@@ -77,18 +131,37 @@ def _persist_param_store_on_shutdown(
     primary_path: Path | None,
     autosave: ParamStoreAutosave | None,
     session_completed_cleanly: bool,
+    monitor: Any | None = None,
 ) -> None:
     """session 終了時に recovery を確定し、正常終了だけ primary へ昇格する。"""
 
     # まず live override 付き recovery を確定する。以下の primary
     # finalize 中に障害が起き、未完了になっても復帰できる。
-    if autosave is not None:
-        autosave.flush()
-    # code-first の primary へ確定し recovery を消すのは、
-    # event loop が正常に制御を返した場合だけ。例外終了では
-    # recovery を残し、次回起動時に live override を戻せるようにする。
-    if primary_path is not None and session_completed_cleanly:
-        finalize_param_store_session(store, primary_path)
+    try:
+        if autosave is not None:
+            autosave.flush()
+        # code-first の primary へ確定し recovery を消すのは、
+        # event loop が正常に制御を返した場合だけ。例外終了では
+        # recovery を残し、次回起動時に live override を戻せるようにする。
+        if primary_path is not None and session_completed_cleanly:
+            finalize_param_store_session(store, primary_path)
+    except Exception as exc:
+        if monitor is not None:
+            source = autosave.path if autosave is not None else primary_path
+            monitor.publish_diagnostic(
+                DiagnosticEvent(
+                    category="save",
+                    severity="error",
+                    summary="Parameter save failed during shutdown",
+                    details="".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    ),
+                    source=None if source is None else str(source),
+                    actions=(DiagnosticAction("copy", "Copy details"),),
+                    dedupe_key=f"parameter-shutdown-save:{type(exc).__name__}:{exc}",
+                )
+            )
+        raise
 
 
 def _close_midi_controller(controller: MidiController) -> None:
@@ -99,6 +172,140 @@ def _close_midi_controller(controller: MidiController) -> None:
             ("save MIDI CC snapshot", controller.save),
             ("close MIDI controller", controller.close),
         ]
+    )
+
+
+def _diagnostic_source_path(source: str) -> Path:
+    """`path:line` または path の診断 source を既存 file として解決する。"""
+
+    raw = str(source).strip()
+    path_text, separator, line_text = raw.rpartition(":")
+    if separator and line_text.isdigit() and path_text:
+        raw = path_text
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"Diagnostic source does not exist: {path}")
+    return path.resolve()
+
+
+def _open_diagnostic_source(source: str) -> None:
+    """診断 source を platform の既定 application で開く。"""
+
+    path = _diagnostic_source_path(source)
+    command = ["open", str(path)] if sys.platform == "darwin" else ["xdg-open", str(path)]
+    subprocess.Popen(  # noqa: S603 -- validated local file without shell expansion.
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _install_parameter_diagnostic_actions(
+    *,
+    monitor: Any,
+    store: ParamStore,
+    primary_path: Path | None,
+    autosave: ParamStoreAutosave | None,
+    history: ParamStoreHistory | None,
+    snapshot_slots: ParamSnapshotSlots | None,
+    open_source: Callable[[str], None] = _open_diagnostic_source,
+) -> ParamStoreRecoverySession | None:
+    """save/recovery/Open action を共有 DiagnosticCenter へ配線する。"""
+
+    center = monitor.diagnostic_center
+
+    def open_event(event: DiagnosticEvent) -> None:
+        if event.source is None:
+            raise ValueError("Diagnostic has no source to open")
+        open_source(event.source)
+
+    center.register_action("open", open_event)
+
+    if autosave is not None:
+
+        def retry_autosave(event: DiagnosticEvent) -> None:
+            try:
+                autosave.flush()
+            finally:
+                monitor.set_autosave(
+                    status=autosave.status,
+                    error=autosave.last_error,
+                    source=str(autosave.path),
+                )
+            center.dismiss(event)
+
+        center.register_action("retry", retry_autosave, category="save")
+
+    if primary_path is None:
+        return None
+
+    for event in param_store_load_diagnostic_events(
+        store,
+        primary_path=primary_path,
+    ):
+        monitor.publish_diagnostic(event)
+
+    if store.load_provenance != "session_recovery":
+        return None
+
+    recovery = ParamStoreRecoverySession(store, primary_path)
+    monitor.publish_diagnostic(recovered_session_diagnostic(primary_path))
+    monitor.set_recovered_session(True)
+
+    def finish_decision(event: DiagnosticEvent) -> None:
+        if autosave is not None:
+            autosave.mark_clean()
+            monitor.set_autosave(
+                status=autosave.status,
+                error=autosave.last_error,
+                source=str(autosave.path),
+            )
+        if history is not None:
+            history.clear()
+        if snapshot_slots is not None:
+            snapshot_slots.clear()
+        monitor.set_recovered_session(False)
+        center.dismiss(event)
+
+    def keep(event: DiagnosticEvent) -> None:
+        recovery.keep()
+        finish_decision(event)
+
+    def discard(event: DiagnosticEvent) -> None:
+        diagnostics = recovery.discard()
+        finish_decision(event)
+        for diagnostic in diagnostics:
+            monitor.publish_diagnostic(diagnostic)
+
+    def compare(_event: DiagnosticEvent) -> None:
+        monitor.publish_diagnostic(recovery.compare_diagnostic())
+
+    center.register_action("keep", keep, category="recovery")
+    center.register_action("discard", discard, category="recovery")
+    center.register_action("compare", compare, category="recovery")
+    return recovery
+
+
+def _publish_runtime_config_fallback(
+    monitor: Any,
+    fallback: RuntimeConfigFallback,
+) -> DiagnosticEvent:
+    """interactive config fallbackを共通DiagnosticCenterへ常設する。"""
+
+    actions = [DiagnosticAction("copy", "Copy details")]
+    if fallback.source is not None:
+        actions.append(DiagnosticAction("open", "Open config"))
+    return monitor.publish_diagnostic(
+        DiagnosticEvent(
+            category="config",
+            severity="error",
+            summary="Runtime config is invalid; using packaged defaults",
+            details=fallback.details,
+            source=None if fallback.source is None else str(fallback.source),
+            actions=tuple(actions),
+            dedupe_key=f"config-fallback:{fallback.summary}",
+        )
     )
 
 
@@ -235,6 +442,33 @@ def _usable_screen_bounds(window: Any, position: tuple[int, int]) -> WindowRect 
     return _macos_visible_screen_bounds(screen, full) or full
 
 
+def _available_screen_bounds(window: Any) -> tuple[WindowRect, ...]:
+    """window の display から現在使える screen bounds を返す。"""
+
+    try:
+        get_screens = getattr(window.display, "get_screens", None)
+        screens = list(get_screens()) if callable(get_screens) else []
+    except Exception:
+        screens = []
+    if not screens:
+        try:
+            screens = [window.screen]
+        except (AttributeError, TypeError):
+            return ()
+
+    bounds: list[WindowRect] = []
+    for screen in screens:
+        full = _full_screen_bounds(screen)
+        if full is None:
+            continue
+        usable = _macos_visible_screen_bounds(screen, full) or full
+        safe = _safe_explicit_layout_bounds(usable)
+        candidate = usable if safe is None else safe
+        if candidate not in bounds:
+            bounds.append(candidate)
+    return tuple(bounds)
+
+
 def _rect_is_inside(rect: WindowRect, bounds: WindowRect) -> bool:
     return bool(
         rect.x >= bounds.x
@@ -267,6 +501,122 @@ def _safe_explicit_layout_bounds(bounds: WindowRect) -> WindowRect | None:
         width,
         height,
     )
+
+
+def _window_rect(window: Any) -> WindowRect | None:
+    """duck-typed window から logical content rect を取得する。"""
+
+    size = _window_content_size(window)
+    if size is None:
+        return None
+    get_location = getattr(window, "get_location", None)
+    try:
+        if callable(get_location):
+            x, y = get_location()
+        else:
+            x, y = window.x, window.y
+        return WindowRect(int(x), int(y), int(size[0]), int(size[1]))
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _window_can_apply_rect(window: Any, rect: WindowRect) -> bool:
+    """partial mutation を避けるため rect 適用 API を事前検査する。"""
+
+    size = _window_content_size(window)
+    if size is None or not callable(getattr(window, "set_location", None)):
+        return False
+    target_size = (int(rect.width), int(rect.height))
+    return target_size == size or callable(getattr(window, "set_size", None))
+
+
+def _apply_window_rect(window: Any, rect: WindowRect) -> None:
+    size = _window_content_size(window)
+    assert size is not None
+    target_size = (int(rect.width), int(rect.height))
+    if target_size != size:
+        window.set_size(*target_size)
+    window.set_location(int(rect.x), int(rect.y))
+
+
+def _apply_workspace_layout(
+    *,
+    preview_window: Any,
+    inspector_window: Any | None,
+    state: WorkspaceState,
+) -> bool:
+    """保存 layout を現在 screen へ clamp して window へ適用する。"""
+
+    bounds = _available_screen_bounds(preview_window)
+    if not bounds:
+        return False
+    clamped = clamp_workspace_state(state, screen_bounds=bounds)
+
+    if not _window_can_apply_rect(preview_window, clamped.preview_rect):
+        return False
+    if inspector_window is not None:
+        inspector_rect = clamped.inspector_rect
+        if inspector_rect is None:
+            return False
+        if not _window_can_apply_rect(inspector_window, inspector_rect):
+            return False
+        if not callable(getattr(inspector_window, "set_visible", None)):
+            return False
+
+    _apply_window_rect(preview_window, clamped.preview_rect)
+    if inspector_window is not None:
+        assert clamped.inspector_rect is not None
+        _apply_window_rect(inspector_window, clamped.inspector_rect)
+        inspector_window.set_visible(bool(clamped.inspector_visible))
+    return True
+
+
+def _workspace_state_from_windows(
+    *,
+    preview_window: Any,
+    inspector_window: Any | None,
+    previous: WorkspaceState,
+) -> WorkspaceState | None:
+    """終了時 window から保存用 state を作り、取得不能なら None を返す。"""
+
+    preview_rect = _window_rect(preview_window)
+    if preview_rect is None:
+        return None
+    inspector_rect = previous.inspector_rect
+    inspector_visible = previous.inspector_visible
+    if inspector_window is not None:
+        current_inspector_rect = _window_rect(inspector_window)
+        if current_inspector_rect is not None:
+            inspector_rect = current_inspector_rect
+        inspector_visible = bool(getattr(inspector_window, "visible", inspector_visible))
+    return WorkspaceState(
+        preview_rect=preview_rect,
+        inspector_rect=inspector_rect,
+        inspector_visible=inspector_visible,
+        ui_scale=previous.ui_scale,
+    )
+
+
+def _persist_workspace_state_on_shutdown(
+    *,
+    path: Path,
+    preview_window: Any | None,
+    inspector_window: Any | None,
+    previous: WorkspaceState,
+) -> None:
+    """window が構築済みの場合だけ workspace を atomic 保存する。"""
+
+    if preview_window is None:
+        return
+    state = _workspace_state_from_windows(
+        preview_window=preview_window,
+        inspector_window=inspector_window,
+        previous=previous,
+    )
+    if state is None:
+        _logger.debug("WorkspaceState save skipped: window rect unavailable")
+        return
+    save_workspace_state(state, path)
 
 
 def _apply_initial_window_layout(
@@ -378,10 +728,55 @@ def _activate_initial_windows(preview_window: Any, parameter_gui_window: Any | N
     except Exception:
         pass
     try:
-        if parameter_gui_window is not None:
+        if parameter_gui_window is not None and bool(
+            getattr(parameter_gui_window, "visible", True)
+        ):
             parameter_gui_window.activate()
     except Exception:
         pass
+
+
+def _set_inspector_visible(
+    *,
+    preview_window: Any,
+    inspector_window: Any,
+    visible: bool,
+) -> None:
+    """Inspector の表示を切り替え、操作先 window を前面化する。"""
+
+    inspector_window.set_visible(bool(visible))
+    if visible:
+        inspector_window.activate()
+    else:
+        preview_window.activate()
+
+
+def _install_inspector_visibility_shortcut(
+    *,
+    preview_window: Any,
+    inspector_window: Any,
+) -> None:
+    """preview/Inspector の Cmd/Ctrl+I に Inspector toggle を配線する。"""
+
+    shortcut_modifier_mask = int(key.MOD_CTRL) | int(key.MOD_COMMAND)
+
+    def toggle_inspector(symbol: int | None, modifiers: int) -> object | None:
+        if symbol is None or int(symbol) != int(key.I):
+            return None
+        if not int(modifiers) & shortcut_modifier_mask:
+            return None
+
+        _set_inspector_visible(
+            preview_window=preview_window,
+            inspector_window=inspector_window,
+            visible=not bool(getattr(inspector_window, "visible", True)),
+        )
+        return pyglet.event.EVENT_HANDLED
+
+    # Inspector が hide 中は preview、表示中はどちらに focus があっても
+    # 同じ shortcut で戻せる。preview 自体の command surface は増やさない。
+    preview_window.push_handlers(on_key_press=toggle_inspector)
+    inspector_window.push_handlers(on_key_press=toggle_inspector)
 
 
 def run(
@@ -399,8 +794,11 @@ def run(
     midi_port_name: str | None = "auto",
     midi_mode: str = "7bit",
     n_worker: int = 1,
+    evaluation_timeout: float | None = 5.0,
     fps: float = 60.0,
+    seed: int | None = None,
     resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
+    runtime_limit_profiles: RuntimeLimitProfiles | None = None,
 ) -> None:
     """pyglet ウィンドウを生成し `draw(t)` のシーンをリアルタイム描画する。
 
@@ -416,7 +814,8 @@ def run(
     background_color : tuple[float, float, float]
         背景色 RGB。alpha は 1.0 固定。既定は白。
     line_thickness : float
-        プレビュー用線幅（ワールド単位）。Layer.thickness 未指定時の基準値。
+        Layer.thickness 未指定時の線幅。キャンバス短辺に対する比率で、既定
+        ``0.001`` は短辺の 0.1% に相当する。
     line_color : tuple[float, float, float]
         線色 RGB。既定は黒。
     render_scale : float
@@ -440,24 +839,48 @@ def run(
     midi_mode : str
         MIDI CC の解釈モード。`"7bit"` または `"14bit"`。
     n_worker : int
-        `draw(t)` を multiprocessing で実行するワーカープロセス数。
-        既定は同期実行の 1。`>=2` の場合は spawn + Queue（pickle）で非同期化する。
-        CPU負荷の高いdrawでプレビュー応答性を優先するときだけ明示的に増やす。
+        `draw(t)` を multiprocessing で実行する background worker 数。
+        既定の 1 は UI event loop を塞がない 1 worker 非同期評価。`>=1` は
+        spawn + Queue（pickle）で非同期化し、`0` の場合だけ main process で同期実行する。
+        非同期評価では `draw` をモジュールトップレベルに定義し、起動側に
+        `if __name__ == "__main__":` guard を置く必要がある。
+    evaluation_timeout : float | None
+        background worker の 1 回の `draw(t)` を待つ秒数。超過時は直近の成功表示を
+        保ったまま worker を再起動する。`None` の場合は timeout を無効にする。
     fps : float
         目標フレームレート。`<=0` の場合はフレーム末尾で sleep せず、可能な限り速く回す。
         録画機能（V キー）は fps > 0 が必要。
+    seed : int or None
+        capture manifest に記録する作品 seed。乱数 global state は変更しない。
     resource_budget : ResourceBudget
         1 operation が確保できる頂点数・線数・byte 数の上限。コードから極端な値を
         指定した場合も、大規模配列を確保する前に `ResourceLimitError` で停止する。
+    runtime_limit_profiles : RuntimeLimitProfiles or None
+        preview/final ごとの per-operation、scene aggregate、CPU/GPU cache、
+        capture queue 上限。指定時は `resource_budget` より優先する。
 
     Returns
     -------
     None
-        どちらかのウィンドウを閉じると制御を返す。
+        preview ウィンドウを閉じると制御を返す。
+        Inspector の close はウィンドウを hide し、Cmd/Ctrl+I で再表示できる。
     """
 
     set_config_path(config_path)
-    cfg = runtime_config()
+    from grafix.interactive.runtime.source_reload import current_source_reload
+
+    source_reload = current_source_reload()
+    try:
+        cfg = runtime_config()
+        config_fallback = None
+    except (OSError, RuntimeError, ValueError):
+        cfg, config_fallback = runtime_config_with_fallback()
+    if config_fallback is not None and not parameter_gui:
+        _logger.error(
+            "Runtime config invalid; using packaged defaults: %s\n%s",
+            config_fallback.summary,
+            config_fallback.details,
+        )
 
     # Parameter GUI はメインプロセス上の registry（preset_registry）を参照して
     # preset 行を分類/ヘッダ表示する。
@@ -489,6 +912,35 @@ def run(
     # GUI で値を変えると、次フレーム以降の parameter_context 参照に反映される。
     default_store_path = default_param_store_path(draw, run_id=run_id)
 
+    workspace_path = output_path_for_draw(
+        kind="workspace",
+        ext="json",
+        draw=draw,
+        run_id=run_id,
+    )
+    preview_width = max(1, int(round(float(canvas_size[0]) * float(render_scale))))
+    preview_height = max(1, int(round(float(canvas_size[1]) * float(render_scale))))
+    fallback_workspace = WorkspaceState(
+        preview_rect=WindowRect(
+            int(cfg.window_pos_draw[0]),
+            int(cfg.window_pos_draw[1]),
+            preview_width,
+            preview_height,
+        ),
+        inspector_rect=WindowRect(
+            int(cfg.window_pos_parameter_gui[0]),
+            int(cfg.window_pos_parameter_gui[1]),
+            int(cfg.parameter_gui_window_size[0]),
+            int(cfg.parameter_gui_window_size[1]),
+        ),
+        inspector_visible=True,
+        ui_scale=1.0,
+    )
+    workspace_result: WorkspaceStateLoadResult = load_workspace_state(
+        workspace_path,
+        fallback=fallback_workspace,
+    )
+
     param_store_path = default_store_path if parameter_persistence else None
     param_store = (
         load_param_store_with_recovery(param_store_path)
@@ -511,6 +963,10 @@ def run(
     # window 配置で失敗しても、それまでに取得した MIDI/window/worker を解放する。
     closers: list[Callable[[], None]] = []
     unowned_midi_controller: MidiController | None = None
+    unowned_midi_session: MidiSession | None = None
+    draw_window: DrawWindowSystem | None = None
+    gui_window: Any | None = None
+    monitor: Any | None = None
     session_completed_cleanly = False
     session_error: BaseException | None = None
     try:
@@ -529,10 +985,14 @@ def run(
         unowned_midi_controller = midi_controller
 
         def close_unowned_midi() -> None:
-            nonlocal unowned_midi_controller
+            nonlocal unowned_midi_controller, unowned_midi_session
+            session = unowned_midi_session
+            unowned_midi_session = None
             controller = unowned_midi_controller
             unowned_midi_controller = None
-            if controller is not None:
+            if session is not None:
+                session.close()
+            elif controller is not None:
                 _close_midi_controller(controller)
 
         # DrawWindowSystem が完成するまでは runner が MIDI を所有する。
@@ -544,11 +1004,67 @@ def run(
             save_dir=midi_save_dir,
         )
 
-        monitor = None
         if parameter_gui:
             from grafix.interactive.runtime.monitor import RuntimeMonitor
 
             monitor = RuntimeMonitor()
+
+        def reconnect_midi() -> MidiController | None:
+            return create_midi_controller(
+                port_name=midi_port_name,
+                mode=str(midi_mode),
+                profile_name=midi_profile_name,
+                save_dir=midi_save_dir,
+                priority_inputs=cfg.midi_inputs,
+            )
+
+        midi_session = MidiSession(
+            controller=midi_controller,
+            frozen_values=frozen_cc_snapshot,
+            reconnect=None if midi_port_name is None else reconnect_midi,
+            diagnostics=(
+                None if monitor is None else monitor.diagnostic_center
+            ),
+            clear_frozen=lambda: save_cc_snapshot({}, midi_path),
+        )
+        unowned_midi_controller = None
+        unowned_midi_session = midi_session
+
+        workspace_diagnostic = workspace_result.diagnostic
+        if workspace_diagnostic is not None:
+            if monitor is not None:
+                monitor.publish_diagnostic(workspace_diagnostic)
+            else:
+                _logger.warning(
+                    "%s: %s",
+                    workspace_diagnostic.summary,
+                    workspace_diagnostic.details,
+                )
+
+        if monitor is not None:
+            _install_parameter_diagnostic_actions(
+                monitor=monitor,
+                store=param_store,
+                primary_path=param_store_path,
+                autosave=param_autosave,
+                history=param_history,
+                snapshot_slots=param_snapshot_slots,
+            )
+            center = monitor.diagnostic_center
+
+            if config_fallback is not None:
+                _publish_runtime_config_fallback(monitor, config_fallback)
+
+            def retry_midi(event: DiagnosticEvent) -> None:
+                if midi_session.reconnect():
+                    center.dismiss(event)
+
+            def clear_frozen_midi(event: DiagnosticEvent) -> None:
+                midi_session.clear_frozen_snapshot()
+                center.dismiss(event)
+
+            center.register_action("retry", retry_midi, category="midi")
+            center.register_action("discard", clear_frozen_midi, category="midi")
 
         # --- サブシステムの組み立て ---
         # 描画ウィンドウは常に有効（メイン描画）。constructor が戻った直後に
@@ -558,32 +1074,63 @@ def run(
             settings=settings,
             defaults=defaults,
             store=param_store,
-            midi_controller=midi_controller,
-            frozen_cc_snapshot=frozen_cc_snapshot,
+            midi_session=midi_session,
             monitor=monitor,
             fps=float(fps),
             n_worker=int(n_worker),
+            evaluation_timeout=evaluation_timeout,
             run_id=run_id,
             resource_budget=resource_budget,
+            runtime_limit_profiles=runtime_limit_profiles,
+            source_reload=source_reload,
+            effective_config=cfg,
+            parameter_source="recovery" if parameter_persistence else "code",
+            parameter_store_path=param_store_path,
+            seed=seed,
         )
         # 正常構築後は DrawWindowSystem が MIDI の save/close を所有する。
-        unowned_midi_controller = None
+        unowned_midi_session = None
         closers.append(draw_window.close)
         draw_window.window.set_location(*cfg.window_pos_draw)
 
         # `tasks` はループ駆動用（イベント処理→描画→flip の対象）。
-        tasks = [WindowTask(window=draw_window.window, draw_frame=draw_window.draw_frame)]
+        tasks = [
+            WindowTask(
+                window=draw_window.window,
+                draw_frame=draw_window.draw_frame,
+                on_close=pyglet.app.exit,
+            )
+        ]
 
-        gui_window = None
         if parameter_gui:
             # Parameter GUI は依存が重い（pyimgui）なので、使うときだけ遅延 import する。
+            from grafix.interactive.parameter_gui.variation_panel import (
+                make_capture_service_thumbnail_capture,
+            )
             from grafix.interactive.runtime.parameter_gui_system import (
                 ParameterGUIWindowSystem,
             )
 
+            variation_thumbnail_base = output_path_for_draw(
+                kind="variation_thumbnail",
+                ext="png",
+                draw=draw,
+                run_id=run_id,
+                canvas_size=canvas_size,
+            )
+            variation_thumbnail_capture = make_capture_service_thumbnail_capture(
+                draw_window.capture_service,
+                frame_provider=draw_window.final_capture_frame,
+                output_path_for_name=lambda name: _variation_thumbnail_output_path(
+                    variation_thumbnail_base,
+                    name,
+                ),
+                output_size=_variation_thumbnail_size(canvas_size),
+            )
+
             gui = ParameterGUIWindowSystem(
                 store=param_store,
-                midi_controller=midi_controller,
+                midi_session=midi_session,
                 monitor=monitor,
                 transport=draw_window.transport,
                 transport_fps=float(fps),
@@ -591,19 +1138,50 @@ def run(
                 snapshot_slots=param_snapshot_slots,
                 autosave=param_autosave,
                 is_recording=lambda: draw_window.is_recording,
+                variation_thumbnail_capture=variation_thumbnail_capture,
+                variation_thumbnail_preview=_draw_variation_thumbnail_status,
+                ui_scale=workspace_result.state.ui_scale,
             )
             closers.append(gui.close)
-            layout_applied = _apply_initial_window_layout(
-                preview_window=draw_window.window,
-                parameter_gui_window=gui.window,
-                preferred_preview_position=cfg.window_pos_draw,
-                preferred_parameter_gui_position=cfg.window_pos_parameter_gui,
-            )
+            gui_window = gui.window
+            layout_applied = False
+            if workspace_result.restored:
+                layout_applied = _apply_workspace_layout(
+                    preview_window=draw_window.window,
+                    inspector_window=gui.window,
+                    state=workspace_result.state,
+                )
+            if not layout_applied:
+                layout_applied = _apply_initial_window_layout(
+                    preview_window=draw_window.window,
+                    parameter_gui_window=gui.window,
+                    preferred_preview_position=cfg.window_pos_draw,
+                    preferred_parameter_gui_position=cfg.window_pos_parameter_gui,
+                )
             if not layout_applied:
                 # screen / size API を持たない test double や backend では従来設定を維持する。
                 gui.window.set_location(*cfg.window_pos_parameter_gui)
-            gui_window = gui.window
-            tasks.append(WindowTask(window=gui.window, draw_frame=gui.draw_frame))
+            tasks.append(
+                WindowTask(
+                    window=gui.window,
+                    draw_frame=gui.draw_frame,
+                    on_close=lambda: _set_inspector_visible(
+                        preview_window=draw_window.window,
+                        inspector_window=gui.window,
+                        visible=False,
+                    ),
+                )
+            )
+            _install_inspector_visibility_shortcut(
+                preview_window=draw_window.window,
+                inspector_window=gui.window,
+            )
+        elif workspace_result.restored:
+            _apply_workspace_layout(
+                preview_window=draw_window.window,
+                inspector_window=None,
+                state=workspace_result.state,
+            )
 
         # macOS + unbundled CLI 起動では、起動直後にウィンドウが他アプリの背面に残る事がある。
         # event loop 開始直後に 1 回だけ明示 activate して前面化する。
@@ -634,8 +1212,18 @@ def run(
                 primary_path=param_store_path,
                 autosave=param_autosave,
                 session_completed_cleanly=session_completed_cleanly,
+                monitor=monitor,
             ),
-        )
+        ),
+        (
+            "persist WorkspaceState",
+            lambda: _persist_workspace_state_on_shutdown(
+                path=workspace_path,
+                preview_window=(None if draw_window is None else draw_window.window),
+                inspector_window=gui_window,
+                previous=workspace_result.state,
+            ),
+        ),
     ]
     cleanup_steps.extend(
         (f"close subsystem {index}", close)

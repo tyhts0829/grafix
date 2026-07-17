@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
@@ -208,20 +209,14 @@ def test_drop_probability_non_finite_is_noop_in_impl() -> None:
     assert out_inf_offsets.tolist() == base.offsets.tolist()
 
 
-def test_drop_unknown_keep_mode_is_noop() -> None:
-    g = G.drop_test_lines5()
-    base = realize(g)
-    out = realize(E.drop(interval=1, keep_mode="wat")(g))
-    np.testing.assert_allclose(out.coords, base.coords, rtol=0.0, atol=0.0)
-    assert out.offsets.tolist() == base.offsets.tolist()
+def test_drop_unknown_keep_mode_is_rejected_eagerly() -> None:
+    with pytest.raises(ValueError, match="keep_mode"):
+        E.drop(interval=1, keep_mode="wat")
 
 
-def test_drop_unknown_by_is_noop() -> None:
-    g = G.drop_test_lines5()
-    base = realize(g)
-    out = realize(E.drop(interval=1, by="wat", keep_mode="drop")(g))
-    np.testing.assert_allclose(out.coords, base.coords, rtol=0.0, atol=0.0)
-    assert out.offsets.tolist() == base.offsets.tolist()
+def test_drop_unknown_by_is_rejected_eagerly() -> None:
+    with pytest.raises(ValueError, match="by"):
+        E.drop(interval=1, by="wat", keep_mode="drop")
 
 
 def test_drop_face_mode_with_lines_only_is_noop() -> None:

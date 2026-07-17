@@ -13,6 +13,7 @@ from numba import njit, types  # type: ignore[attr-defined, import-untyped]
 from numba.typed import List  # type: ignore[attr-defined]
 
 from grafix.core.effect_registry import effect
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from .util import PlanarFrame, pack_polylines
@@ -83,17 +84,41 @@ def weave(
     if coords.shape[0] == 0:
         return coords, offsets
 
-    num_lines = int(num_candidate_lines)
+    requested_num_lines = int(num_candidate_lines)
+    num_lines = requested_num_lines
     num_lines = max(0, min(MAX_NUM_CANDIDATE_LINES, num_lines))
+    if num_lines != requested_num_lines:
+        emit_operation_diagnostic(
+            op="weave.num_candidate_lines",
+            original_value=requested_num_lines,
+            effective_value=num_lines,
+            reason="candidate line count was clamped to the supported range",
+        )
 
-    iterations = int(relaxation_iterations)
+    requested_iterations = int(relaxation_iterations)
+    iterations = requested_iterations
     iterations = max(0, min(MAX_RELAXATION_ITERATIONS, iterations))
+    if iterations != requested_iterations:
+        emit_operation_diagnostic(
+            op="weave.relaxation_iterations",
+            original_value=requested_iterations,
+            effective_value=iterations,
+            reason="relaxation iterations was clamped to the supported range",
+        )
 
-    step_size = float(step)
+    requested_step = float(step)
+    step_size = requested_step
     if step_size < 0.0:
         step_size = 0.0
     if step_size > MAX_STEP:
         step_size = MAX_STEP
+    if step_size != requested_step:
+        emit_operation_diagnostic(
+            op="weave.step",
+            original_value=requested_step,
+            effective_value=step_size,
+            reason="relaxation step was clamped to the supported range",
+        )
 
     out_lines: list[np.ndarray] = []
     did_webify = False
@@ -115,6 +140,12 @@ def weave(
         )
 
     if not did_webify:
+        emit_operation_diagnostic(
+            op="weave.input",
+            original_value="no_closed_polyline",
+            effective_value="input_unchanged",
+            reason="weave requires at least one closed polyline",
+        )
         return coords, offsets
     return pack_polylines(out_lines)
 
@@ -129,6 +160,12 @@ def _webify_single_polyline(
     """単一ポリラインからウェブ状の線分群を生成して 3D に戻す。"""
     frame = PlanarFrame.from_points(vertices)
     if not frame.is_planar(_planarity_threshold(vertices)):
+        emit_operation_diagnostic(
+            op="weave.input",
+            original_value="nonplanar_polyline",
+            effective_value="input_unchanged",
+            reason="weave only processes planar closed polylines",
+        )
         return [vertices]
     transformed = frame.to_local(vertices)
     polylines_xy = create_web(

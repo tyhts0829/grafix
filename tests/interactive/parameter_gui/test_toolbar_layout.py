@@ -90,7 +90,7 @@ def test_real_pyimgui_can_render_toolbar_children_and_closed_midi_popup() -> Non
         gui._transport = None
         gui._history = None
         gui._snapshot_slots = None
-        gui._midi_controller = None
+        gui._midi_session = None
         gui._store = ParamStore()
         gui._show_inactive_params = False
         gui._midi_learn_state = SimpleNamespace(active_target=None, active_component=None)

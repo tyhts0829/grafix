@@ -21,7 +21,23 @@ from collections.abc import Mapping, Sequence
 from .meta import ParamMeta
 
 # dict spec として受理するキーを固定し、入力仕様を小さく保つ。
-_ALLOWED_META_SPEC_KEYS = {"kind", "ui_min", "ui_max", "choices"}
+PARAM_META_SPEC_KEYS = frozenset(
+    {
+        "kind",
+        "ui_min",
+        "ui_max",
+        "choices",
+        "display_name",
+        "description",
+        "unit",
+        "step",
+        "format",
+        "scale",
+        "category",
+        "advanced",
+        "recommended_range",
+    }
+)
 
 
 def meta_from_spec(spec: ParamMeta | Mapping[str, object]) -> ParamMeta:
@@ -39,6 +55,11 @@ def meta_from_spec(spec: ParamMeta | Mapping[str, object]) -> ParamMeta:
         - kind: str（必須）
         - ui_min/ui_max: object（任意）
         - choices: Sequence[str] | None（任意）
+        - display_name/description/unit/format/category: str | None（任意）
+        - step: 正の有限数 | None（任意）
+        - scale: "linear" | "log" | None（任意）
+        - advanced: bool（任意、既定 False）
+        - recommended_range: 2 要素の有限数列 | None（任意）
 
         注意:
         - ui_min/ui_max の型・大小関係などはここでは検証しない（UI 側の都合があるため）。
@@ -60,7 +81,7 @@ def meta_from_spec(spec: ParamMeta | Mapping[str, object]) -> ParamMeta:
         raise TypeError("meta spec は ParamMeta または dict である必要があります")
 
     # 入力キーの「typo」や「意図しない追加」を早期に検出するため、許可キー以外は弾く。
-    unknown = set(spec.keys()) - _ALLOWED_META_SPEC_KEYS
+    unknown = set(spec.keys()) - PARAM_META_SPEC_KEYS
     if unknown:
         names = ", ".join(sorted(str(k) for k in unknown))
         raise ValueError(f"meta spec に未知キーがあります: {names}")
@@ -89,7 +110,60 @@ def meta_from_spec(spec: ParamMeta | Mapping[str, object]) -> ParamMeta:
         # list など可変の可能性があるため、ここで tuple にして安定化する。
         choices = tuple(str(x) for x in raw_choices)
 
-    return ParamMeta(kind=str(kind), ui_min=ui_min, ui_max=ui_max, choices=choices)
+    return ParamMeta(
+        kind=str(kind),
+        ui_min=ui_min,
+        ui_max=ui_max,
+        choices=choices,
+        display_name=spec.get("display_name"),  # type: ignore[arg-type]
+        description=spec.get("description"),  # type: ignore[arg-type]
+        unit=spec.get("unit"),  # type: ignore[arg-type]
+        step=spec.get("step"),  # type: ignore[arg-type]
+        format=spec.get("format"),  # type: ignore[arg-type]
+        scale=spec.get("scale"),  # type: ignore[arg-type]
+        category=spec.get("category"),  # type: ignore[arg-type]
+        advanced=spec.get("advanced", False),  # type: ignore[arg-type]
+        recommended_range=spec.get("recommended_range"),  # type: ignore[arg-type]
+    )
+
+
+def meta_to_spec(meta: ParamMeta) -> dict[str, object]:
+    """`ParamMeta` を永続化にも使える dict spec へ射影する。"""
+
+    if not isinstance(meta, ParamMeta):
+        raise TypeError("meta は ParamMeta である必要があります")
+    spec: dict[str, object] = {
+        "kind": meta.kind,
+        "ui_min": meta.ui_min,
+        "ui_max": meta.ui_max,
+        "choices": list(meta.choices) if meta.choices is not None else None,
+    }
+    for key, value in (
+        ("display_name", meta.display_name),
+        ("description", meta.description),
+        ("unit", meta.unit),
+        ("step", meta.step),
+        ("format", meta.format),
+        ("scale", meta.scale),
+        ("category", meta.category),
+    ):
+        if value is not None:
+            spec[key] = value
+    if meta.advanced:
+        spec["advanced"] = True
+    if meta.recommended_range is not None:
+        spec["recommended_range"] = list(meta.recommended_range)
+    return spec
+
+
+def meta_from_record(record: Mapping[str, object]) -> ParamMeta:
+    """識別子などの追加 key を含む record から metadata 部分だけを復元する。"""
+
+    if not isinstance(record, Mapping):
+        raise TypeError("meta record は dict である必要があります")
+    return meta_from_spec(
+        {key: record[key] for key in PARAM_META_SPEC_KEYS if key in record}
+    )
 
 
 def meta_dict_from_user(
@@ -128,4 +202,10 @@ def meta_dict_from_user(
     return out
 
 
-__all__ = ["meta_from_spec", "meta_dict_from_user"]
+__all__ = [
+    "PARAM_META_SPEC_KEYS",
+    "meta_dict_from_user",
+    "meta_from_record",
+    "meta_from_spec",
+    "meta_to_spec",
+]

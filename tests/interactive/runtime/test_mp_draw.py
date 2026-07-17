@@ -10,10 +10,22 @@ from typing import Any, cast
 import pytest
 
 import grafix.interactive.runtime.scene_runner as scene_runner_module
+from grafix.api import G
 from grafix.core.geometry import Geometry
 from grafix.core.layer import LayerStyleDefaults
-from grafix.core.parameters import FrameParamRecord, ParameterKey, ParamMeta, ParamStore
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
+from grafix.core.parameters import (
+    FrameParamRecord,
+    MidiFrameSnapshot,
+    ParameterKey,
+    ParamMeta,
+    ParamStore,
+    parameter_context,
+)
+from grafix.core.parameters.snapshot_ops import store_snapshot
+from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.resource_budget import ResourceBudget
+from grafix.core.preview_quality import current_preview_quality
 from grafix.core.scene import normalize_scene
 from grafix.interactive.runtime.mp_draw import (
     DrawResult,
@@ -46,6 +58,28 @@ def _draw_that_fails_at_one(t: float) -> Geometry:
     return Geometry.create(op="concat")
 
 
+def _draw_that_hangs_at_one(t: float) -> Geometry:
+    if float(t) == 1.0:
+        time.sleep(60.0)
+    return Geometry.create(op="concat")
+
+
+def _midi_parameter_draw(_t: float) -> Geometry:
+    return G.circle(radius=0.25, key="midi-roundtrip")
+
+
+def _quality_diagnostic_draw(_t: float) -> Geometry:
+    quality = current_preview_quality()
+    emit_operation_diagnostic(
+        op="quality",
+        original_value=quality,
+        effective_value=quality,
+        reason="quality roundtrip",
+        severity="info",
+    )
+    return Geometry.create(op="concat")
+
+
 def _wait_for_result(mp_draw: MpDraw) -> DrawResult:
     deadline = time.monotonic() + _WAIT_TIMEOUT_S
     while time.monotonic() < deadline:
@@ -67,8 +101,13 @@ def _wait_for_worker_error(mp_draw: MpDraw) -> MpDrawWorkerError:
     pytest.fail("mp-draw worker death timeout")
 
 
-def test_workers_report_ready_and_normal_close_leaves_no_children() -> None:
-    mp_draw = MpDraw(_empty_draw, n_worker=2)
+@pytest.mark.parametrize("n_worker", [1, 2])
+def test_workers_report_ready_and_normal_close_leaves_no_children(
+    n_worker: int,
+) -> None:
+    """1 worker と従来の複数 worker が同じ lifecycle 契約を満たす。"""
+
+    mp_draw = MpDraw(_empty_draw, n_worker=n_worker)
     procs = list(mp_draw._procs)
     worker_pids = {int(proc.pid) for proc in procs if proc.pid is not None}
 
@@ -93,6 +132,104 @@ def test_workers_report_ready_and_normal_close_leaves_no_children() -> None:
     assert worker_pids.isdisjoint(active_pids)
 
 
+def test_mp_draw_rejects_zero_workers() -> None:
+    with pytest.raises(ValueError, match="1 以上"):
+        MpDraw(_empty_draw, n_worker=0)
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
+def test_mp_draw_rejects_invalid_evaluation_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="evaluation_timeout"):
+        MpDraw(_empty_draw, n_worker=1, evaluation_timeout=timeout)
+
+
+def test_hung_evaluation_restarts_worker_and_recovers_without_child_leak() -> None:
+    mp_draw = MpDraw(
+        _draw_that_hangs_at_one,
+        n_worker=1,
+        evaluation_timeout=0.1,
+    )
+    old_procs = list(mp_draw._procs)
+    all_worker_pids = {int(proc.pid) for proc in old_procs if proc.pid is not None}
+
+    try:
+        mp_draw.submit(t=0.0, snapshot_revision=0, snapshot={})
+        successful = _wait_for_result(mp_draw)
+        assert successful.error is None
+        assert successful.generation == 0
+
+        mp_draw.submit(t=1.0, snapshot_revision=0, snapshot={})
+        call_durations: list[float] = []
+        deadline = time.monotonic() + _WAIT_TIMEOUT_S
+        while mp_draw.generation == 0 and time.monotonic() < deadline:
+            started_at = time.monotonic()
+            assert mp_draw.poll_latest() is None
+            call_durations.append(time.monotonic() - started_at)
+            time.sleep(0.01)
+
+        assert mp_draw.generation == 1
+        assert mp_draw.restart_count == 1
+        assert mp_draw.last_restart_reason is not None
+        assert "evaluation timeout" in mp_draw.last_restart_reason
+        # timeout/restart の呼び出しは ready 待ちをせず、UI loop を有界に保つ。
+        assert max(call_durations) < 0.75
+        # restart 中も preview fallback は直近の成功 frame を保持する。
+        assert mp_draw.latest_successful_result() is successful
+
+        assert all(not proc.is_alive() for proc in old_procs)
+        new_pids = {
+            int(proc.pid) for proc in mp_draw._procs if proc.pid is not None
+        }
+        all_worker_pids.update(new_pids)
+        assert new_pids.isdisjoint(
+            {int(proc.pid) for proc in old_procs if proc.pid is not None}
+        )
+
+        mp_draw.submit(t=0.25, snapshot_revision=0, snapshot={})
+        recovered = _wait_for_result(mp_draw)
+        assert recovered.error is None
+        assert recovered.t == pytest.approx(0.25)
+        assert recovered.generation == 1
+        assert recovered.worker_pid in new_pids
+    finally:
+        mp_draw.close()
+
+    active_pids = {
+        int(proc.pid) for proc in mp.active_children() if proc.pid is not None
+    }
+    assert all_worker_pids.isdisjoint(active_pids)
+
+
+def test_single_slot_task_queue_drops_old_frame_and_keeps_latest() -> None:
+    """1-worker 相当の満杯 queue では待機中の古い frame だけを置換する。"""
+
+    old = _DrawTask(
+        frame_id=1,
+        t=1.0,
+        snapshot_revision=7,
+        cc_snapshot=None,
+    )
+    latest = _DrawTask(
+        frame_id=2,
+        t=2.0,
+        snapshot_revision=7,
+        cc_snapshot=None,
+    )
+    task_q: queue.Queue[object] = queue.Queue(maxsize=1)
+    task_q.put(old)
+
+    mp_draw = object.__new__(MpDraw)
+    mp_draw._task_q = cast(Any, task_q)
+    mp_draw._ready_worker_pids = {101}
+    mp_draw._worker_snapshot_revisions = {101: 7}
+    mp_draw._pending_task = latest
+
+    mp_draw._enqueue_pending_if_ready()
+
+    assert mp_draw._pending_task is None
+    assert task_q.get_nowait() is latest
+
+
 def test_error_result_keeps_last_successful_layers_for_preview() -> None:
     mp_draw = MpDraw(_draw_that_fails_at_one, n_worker=2)
     try:
@@ -112,6 +249,46 @@ def test_error_result_keeps_last_successful_layers_for_preview() -> None:
         assert mp_draw.latest_layers() is successful.layers
     finally:
         mp_draw.close()
+
+
+def test_worker_roundtrip_preserves_frozen_midi_value_source() -> None:
+    store = ParamStore()
+    with parameter_context(store):
+        _midi_parameter_draw(0.0)
+    snapshot = store_snapshot(store)
+    radius_key = next(
+        key for key in snapshot if key.op == "circle" and key.arg == "radius"
+    )
+    radius_meta = store.get_meta(radius_key)
+    assert radius_meta is not None
+    ok, error = update_state_from_ui(
+        store,
+        radius_key,
+        0.25,
+        meta=radius_meta,
+        override=False,
+        cc_key=7,
+    )
+    assert ok and error is None
+
+    mp_draw = MpDraw(_midi_parameter_draw, n_worker=1)
+    try:
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=store.revision,
+            snapshot=store_snapshot(store),
+            cc_snapshot=MidiFrameSnapshot.from_mapping(
+                {7: 0.5},
+                source="midi_frozen",
+            ),
+        )
+        result = _wait_for_result(mp_draw)
+    finally:
+        mp_draw.close()
+
+    radius_record = next(record for record in result.records if record.key == radius_key)
+    assert radius_record.source == "midi_frozen"
+    assert radius_record.effective == pytest.approx(100.0)
 
 
 def test_worker_result_carries_explicit_epoch() -> None:
@@ -222,6 +399,44 @@ def test_result_drain_discards_old_epoch_and_keeps_diagnostic() -> None:
     assert mp_draw.completed_result_count == 2
     assert mp_draw.stale_result_count == 1
     assert mp_draw.last_stale_result == (10, 1, 2)
+
+
+def test_result_drain_rejects_result_from_old_worker_generation() -> None:
+    cached = DrawResult(
+        frame_id=10,
+        layers=normalize_scene(_empty_draw(0.0)),
+        records=[],
+        labels=[],
+        generation=1,
+    )
+    stale = DrawResult(
+        frame_id=999,
+        layers=normalize_scene(_empty_draw(9.0)),
+        records=[],
+        labels=[],
+        generation=0,
+    )
+    result_q: queue.Queue[object] = queue.Queue()
+    result_q.put(stale)
+
+    mp_draw = object.__new__(MpDraw)
+    mp_draw._result_q = cast(Any, result_q)
+    mp_draw._generation = 1
+    mp_draw._current_epoch = 0
+    mp_draw._latest_received = cached
+    mp_draw._latest_successful = cached
+    mp_draw._active_tasks_by_pid = {}
+    mp_draw._completed_result_count = 0
+    mp_draw._stale_generation_result_count = 0
+    mp_draw._last_stale_generation_result = None
+
+    mp_draw._drain_result_queue()
+
+    assert mp_draw._latest_received is cached
+    assert mp_draw.latest_successful_result() is cached
+    assert mp_draw.completed_result_count == 0
+    assert mp_draw.stale_generation_result_count == 1
+    assert mp_draw.last_stale_generation_result == (999, 0, 1)
 
 
 def test_begin_epoch_invalidates_cached_result_and_queued_task() -> None:
@@ -448,6 +663,260 @@ class _EpochMpDraw:
         self.close_calls += 1
 
 
+class _IdleMpDraw:
+    """SceneRunner の dispatch 境界だけを観測する non-blocking fake。"""
+
+    instances: list[_IdleMpDraw] = []
+
+    def __init__(
+        self,
+        _draw: Callable[[float], Geometry],
+        *,
+        n_worker: int,
+        evaluation_timeout: float | None,
+    ) -> None:
+        self.n_worker = int(n_worker)
+        self.evaluation_timeout = evaluation_timeout
+        self.submit_calls: list[dict[str, object]] = []
+        self.close_calls = 0
+        type(self).instances.append(self)
+
+    def submit(self, **kwargs: object) -> None:
+        self.submit_calls.append(dict(kwargs))
+
+    def poll_latest(self) -> None:
+        return None
+
+    def latest_successful_result(self) -> None:
+        return None
+
+    def begin_epoch(self, _epoch: int | None = None) -> int:
+        return 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+@pytest.mark.parametrize("n_worker", [1, 2])
+def test_scene_runner_uses_background_evaluation_for_positive_worker_count(
+    monkeypatch: pytest.MonkeyPatch,
+    n_worker: int,
+) -> None:
+    """preview の run は positive worker count で user draw を main 実行しない。"""
+
+    draw_calls: list[float] = []
+
+    def draw(t: float) -> Geometry:
+        draw_calls.append(float(t))
+        return Geometry.create(op="concat")
+
+    _IdleMpDraw.instances = []
+    monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
+    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=n_worker)
+    try:
+        assert runner.run(
+            1.25,
+            store=ParamStore(),
+            cc_snapshot=None,
+            defaults=LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01),
+            recording=False,
+        ) == []
+
+        fake = _IdleMpDraw.instances[-1]
+        assert fake.n_worker == n_worker
+        assert fake.evaluation_timeout == pytest.approx(5.0)
+        assert len(fake.submit_calls) == 1
+        assert fake.submit_calls[0]["t"] == pytest.approx(1.25)
+        assert draw_calls == []
+        assert runner.last_evaluation_succeeded is None
+    finally:
+        runner.close()
+
+    assert fake.close_calls == 1
+
+
+def test_scene_runner_passes_evaluation_timeout_to_mp_draw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _IdleMpDraw.instances = []
+    monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
+    runner = SceneRunner(
+        _empty_draw,
+        perf=PerfCollector(enabled=False),
+        n_worker=1,
+        evaluation_timeout=0.25,
+    )
+    try:
+        assert _IdleMpDraw.instances[-1].evaluation_timeout == pytest.approx(0.25)
+    finally:
+        runner.close()
+
+
+def test_scene_runner_replace_draw_retires_old_worker_and_keeps_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _IdleMpDraw.instances = []
+    monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
+    first_draw = _empty_draw
+
+    def second_draw(_t: float) -> Geometry:
+        return Geometry.create(op="concat")
+
+    runner = SceneRunner(
+        first_draw,
+        perf=PerfCollector(enabled=False),
+        n_worker=2,
+        evaluation_timeout=0.75,
+    )
+    first_worker = _IdleMpDraw.instances[-1]
+    runner.replace_draw(second_draw)
+    second_worker = _IdleMpDraw.instances[-1]
+
+    assert second_worker is not first_worker
+    assert first_worker.close_calls == 1
+    assert second_worker.n_worker == 2
+    assert second_worker.evaluation_timeout == pytest.approx(0.75)
+    assert runner._draw is second_draw
+    assert runner._mp_draw is second_worker
+
+    runner.close()
+    assert second_worker.close_calls == 1
+
+
+def test_scene_runner_replace_draw_failure_keeps_current_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _IdleMpDraw.instances = []
+    monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
+    runner = SceneRunner(
+        _empty_draw,
+        perf=PerfCollector(enabled=False),
+        n_worker=1,
+    )
+    current_worker = _IdleMpDraw.instances[-1]
+
+    def fail_to_start(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(scene_runner_module, "MpDraw", fail_to_start)
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        runner.replace_draw(lambda _t: Geometry.create(op="concat"))
+
+    assert runner._draw is _empty_draw
+    assert runner._mp_draw is current_worker
+    assert current_worker.close_calls == 0
+    runner.close()
+    assert current_worker.close_calls == 1
+
+
+def test_scene_runner_zero_runs_synchronously_without_constructing_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    draw_calls: list[float] = []
+
+    def draw(t: float) -> Geometry:
+        draw_calls.append(float(t))
+        return Geometry.create(op="concat")
+
+    def unexpected_mp_draw(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("n_worker=0 must not construct MpDraw")
+
+    monkeypatch.setattr(scene_runner_module, "MpDraw", unexpected_mp_draw)
+    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=0)
+    try:
+        runner.run(
+            2.5,
+            store=ParamStore(),
+            cc_snapshot=None,
+            defaults=LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01),
+            recording=False,
+        )
+        assert draw_calls == [2.5]
+        assert runner.last_evaluation_succeeded is True
+        assert runner.last_evaluation_t == pytest.approx(2.5)
+    finally:
+        runner.close()
+
+
+def test_scene_runner_uses_draft_for_preview_and_final_for_recording() -> None:
+    qualities: list[str] = []
+
+    def draw(_t: float) -> Geometry:
+        qualities.append(current_preview_quality())
+        return Geometry.create(op="concat")
+
+    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=0)
+    try:
+        for recording in (False, True):
+            runner.run(
+                0.0,
+                store=ParamStore(),
+                cc_snapshot=None,
+                defaults=LayerStyleDefaults(
+                    color=(0.0, 0.0, 0.0),
+                    thickness=0.01,
+                ),
+                recording=recording,
+            )
+    finally:
+        runner.close()
+
+    assert qualities == ["draft", "final"]
+
+
+def test_mp_draw_quality_roundtrips_into_worker_context() -> None:
+    mp_draw = MpDraw(_quality_diagnostic_draw, n_worker=1)
+    try:
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=0,
+            snapshot={},
+            quality="final",
+        )
+        result = _wait_for_result(mp_draw)
+        assert result.error is None
+        assert result.diagnostics[0].effective_value == "final"
+        assert result.worker_lag_ms is not None
+        assert result.worker_lag_ms >= 0.0
+    finally:
+        mp_draw.close()
+
+
+def test_scene_runner_rejects_negative_worker_count() -> None:
+    with pytest.raises(ValueError, match="0 以上"):
+        SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=-1)
+
+
+def test_recording_remains_synchronous_with_background_preview_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    draw_calls: list[float] = []
+
+    def draw(t: float) -> Geometry:
+        draw_calls.append(float(t))
+        return Geometry.create(op="concat")
+
+    _IdleMpDraw.instances = []
+    monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
+    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=1)
+    try:
+        runner.run(
+            3.75,
+            store=ParamStore(),
+            cc_snapshot=None,
+            defaults=LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01),
+            recording=True,
+        )
+
+        fake = _IdleMpDraw.instances[-1]
+        assert draw_calls == [3.75]
+        assert fake.submit_calls == []
+        assert runner.last_evaluation_succeeded is True
+        assert runner.last_evaluation_t == pytest.approx(3.75)
+    finally:
+        runner.close()
+
+
 def test_scene_runner_propagates_worker_death_without_sync_fallback() -> None:
     draw_calls = 0
 
@@ -458,7 +927,7 @@ def test_scene_runner_propagates_worker_death_without_sync_fallback() -> None:
 
     error = MpDrawWorkerError(worker="dead", pid=123, exitcode=7)
     dead_mp_draw = _DeadMpDraw(error)
-    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=1)
+    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, dead_mp_draw)
 
     with pytest.raises(MpDrawWorkerError) as exc_info:
@@ -482,7 +951,7 @@ def test_scene_runner_couples_output_time_to_batched_success_before_later_error(
     """後続 error の `t` ではなく、実際に realize した success の `t` を返す。"""
 
     batched = _BatchedSuccessThenErrorMpDraw()
-    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=1)
+    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, batched)
     store = ParamStore()
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -535,7 +1004,7 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
         epoch=0,
     )
     epoch_mp = _EpochMpDraw(old_preview)
-    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=1)
+    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, epoch_mp)
     store = ParamStore()
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -592,7 +1061,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
         epoch=0,
     )
     epoch_mp = _EpochMpDraw(initial)
-    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=1)
+    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, epoch_mp)
     store = ParamStore()
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -655,7 +1124,7 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
         base=2.0,
         meta=ParamMeta(kind="float", ui_min=0.0, ui_max=10.0),
         effective=2.0,
-        source="base",
+        source="code",
         explicit=True,
     )
     batched = _BatchedSuccessThenErrorMpDraw()
@@ -677,7 +1146,7 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
         return []
 
     monkeypatch.setattr(scene_runner_module, "realize_scene", fail_once)
-    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=1)
+    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, batched)
     store = ParamStore()
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -733,7 +1202,7 @@ def test_scene_runner_passes_resource_budget_to_realize_session() -> None:
     runner = SceneRunner(
         _empty_draw,
         perf=PerfCollector(enabled=False),
-        n_worker=1,
+        n_worker=0,
         resource_budget=budget,
     )
     try:

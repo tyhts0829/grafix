@@ -12,6 +12,7 @@ from grafix.core.parameters.context import (
 )
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.source import MidiFrameSnapshot
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.store import ParamStore
 
@@ -20,7 +21,7 @@ def _assert_current_context(
     *,
     store: ParamStore | None,
     frame_params: object | None,
-    cc_snapshot: dict | None,
+    cc_snapshot: MidiFrameSnapshot | None,
     param_snapshot: object,
 ) -> None:
     assert current_param_store() is store
@@ -36,7 +37,8 @@ def test_parameter_context_restores_outer_context_when_merge_fails(
 ) -> None:
     outer_store = ParamStore()
     inner_store = ParamStore()
-    outer_cc = {"outer": 1}
+    outer_cc = MidiFrameSnapshot.from_mapping({1: 0.25}, source="midi_live")
+    inner_cc = MidiFrameSnapshot.from_mapping({2: 0.5}, source="midi_frozen")
 
     with parameter_context(outer_store, outer_cc):
         outer_frame = current_frame_params()
@@ -48,7 +50,7 @@ def test_parameter_context_restores_outer_context_when_merge_fails(
         with monkeypatch.context() as patch:
             patch.setattr(context_module, failing_merge, fail)
             with pytest.raises(RuntimeError, match="merge failed"):
-                with parameter_context(inner_store, {"inner": 2}):
+                with parameter_context(inner_store, inner_cc):
                     assert current_param_store() is inner_store
 
         _assert_current_context(
@@ -68,7 +70,7 @@ def test_parameter_context_restores_outer_context_when_merge_fails(
 
 def test_parameter_context_restores_state_when_body_raises() -> None:
     store = ParamStore()
-    cc_snapshot = {"cc": 7}
+    cc_snapshot = MidiFrameSnapshot.from_mapping({7: 0.75}, source="midi_live")
 
     with pytest.raises(ValueError, match="draw failed"):
         with parameter_context(store, cc_snapshot):

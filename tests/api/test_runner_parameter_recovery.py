@@ -22,6 +22,29 @@ from grafix.core.parameters.persistence import (
     save_param_store_recovery,
 )
 from grafix.core.parameters.ui_ops import update_state_from_ui
+from grafix.core.runtime_config import RuntimeConfigFallback
+from grafix.interactive.runtime.monitor import RuntimeMonitor
+from grafix.interactive.runtime.diagnostics import DiagnosticAction, DiagnosticEvent
+
+
+def test_config_fallback_is_published_to_shared_diagnostic_center(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "config.yaml"
+    monitor = RuntimeMonitor()
+    fallback = RuntimeConfigFallback(
+        summary="RuntimeError: unknown key",
+        details="traceback with nearest key",
+        source=source,
+    )
+
+    event = runner_module._publish_runtime_config_fallback(monitor, fallback)
+
+    assert event.category == "config"
+    assert event.source == str(source)
+    assert event.details == "traceback with nearest key"
+    assert tuple(action.action_id for action in event.actions) == ("copy", "open")
+    assert monitor.snapshot().diagnostics == (event,)
 
 
 def _session_with_dirty_explicit_override(
@@ -90,6 +113,164 @@ def test_clean_shutdown_promotes_primary_and_removes_recovery(tmp_path: Path) ->
     assert finalized is not None
     assert finalized.ui_value == pytest.approx(0.9)
     assert finalized.override is False
+
+
+def test_recovered_session_actions_are_wired_to_shared_diagnostic_center(
+    tmp_path: Path,
+) -> None:
+    primary = tmp_path / "store.json"
+    recovery = param_store_recovery_path(primary)
+    store, key, autosave = _session_with_dirty_explicit_override(primary)
+    autosave.flush()
+    recovered = load_param_store_with_recovery(primary)
+    recovered_autosave = ParamStoreAutosave(
+        recovered,
+        recovery,
+        save=save_param_store_recovery,
+    )
+    monitor = RuntimeMonitor()
+
+    session = runner_module._install_parameter_diagnostic_actions(
+        monitor=monitor,
+        store=recovered,
+        primary_path=primary,
+        autosave=recovered_autosave,
+        history=None,
+        snapshot_slots=None,
+        open_source=lambda _source: None,
+    )
+
+    assert session is not None
+    snapshot = monitor.snapshot()
+    assert snapshot.recovered_session is True
+    recovered_event = next(
+        event for event in snapshot.diagnostics if event.summary == "Recovered session"
+    )
+    assert tuple(action.action_id for action in recovered_event.actions) == (
+        "keep",
+        "discard",
+        "compare",
+    )
+
+    compare = next(
+        action for action in recovered_event.actions if action.action_id == "compare"
+    )
+    assert monitor.diagnostic_center.dispatch_action(recovered_event, compare)
+    assert any(
+        event.summary == "Recovered session comparison"
+        for event in monitor.snapshot().diagnostics
+    )
+
+    keep = next(action for action in recovered_event.actions if action.action_id == "keep")
+    assert monitor.diagnostic_center.dispatch_action(recovered_event, keep)
+    assert monitor.snapshot().recovered_session is False
+    assert not recovery.exists()
+    kept = load_param_store(primary).get_state(key)
+    assert kept is not None
+    assert kept.ui_value == pytest.approx(0.9)
+
+
+def test_retry_action_retries_autosave_and_clears_failure(
+    tmp_path: Path,
+) -> None:
+    primary = tmp_path / "store.json"
+    store, _key, autosave = _session_with_dirty_explicit_override(primary)
+    attempts = 0
+
+    def flaky_save(current: ParamStore, path: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("disk full")
+        save_param_store_recovery(current, path)
+
+    autosave._save = flaky_save
+    with pytest.raises(OSError, match="disk full"):
+        autosave.flush()
+
+    monitor = RuntimeMonitor()
+    monitor.set_autosave(
+        status=autosave.status,
+        error=autosave.last_error,
+        source=str(autosave.path),
+    )
+    runner_module._install_parameter_diagnostic_actions(
+        monitor=monitor,
+        store=store,
+        primary_path=None,
+        autosave=autosave,
+        history=None,
+        snapshot_slots=None,
+        open_source=lambda _source: None,
+    )
+    failed = next(event for event in monitor.snapshot().diagnostics if event.category == "save")
+    retry = next(action for action in failed.actions if action.action_id == "retry")
+
+    assert monitor.diagnostic_center.dispatch_action(failed, retry)
+    assert attempts == 2
+    assert monitor.snapshot().autosave_status == "clean"
+    assert failed not in monitor.snapshot().diagnostics
+
+
+def test_shutdown_save_failure_is_published_to_shared_center(tmp_path: Path) -> None:
+    primary = tmp_path / "store.json"
+    store, _key, autosave = _session_with_dirty_explicit_override(primary)
+
+    def fail_save(_store: ParamStore, _path: Path) -> None:
+        raise OSError("read-only volume")
+
+    autosave._save = fail_save
+    monitor = RuntimeMonitor()
+
+    with pytest.raises(OSError, match="read-only volume"):
+        runner_module._persist_param_store_on_shutdown(
+            store=store,
+            primary_path=primary,
+            autosave=autosave,
+            session_completed_cleanly=False,
+            monitor=monitor,
+        )
+
+    diagnostic = monitor.snapshot().diagnostics[-1]
+    assert diagnostic.category == "save"
+    assert diagnostic.summary == "Parameter save failed during shutdown"
+    assert "OSError: read-only volume" in diagnostic.details
+
+
+def test_open_action_uses_runner_source_handler(tmp_path: Path) -> None:
+    source = tmp_path / "sketch.py"
+    source.write_text("pass\n", encoding="utf-8")
+    opened: list[str] = []
+    monitor = RuntimeMonitor()
+    runner_module._install_parameter_diagnostic_actions(
+        monitor=monitor,
+        store=ParamStore(),
+        primary_path=None,
+        autosave=None,
+        history=None,
+        snapshot_slots=None,
+        open_source=opened.append,
+    )
+    action = DiagnosticAction("open", "Open source")
+    event = monitor.publish_diagnostic(
+        DiagnosticEvent(
+            category="scene",
+            severity="error",
+            summary="draw failed",
+            source=f"{source}:10",
+            actions=(action,),
+        )
+    )
+
+    assert monitor.diagnostic_center.dispatch_action(event, action)
+    assert opened == [f"{source}:10"]
+
+
+def test_diagnostic_source_path_accepts_file_line_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "sketch.py"
+    source.write_text("pass\n", encoding="utf-8")
+
+    assert runner_module._diagnostic_source_path(f"{source}:42") == source.resolve()
 
 
 def test_cleanup_steps_continue_after_failure_and_raise_the_first_error() -> None:
@@ -175,7 +356,12 @@ def test_acquisition_failure_closes_midi_created_before_draw_window(
     monkeypatch.setattr(
         runner_module,
         "runtime_config",
-        lambda: SimpleNamespace(midi_inputs=()),
+        lambda: SimpleNamespace(
+            midi_inputs=(),
+            window_pos_draw=(0, 0),
+            window_pos_parameter_gui=(10, 10),
+            parameter_gui_window_size=(800, 1000),
+        ),
     )
     monkeypatch.setattr(
         runner_module,
@@ -241,7 +427,12 @@ def test_failure_after_draw_window_construction_runs_registered_closer(
     monkeypatch.setattr(
         runner_module,
         "runtime_config",
-        lambda: SimpleNamespace(midi_inputs=(), window_pos_draw=(0, 0)),
+        lambda: SimpleNamespace(
+            midi_inputs=(),
+            window_pos_draw=(0, 0),
+            window_pos_parameter_gui=(10, 10),
+            parameter_gui_window_size=(800, 1000),
+        ),
     )
     monkeypatch.setattr(
         runner_module,
@@ -294,6 +485,7 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
         window = Window()
         transport = object()
         is_recording = False
+        capture_service = object()
 
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             calls.append("create draw")
@@ -306,8 +498,12 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
         def draw_frame(self) -> None:
             pass
 
+        def final_capture_frame(self) -> None:
+            return None
+
     class FailedGUI:
         def __init__(self, **_kwargs: object) -> None:
+            assert callable(_kwargs["variation_thumbnail_capture"])
             calls.append("create gui")
             raise RuntimeError("GUI construction failed")
 
@@ -319,6 +515,7 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
             midi_inputs=(),
             window_pos_draw=(0, 0),
             window_pos_parameter_gui=(10, 10),
+            parameter_gui_window_size=(800, 1000),
         ),
     )
     monkeypatch.setattr(
@@ -354,4 +551,25 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
         "close draw",
         "save midi",
         "close midi",
+    ]
+
+
+def test_variation_thumbnail_path_size_and_missing_status(tmp_path: Path) -> None:
+    base = tmp_path / "sketch_800x400.png"
+    assert runner_module._variation_thumbnail_output_path(
+        base,
+        "  A/B candidate  ",
+    ) == tmp_path / "sketch_800x400_A_B_candidate.png"
+    assert runner_module._variation_thumbnail_size((800, 400)) == (320, 160)
+
+    messages: list[str] = []
+    imgui = SimpleNamespace(text_disabled=messages.append)
+    missing = tmp_path / "missing.png"
+    runner_module._draw_variation_thumbnail_status(imgui, missing)
+    missing.write_bytes(b"png")
+    runner_module._draw_variation_thumbnail_status(imgui, missing)
+
+    assert messages == [
+        f"Thumbnail unavailable (missing): {missing}",
+        "Thumbnail: missing.png",
     ]

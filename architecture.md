@@ -45,7 +45,9 @@ Grafix は「線（ポリライン列）を **生成** し、effect を **チェ
   - `resolve_params`（base/GUI/CC の統合 + 量子化 + 観測レコード化）
   - `ParamStore`（状態・メタ・ラベル・表示順序の永続）
 - `src/grafix/export/`（ヘッドレス出力）
-  - SVG/PNG/G-code などの “外へ出す” 変換
+  - SVG/PNG/G-code などの encoder と、transactional publish を担う `CaptureService`
+- `src/grafix/api/render.py`（headless render 契約）
+  - immutable `RenderOptions` / `Frame` と、長寿命 `RenderSession`
 - `src/grafix/interactive/`（ランタイム / ウィンドウ / GUI / GL）
   - `runtime/`：複数ウィンドウを 1 ループで回す・各サブシステムを分離
   - `parameter_gui/`：pyimgui + pyglet で `ParamStore` を編集する GUI
@@ -220,7 +222,9 @@ GUI ウィンドウは同じループで `ParameterGUIWindowSystem.draw_frame()`
 - `ParameterKey(op, site_id, arg)` を作る
 - snapshot に状態があればそれを使用（meta/state/ordinal/label）
 - 無ければ `meta.get(arg)` がある引数のみ GUI 対象として扱う（meta が無い引数は観測しない）
-- `CC > GUI > base`（ただし bool は常に GUI）で effective を選ぶ
+- `MIDI > UI > CODE` で effective を選び、MIDI未採用時は全kind（boolを含む）が
+  明示 `override` に従って UI/CODE を選ぶ
+- sourceを `code | ui | midi_live | midi_frozen` として観測recordまで保持する
 - 量子化（既定 `DEFAULT_QUANT_STEP=1e-3`）を **ここだけ** で行い、署名に入る値と実計算値を一致させる
 - `FrameParamsBuffer` に観測レコードを積む（explicit/chain_id/step_index も記録）
 
@@ -321,9 +325,63 @@ interactive の 1 フレーム描画は、概ね次の順で行う。
 
 mp-draw は frame task に ParamStore snapshot 本体を載せず revision だけを渡す。revision が変わった時だけ、worker ごとの bounded control queue へ snapshot を latest-wins で配信し、全 worker の適用 ack 後にその revision の task を実行する。
 
-interactive の PNG/G-code は `ExportJobSystem` が共通の長寿命 spawn worker で処理する。親が保持するのは in-flight 1件と latest pending 1件だけで、window system は immutable frame snapshot の投入と結果表示に限定される。
+interactive の PNG/G-code は `ExportJobSystem` が共通の長寿命 spawn worker で処理する。
+親はin-flight 1件と、件数/aggregate geometry byteで制限したpending FIFOを保持し、window
+systemはimmutable frame snapshotのadmissionと結果表示に限定される。
 
-## 11. 外部依存と実行上の注意
+## 11. 診断・render・capture の責務境界
+
+### 11.1 `DiagnosticCenter`
+
+`src/grafix/interactive/runtime/diagnostics.py` の `DiagnosticCenter` は、frame、reload、
+export、save/recovery、config、operation/resource の失敗を同じ bounded event stream へ
+集約する。イベントは immutable で、dedupe key、発生回数、severity、source、型付き action
+を持つ。各 subsystem は例外を GUI 形式へ描画せず `DiagnosticEvent` を publish し、
+Inspector の diagnostics panel が Copy/Open/Retry/Dismiss を表示する。
+
+責務外なのは、Geometry の結果変更や暗黙 retry である。診断は失敗を可視化するが、
+作品の評価契約は変更しない。
+
+### 11.2 `RenderSession`
+
+`src/grafix/api/render.py` の `RenderSession` は headless 評価期間を所有する。
+
+- draw callable、ParamStore と明示的な parameter load mode
+- effective runtime config と `RenderOptions`
+- `StyleResolver` / `RealizeSession` の cache 寿命
+- capture manifest に渡す session/frame provenance snapshot
+
+`render(t) -> Frame` はファイル I/O を行わない。単発の公開 `render()` も内部で同じ
+session 契約を使い、interactive preview の draft context に影響されず final 品質で評価する。
+
+### 11.3 `CaptureService`
+
+`src/grafix/export/capture.py` の `CaptureService` は完成済み `Frame` を受け取り、suffixで
+SVG/PNG/G-code encoderを選択する。private stagingでencodeした後、artifactとmanifestを
+同じgenerationとしてno-clobber publishする。late collision時は別versionへ進み、失敗時は
+今回generationだけをrollbackする。PNGの中間SVGもprivateであり、public siblingを触らない。
+
+`ExportJobSystem` はqueue/worker/deadlineだけを所有し、形式判定・manifest・publishを
+重複実装しない。workerへ渡すprovenanceはmain processで固定済みのimmutable snapshotで、
+workerがgit/config/sourceを再探索してはならない。
+
+依存方向は次のとおり。
+
+```text
+draw + parameter source + config
+             |
+             v
+        RenderSession --render(t)--> immutable Frame
+                                      |
+                                      v
+                               CaptureService
+                               encode -> stage
+                               -> publish artifact + manifest
+
+interactive errors -----------------> DiagnosticCenter -> Inspector
+```
+
+## 12. 外部依存と実行上の注意
 
 Grafix は “core は Python だけで完結” を基本としつつ、いくつかの機能は外部コマンドに依存する。
 

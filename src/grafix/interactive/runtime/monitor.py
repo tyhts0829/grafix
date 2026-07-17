@@ -8,6 +8,9 @@ from dataclasses import dataclass
 import os
 import time
 
+from .diagnostics import DiagnosticAction, DiagnosticCenter, DiagnosticEvent
+from .perf import PerfSnapshot
+
 
 @dataclass(frozen=True, slots=True)
 class MonitorSnapshot:
@@ -30,6 +33,11 @@ class MonitorSnapshot:
     capture_retained_bytes: int = 0
     capture_byte_limit: int = 0
     capture_notice: str | None = None
+    diagnostics: tuple[DiagnosticEvent, ...] = ()
+    autosave_status: str = "clean"
+    autosave_error: str | None = None
+    recovered_session: bool = False
+    profiler: PerfSnapshot | None = None
 
 
 class RuntimeMonitor:
@@ -40,6 +48,7 @@ class RuntimeMonitor:
         *,
         cpu_mem_sample_interval_s: float = 0.5,
         fps_sample_interval_s: float = 0.5,
+        diagnostic_center: DiagnosticCenter | None = None,
     ) -> None:
         """監視を初期化する。
 
@@ -77,6 +86,13 @@ class RuntimeMonitor:
         self._capture_retained_bytes = 0
         self._capture_byte_limit = 0
         self._capture_notice: str | None = None
+        self._diagnostic_center = (
+            diagnostic_center if diagnostic_center is not None else DiagnosticCenter()
+        )
+        self._autosave_status = "clean"
+        self._autosave_error: str | None = None
+        self._recovered_session = False
+        self._profiler: PerfSnapshot | None = None
 
         try:
             import psutil  # type: ignore[import-untyped]
@@ -138,10 +154,43 @@ class RuntimeMonitor:
         self._vertices = int(vertices)
         self._lines = int(lines)
 
-    def set_frame_error(self, message: str | None) -> None:
+    @property
+    def diagnostic_center(self) -> DiagnosticCenter:
+        """user-facing 診断の共有 center を返す。"""
+
+        return self._diagnostic_center
+
+    def publish_diagnostic(self, event: DiagnosticEvent) -> DiagnosticEvent:
+        """診断を共有 center へ追加して返す。"""
+
+        return self._diagnostic_center.publish(event)
+
+    def set_frame_error(
+        self,
+        message: str | None,
+        *,
+        details: str = "",
+        source: str | None = None,
+    ) -> None:
         """user scene の直近 error を設定する。成功 frame では None に戻す。"""
 
+        previous = self._frame_error
         self._frame_error = None if message is None else str(message)
+        if message is not None and previous != str(message):
+            actions = [DiagnosticAction("copy", "Copy details")]
+            if source is not None:
+                actions.append(DiagnosticAction("open", "Open source"))
+            self.publish_diagnostic(
+                DiagnosticEvent(
+                    category="scene",
+                    severity="error",
+                    summary=str(message),
+                    details=str(details),
+                    source=source,
+                    actions=tuple(actions),
+                    dedupe_key=f"frame-error:{message}",
+                )
+            )
 
     def set_transport(
         self,
@@ -179,7 +228,61 @@ class RuntimeMonitor:
         self._capture_request_limit = max(0, int(request_limit))
         self._capture_retained_bytes = max(0, int(retained_bytes))
         self._capture_byte_limit = max(0, int(byte_limit))
+        previous_notice = self._capture_notice
         self._capture_notice = None if notice is None else str(notice)
+        if notice is not None and previous_notice != str(notice):
+            self.publish_diagnostic(
+                DiagnosticEvent(
+                    category="export",
+                    severity="warning",
+                    summary=str(notice),
+                    dedupe_key=f"capture-notice:{notice}",
+                )
+            )
+
+    def set_autosave(
+        self,
+        *,
+        status: str,
+        error: str | None = None,
+        source: str | None = None,
+    ) -> None:
+        """ParamStore autosave の user-facing 状態を設定する。"""
+
+        status_s = str(status)
+        if status_s not in {"clean", "dirty", "saving", "failed"}:
+            raise ValueError(f"未対応の autosave status: {status_s!r}")
+        previous = self._autosave_status
+        previous_error = self._autosave_error
+        self._autosave_status = status_s
+        self._autosave_error = None if error is None else str(error)
+        if status_s == "failed" and (
+            previous != "failed" or previous_error != self._autosave_error
+        ):
+            summary = "Parameter autosave failed"
+            self.publish_diagnostic(
+                DiagnosticEvent(
+                    category="save",
+                    severity="error",
+                    summary=summary,
+                    details=self._autosave_error or "",
+                    source=source,
+                    actions=(DiagnosticAction("retry", "Retry"),),
+                    dedupe_key=f"autosave:{self._autosave_error}",
+                )
+            )
+
+    def set_recovered_session(self, active: bool) -> None:
+        """未確定の session recovery があるかを status surface へ反映する。"""
+
+        self._recovered_session = bool(active)
+
+    def set_profiler(self, snapshot: PerfSnapshot) -> None:
+        """Inspector へ渡す直近の bounded profiler snapshot を設定する。"""
+
+        if not isinstance(snapshot, PerfSnapshot):
+            raise TypeError("snapshot は PerfSnapshot である必要があります")
+        self._profiler = snapshot
 
     def snapshot(self) -> MonitorSnapshot:
         """現在の監視値をスナップショットとして返す。"""
@@ -202,6 +305,11 @@ class RuntimeMonitor:
             capture_retained_bytes=int(self._capture_retained_bytes),
             capture_byte_limit=int(self._capture_byte_limit),
             capture_notice=self._capture_notice,
+            diagnostics=self._diagnostic_center.snapshot(),
+            autosave_status=self._autosave_status,
+            autosave_error=self._autosave_error,
+            recovered_session=bool(self._recovered_session),
+            profiler=self._profiler,
         )
 
     def _cpu_times_s(self, proc) -> float:

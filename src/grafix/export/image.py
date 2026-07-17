@@ -1,7 +1,7 @@
 """
 どこで: `src/grafix/export/image.py`。
-何を: SVG を外部ラスタライザ（resvg）で PNG に変換して保存する関数を提供する。
-なぜ: SVG を正（ソース）として保存し、PNG は高解像度で再生成できる導線を用意するため。
+何を: SVG を中間表現として外部ラスタライザ（resvg）で PNG に変換する関数を提供する。
+なぜ: ベクター描画と同じ形状を、指定解像度の PNG として安全に保存するため。
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from math import isfinite
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from grafix.core.atomic_write import atomic_output_path
 from grafix.core.output_paths import output_path_for_draw
@@ -32,7 +33,8 @@ def export_image(
 
     Notes
     -----
-    SVG を正として保存し、PNG は resvg でラスタライズして生成する。
+    PNG は private な一時 SVG を resvg でラスタライズして生成する。明示的な SVG
+    出力だけが指定パスへ SVG を保存する。
     """
     _path = Path(path)
     suffix = _path.suffix.lower()
@@ -45,14 +47,15 @@ def export_image(
     if suffix == ".png":
         if canvas_size is None:
             raise ValueError("canvas_size=None は未対応（現在は必須）")
-        svg_path = _path.with_suffix(".svg")
-        export_svg(layers, svg_path, canvas_size=canvas_size)
-        return rasterize_svg_to_png(
-            svg_path,
-            _path,
-            output_size=png_output_size(canvas_size),
-            background_color_rgb01=background_color,
-        )
+        with TemporaryDirectory(prefix="grafix-png-") as temp_dir:
+            svg_path = Path(temp_dir) / "source.svg"
+            export_svg(layers, svg_path, canvas_size=canvas_size)
+            return rasterize_svg_to_png(
+                svg_path,
+                _path,
+                output_size=png_output_size(canvas_size),
+                background_color_rgb01=background_color,
+            )
 
     raise ValueError(f"未対応の画像フォーマット: {suffix!r}")
 
@@ -85,14 +88,27 @@ def default_png_output_path(
     return base.with_name(f"{base.stem}{size_suffix}{run_suffix}{base.suffix}")
 
 
-def png_output_size(canvas_size: tuple[int, int]) -> tuple[int, int]:
-    """canvas_size を基準に PNG 出力ピクセルサイズを返す。"""
+def png_output_size(
+    canvas_size: tuple[int, int],
+    *,
+    scale: float | None = None,
+) -> tuple[int, int]:
+    """canvas_size と明示 scale から PNG 出力ピクセルサイズを返す。
+
+    ``scale=None`` の従来入口だけが process runtime config を参照する。Frame や
+    interactive session は、開始時に固定した effective scale を明示して再探索を避ける。
+    """
 
     canvas_w, canvas_h = canvas_size
     if int(canvas_w) <= 0 or int(canvas_h) <= 0:
         raise ValueError("canvas_size は正の (width, height) である必要がある")
-    scale = float(runtime_config().png_scale)
-    return int(int(canvas_w) * scale), int(int(canvas_h) * scale)
+    effective_scale = float(runtime_config().png_scale if scale is None else scale)
+    if not isfinite(effective_scale) or effective_scale <= 0.0:
+        raise ValueError("scale は正の有限値である必要があります")
+    return (
+        int(int(canvas_w) * effective_scale),
+        int(int(canvas_h) * effective_scale),
+    )
 
 
 def _rgb01_to_hex(rgb01: tuple[float, float, float]) -> str:

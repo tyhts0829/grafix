@@ -23,17 +23,12 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
-from grafix.core.capture_manifest import (
-    CaptureManifest,
-    capture_manifest_path_for,
-    publish_capture_generation,
-)
-from grafix.core.output_paths import gcode_layer_output_path
+from grafix.core.capture_provenance import CaptureProvenance
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET
-from grafix.export.gcode import export_gcode
-from grafix.export.image import png_output_size, rasterize_svg_to_png
-from grafix.export.svg import export_svg
+from grafix.core.runtime_config import GCodeExportConfig
+from grafix.core.runtime_limits import RuntimeLimits
+from grafix.export.capture import CaptureService
 
 _WORKER_JOIN_TIMEOUT_S = 0.5
 _PARENT_TIMEOUT_GRACE_S = 0.25
@@ -45,6 +40,9 @@ _DEFAULT_MAX_RETAINED_BYTES = int(DEFAULT_RESOURCE_BUDGET.max_output_bytes)
 # pending jobにも同じ係数を保守的に課し、queue全体がprocessをまたいでbudget内に
 # 収まる契約にする（Python objectの小さなoverheadは従来どおり推定外）。
 _SNAPSHOT_PROCESS_COPY_FACTOR = 3
+
+# 親 process と spawn worker はそれぞれ独立した service instance を持つ。
+_CAPTURE_SERVICE = CaptureService()
 
 
 class ExportQueueFullError(RuntimeError):
@@ -105,6 +103,8 @@ class FrameExportSnapshot:
     canvas_size: tuple[int, int]
     background_color_rgb01: tuple[float, float, float]
     t: float = 0.0
+    provenance: CaptureProvenance | None = None
+    gcode_config: GCodeExportConfig | None = None
 
     def __post_init__(self) -> None:
         layers = tuple(self.layers)
@@ -121,6 +121,12 @@ class FrameExportSnapshot:
         if not isfinite(capture_t):
             raise ValueError("t は有限値である必要がある")
         object.__setattr__(self, "t", capture_t)
+        if self.provenance is not None and float(self.provenance.frame.t) != capture_t:
+            raise ValueError("provenance.frame.t は snapshot.t と一致する必要があります")
+        if self.gcode_config is not None and not isinstance(
+            self.gcode_config, GCodeExportConfig
+        ):
+            raise TypeError("gcode_config は GCodeExportConfig または None である必要があります")
 
     @property
     def retained_bytes(self) -> int:
@@ -272,22 +278,6 @@ def _job_work_output_path(job: ExportJob) -> Path:
     return staging_dir / job.output_path.name
 
 
-def _final_output_paths(job: ExportJob) -> tuple[Path, ...]:
-    """job 成功時に親 process が公開すべき最終 path 群を返す。"""
-
-    if job.kind is not ExportKind.GCODE_LAYERS:
-        return (job.output_path,)
-    return tuple(
-        gcode_layer_output_path(
-            job.output_path,
-            layer_index=index,
-            n_layers=len(job.snapshot.layers),
-            layer_name=layer.layer.name,
-        )
-        for index, layer in enumerate(job.snapshot.layers, start=1)
-    )
-
-
 def _cleanup_job_staging(job: ExportJob) -> None:
     """job-private staging directory を best-effort で削除する。"""
 
@@ -306,44 +296,15 @@ def _commit_staged_outputs(
     if staging_dir is None:
         return tuple(Path(path) for path in staged_paths), None
 
-    staged = tuple(Path(path) for path in staged_paths)
-    final_paths = _final_output_paths(job)
-    if len(staged) != len(final_paths):
-        raise RuntimeError(
-            "staged artifact 数が期待値と一致しません: "
-            f"got={len(staged)}, expected={len(final_paths)}"
-        )
-
-    # 0 layer の per-layer export は成果物を生成しない。空 manifest は schema 上も
-    # 無効なので、従来どおり成功 paths=() として扱う。
-    if not final_paths:
+    published = _CAPTURE_SERVICE.publish_staged(
+        job.snapshot,
+        job.output_path,
+        staged_paths,
+        mode=job.kind.value,
+        output_size=job.output_size,
+    )
+    if published is None:
         return (), None
-
-    staging_root = staging_dir.resolve(strict=False)
-    for staged_path, final_path in zip(staged, final_paths, strict=True):
-        if staged_path.parent.resolve(strict=False) != staging_root:
-            raise RuntimeError(f"staged artifact が job directory 外です: {staged_path}")
-        if staged_path.name != final_path.name:
-            raise RuntimeError(
-                "staged artifact 名が最終 path と一致しません: "
-                f"staged={staged_path.name!r}, final={final_path.name!r}"
-            )
-        if staged_path.is_symlink() or not staged_path.is_file():
-            raise RuntimeError(f"staged artifact が通常ファイルではありません: {staged_path}")
-
-    manifest_path = capture_manifest_path_for(job.output_path)
-    manifest = CaptureManifest(
-        t=float(job.snapshot.t),
-        canvas_size=job.snapshot.canvas_size,
-        format=job.kind.value,
-        artifact_paths=final_paths,
-    )
-    published = publish_capture_generation(
-        staged_artifact_paths=staged,
-        artifact_paths=final_paths,
-        manifest_path=manifest_path,
-        manifest=manifest,
-    )
     return published.artifact_paths, published.manifest_path
 
 
@@ -379,55 +340,21 @@ def _finalize_default_backend_result(
 def _execute_export_job(job: ExportJob) -> tuple[Path, ...]:
     """既定 backend として PNG/G-code job を同期実行する。"""
 
-    snapshot = job.snapshot
     work_output_path = _job_work_output_path(job)
-    if job.kind is ExportKind.PNG:
-        # PNG 用 SVG はあくまで job 内部の中間生成物である。公開 SVG の保存先
-        # (`svg_output_path`) を共有すると、S キーの SVG 保存と P キーの PNG 保存が
-        # 同時に走ったときに片方がもう片方の入力を書き換え得るため、job ごとの一時
-        # ディレクトリへ隔離する。TemporaryDirectory により成功・失敗のどちらでも
-        # 中間 SVG を残さない。
-        with tempfile.TemporaryDirectory(
-            prefix=f"grafix-png-job-{job.job_id}-",
-            dir=job.staging_dir,
-        ) as temp_dir:
-            svg_path = Path(temp_dir) / "intermediate.svg"
-            export_svg(snapshot.layers, svg_path, canvas_size=snapshot.canvas_size)
-            remaining = (
-                job.timeout_s
-                if job.deadline_monotonic is None
-                else job.deadline_monotonic - time.monotonic()
-            )
-            if remaining <= 0.0:
-                raise TimeoutError("PNG export deadline exceeded before resvg")
-            png_path = rasterize_svg_to_png(
-                svg_path,
-                work_output_path,
-                output_size=job.output_size or png_output_size(snapshot.canvas_size),
-                background_color_rgb01=snapshot.background_color_rgb01,
-                timeout_s=remaining,
-            )
-        return (png_path,)
-
-    if job.kind is ExportKind.GCODE:
-        path = export_gcode(
-            snapshot.layers,
-            work_output_path,
-            canvas_size=snapshot.canvas_size,
-        )
-        return (path,)
-
-    paths: list[Path] = []
-    for index, layer in enumerate(snapshot.layers, start=1):
-        path = gcode_layer_output_path(
-            work_output_path,
-            layer_index=index,
-            n_layers=len(snapshot.layers),
-            layer_name=layer.layer.name,
-        )
-        export_gcode([layer], path, canvas_size=snapshot.canvas_size)
-        paths.append(path)
-    return tuple(paths)
+    gcode_config = (
+        job.snapshot.gcode_config
+        if job.kind in {ExportKind.GCODE, ExportKind.GCODE_LAYERS}
+        else None
+    )
+    return _CAPTURE_SERVICE.encode(
+        job.snapshot,
+        work_output_path,
+        mode=job.kind.value,
+        output_size=job.output_size,
+        timeout_s=job.timeout_s,
+        deadline_monotonic=job.deadline_monotonic,
+        gcode_config=gcode_config,
+    )
 
 
 def _export_worker_main(
@@ -502,7 +429,13 @@ class ExportJobSystem:
         default_timeout_s: float = 30.0,
         max_pending_jobs: int = _DEFAULT_PENDING_JOB_LIMIT,
         max_retained_bytes: int = _DEFAULT_MAX_RETAINED_BYTES,
+        runtime_limits: RuntimeLimits | None = None,
     ) -> None:
+        if runtime_limits is not None:
+            if not isinstance(runtime_limits, RuntimeLimits):
+                raise TypeError("runtime_limits は RuntimeLimits である必要があります")
+            max_pending_jobs = int(runtime_limits.capture_queue_pending_jobs)
+            max_retained_bytes = int(runtime_limits.capture_queue_bytes)
         timeout_s = float(default_timeout_s)
         if not isfinite(timeout_s) or timeout_s <= 0.0:
             raise ValueError("default_timeout_s は正である必要がある")

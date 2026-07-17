@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 from .midi_controller import InvalidPortError, MidiController
+from .session import MidiConnectionState, MidiSession
 
 __all__ = [
     "InvalidPortError",
     "MidiController",
+    "MidiConnectionState",
+    "MidiSession",
 ]
-

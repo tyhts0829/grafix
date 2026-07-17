@@ -33,6 +33,19 @@ def _primitive_spec(evaluator: PrimitiveFunc) -> OpSpec[PrimitiveFunc]:
     )
 
 
+def _uncached_primitive_spec(evaluator: PrimitiveFunc) -> OpSpec[PrimitiveFunc]:
+    return OpSpec(
+        evaluator=evaluator,
+        meta={},
+        defaults={},
+        param_order=(),
+        ui_visible={},
+        n_inputs=0,
+        kind="primitive",
+        cache_policy="none",
+    )
+
+
 def _effect_spec(evaluator: EffectFunc) -> OpSpec[EffectFunc]:
     return OpSpec(
         evaluator=evaluator,
@@ -105,6 +118,67 @@ def test_module_convenience_call_does_not_share_global_cache(
     assert first is not second
     assert calls == 2
     assert not hasattr(realize_module, "realize_cache")
+
+
+def test_cache_policy_none_bypasses_cpu_cache_and_changes_gpu_key(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, _ = isolated_registries
+    calls = 0
+
+    def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        nonlocal calls
+        calls += 1
+        return _realized(2, value=float(calls))
+
+    primitives.register("live", _uncached_primitive_spec(evaluate))
+    geometry = Geometry.create("live")
+
+    with RealizeSession() as session:
+        first, first_key = session.realize_with_key(geometry)
+        second, second_key = session.realize_with_key(geometry)
+        stats = session.stats()
+
+    assert calls == 2
+    assert first is not second
+    assert first_key != second_key
+    assert stats.hits == 0
+    assert stats.misses == 2
+    assert stats.entries == 0
+
+
+def test_uncached_input_makes_content_parent_uncached(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, effects = isolated_registries
+    primitive_calls = 0
+    effect_calls = 0
+
+    def evaluate_primitive(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        nonlocal primitive_calls
+        primitive_calls += 1
+        return _realized(2, value=float(primitive_calls))
+
+    def evaluate_effect(
+        inputs: Sequence[RealizedGeometry],
+        _args: tuple[tuple[str, object], ...],
+    ) -> RealizedGeometry:
+        nonlocal effect_calls
+        effect_calls += 1
+        return inputs[0]
+
+    primitives.register("live", _uncached_primitive_spec(evaluate_primitive))
+    effects.register("pass_through", _effect_spec(evaluate_effect))
+    geometry = Geometry.create("pass_through", inputs=(Geometry.create("live"),))
+
+    with RealizeSession() as session:
+        session.realize(geometry)
+        session.realize(geometry)
+        stats = session.stats()
+
+    assert primitive_calls == 2
+    assert effect_calls == 2
+    assert stats.entries == 0
 
 
 def test_lru_evicts_least_recently_used_entry_by_byte_budget(

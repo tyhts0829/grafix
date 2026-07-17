@@ -1,110 +1,38 @@
-"""
-どこで: `src/grafix/api/export.py`。
-何を: ヘッドレス export の公開導線 `Export` を提供する。
-なぜ: 対話ウィンドウを立ち上げずに `draw(t)` の 1 フレームを SVG/PNG/G-code へ保存するため。
-"""
+"""render 済み ``Frame`` を安全に保存する公開関数を提供する。"""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
-from grafix.core.layer import LayerStyleDefaults
-from grafix.core.parameters.context import parameter_context
-from grafix.core.parameters.persistence import default_param_store_path, load_param_store
-from grafix.core.parameters.style_resolver import FrameStyle, StyleResolver
-from grafix.core.pipeline import RealizedLayer, realize_scene
-from grafix.core.realize import RealizeSession
-from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET, ResourceBudget
-from grafix.core.scene import SceneItem
-from grafix.export.gcode import export_gcode
-from grafix.export.image import export_image
-from grafix.export.svg import export_svg
+from grafix.api.render import ExportResult, Frame
+from grafix.export.capture import CaptureService
 
 
-class Export:
-    """`draw(t)` の 1 フレーム分をファイルへ書き出す。"""
+def export(
+    frame: Frame,
+    path: str | Path,
+    *,
+    overwrite: bool = False,
+) -> ExportResult:
+    """``Frame`` を path suffix の形式で保存し、実保存結果を返す。
 
-    def __init__(
-        self,
-        draw: Callable[[float], SceneItem],
-        t: float,
-        fmt: str,
-        path: str | Path,
-        *,
-        canvas_size: tuple[int, int] = (800, 800),
-        line_color: tuple[float, float, float] = (0.0, 0.0, 0.0),
-        line_thickness: float = 0.01,
-        background_color: tuple[float, float, float] = (1.0, 1.0, 1.0),
-        run_id: str | None = None,
-        resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
-    ) -> None:
-        """export を実行する。
+    Parameters
+    ----------
+    frame : Frame
+        :func:`grafix.render` または :class:`grafix.RenderSession` が返したフレーム。
+    path : str or Path
+        ``.svg``、``.png``、``.gcode`` のいずれかで終わる要求 path。
+    overwrite : bool, optional
+        ``False`` では既存成果物を避けて連番 path に保存する。``True`` の場合だけ
+        artifact と manifest の既存 generation を置換する。
 
-        Parameters
-        ----------
-        draw : Callable[[float], SceneItem]
-            フレーム時刻 t を受け取り Geometry/Layer/Sequence を返すコールバック。
-        t : float
-            出力対象のフレーム時刻。
-        fmt : str
-            出力フォーマット。`"svg"`, `"image"`, `"gcode"` を想定する。
-        path : str or Path
-            出力先パス。
-        canvas_size : tuple[int, int]
-            SVG、PNG、G-code で使用するキャンバス寸法。
-        line_color : tuple[float, float, float]
-            Layer の既定線色（0..1）。
-        line_thickness : float
-            Layer の既定線幅。
-        background_color : tuple[float, float, float]
-            背景色（0..1）。PNG 出力で使用する。
-        run_id : str | None
-            ParamStore の既定パス（読み込み元）の run_id suffix。
-        resource_budget : ResourceBudget
-            operation の配列確保前検査に使う上限。interactive preview と同じ契約を使う。
-        """
-        self.path = Path(path)
-        self.fmt = str(fmt).lower().strip()
+    Returns
+    -------
+    ExportResult
+        連番付与を含む実 artifact path、形式、manifest path。
+    """
 
-        # headless export でも ParamStore の保存値（GUI で調整した値）を反映する。
-        # これにより「コードに明示されていないパラメータ」も保存済みの UI 値で解決できる。
-        store_path = default_param_store_path(draw, run_id=run_id)
-        store = load_param_store(store_path)
+    return CaptureService().export(frame, path, overwrite=overwrite)
 
-        # interactive と同じルールで style（背景・既定線色・線幅）を解決する。
-        self.style: FrameStyle = StyleResolver(
-            store,
-            base_background_color_rgb01=background_color,
-            base_global_thickness=float(line_thickness),
-            base_global_line_color_rgb01=line_color,
-        ).resolve()
 
-        defaults = LayerStyleDefaults(
-            color=self.style.global_line_color_rgb01,
-            thickness=float(self.style.global_thickness),
-        )
-        with RealizeSession(resource_budget=resource_budget) as session, parameter_context(store):
-            self.layers: list[RealizedLayer] = realize_scene(
-                draw,
-                float(t),
-                defaults,
-                session=session,
-            )
-
-        if self.fmt == "svg":
-            export_svg(self.layers, self.path, canvas_size=canvas_size)
-            return
-        if self.fmt in {"image", "png"}:
-            export_image(
-                self.layers,
-                self.path,
-                canvas_size=canvas_size,
-                background_color=self.style.bg_color_rgb01,
-            )
-            return
-        if self.fmt in {"gcode", "g-code"}:
-            export_gcode(self.layers, self.path, canvas_size=canvas_size)
-            return
-
-        raise ValueError(f"未対応の export fmt: {fmt!r}")
+__all__ = ["export"]

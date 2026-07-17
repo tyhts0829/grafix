@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import grafix.api
+
+from grafix.__main__ import main as grafix_main
+
+
+def _write_project(project: Path) -> None:
+    (project / ".grafix").mkdir(parents=True)
+    (project / "sketch").mkdir(parents=True)
+    (project / ".grafix/config.yaml").write_text(
+        """version: 1
+paths:
+  output_dir: "../data/output"
+  sketch_dir: "../sketch"
+  preset_module_dirs: []
+""",
+        encoding="utf-8",
+    )
+    (project / "sketch/main.py").write_text(
+        '''from __future__ import annotations
+
+import numpy as np
+
+from grafix import G, effect, preset, primitive
+from grafix.core.geometry import Geometry
+
+
+@primitive(meta={"size": {"kind": "float", "ui_min": 0.0, "ui_max": 10.0}})
+def onboarding_local_primitive(*, size: float = 1.0):
+    return np.zeros((0, 3), dtype=np.float32), np.zeros((1,), dtype=np.int32)
+
+
+@effect(meta={"amount": {"kind": "float", "ui_min": 0.0, "ui_max": 1.0}})
+def onboarding_local_effect(g, *, amount: float = 0.5):
+    return g
+
+
+@preset(meta={"size": {"kind": "float", "ui_min": 0.0, "ui_max": 10.0}})
+def onboarding_local_preset(
+    *, size: float = 1.0, name=None, key=None
+) -> Geometry:
+    return G.circle(radius=size)
+''',
+        encoding="utf-8",
+    )
+
+
+def test_stub_cli_defaults_to_project_local_output_and_includes_user_ops(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    installed_stub = Path(grafix.api.__file__).with_name("__init__.pyi")
+    installed_before = installed_stub.read_bytes()
+
+    assert grafix_main(["stub", "--project", str(project)]) == 0
+
+    output = project / "typings/grafix/api/__init__.pyi"
+    root_proxy = project / "typings/grafix/__init__.pyi"
+    generated = output.read_text(encoding="utf-8")
+    assert "def onboarding_local_primitive(" in generated
+    assert generated.count("def onboarding_local_effect(") == 2
+    assert "def onboarding_local_preset(" in generated
+    assert root_proxy.is_file()
+    assert installed_stub.read_bytes() == installed_before
+
+    # 同一 process での再生成でも module を二重登録せず正常に更新できる。
+    assert grafix_main(["stub", "--project", str(project)]) == 0
+
+    explicit = Path("generated/custom_api.pyi")
+    assert (
+        grafix_main(
+            [
+                "stub",
+                "--project",
+                str(project),
+                "--no-default-import",
+                "--output",
+                str(explicit),
+            ]
+        )
+        == 0
+    )
+    assert (project / explicit).is_file()

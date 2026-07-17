@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 RGBA = tuple[float, float, float, float]
@@ -65,35 +66,39 @@ def _set_color(imgui: Any, color_index: int, token: str) -> None:
     imgui.get_style().colors[int(color_index)] = PARAMETER_GUI_PALETTE[token]
 
 
-def apply_parameter_gui_theme(imgui: Any) -> None:
+def apply_parameter_gui_theme(imgui: Any, *, ui_scale: float = 1.0) -> None:
     """現在の ImGui context に Grafix Inspector のテーマを適用する。
 
     ここで扱う寸法は logical px。Retina の backing scale はフォント atlas と
     framebuffer 側だけで処理し、style 寸法へ二重に掛けない。
     """
 
+    scale = float(ui_scale)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("ui_scale は finite な正の値である必要がある")
+
     style = imgui.get_style()
-    style.window_padding = (16.0, 12.0)
-    style.frame_padding = (8.0, 6.0)
-    style.item_spacing = (8.0, 6.0)
-    style.item_inner_spacing = (6.0, 4.0)
-    style.cell_padding = (8.0, 5.0)
-    style.indent_spacing = 18.0
-    style.scrollbar_size = 12.0
-    style.grab_min_size = 12.0
+    style.window_padding = (16.0 * scale, 12.0 * scale)
+    style.frame_padding = (8.0 * scale, 6.0 * scale)
+    style.item_spacing = (8.0 * scale, 6.0 * scale)
+    style.item_inner_spacing = (6.0 * scale, 4.0 * scale)
+    style.cell_padding = (8.0 * scale, 5.0 * scale)
+    style.indent_spacing = 18.0 * scale
+    style.scrollbar_size = 12.0 * scale
+    style.grab_min_size = 12.0 * scale
 
     # 全面ウィンドウは角丸にせず、内側の surface と操作だけを柔らかくする。
     style.window_rounding = 0.0
-    style.child_rounding = 6.0
-    style.frame_rounding = 4.0
-    style.popup_rounding = 8.0
-    style.scrollbar_rounding = 6.0
-    style.grab_rounding = 4.0
-    style.tab_rounding = 4.0
+    style.child_rounding = 6.0 * scale
+    style.frame_rounding = 4.0 * scale
+    style.popup_rounding = 8.0 * scale
+    style.scrollbar_rounding = 6.0 * scale
+    style.grab_rounding = 4.0 * scale
+    style.tab_rounding = 4.0 * scale
 
     style.window_border_size = 0.0
     style.child_border_size = 0.0
-    style.popup_border_size = 1.0
+    style.popup_border_size = 1.0 * scale
     style.frame_border_size = 0.0
     style.tab_border_size = 0.0
 

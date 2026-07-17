@@ -16,7 +16,7 @@ def test_snapshot_includes_meta_state_and_ordinal():
         base=0.5,
         meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
         effective=0.5,
-        source="base",
+        source="code",
     )
 
     merge_frame_params(store, [record])

@@ -6,6 +6,7 @@ import numpy as np
 from numba import njit  # type: ignore[import-untyped, attr-defined]
 
 from grafix.core.effect_registry import effect
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from .util import pack_polylines
@@ -226,9 +227,31 @@ def trim(
     if coords.shape[0] == 0:
         return coords, offsets
 
-    sp = _clamp01(float(start_param))
-    ep = _clamp01(float(end_param))
+    requested_start = float(start_param)
+    requested_end = float(end_param)
+    sp = _clamp01(requested_start)
+    ep = _clamp01(requested_end)
+    if sp != requested_start:
+        emit_operation_diagnostic(
+            op="trim.start_param",
+            original_value=requested_start,
+            effective_value=sp,
+            reason="start parameter was clamped to [0, 1]",
+        )
+    if ep != requested_end:
+        emit_operation_diagnostic(
+            op="trim.end_param",
+            original_value=requested_end,
+            effective_value=ep,
+            reason="end parameter was clamped to [0, 1]",
+        )
     if sp >= ep:
+        emit_operation_diagnostic(
+            op="trim.range",
+            original_value=(sp, ep),
+            effective_value="input_unchanged",
+            reason="trim start must be smaller than trim end",
+        )
         return coords, offsets
 
     results: list[np.ndarray] = []
@@ -246,10 +269,22 @@ def trim(
             results.append(trimmed)
 
     if not results:
+        emit_operation_diagnostic(
+            op="trim.output",
+            original_value=n_lines,
+            effective_value="input_unchanged",
+            reason="all trimmed polylines had fewer than two output points",
+        )
         return coords, offsets
 
     out_coords, out_offsets = pack_polylines(results)
     if out_coords.shape[0] == 0 and coords.shape[0] != 0:
+        emit_operation_diagnostic(
+            op="trim.output",
+            original_value=n_lines,
+            effective_value="input_unchanged",
+            reason="trim produced no drawable output",
+        )
         return coords, offsets
     return out_coords, out_offsets
 

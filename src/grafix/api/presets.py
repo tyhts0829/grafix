@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from grafix.core.preset_registry import preset_func_registry
+from grafix.core.parameters import validate_parameter_identity
 from grafix.core.runtime_config import runtime_config
 from grafix.core.scene import SceneItem
 
@@ -71,8 +72,15 @@ class PresetNamespace:
             raise AttributeError(f"未登録の preset: {name!r}")
         pending_name = self._pending_name
         pending_key = self._pending_key
+        pending_instance_key = self._pending_instance_key
+        pending_shared = self._pending_shared
 
-        if pending_name is None and pending_key is None:
+        if (
+            pending_name is None
+            and pending_key is None
+            and pending_instance_key is None
+            and not pending_shared
+        ):
             return func
 
         def _call_with_pending(*args: Any, **kwargs: Any) -> SceneItem:
@@ -80,20 +88,45 @@ class PresetNamespace:
                 kwargs["name"] = pending_name
             if pending_key is not None and "key" not in kwargs:
                 kwargs["key"] = pending_key
+            if pending_instance_key is not None and "instance_key" not in kwargs:
+                kwargs["instance_key"] = pending_instance_key
+            if pending_shared and "shared" not in kwargs:
+                kwargs["shared"] = True
             return func(*args, **kwargs)
 
         return _call_with_pending
 
     def __call__(
-        self, name: str | None = None, *, key: str | int | None = None
+        self,
+        name: str | None = None,
+        *,
+        key: str | int | None = None,
+        instance_key: str | int | None = None,
+        shared: bool = False,
     ) -> "PresetNamespace":
+        """label と parameter identity を保持する preset 名前空間を返す。
+
+        ``key`` は semantic site、``instance_key`` は反復 instance を表す。
+        ``shared=True`` は同じ semantic site を共有し、``instance_key`` との
+        同時指定は実際の preset 呼び出し時に拒否される。
+        """
+
+        validate_parameter_identity(
+            key=key,
+            instance_key=instance_key,
+            shared=shared,
+        )
         ns = PresetNamespace()
         ns._pending_name = name  # type: ignore[attr-defined]
         ns._pending_key = key  # type: ignore[attr-defined]
+        ns._pending_instance_key = instance_key  # type: ignore[attr-defined]
+        ns._pending_shared = shared  # type: ignore[attr-defined]
         return ns
 
     _pending_name: str | None = None
     _pending_key: str | int | None = None
+    _pending_instance_key: str | int | None = None
+    _pending_shared: bool = False
 
 
 P = PresetNamespace()

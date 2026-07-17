@@ -77,6 +77,43 @@ def test_component_key_splits_instances_from_same_callsite() -> None:
     assert len(site_ids) == 2
 
 
+def test_component_instance_key_and_shared_control_repeated_groups() -> None:
+    meta = {"x": {"kind": "float", "ui_min": 0.0, "ui_max": 10.0}}
+    received_identity: list[tuple[object, object]] = []
+
+    @preset(meta=meta)
+    def component_instance_identity(
+        *,
+        x: float = 1.0,
+        instance_key=None,
+        shared=False,
+    ) -> Geometry:
+        received_identity.append((instance_key, shared))
+        return Geometry.create(op="concat", params={"x": float(x)})
+
+    individual_store = ParamStore()
+    with parameter_context(store=individual_store):
+        [component_instance_identity(instance_key=i) for i in range(3)]
+    individual_sites = {
+        key.site_id
+        for key in store_snapshot(individual_store)
+        if key.op == "preset.component_instance_identity"
+    }
+    assert len(individual_sites) == 3
+
+    shared_store = ParamStore()
+    with parameter_context(store=shared_store):
+        for _i in range(3):
+            component_instance_identity(shared=True)
+    shared_sites = {
+        key.site_id
+        for key in store_snapshot(shared_store)
+        if key.op == "preset.component_instance_identity"
+    }
+    assert len(shared_sites) == 1
+    assert received_identity[-3:] == [(None, True)] * 3
+
+
 def test_component_meta_dict_spec_rejects_unknown_key() -> None:
     meta = {"x": {"kind": "float", "bad": 123}}
 

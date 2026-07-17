@@ -75,7 +75,9 @@
   - 役割: `ParamStore` を持たずに、適用済み revision の snapshot + 観測だけを扱う
 - `site_id` は「呼び出し箇所 ID」で、GUI 行の安定性に直結する:
   - 生成: `grafix.core.parameters.caller_site_id`（入口は `src/grafix/core/parameters/__init__.py` 側）
-  - G/E/L/P の `key=` で同一ファイル内の明示的な安定 ID を指定できる
+  - G/E/L/P の `key=` で semantic site の明示的な安定 ID を指定できる
+  - loop/comprehension の個別 group は `instance_key=i`、意図的な共有 group は
+    `shared=True` を使う（両者は同時指定できない）
 
 ## Undo / Redo と Snapshot A/B の境界
 

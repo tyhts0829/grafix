@@ -19,8 +19,8 @@ def test_polyhedron_data_files_exist() -> None:
 
 
 def test_polyhedron_realize_returns_nonempty_geometry() -> None:
-    for type_index in range(len(polyhedron_mod._TYPE_ORDER)):
-        realized = realize(G.polyhedron(type_index=type_index))
+    for kind in polyhedron_mod._TYPE_ORDER:
+        realized = realize(G.polyhedron(kind=kind))
         assert realized.coords.dtype == np.float32
         assert realized.offsets.dtype == np.int32
         assert realized.coords.shape[0] > 0

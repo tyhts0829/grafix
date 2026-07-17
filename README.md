@@ -53,6 +53,17 @@ if __name__ == "__main__":
     run(draw, canvas_size=CANVAS_SIZE, render_scale=5.0)
 ```
 
+To run a sketch file with transactional live reload:
+
+```bash
+python -m grafix run sketch.py --watch
+```
+
+Grafix polls the source mtime without an extra watcher dependency. It loads changed
+operations, presets, and `draw(t)` into staging registries, validates them, and only then
+swaps the callable and worker generation. A syntax/load error keeps the last-good code,
+frame, parameters, and worker alive; the Inspector shows the traceback with Retry/Open.
+
 ## Core API
 
 - `G`: primitive Geometry factories (`G.polygon(...)`, `G.grid(...)`, ...)
@@ -63,23 +74,38 @@ if __name__ == "__main__":
 - `run(draw)`: interactive rendering + Parameter GUI
 - `ResourceBudget`: per-operation vertex/line/byte limits checked before large allocations
 
-`run()` uses synchronous drawing by default (`n_worker=1`). For CPU-heavy `draw(t)`
-functions, pass `n_worker=4` explicitly to keep the window responsive with mp-draw.
+`run()` evaluates `draw(t)` in one background worker by default (`n_worker=1`) so the
+window stays responsive. Use `n_worker=0` only when synchronous evaluation is required,
+or increase the worker count for CPU-heavy `draw(t)` functions. Background evaluation
+uses multiprocessing `spawn`, so keep `draw` at module scope and call `run()` behind an
+`if __name__ == "__main__":` guard. A background evaluation that exceeds
+`evaluation_timeout=5.0` seconds is cancelled by restarting its worker while the last
+successful frame stays visible; pass `evaluation_timeout=None` to disable this deadline.
 Temporary user-code/effect errors keep the last successful frame visible and appear in
 the Parameter GUI monitor bar; fixing the error lets the next successful frame recover
 without restarting the application.
 
-The Parameter GUI shows each value's effective `CODE` / `UI` / `MIDI` source. Parameter
-edits support coalesced Undo/Redo, Snapshot A/B, and debounced atomic autosave, so it is
-safe to explore alternatives and return to an earlier state. Use `Cmd/Ctrl+Z` to undo and
-`Cmd/Ctrl+Shift+Z` (or `Ctrl+Y`) to redo while the Parameter GUI is focused.
+The Parameter GUI shows each value's effective `CODE` / `UI` / `MIDI LIVE` /
+`MIDI FROZEN` source. Search and structured filters find rows by label, operation,
+source, or MIDI CC; favorites, collapsible groups, and the Help pane keep large scenes
+navigable. Parameter edits support coalesced Undo/Redo, named variations, deterministic
+randomize/lock/morph, and debounced atomic autosave, so it is safe to explore alternatives
+and return to an earlier state. Use `Cmd/Ctrl+Z` to undo and `Cmd/Ctrl+Shift+Z` (or
+`Ctrl+Y`) to redo while the Parameter GUI is focused.
+
+Closing the Inspector hides it instead of stopping the artwork; `Cmd/Ctrl+I` shows it
+again. Preview/Inspector placement, Inspector visibility, and UI scale are saved per
+sketch and clamped to the available screens on the next launch.
 
 Use `run(..., resource_budget=ResourceBudget(...))` to tune allocation limits for the
 machine or sketch. The defaults apply to code-provided values as well as GUI values.
 
-`G`, `E`, `L`, and `P` accept `key=str|int` when a parameter group must keep the same
-identity after moving its call within the same source file. Without `key`, Grafix derives
-a cached project-relative call-site identity automatically.
+`G`, `E`, `L`, and `P` accept `key=str|int` as a stable semantic identity when a
+parameter group must survive moving its call within the same source file. For repeated
+structures, add `instance_key=i` to give each loop/comprehension instance its own group,
+or use `shared=True` to intentionally share one semantic group. `instance_key` and
+`shared=True` are mutually exclusive. Without these options, Grafix derives a cached
+project-relative call-site identity automatically.
 
 ## Export & shortcuts
 
@@ -98,7 +124,9 @@ When the draw window is focused:
 Outputs are written under `paths.output_dir` (default: `data/output`), under per-kind subdirectories (`svg/`, `png/`, `gcode/`, ...).
 Interactive captures never silently overwrite an existing artifact: Grafix reserves an
 unused numbered filename and writes a sibling `*.capture.json` manifest containing the
-capture time, canvas size, format, and artifact paths.
+Grafix/source/git/config/parameter snapshot provenance, frame time/quality, output size,
+format, and actual artifact paths. Provenance is fixed with the frame in the main process;
+the capture worker does not re-read Git, config, or source state.
 PNG and G-code shortcuts enqueue an immutable frame snapshot on one bounded background
 worker, so a slow export does not stop the preview loop. After the first frame, each
 shortcut is bound to the frame visible at keypress and is immediately admitted or rejected
@@ -111,7 +139,10 @@ The byte limit is a conservative process-wide estimate: Grafix accounts for the 
 geometry, multiprocessing serialization, and the worker copy. It is a backpressure budget,
 not an exact operating-system RSS measurement. Closing the app finalizes an active video
 before draining other exports; video finalization and export drain share a bounded deadline,
-and unfinished exports are reported as cancelled when that deadline is reached.
+and unfinished exports are reported as cancelled when that deadline is reached. Recording
+uses an explicit pause-on-error policy: a failed scene is not replaced by a duplicated
+last-good video frame, and its fixed-FPS clock does not advance. The recording manifest
+reports written/dropped/duplicated/error counts and the stop/abort reason.
 
 ## Examples
 
@@ -247,14 +278,40 @@ You can also pass an explicit config path:
 - `run(..., config_path="path/to/config.yaml")`
 - `python -m grafix export --config path/to/config.yaml`
 
-Paths support `~` and environment variables like `$HOME`.
-
-To create a project-local config (starting from the packaged defaults):
+Validate or inspect effective values and their source before launching:
 
 ```bash
-mkdir -p .grafix
-python -c "from importlib.resources import files; print(files('grafix').joinpath('resource','default_config.yaml').read_text())" > .grafix/config.yaml
-$EDITOR .grafix/config.yaml
+python -m grafix config validate .grafix/config.yaml
+python -m grafix config show .grafix/config.yaml
+```
+
+Unknown keys and invalid values are rejected with a nearest-key hint. Interactive runs
+remain recoverable: an invalid user config falls back to the packaged defaults and emits
+an explicit Inspector diagnostic with the source and traceback. The validation CLI stays
+strict and exits non-zero instead of applying that fallback.
+
+Paths support `~` and environment variables like `$HOME`. Relative paths in a user
+config are resolved from that config file's directory. Therefore paths in
+`./.grafix/config.yaml` normally start with `../` when they point into the project root.
+
+To create a project-local config, prefer the no-clobber project initializer:
+
+```bash
+python -m grafix init .
+```
+
+The packaged defaults are interpreted relative to the process working directory, so do
+not copy them verbatim under `.grafix/`. A minimal project-local path overlay looks like:
+
+```yaml
+version: 1
+paths:
+  output_dir: "../data/output"
+  sketch_dir: "../sketch"
+  preset_module_dirs:
+    - "../sketch/presets"
+  font_dirs:
+    - "../data/input/font"
 ```
 
 Overlay is recursive for mapping values. For example, overriding only
@@ -266,7 +323,18 @@ To autoload user presets from a directory:
 ```yaml
 paths:
   preset_module_dirs:
-    - "sketch/presets"
+    - "../sketch/presets"
+```
+
+Useful project/operation CLI entry points:
+
+```bash
+python -m grafix init my-project       # no-clobber scaffold
+python -m grafix doctor                # GL/resvg/ffmpeg/MIDI/font/output checks
+python -m grafix examples list
+python -m grafix list
+python -m grafix describe primitive circle
+python -m grafix stub                  # project-local G/E/P typing
 ```
 
 ## Text-to-Physical art (WIP)
@@ -288,11 +356,17 @@ The image below was generated by the LLM in this closed loop.
 
 ### Headless export (batch rendering)
 
-The loop uses `python -m grafix export` to render `draw(t)` without opening any window:
+The loop uses `python -m grafix export` to render `draw(t)` without opening any window.
+The default parameter source is `code`, so headless output never reads a hidden ParamStore
+unless you explicitly select `saved`, `recovery`, or a JSON path:
 
 ```bash
 python -m grafix export --callable sketch.main:draw --t 0.0 --canvas 300 300
-python -m grafix export --callable sketch.main:draw --t 0.0 1.0 2.0 --canvas 300 300 --out-dir data/output
+python -m grafix export --callable sketch.main:draw --format svg --out art.svg
+python -m grafix export --callable sketch.main:draw --format gcode --out plot.gcode
+python -m grafix export --callable sketch.main:draw --t 0.0 1.0 2.0 --format png --canvas 300 300 --out-dir data/output
+python -m grafix export --callable sketch.main:draw --parameter-source saved --out saved-state.png
+python -m grafix export --callable sketch.main:draw --parameter-source data/params.json --out explicit-state.svg
 ```
 
 With an explicit config file:
@@ -301,10 +375,37 @@ With an explicit config file:
 python -m grafix export --config path/to/config.yaml --callable sketch.main:draw --t 0.0 --canvas 300 300
 ```
 
-If you want to use the API directly, `Export` lives in `grafix.api`:
+Existing artifacts are not overwritten by default. The CLI prints the actual numbered
+artifact path and its `*.capture.json` manifest; pass `--overwrite` only when replacing
+that generation is intentional.
+
+Render saved named variations as no-clobber thumbnails plus an SVG contact sheet and a
+structured partial-failure summary:
+
+```bash
+python -m grafix variations \
+  --callable sketch.main:draw \
+  --parameter-source saved \
+  --out-dir data/output/variation-batches
+```
+
+Each thumbnail label includes the variation name and seed. A failed variation does not
+discard successful siblings; the CLI reports the failed item and exits non-zero.
+
+The direct API separates one final-quality render from capture. `line_thickness=0.001`
+means 0.1% of the canvas short side:
 
 ```python
-from grafix.api import Export
+from grafix import RenderOptions, export, render
+
+frame = render(
+    draw,
+    0.0,
+    options=RenderOptions(canvas_size=(300, 300), line_thickness=0.001),
+    parameter_source="code",
+)
+result = export(frame, "data/output/art.svg")
+print(result.path, result.manifest_path)
 ```
 
 ## Troubleshooting

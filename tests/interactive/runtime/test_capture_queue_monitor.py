@@ -34,7 +34,7 @@ def test_capture_queue_pressure_and_rejection_are_visible_in_monitor() -> None:
     render_monitor_bar(
         imgui=imgui,
         snapshot=snapshot,
-        midi_port_name=None,
+        midi_status=None,
     )
 
     assert "CAPTURE QUEUE (estimated process-wide): 3/17 · 12.0/256.0 MiB" in imgui.lines
@@ -56,7 +56,7 @@ def test_transport_waiting_shows_rendered_and_target_times() -> None:
     render_monitor_bar(
         imgui=imgui,
         snapshot=monitor.snapshot(),
-        midi_port_name=None,
+        midi_status=None,
     )
 
     assert any(
@@ -72,7 +72,7 @@ def test_normal_monitor_omits_empty_queue_and_disconnected_midi_noise() -> None:
     render_monitor_bar(
         imgui=imgui,
         snapshot=monitor.snapshot(),
-        midi_port_name=None,
+        midi_status=None,
     )
 
     assert len(imgui.lines) == 2
@@ -93,7 +93,7 @@ def test_compact_status_is_one_line_and_spells_out_wait_state() -> None:
 
     lines = monitor_status_lines(
         monitor.snapshot(),
-        midi_port_name=None,
+        midi_status=None,
         compact=True,
     )
 
@@ -108,7 +108,7 @@ def test_long_frame_error_lives_in_full_width_alert_not_status_column() -> None:
     monitor.set_frame_error("renderer failed with a deliberately long diagnostic")
     snapshot = monitor.snapshot()
 
-    status = monitor_status_lines(snapshot, midi_port_name=None, compact=False)
+    status = monitor_status_lines(snapshot, midi_status=None, compact=False)
     alerts = monitor_alert_lines(snapshot)
 
     assert status[-1].text == "FRAME ERROR"
@@ -134,7 +134,37 @@ def test_monitor_wraps_actionable_notices_when_backend_supports_it() -> None:
     render_monitor_bar(
         imgui=imgui,
         snapshot=monitor.snapshot(),
-        midi_port_name=None,
+        midi_status=None,
     )
 
     assert "wrapped:Capture rejected: queue is full" in imgui.lines
+
+
+def test_autosave_failure_is_visible_in_status_alert_and_diagnostics() -> None:
+    monitor = RuntimeMonitor()
+    monitor.set_autosave(status="failed", error="OSError: disk full")
+    monitor.set_autosave(status="failed", error="OSError: disk full")
+    snapshot = monitor.snapshot()
+
+    status = monitor_status_lines(snapshot, midi_status=None, compact=False)
+    alerts = monitor_alert_lines(snapshot)
+
+    assert status[-1].text == "SAVE FAILED"
+    assert any("OSError: disk full" in line.text for line in alerts)
+    assert snapshot.diagnostics[-1].category == "save"
+    assert snapshot.diagnostics[-1].count == 1
+
+
+def test_recovered_session_remains_visible_in_status() -> None:
+    monitor = RuntimeMonitor()
+    monitor.set_recovered_session(True)
+    monitor.set_autosave(status="dirty")
+
+    status = monitor_status_lines(
+        monitor.snapshot(),
+        midi_status=None,
+        compact=False,
+    )
+
+    assert status[-1].text == "RECOVERED SESSION  ·  UNSAVED"
+    assert status[-1].token == "warning"

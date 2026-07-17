@@ -4,27 +4,56 @@
 
 from __future__ import annotations
 
+from .effects import E
+from .export import export
+from .layers import L
 from .preset import preset
 from .presets import P
-from .export import Export
-from .effects import E
-from .layers import L
 from .primitives import G
+from .render import (
+    Color,
+    ExportFormat,
+    ExportResult,
+    Frame,
+    RenderOptions,
+    RenderSession,
+    RenderSessionMetadata,
+    render,
+)
+from .variation_batch import (
+    VariationBatchResult,
+    VariationRenderResult,
+    render_variation_batch,
+)
 from grafix.core.effect_registry import effect
 from grafix.core.primitive_registry import primitive
 from grafix.core.resource_budget import ResourceBudget, ResourceLimitError
+from grafix.core.runtime_limits import RuntimeLimitProfiles, RuntimeLimits
 
 __all__ = [
+    "Color",
     "E",
-    "Export",
+    "ExportFormat",
+    "ExportResult",
+    "Frame",
     "G",
     "L",
     "P",
+    "RenderOptions",
+    "RenderSession",
+    "RenderSessionMetadata",
     "ResourceBudget",
     "ResourceLimitError",
+    "RuntimeLimitProfiles",
+    "RuntimeLimits",
+    "VariationBatchResult",
+    "VariationRenderResult",
     "effect",
+    "export",
     "preset",
     "primitive",
+    "render",
+    "render_variation_batch",
     "run",
 ]
 

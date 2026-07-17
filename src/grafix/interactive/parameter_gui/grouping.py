@@ -37,17 +37,23 @@ def group_info_for_row(
 ) -> GroupInfo:
     """行から group/header/visible_label を決定して返す。"""
 
+    display_arg = row.display_name or row.arg
+
     # --- Style（global + layer_style） ---
     if row.op in {STYLE_OP, LAYER_STYLE_OP}:
         if row.op == STYLE_OP:
-            visible_label = humanize_identifier(row.arg)
+            visible_label = humanize_identifier(display_arg)
         else:
             layer_name = (
                 "layer"
                 if layer_style_name_by_site_id is None
                 else str(layer_style_name_by_site_id.get(row.site_id, "layer"))
             )
-            visible_label = format_contextual_row_label(layer_name, int(row.ordinal), row.arg)
+            visible_label = format_contextual_row_label(
+                layer_name,
+                int(row.ordinal),
+                display_arg,
+            )
         return GroupInfo(
             group_id=("style", "global"),
             header_id="style",
@@ -68,7 +74,7 @@ def group_info_for_row(
         step_ordinal = int(row.ordinal)
         if effect_step_ordinal_by_site is not None:
             step_ordinal = int(effect_step_ordinal_by_site.get(step_key, step_ordinal))
-        visible_label = humanize_identifier(row.arg)
+        visible_label = humanize_identifier(display_arg)
         return GroupInfo(
             group_id=("effect_chain", chain_id),
             header_id=f"effect_chain:{chain_id}",
@@ -82,7 +88,7 @@ def group_info_for_row(
         header = (
             None if primitive_header_by_group is None else primitive_header_by_group.get(group_key)
         )
-        visible_label = humanize_identifier(row.arg)
+        visible_label = humanize_identifier(display_arg)
         return GroupInfo(
             group_id=("preset", group_key),
             header_id=f"preset:{group_key[0]}#{group_key[1]}",
@@ -93,7 +99,7 @@ def group_info_for_row(
     # --- Primitive（(op, ordinal) でグループ化） ---
     group_key = (row.op, int(row.ordinal))
     header = None if primitive_header_by_group is None else primitive_header_by_group.get(group_key)
-    visible_label = humanize_identifier(row.arg)
+    visible_label = humanize_identifier(display_arg)
     return GroupInfo(
         group_id=("primitive", group_key),
         header_id=f"primitive:{group_key[0]}#{group_key[1]}",

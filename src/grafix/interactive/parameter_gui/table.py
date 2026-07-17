@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 
 from grafix.core.parameters.key import ParameterKey
+from grafix.core.parameters.source import ValueSource
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
 from grafix.core.runtime_config import runtime_config
@@ -144,13 +146,46 @@ def _collapse_key_for_block(block: GroupBlock) -> str | None:
     return None
 
 
+def parameter_group_collapse_keys(
+    rows: list[ParameterRow],
+    *,
+    primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
+    layer_style_name_by_site_id: Mapping[str, str] | None = None,
+    effect_chain_header_by_id: Mapping[str, str] | None = None,
+    step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
+    effect_step_ordinal_by_site: Mapping[tuple[str, str], int] | None = None,
+) -> tuple[str, ...]:
+    """現在の行モデルから Expand/Collapse all 対象の header key を返す。"""
+
+    blocks = group_blocks_from_rows(
+        rows,
+        primitive_header_by_group=primitive_header_by_group,
+        layer_style_name_by_site_id=layer_style_name_by_site_id,
+        effect_chain_header_by_id=effect_chain_header_by_id,
+        step_info_by_site=step_info_by_site,
+        effect_step_ordinal_by_site=effect_step_ordinal_by_site,
+    )
+    keys: list[str] = []
+    seen: set[str] = set()
+    for block in blocks:
+        if not block.header:
+            continue
+        key = _collapse_key_for_block(block)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return tuple(keys)
+
+
 def _row_visible_label(row: ParameterRow) -> str:
     """行の表示ラベル（`op#ordinal arg`）を返す。"""
 
     op = str(row.op)
     if op in preset_registry:
         op = preset_registry.get_display_op(op)
-    return format_contextual_row_label(op, int(row.ordinal), row.arg)
+    display_arg = row.display_name or row.arg
+    return format_contextual_row_label(op, int(row.ordinal), display_arg)
 
 
 def _row_id(row: ParameterRow) -> str:
@@ -159,7 +194,7 @@ def _row_id(row: ParameterRow) -> str:
     return f"{row.op}#{row.ordinal}:{row.arg}"
 
 
-def source_badge_for_row(row: ParameterRow, last_source: str | None) -> str:
+def source_badge_for_row(row: ParameterRow, last_source: ValueSource | None) -> str:
     """行の現在の有効値ソースを、製品 UI 用の短い表記で返す。"""
 
     # last_source は直近に実現した frame の観測値。Undo/Redo や
@@ -170,24 +205,57 @@ def source_badge_for_row(row: ParameterRow, last_source: str | None) -> str:
         and row.kind == "vec3"
         and any(cc is not None for cc in row.cc_key)
     )
-    if last_source == "cc" and cc_can_be_source:
-        return "MIDI"
-    if last_source == "gui" and (row.kind == "bool" or row.override):
+    if last_source in {"midi_live", "midi_frozen"} and cc_can_be_source:
+        return "MIDI LIVE" if last_source == "midi_live" else "MIDI FROZEN"
+    if last_source == "ui" and row.override:
         return "UI"
-    if last_source == "base" and row.kind != "bool" and not row.override:
+    if last_source == "code" and not row.override:
         return "CODE"
-    if row.kind == "bool" or row.override:
+    if row.override:
         return "UI"
     return "CODE"
 
 
 def _set_item_tooltip(imgui, text: str) -> None:
-    """直前の item が hover 中なら tooltip を設定する。"""
+    """直前の item がhoverまたはkeyboard focus中ならtooltipを設定する。"""
 
     is_item_hovered = getattr(imgui, "is_item_hovered", None)
+    is_item_focused = getattr(imgui, "is_item_focused", None)
     set_tooltip = getattr(imgui, "set_tooltip", None)
-    if callable(is_item_hovered) and callable(set_tooltip) and is_item_hovered():
+    visible = (callable(is_item_hovered) and bool(is_item_hovered())) or (
+        callable(is_item_focused) and bool(is_item_focused())
+    )
+    if callable(set_tooltip) and visible:
         set_tooltip(str(text))
+
+
+def _notify_parameter_help(
+    imgui,
+    row: ParameterRow,
+    callback: Callable[[ParameterRow, bool], None] | None,
+) -> None:
+    """直前 item の hover/focus/select を Help pane へ通知する。"""
+
+    if callback is None:
+        return
+
+    def _item_state(name: str) -> bool:
+        getter = getattr(imgui, name, None)
+        if not callable(getter):
+            return False
+        try:
+            return bool(getter())
+        except TypeError:
+            return False
+
+    selected = _item_state("is_item_clicked")
+    if (
+        selected
+        or _item_state("is_item_hovered")
+        or _item_state("is_item_focused")
+        or _item_state("is_item_active")
+    ):
+        callback(row, selected)
 
 
 def _imgui_metric_scale(imgui) -> float:
@@ -238,14 +306,19 @@ def _source_selector_tooltip(
     source: str,
     kind: str,
     cc_key: int | tuple[int | None, int | None, int | None] | None,
-    last_source: str | None,
+    last_source: ValueSource | None,
 ) -> str:
     """CODE/UI selector の意味を、MIDI priority を含めて説明する。"""
 
     source_upper = str(source).upper()
     mapping = _midi_mapping_summary(kind=kind, cc_key=cc_key)
     if mapping is not None:
-        activity = " is controlling now" if last_source == "cc" else " is assigned"
+        if last_source == "midi_live":
+            activity = " is controlled by live MIDI now"
+        elif last_source == "midi_frozen":
+            activity = " is controlled by a frozen saved MIDI value"
+        else:
+            activity = " is assigned"
         return (
             f"{mapping}{activity}. {source_upper} is the fallback; "
             "switching source keeps the MIDI mapping."
@@ -388,8 +461,18 @@ def _render_midi_button(
             pop_style_color(pushed_colors)
 
 
-def _render_midi_live_indicator(imgui, *, compact: bool, width: float) -> None:
-    """vec3 行全体の MIDI 駆動状態を、非interactiveな amber chip で示す。"""
+def _render_midi_source_indicator(
+    imgui,
+    *,
+    source: ValueSource,
+    compact: bool,
+    width: float,
+) -> None:
+    """vec3 行全体の MIDI LIVE/FROZEN 状態を amber chip で示す。"""
+
+    frozen = source == "midi_frozen"
+    source_label = "FROZEN" if frozen else "LIVE"
+    visible_label = ("F" if frozen else "*") if compact else source_label
 
     warning = PARAMETER_GUI_PALETTE["source_midi"]
     red, green, blue, _alpha = warning
@@ -412,7 +495,7 @@ def _render_midi_live_indicator(imgui, *, compact: bool, width: float) -> None:
             pushed_colors = 2
         try:
             selectable(
-                ("*" if compact else "LIVE") + "##midi_live",
+                visible_label + "##midi_source",
                 True,
                 getattr(imgui, "SELECTABLE_DISABLED", 0),
                 float(width),
@@ -423,59 +506,13 @@ def _render_midi_live_indicator(imgui, *, compact: bool, width: float) -> None:
                 pop_style_color(pushed_colors)
     else:
         # test double / 古い backend でも状態文字は失わない。
-        imgui.button(("*" if compact else "LIVE") + "##midi_live", float(width))
+        imgui.button(visible_label + "##midi_source", float(width))
 
     _set_item_tooltip(
         imgui,
-        "LIVE — one or more mapped components are driven by MIDI; "
-        "component-level activity is not available.",
+        f"{source_label} — one or more mapped components are driven by "
+        + ("a frozen saved MIDI snapshot." if frozen else "the connected MIDI input."),
     )
-
-
-def _render_fixed_ui_indicator(imgui, *, width: float) -> None:
-    """bool 行用の、同幅で非 interactive な UI source 表示を描画する。"""
-
-    selectable = getattr(imgui, "selectable", None)
-    if callable(selectable):
-        header = PARAMETER_GUI_PALETTE["source_ui"]
-        red, green, blue, _alpha = header
-        push_style_color = getattr(imgui, "push_style_color", None)
-        pop_style_color = getattr(imgui, "pop_style_color", None)
-        color_indices = (
-            getattr(imgui, "COLOR_HEADER", None),
-            getattr(imgui, "COLOR_TEXT", None),
-        )
-        pushed_colors = 0
-        if (
-            callable(push_style_color)
-            and callable(pop_style_color)
-            and all(index is not None for index in color_indices)
-        ):
-            push_style_color(color_indices[0], red, green, blue, 0.20)
-            push_style_color(color_indices[1], *header)
-            pushed_colors = 2
-        try:
-            selectable(
-                "UI##source_fixed",
-                True,
-                getattr(imgui, "SELECTABLE_DISABLED", 0),
-                float(width),
-                0.0,
-            )
-        finally:
-            if pushed_colors and callable(pop_style_color):
-                pop_style_color(pushed_colors)
-    else:
-        # 古い backend/test double 向け。表示は UI のまま、label の開始位置は
-        # dummy で selector と同幅に揃える。
-        imgui.text("UI")
-        same_line = getattr(imgui, "same_line", None)
-        dummy = getattr(imgui, "dummy", None)
-        if callable(same_line) and callable(dummy):
-            same_line(0.0, 0.0)
-            dummy(max(1.0, float(width) - 16.0), 1.0)
-
-    _set_item_tooltip(imgui, "Boolean parameters always use the Inspector UI value.")
 
 
 def _render_source_actions_menu(
@@ -542,7 +579,7 @@ def _render_label_cell(
     kind: str,
     override: bool,
     cc_key: int | tuple[int | None, int | None, int | None] | None,
-    last_source: str | None = None,
+    last_source: ValueSource | None = None,
 ) -> tuple[bool, bool, bool]:
     """source + label を描画し、(source変更, override, 明示reset) を返す。"""
 
@@ -561,69 +598,81 @@ def _render_label_cell(
     actions_width = (
         SOURCE_ACTIONS_SHORT_WIDTH_PX if compact else SOURCE_ACTIONS_WIDTH_PX
     ) * metric_scale
-    selector_width = (
-        SOURCE_SELECTOR_SHORT_TOTAL_WIDTH_PX if compact else SOURCE_SELECTOR_TOTAL_WIDTH_PX
-    ) * metric_scale
     segment_gap = SOURCE_SEGMENT_GAP_PX * metric_scale
     label_gap = SOURCE_LABEL_GAP_PX * metric_scale
     override_out = bool(override)
     source_changed = False
     reset_to_code = False
 
-    if str(kind) == "bool":
-        _render_fixed_ui_indicator(imgui, width=selector_width)
-    else:
-        code_clicked = _render_source_segment_button(
-            imgui,
+    code_clicked = _render_source_segment_button(
+        imgui,
+        source="CODE",
+        visible_label="C" if compact else "CODE",
+        active=not override_out,
+        width=code_width,
+    )
+    _set_item_tooltip(
+        imgui,
+        _source_selector_tooltip(
             source="CODE",
-            visible_label="C" if compact else "CODE",
-            active=not override_out,
-            width=code_width,
-        )
-        _set_item_tooltip(
-            imgui,
-            _source_selector_tooltip(
-                source="CODE",
-                kind=kind,
-                cc_key=cc_key,
-                last_source=last_source,
-            ),
-        )
-        if code_clicked and override_out:
-            override_out = False
-            source_changed = True
+            kind=kind,
+            cc_key=cc_key,
+            last_source=last_source,
+        ),
+    )
+    if code_clicked and override_out:
+        override_out = False
+        source_changed = True
 
-        imgui.same_line(0.0, segment_gap)
-        ui_clicked = _render_source_segment_button(
-            imgui,
+    imgui.same_line(0.0, segment_gap)
+    ui_clicked = _render_source_segment_button(
+        imgui,
+        source="UI",
+        visible_label="U" if compact else "UI",
+        active=override_out,
+        width=ui_width,
+    )
+    _set_item_tooltip(
+        imgui,
+        _source_selector_tooltip(
             source="UI",
-            visible_label="U" if compact else "UI",
-            active=override_out,
-            width=ui_width,
-        )
-        _set_item_tooltip(
-            imgui,
-            _source_selector_tooltip(
-                source="UI",
-                kind=kind,
-                cc_key=cc_key,
-                last_source=last_source,
-            ),
-        )
-        if ui_clicked and not override_out:
-            override_out = True
-            source_changed = True
+            kind=kind,
+            cc_key=cc_key,
+            last_source=last_source,
+        ),
+    )
+    if ui_clicked and not override_out:
+        override_out = True
+        source_changed = True
 
-        imgui.same_line(0.0, segment_gap)
-        reset_to_code = _render_source_actions_menu(
-            imgui,
-            reset_available=bool(override_out or cc_key is not None),
-            width=actions_width,
-        )
+    imgui.same_line(0.0, segment_gap)
+    reset_to_code = _render_source_actions_menu(
+        imgui,
+        reset_available=bool(override_out or cc_key is not None),
+        width=actions_width,
+    )
 
     imgui.same_line(0.0, label_gap)
     imgui.text(str(row_label))
     return source_changed, override_out, reset_to_code
+
+
+def _render_favorite_toggle(imgui, favorite: bool) -> tuple[bool, bool]:
+    """label cell 末尾に favorite/pin を描画して更新値を返す。"""
+
+    imgui.same_line(0.0, 4.0 * _imgui_metric_scale(imgui))
+    label = "★##favorite" if favorite else "☆##favorite"
+    small_button = getattr(imgui, "small_button", None)
+    clicked = (
+        bool(small_button(label))
+        if callable(small_button)
+        else bool(imgui.button(label))
+    )
+    _set_item_tooltip(
+        imgui,
+        "Remove from favorites" if favorite else "Pin to favorites",
+    )
+    return clicked, (not favorite if clicked else bool(favorite))
 
 
 def _render_control_cell(imgui, row: ParameterRow) -> tuple[bool, object]:
@@ -678,13 +727,9 @@ def _should_auto_enable_override(
     - override は「GUI 値を採用するか」を決めるトグル。
     - parameter_gui では `override=False` の行でも、値を触った瞬間に反映されるのが直感的。
       そのため「値が編集されたら override=True」を基本とする。
-    - ただし `kind=bool` は override を持たない（常に GUI 値を採用する）ため対象外。
     - `kind=choice` は choices の変化などで ui_value が自動丸めされる場合がある。
       そのケースでは override を自動で立てず、base 優先を維持する。
     """
-
-    if row.kind == "bool":
-        return False
 
     if row.kind == "choice":
         choices = list(row.choices) if row.choices is not None else []
@@ -899,7 +944,7 @@ def _render_cc_cell(
     width_spacer: int,
     midi_learn_state: MidiLearnState | None,
     midi_last_cc_change: tuple[int, int] | None,
-    last_source: str | None = None,
+    last_source: ValueSource | None = None,
 ) -> tuple[bool, int | tuple[int | None, int | None, int | None] | None, bool]:
     """MIDI 列を描画し、(changed, cc_key, override) を返す。
 
@@ -968,14 +1013,18 @@ def _render_cc_cell(
         state.active_component = None
 
     key = _key_for_row(row)
-    midi_is_driving = last_source == "cc"
+    midi_is_driving = last_source in {"midi_live", "midi_frozen"}
 
     if rules.cc_key == "int3":
         component_names = ("R", "G", "B") if row.kind == "rgb" else ("X", "Y", "Z")
         current_tuple = cc_key if isinstance(cc_key, tuple) else (None, None, None)
         show_live = bool(midi_is_driving and any(cc is not None for cc in current_tuple))
         live_compact = bool(cell_width is not None and cell_width < 145.0 * metric_scale)
-        live_width = (14.0 if live_compact else 38.0) * metric_scale
+        live_width = (
+            14.0
+            if live_compact
+            else (58.0 if last_source == "midi_frozen" else 38.0)
+        ) * metric_scale
         gap_count = 3 if show_live else 2
         reserved_live_width = live_width if show_live else 0.0
         component_width = (
@@ -993,8 +1042,10 @@ def _render_cc_cell(
         )
         compact_components = component_width < 52.0 * metric_scale
         if show_live:
-            _render_midi_live_indicator(
+            assert last_source is not None
+            _render_midi_source_indicator(
                 imgui,
+                source=last_source,
                 compact=live_compact,
                 width=live_width,
             )
@@ -1078,7 +1129,8 @@ def _render_cc_cell(
         elif current_cc is None:
             label_text = "MIDI +"
         elif midi_is_driving:
-            label_text = f"LIVE {int(current_cc)}"
+            status = "FROZEN" if last_source == "midi_frozen" else "LIVE"
+            label_text = f"{status} {int(current_cc)}"
         else:
             label_text = f"MIDI {int(current_cc)} ×"
 
@@ -1107,9 +1159,16 @@ def _render_cc_cell(
         elif current_cc is None:
             _set_item_tooltip(imgui, "Learn a MIDI CC")
         elif midi_is_driving:
+            status = "FROZEN" if last_source == "midi_frozen" else "LIVE"
+            source_explanation = (
+                "a saved snapshot"
+                if last_source == "midi_frozen"
+                else "the connected MIDI input"
+            )
             _set_item_tooltip(
                 imgui,
-                f"LIVE — MIDI CC {int(current_cc)} is driving this value; click to remove",
+                f"{status} — MIDI CC {int(current_cc)} from {source_explanation} "
+                "is driving this value; click to remove",
             )
         else:
             _set_item_tooltip(imgui, "Remove MIDI CC mapping; keep its effective value in UI")
@@ -1138,7 +1197,8 @@ def render_parameter_row_4cols(
     visible_label: str | None = None,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
-    last_source: str | None = None,
+    last_source: ValueSource | None = None,
+    on_help_row: Callable[[ParameterRow, bool], None] | None = None,
 ) -> tuple[bool, ParameterRow]:
     """1 行（1 key）を 4 列テーブルとして描画し、更新後の row を返す。
 
@@ -1170,6 +1230,7 @@ def render_parameter_row_4cols(
     ui_max = row.ui_max
     cc_key = row.cc_key
     override = row.override
+    favorite = row.favorite
 
     cc_key_width = 30
     width_spacer = 4
@@ -1203,6 +1264,14 @@ def render_parameter_row_4cols(
                 midi_learn_state.active_target = None
                 midi_learn_state.active_component = None
 
+        # _render_label_cell の最後の item は可視 label。label 自体の hover も
+        # pin button と同様に Help pane の対象にする。
+        _notify_parameter_help(imgui, row, on_help_row)
+        favorite_changed, favorite = _render_favorite_toggle(imgui, favorite)
+        if favorite_changed:
+            changed_any = True
+        _notify_parameter_help(imgui, row, on_help_row)
+
         # --- Column 2: control（kind に応じたウィジェット）---
         # slider の visible label はテーブルの label 列で代替するため、
         # ウィジェット側は "##value" を使って非表示にしている。
@@ -1221,6 +1290,7 @@ def render_parameter_row_4cols(
                 )
             ):
                 override = True
+        _notify_parameter_help(imgui, row, on_help_row)
 
         # --- Column 3: min-max（ui_min/ui_max）---
         changed_range, ui_min, ui_max = _render_minmax_cell(
@@ -1231,6 +1301,7 @@ def render_parameter_row_4cols(
         )
         if changed_range:
             changed_any = True
+        _notify_parameter_help(imgui, row, on_help_row)
 
         # --- Column 4: MIDI（cc_key learn / unassign のみ）---
         changed_cc, cc_key, override = _render_cc_cell(
@@ -1247,24 +1318,20 @@ def render_parameter_row_4cols(
         )
         if changed_cc:
             changed_any = True
+        _notify_parameter_help(imgui, row, on_help_row)
     finally:
         # push_id と必ず対になるよう finally で pop_id する。
         imgui.pop_id()
 
     # ローカル変数へ反映した結果を、新しい ParameterRow として返す。
-    updated = ParameterRow(
-        label=row.label,
-        op=row.op,
-        site_id=row.site_id,
-        arg=row.arg,
-        kind=row.kind,
+    updated = replace(
+        row,
         ui_value=ui_value,
         ui_min=ui_min,
         ui_max=ui_max,
-        choices=row.choices,
         cc_key=cc_key,
         override=override,
-        ordinal=row.ordinal,
+        favorite=bool(favorite),
         reset_to_code=bool(reset_to_code),
     )
 
@@ -1281,11 +1348,12 @@ def render_parameter_table(
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
     effect_step_ordinal_by_site: Mapping[tuple[str, str], int] | None = None,
     last_effective_by_key: Mapping[ParameterKey, object] | None = None,
-    last_source_by_key: Mapping[ParameterKey, str] | None = None,
+    last_source_by_key: Mapping[ParameterKey, ValueSource] | None = None,
     raw_label_by_site: Mapping[tuple[str, str], str] | None = None,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
     collapsed_headers: set[str] | None = None,
+    on_help_row: Callable[[ParameterRow, bool], None] | None = None,
 ) -> tuple[bool, list[ParameterRow]]:
     """ParameterRow の列を 4 列テーブルとして描画し、更新後の rows を返す。"""
 
@@ -1490,6 +1558,7 @@ def render_parameter_table(
                         last_source=(
                             None if last_source_by_key is None else last_source_by_key.get(row_key)
                         ),
+                        on_help_row=on_help_row,
                     )
                     changed_any = changed_any or row_changed
                     updated_rows.append(updated)

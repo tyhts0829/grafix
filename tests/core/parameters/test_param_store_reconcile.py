@@ -2,16 +2,28 @@ from __future__ import annotations
 
 import json
 
-from grafix.core.parameters import ParameterKey, ParamMeta, ParamStore
+from grafix.core.parameters import (
+    ParameterKey,
+    ParamMeta,
+    ParamStore,
+    ParamStoreHistory,
+    list_reconcile_orphans,
+    manual_migrate_orphan,
+)
 from grafix.core.parameters.codec import dumps_param_store, loads_param_store
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.invariants import assert_invariants
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP, layer_style_records
+from grafix.core.parameters.labels_ops import set_label
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.prune_ops import prune_groups, prune_stale_loaded_groups
 from grafix.core.parameters.snapshot_ops import store_snapshot, store_snapshot_for_gui
 from grafix.core.parameters.ui_ops import update_state_from_ui
+from grafix.core.parameters.variations import (
+    is_parameter_locked,
+    set_parameters_locked,
+)
 
 
 def _roundtrip_store(store: ParamStore) -> ParamStore:
@@ -24,9 +36,18 @@ def _roundtrip_store(store: ParamStore) -> ParamStore:
 def _polyhedron_records(site_id: str) -> list[FrameParamRecord]:
     return [
         FrameParamRecord(
-            key=ParameterKey(op="polyhedron", site_id=site_id, arg="type_index"),
-            base=0,
-            meta=ParamMeta(kind="int", ui_min=0, ui_max=4),
+            key=ParameterKey(op="polyhedron", site_id=site_id, arg="kind"),
+            base="tetrahedron",
+            meta=ParamMeta(
+                kind="choice",
+                choices=(
+                    "tetrahedron",
+                    "hexahedron",
+                    "octahedron",
+                    "dodecahedron",
+                    "icosahedron",
+                ),
+            ),
             explicit=False,
         ),
         FrameParamRecord(
@@ -47,9 +68,12 @@ def _polyhedron_records(site_id: str) -> list[FrameParamRecord]:
 def _sphere_records(site_id: str) -> list[FrameParamRecord]:
     return [
         FrameParamRecord(
-            key=ParameterKey(op="sphere", site_id=site_id, arg="type_index"),
-            base=0,
-            meta=ParamMeta(kind="int", ui_min=0, ui_max=3),
+            key=ParameterKey(op="sphere", site_id=site_id, arg="style"),
+            base="latlon",
+            meta=ParamMeta(
+                kind="choice",
+                choices=("latlon", "zigzag", "icosphere", "rings"),
+            ),
             explicit=False,
         ),
         FrameParamRecord(
@@ -77,6 +101,7 @@ def test_reconcile_migrates_state_and_hides_stale_group_in_gui_snapshot():
         meta=old_center_meta,
         override=True,
     )
+    set_parameters_locked(original, [old_center_key], locked=True)
 
     store = _roundtrip_store(original)
 
@@ -90,6 +115,8 @@ def test_reconcile_migrates_state_and_hides_stale_group_in_gui_snapshot():
     assert new_state is not None
     assert new_state.override is True
     assert tuple(new_state.ui_value) == (12.0, 34.0, 56.0)
+    assert is_parameter_locked(store, old_center_key) is False
+    assert is_parameter_locked(store, new_center_key) is True
 
     # GUI 表示用スナップショットでは旧グループが隠れる（増殖しない）。
     gui_snapshot = store_snapshot_for_gui(store)
@@ -104,6 +131,8 @@ def test_prune_stale_loaded_groups_removes_old_entries_on_save_path():
 
     original = ParamStore()
     merge_frame_params(original, _polyhedron_records(old_site_id))
+    old_center_key = ParameterKey(op="polyhedron", site_id=old_site_id, arg="center")
+    set_parameters_locked(original, [old_center_key], locked=True)
     store = _roundtrip_store(original)
 
     merge_frame_params(store, _polyhedron_records(new_site_id))
@@ -118,6 +147,7 @@ def test_prune_stale_loaded_groups_removes_old_entries_on_save_path():
         ParameterKey(op="polyhedron", site_id=new_site_id, arg="center")
         in full_snapshot
     )
+    assert is_parameter_locked(store, old_center_key) is False
     assert_invariants(store)
 
 
@@ -207,25 +237,131 @@ def test_reconcile_does_not_migrate_when_ambiguous():
     merge_frame_params(original, old_a_records)
     merge_frame_params(original, old_b_records)
 
-    key_old_a = ParameterKey(op="polyhedron", site_id="old-a", arg="type_index")
+    key_old_a = ParameterKey(op="polyhedron", site_id="old-a", arg="kind")
     meta_old_a = next(rec.meta for rec in old_a_records if rec.key == key_old_a)
-    update_state_from_ui(original, key_old_a, 1, meta=meta_old_a, override=True)
+    update_state_from_ui(
+        original,
+        key_old_a,
+        "hexahedron",
+        meta=meta_old_a,
+        override=True,
+    )
 
-    key_old_b = ParameterKey(op="polyhedron", site_id="old-b", arg="type_index")
+    key_old_b = ParameterKey(op="polyhedron", site_id="old-b", arg="kind")
     meta_old_b = next(rec.meta for rec in old_b_records if rec.key == key_old_b)
-    update_state_from_ui(original, key_old_b, 4, meta=meta_old_b, override=True)
+    update_state_from_ui(
+        original,
+        key_old_b,
+        "icosahedron",
+        meta=meta_old_b,
+        override=True,
+    )
 
     store = _roundtrip_store(original)
 
     fresh_site_id = "new"
     merge_frame_params(store, _polyhedron_records(fresh_site_id))
 
-    fresh_key = ParameterKey(op="polyhedron", site_id=fresh_site_id, arg="type_index")
+    fresh_key = ParameterKey(op="polyhedron", site_id=fresh_site_id, arg="kind")
     state = store.get_state(fresh_key)
     assert state is not None
-    # base=0 のまま（どちらの stale にも寄せない）
-    assert state.ui_value == 0
+    # code既定のまま（どちらの stale にも寄せない）
+    assert state.ui_value == "tetrahedron"
+    orphans = list_reconcile_orphans(store)
+    assert len(orphans) == 1
+    assert orphans[0].new_group == ("polyhedron", fresh_site_id)
+    assert orphans[0].candidate_old_groups == (
+        ("polyhedron", "old-a"),
+        ("polyhedron", "old-b"),
+    )
+    assert orphans[0].reason == "tie"
     assert_invariants(store)
+
+
+def test_manual_orphan_migration_is_undoable_and_persistent():
+    original = ParamStore()
+    old_a_records = _polyhedron_records("old-a")
+    old_b_records = _polyhedron_records("old-b")
+    merge_frame_params(original, old_a_records)
+    merge_frame_params(original, old_b_records)
+
+    old_key = ParameterKey(op="polyhedron", site_id="old-b", arg="kind")
+    old_meta = next(record.meta for record in old_b_records if record.key == old_key)
+    update_state_from_ui(
+        original,
+        old_key,
+        "icosahedron",
+        meta=old_meta,
+        override=True,
+    )
+
+    store = _roundtrip_store(original)
+    merge_frame_params(store, _polyhedron_records("new"))
+    history = ParamStoreHistory(store)
+    new_key = ParameterKey(op="polyhedron", site_id="new", arg="kind")
+
+    manual_migrate_orphan(
+        store,
+        ("polyhedron", "old-b"),
+        ("polyhedron", "new"),
+        history=history,
+    )
+    assert list_reconcile_orphans(store) == ()
+    assert store.get_state(new_key).ui_value == "icosahedron"  # type: ignore[union-attr]
+
+    assert history.undo() is True
+    assert store.get_state(new_key).ui_value == "tetrahedron"  # type: ignore[union-attr]
+    assert history.redo() is True
+    assert store.get_state(new_key).ui_value == "icosahedron"  # type: ignore[union-attr]
+
+    prune_stale_loaded_groups(store)
+    restored = _roundtrip_store(store)
+    restored_state = restored.get_state(new_key)
+    assert restored_state is not None
+    assert restored_state.override is True
+    assert restored_state.ui_value == "icosahedron"
+
+
+def test_reconcile_never_reuses_an_old_group_after_automatic_migration():
+    original = ParamStore()
+    old_records = _polyhedron_records("old")
+    merge_frame_params(original, old_records)
+    set_label(original, op="polyhedron", site_id="old", label="primary")
+    old_key = ParameterKey(op="polyhedron", site_id="old", arg="kind")
+    old_meta = next(record.meta for record in old_records if record.key == old_key)
+    update_state_from_ui(
+        original,
+        old_key,
+        "hexahedron",
+        meta=old_meta,
+        override=True,
+    )
+
+    store = _roundtrip_store(original)
+    set_label(store, op="polyhedron", site_id="new-primary", label="primary")
+    merge_frame_params(
+        store,
+        [
+            *_polyhedron_records("new-primary"),
+            *_polyhedron_records("new-secondary"),
+        ],
+    )
+
+    primary_key = ParameterKey(
+        op="polyhedron", site_id="new-primary", arg="kind"
+    )
+    secondary_key = ParameterKey(
+        op="polyhedron", site_id="new-secondary", arg="kind"
+    )
+    assert store.get_state(primary_key).ui_value == "hexahedron"  # type: ignore[union-attr]
+    assert store.get_state(secondary_key).ui_value == "tetrahedron"  # type: ignore[union-attr]
+
+    # 次 frame でも、primary に使用済みの old を secondary へ再利用しない。
+    merge_frame_params(store, _polyhedron_records("new-secondary"))
+    assert store.get_state(secondary_key).ui_value == "tetrahedron"  # type: ignore[union-attr]
+    assert store._runtime_ref().reconcile_applied == {
+        (("polyhedron", "old"), ("polyhedron", "new-primary"))
+    }
 
 
 def test_prune_removes_stale_effect_steps_and_unused_chain_ordinals():
@@ -380,10 +516,16 @@ def draw():
     # 何か 1 つ値を変えたことにする（=GUI 調整）。
     snap_v1 = store_snapshot(store_v1)
     key_v1 = next(
-        k for k in snap_v1.keys() if k.op == "polyhedron" and k.arg == "type_index"
+        k for k in snap_v1.keys() if k.op == "polyhedron" and k.arg == "kind"
     )
     meta_v1, _state_v1, _ordinal_v1, _label_v1 = snap_v1[key_v1]
-    update_state_from_ui(store_v1, key_v1, 3, meta=meta_v1, override=True)
+    update_state_from_ui(
+        store_v1,
+        key_v1,
+        "dodecahedron",
+        meta=meta_v1,
+        override=True,
+    )
 
     store = _roundtrip_store(store_v1)
 
@@ -393,7 +535,7 @@ def draw():
 from grafix.api.primitives import G
 
 def draw():
-    G.polyhedron(type_index=2)
+    G.polyhedron(kind="octahedron")
 """
     )
 
@@ -406,10 +548,10 @@ def draw():
     assert len(poly_sites) == 1
 
     # 値が引き継がれている（曖昧ではないので migrate される）。
-    type_key = next(
-        k for k in gui_snapshot.keys() if k.op == "polyhedron" and k.arg == "type_index"
+    kind_key = next(
+        k for k in gui_snapshot.keys() if k.op == "polyhedron" and k.arg == "kind"
     )
-    st = store.get_state(type_key)
+    st = store.get_state(kind_key)
     assert st is not None
-    assert st.ui_value == 3
+    assert st.ui_value == "dodecahedron"
     assert_invariants(store)

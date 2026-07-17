@@ -10,18 +10,74 @@ from math import isfinite
 from pathlib import Path
 from typing import Final
 
-CAPTURE_MANIFEST_SCHEMA_VERSION = 1
+from grafix.core.capture_provenance import (
+    CaptureProvenance,
+    unavailable_capture_provenance,
+)
+
+CAPTURE_MANIFEST_SCHEMA_VERSION = 2
 _UTF8: Final = "utf-8"
 
 
 @dataclass(frozen=True, slots=True)
+class RecordingManifest:
+    """動画 recording の終端統計と明示 error policy。"""
+
+    fps: float
+    frame_count: int
+    dropped_frame_count: int = 0
+    duplicated_frame_count: int = 0
+    error_count: int = 0
+    error_policy: str = "pause"
+    stop_reason: str | None = None
+    abort_reason: str | None = None
+    last_error: str | None = None
+
+    def __post_init__(self) -> None:
+        fps = float(self.fps)
+        if not isfinite(fps) or fps <= 0.0:
+            raise ValueError("recording fps は正の有限値である必要があります")
+        object.__setattr__(self, "fps", fps)
+        for name in (
+            "frame_count",
+            "dropped_frame_count",
+            "duplicated_frame_count",
+            "error_count",
+        ):
+            value = int(getattr(self, name))
+            if value < 0:
+                raise ValueError(f"{name} は 0 以上である必要があります")
+            object.__setattr__(self, name, value)
+        policy = str(self.error_policy).strip().casefold()
+        if policy != "pause":
+            raise ValueError("recording error_policy は 'pause' である必要があります")
+        object.__setattr__(self, "error_policy", policy)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "fps": self.fps,
+            "frame_count": self.frame_count,
+            "dropped_frame_count": self.dropped_frame_count,
+            "duplicated_frame_count": self.duplicated_frame_count,
+            "error_count": self.error_count,
+            "error_policy": self.error_policy,
+            "stop_reason": self.stop_reason,
+            "abort_reason": self.abort_reason,
+            "last_error": self.last_error,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CaptureManifest:
-    """1 回の capture に対応する、JSON 化可能な最小 manifest。"""
+    """1 回の capture に対応する JSON 化可能な manifest v2。"""
 
     t: float
     canvas_size: tuple[int, int]
     format: str
     artifact_paths: tuple[Path, ...]
+    provenance: CaptureProvenance | None = None
+    output_size: tuple[int, int] | None = None
+    recording: RecordingManifest | None = None
 
     def __post_init__(self) -> None:
         capture_t = float(self.t)
@@ -42,22 +98,50 @@ class CaptureManifest:
         if any(not path.name for path in artifact_paths):
             raise ValueError("artifact_paths はファイル名を含む必要がある")
 
+        output_size = self.output_size
+        if output_size is not None:
+            output_size = (int(output_size[0]), int(output_size[1]))
+            if output_size[0] <= 0 or output_size[1] <= 0:
+                raise ValueError("output_size は正の (width, height) である必要があります")
+
+        provenance = self.provenance
+        if provenance is not None and float(provenance.frame.t) != capture_t:
+            raise ValueError("provenance.frame.t は manifest.t と一致する必要があります")
+
         object.__setattr__(self, "t", capture_t)
         object.__setattr__(self, "canvas_size", canvas_size)
         object.__setattr__(self, "format", artifact_format)
         object.__setattr__(self, "artifact_paths", artifact_paths)
+        object.__setattr__(self, "output_size", output_size)
 
     def as_dict(self) -> dict[str, object]:
         """安定した JSON schema の dict を返す。"""
 
         width, height = self.canvas_size
-        return {
+        provenance = self.provenance or unavailable_capture_provenance(t=self.t)
+        sections = provenance.manifest_sections()
+        output: dict[str, object] = {
+            "format": self.format,
+            "artifact_paths": [str(path) for path in self.artifact_paths],
+            "canvas_size": {"width": width, "height": height},
+            "size": (
+                None
+                if self.output_size is None
+                else {"width": self.output_size[0], "height": self.output_size[1]}
+            ),
+        }
+        payload = {
             "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
+            # v1 の top-level identity は diff/readability のため v2 でも保持する。
             "t": self.t,
             "canvas_size": {"width": width, "height": height},
             "format": self.format,
             "artifact_paths": [str(path) for path in self.artifact_paths],
+            **sections,
+            "output": output,
+            "recording": None if self.recording is None else self.recording.as_dict(),
         }
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +213,73 @@ def _unlink_if_identity(path: Path, expected: tuple[int, int]) -> None:
         pass
 
 
+def _private_backup_path(path: Path) -> Path:
+    """overwrite transaction 用の一意な sibling backup path を返す。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".grafix-capture-backup-{path.name}-",
+        suffix=".tmp",
+    )
+    os.close(fd)
+    backup = Path(name)
+    backup.unlink()
+    return backup
+
+
+def _publish_capture_generation_overwrite(
+    *,
+    sources: tuple[Path, ...],
+    targets: tuple[Path, ...],
+    source_identities: tuple[tuple[int, int], ...],
+) -> None:
+    """既存 generation を退避し、失敗時に元へ戻して置換する。"""
+
+    backups: list[tuple[Path, Path]] = []
+    committed: list[tuple[Path, tuple[int, int]]] = []
+    directories = tuple(path.parent for path in targets)
+    try:
+        for target in targets:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not os.path.lexists(target):
+                continue
+            if target.is_dir() and not target.is_symlink():
+                raise IsADirectoryError(f"capture の公開先が directory です: {target}")
+            backup = _private_backup_path(target)
+            os.replace(target, backup)
+            backups.append((target, backup))
+
+        for source, target, identity in zip(
+            sources,
+            targets,
+            source_identities,
+            strict=True,
+        ):
+            os.link(source, target, follow_symlinks=False)
+            committed.append((target, identity))
+        _fsync_directories(directories, best_effort=False)
+    except BaseException:
+        for target, identity in reversed(committed):
+            _unlink_if_identity(target, identity)
+        for target, backup in reversed(backups):
+            # transaction 外から同名 path が作られた場合は上書きしない。通常の
+            # rollback では target は空いており、元 generation を atomic に戻せる。
+            if not os.path.lexists(target) and os.path.lexists(backup):
+                os.replace(backup, target)
+        _fsync_directories(directories, best_effort=True)
+        raise
+    else:
+        for _target, backup in backups:
+            try:
+                backup.unlink(missing_ok=True)
+            except OSError:
+                # generation は既に公開済み。private backup の後始末失敗を
+                # publish failure と誤報して、呼び出し側に再試行させない。
+                pass
+        _fsync_directories(directories, best_effort=True)
+
+
 def _fsync_directories(directories: tuple[Path, ...], *, best_effort: bool) -> None:
     """重複を除いた publish directory を同期する。"""
 
@@ -157,6 +308,7 @@ def publish_capture_generation(
     artifact_paths: tuple[Path, ...],
     manifest_path: str | Path,
     manifest: CaptureManifest,
+    overwrite: bool = False,
 ) -> PublishedCaptureGeneration:
     """成果物と manifest を no-clobber generation として公開する。
 
@@ -200,16 +352,23 @@ def publish_capture_generation(
             with source.open("rb") as stream:
                 os.fsync(stream.fileno())
 
-        for source, target, identity in zip(
-            sources,
-            all_targets,
-            source_identities,
-            strict=True,
-        ):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.link(source, target, follow_symlinks=False)
-            committed.append((target, identity))
-        _fsync_directories(target_directories, best_effort=False)
+        if overwrite:
+            _publish_capture_generation_overwrite(
+                sources=sources,
+                targets=all_targets,
+                source_identities=source_identities,
+            )
+        else:
+            for source, target, identity in zip(
+                sources,
+                all_targets,
+                source_identities,
+                strict=True,
+            ):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.link(source, target, follow_symlinks=False)
+                committed.append((target, identity))
+            _fsync_directories(target_directories, best_effort=False)
     except BaseException:
         for target, identity in reversed(committed):
             _unlink_if_identity(target, identity)
@@ -255,6 +414,7 @@ __all__ = [
     "CAPTURE_MANIFEST_SCHEMA_VERSION",
     "CaptureManifest",
     "PublishedCaptureGeneration",
+    "RecordingManifest",
     "capture_manifest_path_for",
     "publish_capture_generation",
     "write_capture_manifest",

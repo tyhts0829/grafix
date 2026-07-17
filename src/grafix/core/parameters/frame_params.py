@@ -9,6 +9,7 @@ from typing import Any
 
 from .key import ParameterKey
 from .meta import ParamMeta
+from .source import ValueSource
 
 
 @dataclass
@@ -19,7 +20,7 @@ class FrameParamRecord:
     base: Any
     meta: ParamMeta
     effective: Any | None = None
-    source: str | None = None  # "base" | "gui" | "cc"
+    source: ValueSource | None = None
     explicit: bool = True
     chain_id: str | None = None
     step_index: int | None = None
@@ -48,7 +49,7 @@ class FrameParamsBuffer:
         base: Any,
         meta: ParamMeta,
         effective: Any | None = None,
-        source: str | None = None,
+        source: ValueSource | None = None,
         explicit: bool = True,
         chain_id: str | None = None,
         step_index: int | None = None,

@@ -7,9 +7,11 @@ from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
 from grafix.core.op_registry import (
+    CachePolicy,
     OpRegistry,
     OpSpec,
     UiVisiblePred,
+    op_callable_catalog_fields,
     op_defaults_and_order,
 )
 from grafix.core.parameters.meta import ParamMeta
@@ -33,6 +35,7 @@ def effect(
     func: Callable[..., GeomTuple] | None = None,
     *,
     overwrite: bool = False,
+    cache_policy: CachePolicy = "content",
     n_inputs: int = 1,
     meta: Mapping[str, ParamMeta | Mapping[str, object]] | None = None,
     ui_visible: Mapping[str, UiVisiblePred] | None = None,
@@ -48,6 +51,10 @@ def effect(
         引数なしデコレータ利用時は None。
     overwrite : bool, optional
         既存エントリがある場合に上書きするかどうか。
+    cache_policy : {"content", "none"}, optional
+        ``"content"`` はpure/deterministicな結果を同一入力間で再利用する。
+        乱数は明示 ``seed`` 引数を使う。時刻・global stateへ依存するeffectだけ
+        ``"none"`` を指定してCPU/GPU cacheを迂回する。
 
     Examples
     --------
@@ -131,6 +138,12 @@ def effect(
             ui_visible={} if ui_visible is None else ui_visible,
             n_inputs=n_inputs_i,
             kind="effect",
+            cache_policy=cache_policy,
+            **op_callable_catalog_fields(
+                kind="effect",
+                func=f,
+                n_inputs=n_inputs_i,
+            ),
         )
         effect_registry.register(
             f.__name__,

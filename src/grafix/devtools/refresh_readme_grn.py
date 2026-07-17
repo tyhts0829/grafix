@@ -109,9 +109,9 @@ def _resolve_draw_and_canvas(mod: object) -> tuple[object, tuple[int, int]]:
 
 def _export_one(*, draw: object, canvas_size: tuple[int, int]) -> tuple[Path, Path]:
     """1 スケッチ分の SVG/PNG を export して保存先パスを返す。"""
-    from grafix.api import Export
+    from grafix import RenderOptions, export, render
     from grafix.core.output_paths import output_path_for_draw
-    from grafix.export.image import default_png_output_path, png_output_size, rasterize_svg_to_png
+    from grafix.export.image import default_png_output_path
 
     svg_path = output_path_for_draw(
         kind="svg",
@@ -119,25 +119,22 @@ def _export_one(*, draw: object, canvas_size: tuple[int, int]) -> tuple[Path, Pa
         draw=draw,  # type: ignore[arg-type]
         canvas_size=canvas_size,
     )
-    exp = Export(
+    frame = render(
         draw,  # type: ignore[arg-type]
-        t=float(EXPORT_T),
-        fmt="svg",
-        path=svg_path,
-        canvas_size=canvas_size,
-        line_color=LINE_COLOR,
-        line_thickness=float(LINE_THICKNESS),
-        background_color=BACKGROUND_COLOR,
+        float(EXPORT_T),
+        options=RenderOptions(
+            canvas_size=canvas_size,
+            line_color=LINE_COLOR,
+            line_thickness=float(LINE_THICKNESS),
+            background_color=BACKGROUND_COLOR,
+        ),
+        parameter_source="saved",
     )
+    svg_result = export(frame, svg_path, overwrite=True)
 
     png_path = default_png_output_path(draw, canvas_size=canvas_size)  # type: ignore[arg-type]
-    rasterize_svg_to_png(
-        svg_path,
-        png_path,
-        output_size=png_output_size(canvas_size),
-        background_color_rgb01=exp.style.bg_color_rgb01,
-    )
-    return svg_path, png_path
+    png_result = export(frame, png_path, overwrite=True)
+    return svg_result.path, png_result.path
 
 
 def main() -> int:

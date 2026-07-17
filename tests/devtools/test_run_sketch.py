@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+# ruff: noqa: E402 -- pyglet option must be set before importing runner modules.
+
+import importlib
+from pathlib import Path
+
+import pyglet
+import pytest
+
+# runner import時のshadow GL contextをCI/headless環境では作らない。
+pyglet.options["shadow_window"] = False
+
+from grafix import __main__ as grafix_main
+from grafix.devtools import run_sketch
+
+
+def _write_sketch(path: Path) -> None:
+    path.write_text("def draw(t):\n    return []\n", encoding="utf-8")
+
+
+def test_run_cli_passes_transactional_controller_only_with_watch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sketch = tmp_path / "art.py"
+    _write_sketch(sketch)
+    calls: list[dict[str, object]] = []
+    runner_module = importlib.import_module("grafix.api.runner")
+    source_reload_module = importlib.import_module(
+        "grafix.interactive.runtime.source_reload"
+    )
+
+    def fake_run(_draw: object, **kwargs: object) -> None:
+        calls.append(
+            {
+                **kwargs,
+                "source_reload": source_reload_module.current_source_reload(),
+            }
+        )
+
+    monkeypatch.setattr(runner_module, "run", fake_run)
+
+    assert run_sketch.main([str(sketch), "--watch", "--no-parameter-gui"]) == 0
+    assert calls[0]["parameter_gui"] is False
+    controller = calls[0]["source_reload"]
+    assert controller is not None
+    assert controller.path == sketch.resolve()
+
+    calls.clear()
+    assert run_sketch.main([str(sketch), "--no-parameter-gui"]) == 0
+    assert calls[0]["source_reload"] is None
+
+
+def test_main_dispatches_run_subcommand(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_main(argv: list[str]) -> int:
+        seen.append(argv)
+        return 7
+
+    monkeypatch.setattr(run_sketch, "main", fake_main)
+
+    assert grafix_main.main(["run", "--", "sketch.py", "--watch"]) == 7
+    assert seen == [["sketch.py", "--watch"]]
+
+
+def test_run_cli_reports_initial_source_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sketch = tmp_path / "broken.py"
+    sketch.write_text("def draw(:\n", encoding="utf-8")
+
+    assert run_sketch.main([str(sketch), "--no-parameter-gui"]) == 1
+    captured = capsys.readouterr()
+    assert "SyntaxError" in captured.err

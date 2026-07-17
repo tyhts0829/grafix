@@ -8,11 +8,17 @@ import contextlib
 import contextvars
 from typing import Iterator
 
+from grafix.core.operation_diagnostics import (
+    OperationDiagnosticBuffer,
+    operation_diagnostic_context,
+)
+
 from .frame_params import FrameParamsBuffer
 from .store import ParamStore
 from .labels_ops import merge_frame_labels
 from .merge_ops import merge_frame_params
 from .snapshot_ops import ParamSnapshot, store_snapshot
+from .source import MidiFrameSnapshot
 
 _EMPTY_SNAPSHOT: ParamSnapshot = {}
 _param_snapshot_var: contextvars.ContextVar[ParamSnapshot] = contextvars.ContextVar(
@@ -21,7 +27,7 @@ _param_snapshot_var: contextvars.ContextVar[ParamSnapshot] = contextvars.Context
 _frame_params_var: contextvars.ContextVar[FrameParamsBuffer | None] = (
     contextvars.ContextVar("frame_params", default=None)
 )
-_cc_snapshot_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+_cc_snapshot_var: contextvars.ContextVar[MidiFrameSnapshot | None] = contextvars.ContextVar(
     "cc_snapshot", default=None
 )
 _store_var: contextvars.ContextVar[ParamStore | None] = contextvars.ContextVar(
@@ -41,7 +47,7 @@ def current_frame_params() -> FrameParamsBuffer | None:
     return _frame_params_var.get()
 
 
-def current_cc_snapshot() -> dict | None:
+def current_cc_snapshot() -> MidiFrameSnapshot | None:
     return _cc_snapshot_var.get()
 
 
@@ -69,52 +75,53 @@ def parameter_recording_muted() -> Iterator[None]:
 
 @contextlib.contextmanager
 def parameter_context(
-    store: ParamStore, cc_snapshot: dict | None = None
-) -> Iterator[None]:
+    store: ParamStore, cc_snapshot: MidiFrameSnapshot | None = None
+) -> Iterator[OperationDiagnosticBuffer]:
     """フレーム境界で param_snapshot / frame_params を固定するコンテキストマネージャ。"""
 
     snapshot = store_snapshot(store)
     frame_params = FrameParamsBuffer()
 
-    t1 = _param_snapshot_var.set(snapshot)
-    t2 = _frame_params_var.set(frame_params)
-    t3 = _cc_snapshot_var.set(cc_snapshot)
-    t4 = _store_var.set(store)
-    try:
-        yield
-    except BaseException:
-        # draw が失敗した frame は、途中までの観測結果を反映しない。
-        # 不完全な records/labels が observed_groups や永続ストアを書き換えると、
-        # 次回の正常 frame でパラメータを復元できなくなるため。
-        raise
-    else:
-        # yield が正常完了した frame の観測結果だけを commit する。
-        merge_frame_labels(store, frame_params.labels)
-        merge_frame_params(store, frame_params.records)
-    finally:
-        # body/merge のどちらが失敗しても ContextVar は必ず元へ戻す。
-        _store_var.reset(t4)
-        _cc_snapshot_var.reset(t3)
-        _frame_params_var.reset(t2)
-        _param_snapshot_var.reset(t1)
+    with operation_diagnostic_context() as operation_diagnostics:
+        t1 = _param_snapshot_var.set(snapshot)
+        t2 = _frame_params_var.set(frame_params)
+        t3 = _cc_snapshot_var.set(cc_snapshot)
+        t4 = _store_var.set(store)
+        try:
+            yield operation_diagnostics
+        except BaseException:
+            # draw が失敗した frame は、途中までの parameter 観測を反映しない。
+            # operation diagnostics は呼び出し側が buffer から失敗理由として読める。
+            raise
+        else:
+            # yield が正常完了した frame の観測結果だけを commit する。
+            merge_frame_labels(store, frame_params.labels)
+            merge_frame_params(store, frame_params.records)
+        finally:
+            # body/merge のどちらが失敗しても ContextVar は必ず元へ戻す。
+            _store_var.reset(t4)
+            _cc_snapshot_var.reset(t3)
+            _frame_params_var.reset(t2)
+            _param_snapshot_var.reset(t1)
 
 
 @contextlib.contextmanager
 def parameter_context_from_snapshot(
-    snapshot: ParamSnapshot, cc_snapshot: dict | None = None
+    snapshot: ParamSnapshot, cc_snapshot: MidiFrameSnapshot | None = None
 ) -> Iterator[FrameParamsBuffer]:
     """ParamStore を持たずに snapshot/frame_params を固定する（worker 用）。"""
 
     frame_params = FrameParamsBuffer()
 
-    t1 = _param_snapshot_var.set(snapshot)
-    t2 = _frame_params_var.set(frame_params)
-    t3 = _cc_snapshot_var.set(cc_snapshot)
-    t4 = _store_var.set(None)
-    try:
-        yield frame_params
-    finally:
-        _store_var.reset(t4)
-        _cc_snapshot_var.reset(t3)
-        _frame_params_var.reset(t2)
-        _param_snapshot_var.reset(t1)
+    with operation_diagnostic_context():
+        t1 = _param_snapshot_var.set(snapshot)
+        t2 = _frame_params_var.set(frame_params)
+        t3 = _cc_snapshot_var.set(cc_snapshot)
+        t4 = _store_var.set(None)
+        try:
+            yield frame_params
+        finally:
+            _store_var.reset(t4)
+            _cc_snapshot_var.reset(t3)
+            _frame_params_var.reset(t2)
+            _param_snapshot_var.reset(t1)

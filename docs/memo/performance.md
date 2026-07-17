@@ -8,6 +8,7 @@
 ## 仕組み（実装）
 
 - `src/grafix/interactive/runtime/perf.py` の `PerfCollector` が、区間時間を集計して N フレームごとに平均値を出力する。
+- operation/layer ごとの時間、CPU cache hit/miss/eviction、mp-draw worker lag は bounded snapshot として Inspector の `PROFILER` に表示する。
 - `src/grafix/interactive/runtime/draw_window_system.py` が `draw_frame()` 内で以下を計測する:
   - `frame`: `draw_frame()` 全体
   - `scene`: `realize_scene(...)` 全体（内部で `draw(t)` を含む）
@@ -36,12 +37,21 @@ GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 GRAFIX_PERF_GPU_FINISH=1 python sketch/perf_s
 GRAFIX_SKETCH_PARAMETER_GUI=0 GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 python sketch/perf_sketch.py
 ```
 
+### GUI 無しで structured trace を保存する
+
+```bash
+GRAFIX_SKETCH_PARAMETER_GUI=0 GRAFIX_PERF_TRACE=data/output/performance.jsonl GRAFIX_PERF_EVERY=60 python sketch/perf_sketch.py
+```
+
+trace は `grafix.performance.trace.v1` の JSON Lines で、履歴をメモリへ保持せず指定ファイルへ追記する。
+
 ## 環境変数（Perf）
 
 - `GRAFIX_PERF=1` : 計測を有効化する（既定は無効）。
 - `GRAFIX_PERF_EVERY=60` : 何フレームごとに出力するか（既定 60）。
 - `GRAFIX_PERF_GPU_FINISH=1` : `ctx.finish()` を呼び、GPU 同期待ち込みで計測する（既定は無効）。
   - 注意: 同期待ちは挙動を変えるので、常用の計測には使わない。
+- `GRAFIX_PERF_TRACE=path/to/performance.jsonl` : GUI の有無に依存しない structured JSON trace を有効化する。
 
 ## 出力の読み方
 
@@ -74,7 +84,8 @@ GRAFIX_SKETCH_PARAMETER_GUI=0 GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 python sketch/p
 - `GRAFIX_SKETCH_CASE=static_layers` : 多レイヤーだがジオメトリは静的（GPU upload skip の効果確認用）
 - `GRAFIX_SKETCH_CASE=upload_skip` : 少数レイヤー + 巨大静的ジオメトリ（upload skip が効くかを確認する）
 
-`GRAFIX_SKETCH_N_WORKER` を 2 以上にすると `run(..., n_worker=...)` を通じて mp-draw を有効化できる。
+`GRAFIX_SKETCH_N_WORKER` は `1` 以上で `run(..., n_worker=...)` の mp-draw worker 数になる。
+`0` の場合だけ main process で同期評価する。
 
 - 注意（spawn 前提）:
   - `draw` はモジュールトップレベル定義（picklable）である必要がある。

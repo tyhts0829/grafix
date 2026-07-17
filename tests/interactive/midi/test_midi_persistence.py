@@ -8,6 +8,7 @@ from pathlib import Path
 from grafix import cc
 from grafix.core.parameters.context import parameter_context_from_snapshot
 from grafix.interactive.midi.midi_controller import MidiController
+from grafix.core.parameters import MidiFrameSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,8 +67,11 @@ def test_restored_values_are_visible_via_cc_snapshot(tmp_path: Path) -> None:
     )
     ctrl2.poll_pending()
 
-    with parameter_context_from_snapshot({}, cc_snapshot=ctrl2.snapshot()):
+    snapshot = MidiFrameSnapshot.from_mapping(
+        ctrl2.snapshot(),
+        source="midi_live",
+    )
+    with parameter_context_from_snapshot({}, cc_snapshot=snapshot):
         assert cc[1] == 0.25
         assert cc[2] == 1.0
         assert cc[999] == 0.0
-

@@ -59,7 +59,7 @@ def ui_rules_for_row(row: ParameterRow) -> RowUiRules:
 
     if row.kind == "bool":
         cc_key: CcKeyMode = "none"
-        show_override = False
+        show_override = True
     elif row.kind in {"str", "font", "choice"}:
         cc_key = "none"
         show_override = True

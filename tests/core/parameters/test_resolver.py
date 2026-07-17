@@ -1,6 +1,7 @@
 import pytest
 
 from grafix.core.parameters import (
+    MidiFrameSnapshot,
     ParameterKey,
     ParamMeta,
     ParamStore,
@@ -102,10 +103,15 @@ def test_vec3_cc_applies_per_component():
     meta = {"p": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0)}
     params = {"p": (0.0, 0.0, 0.0)}
 
-    with parameter_context(store=store, cc_snapshot={10: 0.0, 11: 0.5, 12: 1.0}):
+    midi_snapshot = MidiFrameSnapshot.from_mapping(
+        {10: 0.0, 11: 0.5, 12: 1.0},
+        source="midi_live",
+    )
+    with parameter_context(store=store, cc_snapshot=midi_snapshot):
         resolved = resolve_params(op="scale", params=params, meta=meta, site_id="sv2")
 
     assert resolved["p"] == pytest.approx((-1.0, 0.0, 1.0))
+    assert store._runtime_ref().last_source_by_key[key] == "midi_live"
 
 
 def test_font_uses_base_when_override_false():
@@ -140,3 +146,46 @@ def test_font_uses_base_when_override_false():
     with parameter_context(store=store, cc_snapshot=None):
         resolved2 = resolve_params(op="text", params=params, meta=meta, site_id="sfont")
     assert resolved2["font"] == "B.ttf"
+
+
+def test_bool_uses_code_or_ui_according_to_override() -> None:
+    store = ParamStore()
+    key = ParameterKey(op="switch", site_id="bool-site", arg="enabled")
+    meta_bool = ParamMeta(kind="bool")
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=True,
+                meta=meta_bool,
+                explicit=True,
+            )
+        ],
+    )
+    stored_meta = store.get_meta(key)
+    assert stored_meta is not None
+    update_state_from_ui(store, key, False, meta=stored_meta, override=False)
+
+    params = {"enabled": True}
+    meta = {"enabled": meta_bool}
+    with parameter_context(store=store, cc_snapshot=None):
+        code_value = resolve_params(
+            op="switch",
+            params=params,
+            meta=meta,
+            site_id="bool-site",
+        )
+    assert code_value["enabled"] is True
+    assert store._runtime_ref().last_source_by_key[key] == "code"
+
+    update_state_from_ui(store, key, False, meta=stored_meta, override=True)
+    with parameter_context(store=store, cc_snapshot=None):
+        ui_value = resolve_params(
+            op="switch",
+            params=params,
+            meta=meta,
+            site_id="bool-site",
+        )
+    assert ui_value["enabled"] is False
+    assert store._runtime_ref().last_source_by_key[key] == "ui"

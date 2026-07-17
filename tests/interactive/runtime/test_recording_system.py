@@ -25,10 +25,11 @@ class _FakeRecorder:
         self.closed = False
         self.aborted = False
         self.close_timeout_s: float | None = None
+        self.frames: list[bytes] = []
         _FakeRecorder.last_created = self
 
-    def write_frame_rgb24(self, _frame: bytes) -> None:
-        pass
+    def write_frame_rgb24(self, frame: bytes) -> None:
+        self.frames.append(frame)
 
     def close(self, *, timeout_s: float) -> None:
         self.closed = True
@@ -82,6 +83,44 @@ def test_recording_can_transfer_completed_video_to_generation_transaction(
     assert _FakeRecorder.last_created is not None
     assert _FakeRecorder.last_created.close_timeout_s == 1.25
     assert system.is_recording is False
+
+
+def test_pause_policy_drops_error_frame_without_advancing_clock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class Screen:
+        def read(self, **_kwargs: object) -> bytes:
+            return b"rgb"
+
+    monkeypatch.setattr(recording_module, "VideoRecorder", _FakeRecorder)
+    system = VideoRecordingSystem(output_path=tmp_path / "base.mp4", fps=20.0)
+    system.start(framebuffer_size=(100, 80), t0=1.5)
+
+    system.write_frame(Screen())
+    assert system.t() == pytest.approx(1.55)
+    system.pause_frame("ValueError: broken scene")
+    assert system.t() == pytest.approx(1.55)
+    assert system.frame_index == 1
+
+    staged = system.stop_to_staging(stop_reason="user_stop")
+
+    assert staged is not None
+    assert staged.framebuffer_size == (100, 80)
+    assert staged.recording.as_dict() == {
+        "fps": 20.0,
+        "frame_count": 1,
+        "dropped_frame_count": 1,
+        "duplicated_frame_count": 0,
+        "error_count": 1,
+        "error_policy": "pause",
+        "stop_reason": "user_stop",
+        "abort_reason": None,
+        "last_error": "ValueError: broken scene",
+    }
+    recorder = _FakeRecorder.last_created
+    assert recorder is not None
+    assert recorder.frames == [b"rgb"]
 
 
 def test_direct_stop_surfaces_recovery_path_after_late_publish_collision(

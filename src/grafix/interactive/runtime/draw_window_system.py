@@ -34,14 +34,25 @@ from math import isfinite
 import shutil
 import tempfile
 import time
+import traceback
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Callable, TypeAlias, cast
 
 from pyglet.window import key
 
+from grafix.api.render import (
+    Frame,
+    ParameterLoadMode,
+    RenderOptions,
+    RenderSessionMetadata,
+)
 from grafix.core.parameters import ParamStore
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.pipeline import RealizedLayer
+from grafix.core.capture_provenance import (
+    CaptureProvenance,
+    CaptureProvenanceBuilder,
+)
 from grafix.core.capture_manifest import (
     CaptureManifest,
     capture_manifest_path_for,
@@ -51,7 +62,8 @@ from grafix.core.output_paths import (
     VersionedPathAllocator,
     output_path_for_draw,
 )
-from grafix.export.svg import export_svg
+from grafix.core.runtime_config import GCodeExportConfig, RuntimeConfig, runtime_config
+from grafix.export.capture import CaptureMode, CaptureService
 from grafix.export.image import default_png_output_path, png_output_size
 from grafix.interactive.draw_window import (
     MINIMUM_DRAW_WINDOW_HEIGHT,
@@ -62,9 +74,19 @@ from grafix.interactive.gl.draw_renderer import DrawRenderer
 from grafix.interactive.render_settings import RenderSettings
 from grafix.core.scene import SceneItem
 from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET, ResourceBudget
+from grafix.core.runtime_limits import (
+    DEFAULT_RUNTIME_LIMIT_PROFILES,
+    RuntimeLimitProfiles,
+    profiles_for_resource_budget,
+)
 from grafix.interactive.runtime.perf import PerfCollector
-from grafix.interactive.midi import MidiController
+from grafix.interactive.midi import MidiSession
 from grafix.interactive.runtime.frame_clock import RealTimeClock, TransportClock
+from grafix.interactive.runtime.diagnostics import (
+    DiagnosticAction,
+    DiagnosticEvent,
+    DiagnosticSeverity,
+)
 from grafix.interactive.runtime.export_job_system import (
     ExportJobStatus,
     ExportJobSystem,
@@ -75,6 +97,8 @@ from grafix.interactive.runtime.export_job_system import (
 from grafix.interactive.runtime.recording_system import VideoRecordingSystem
 from grafix.interactive.runtime.scene_runner import SceneRunner
 from grafix.core.parameters.style_resolver import StyleResolver
+from grafix.core.parameters.source import MidiFrameSnapshot
+from grafix.core.preview_quality import PreviewQuality
 from grafix.interactive.runtime.video_recorder import default_video_output_path
 
 _logger = logging.getLogger(__name__)
@@ -88,6 +112,7 @@ _RESTORED_DRAW_WINDOW_MAX_SIZE = 1_000_000
 
 if TYPE_CHECKING:
     from grafix.interactive.runtime.monitor import RuntimeMonitor
+    from grafix.interactive.runtime.source_reload import SourceReloadController
 
 
 class _SynchronousCaptureKind(Enum):
@@ -96,7 +121,7 @@ class _SynchronousCaptureKind(Enum):
     SVG = "svg"
 
 
-_CaptureKind = ExportKind | _SynchronousCaptureKind
+_CaptureKind: TypeAlias = ExportKind | _SynchronousCaptureKind
 
 
 @dataclass(slots=True)
@@ -105,6 +130,16 @@ class _PendingExportRequest:
 
     kind: _CaptureKind
     snapshot: FrameExportSnapshot | None = None
+
+
+@dataclass(slots=True)
+class _RecordingCaptureState:
+    """recording artifact と開始 frame provenance を同じ寿命で保持する。"""
+
+    path: Path
+    t0: float
+    framebuffer_size: tuple[int, int]
+    provenance: CaptureProvenance | None = None
 
 
 class DrawWindowSystem:
@@ -134,13 +169,19 @@ class DrawWindowSystem:
         settings: RenderSettings,
         defaults: LayerStyleDefaults,
         store: ParamStore,
-        midi_controller: MidiController | None = None,
-        frozen_cc_snapshot: dict[int, float] | None = None,
+        midi_session: MidiSession | None = None,
         monitor: RuntimeMonitor | None = None,
         fps: float = 60.0,
         n_worker: int = 0,
+        evaluation_timeout: float | None = 5.0,
         run_id: str | None = None,
         resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
+        runtime_limit_profiles: RuntimeLimitProfiles | None = None,
+        source_reload: SourceReloadController | None = None,
+        effective_config: RuntimeConfig | None = None,
+        parameter_source: ParameterLoadMode = "code",
+        parameter_store_path: Path | None = None,
+        seed: int | None = None,
     ) -> None:
         """描画用の window/renderer と各種状態を初期化する。
 
@@ -152,15 +193,52 @@ class DrawWindowSystem:
         - `draw(t)` に渡す `t` の基準となる clock の開始
         """
 
+        profiles = (
+            profiles_for_resource_budget(resource_budget)
+            if runtime_limit_profiles is None
+            else runtime_limit_profiles
+        )
+        if not isinstance(profiles, RuntimeLimitProfiles):
+            raise TypeError(
+                "runtime_limit_profiles は RuntimeLimitProfiles である必要があります"
+            )
+
         # 設定/既定スタイル/draw 関数/ParamStore は 1 フレームごとに参照するため保持しておく。
         self._settings = settings
         self._store = store
-        self._midi_controller = midi_controller
-        self._frozen_cc_snapshot: dict[int, float] = (
-            dict(frozen_cc_snapshot) if frozen_cc_snapshot is not None else {}
-        )
+        self._midi_session = midi_session
         self._monitor = monitor
+        self._source_reload = source_reload
+        self._runtime_limit_profiles = profiles
+        self._capture_request_limit = (
+            int(profiles.final.capture_queue_pending_jobs) + 1
+        )
         self._fps = float(fps)
+        self._effective_config = (
+            runtime_config() if effective_config is None else effective_config
+        )
+        if not isinstance(self._effective_config, RuntimeConfig):
+            raise TypeError("effective_config は RuntimeConfig である必要があります")
+        self._parameter_source = parameter_source
+        self._parameter_store_path = (
+            None if parameter_store_path is None else Path(parameter_store_path)
+        )
+        self._seed = seed
+        self._provenance_builder = CaptureProvenanceBuilder(
+            draw,
+            config=self._effective_config,
+            parameter_source=self._parameter_source,
+            parameter_store_path=self._parameter_store_path,
+            parameter_load_provenance=store.load_provenance,
+            seed=seed,
+        )
+        self._provenance_frame_index = 0
+        self._render_options = RenderOptions(
+            canvas_size=settings.canvas_size,
+            background_color=settings.background_color,
+            line_color=settings.line_color,
+            line_thickness=settings.line_thickness,
+        )
 
         self._style = StyleResolver(
             self._store,
@@ -178,7 +256,15 @@ class DrawWindowSystem:
             # 描画用の pyglet window と、その OpenGL context に紐づく renderer。
             window = create_draw_window(settings)
             self.window = window
-            renderer = DrawRenderer(window, settings)
+            diagnostic_center = (
+                None if monitor is None else monitor.diagnostic_center
+            )
+            renderer = DrawRenderer(
+                window,
+                settings,
+                runtime_limits=profiles.preview,
+                diagnostic_center=diagnostic_center,
+            )
             self._renderer = renderer
 
             self._svg_output_path = output_path_for_draw(
@@ -207,8 +293,9 @@ class DrawWindowSystem:
             )
             self._video_output_path = video_output_path
             self._capture_paths = VersionedPathAllocator()
+            self._capture_service = CaptureService(path_allocator=self._capture_paths)
             self._pending_capture_by_job: dict[int, tuple[float, str]] = {}
-            self._recording_capture: tuple[Path, float] | None = None
+            self._recording_capture: _RecordingCaptureState | None = None
             self._preview_was_playing_before_recording: bool | None = None
             self._recording_window_constraints_locked = False
             self._last_realized_layers: list[RealizedLayer] = []
@@ -219,7 +306,7 @@ class DrawWindowSystem:
             # 初回frame前intent以外は直接 ExportJobSystem の bounded admissionへ渡す。
             self._pending_export_requests: deque[_PendingExportRequest] = deque()
             export_jobs = ExportJobSystem(
-                max_retained_bytes=int(resource_budget.max_output_bytes),
+                runtime_limits=profiles.final,
             )
             self._export_jobs = export_jobs
             window.push_handlers(on_key_press=self._on_key_press)
@@ -227,14 +314,30 @@ class DrawWindowSystem:
             # draw(t) に渡す t の基準時刻。
             start_time = time.perf_counter()
             self._clock = RealTimeClock(start_time=start_time)
-            self._perf = PerfCollector.from_env()
+            self._perf = PerfCollector.from_env(
+                enabled_by_default=monitor is not None,
+                snapshot_callback=(
+                    None if monitor is None else monitor.set_profiler
+                ),
+            )
             scene_runner = SceneRunner(
                 draw,
                 perf=self._perf,
                 n_worker=int(n_worker),
+                evaluation_timeout=evaluation_timeout,
                 resource_budget=resource_budget,
+                runtime_limit_profiles=profiles,
+                diagnostic_center=(
+                    None if monitor is None else monitor.diagnostic_center
+                ),
             )
             self._scene_runner = scene_runner
+            if source_reload is not None and diagnostic_center is not None:
+                diagnostic_center.register_action(
+                    "retry",
+                    self._retry_source_reload,
+                    category="reload",
+                )
         except BaseException:
             # constructor が return しない場合、runner は部分構築 object を close
             # できない。ここで取得済み resource を全て逆順に試す。MIDI ownership は
@@ -323,6 +426,19 @@ class DrawWindowSystem:
         """keypress 時点の表示 snapshot を一つの bounded queue 契約へ投入する。"""
 
         snapshot = getattr(self, "_last_export_snapshot", None)
+        if snapshot is not None and hasattr(self, "_scene_runner"):
+            # previewはdraftでも、artifactは同じt/parameterをfinal品質で再評価する。
+            try:
+                snapshot = self._final_capture_snapshot()
+            except Exception as exc:
+                self._publish_export_diagnostic(
+                    summary=f"Final capture evaluation failed: {self._export_label(kind)}",
+                    details="".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    ),
+                    severity="error",
+                )
+                return False
         request = _PendingExportRequest(kind=kind, snapshot=snapshot)
         if snapshot is not None:
             # 初回 draw 後は UI 側に第2 queueを作らず、ExportJobSystem の件数/byte
@@ -331,14 +447,26 @@ class DrawWindowSystem:
 
         # 初回 draw より前だけは geometry が存在せず byte 見積もりができないため、
         # 最初の表示 frame へ結合する小さな intent queue を許す。
-        if len(self._pending_export_requests) >= _MAX_PRE_FRAME_CAPTURE_REQUESTS:
+        request_limit = int(
+            getattr(
+                self,
+                "_capture_request_limit",
+                _MAX_PRE_FRAME_CAPTURE_REQUESTS,
+            )
+        )
+        if len(self._pending_export_requests) >= request_limit:
             label = self._export_label(kind)
             notice = (
                 f"Capture rejected: {label}; before-first-frame requests="
-                f"{len(self._pending_export_requests)}/{_MAX_PRE_FRAME_CAPTURE_REQUESTS}"
+                f"{len(self._pending_export_requests)}/{request_limit}"
             )
             self._last_capture_queue_notice = notice
             print(notice)
+            self._publish_export_diagnostic(
+                summary=notice,
+                details=notice,
+                severity="warning",
+            )
             self._update_capture_queue_monitor()
             return False
         self._pending_export_requests.append(request)
@@ -357,6 +485,67 @@ class DrawWindowSystem:
 
         return bool(self._recording.is_recording)
 
+    @property
+    def capture_service(self) -> CaptureService:
+        """Inspector callback と keyboard capture が共有する service を返す。"""
+
+        return self._capture_service
+
+    def _new_provenance_builder(
+        self,
+        draw: Callable[[float], SceneItem],
+    ) -> CaptureProvenanceBuilder:
+        """同じ interactive session 設定で新しい source 世代を固定する。"""
+
+        return CaptureProvenanceBuilder(
+            draw,
+            config=self._effective_config,
+            parameter_source=self._parameter_source,
+            parameter_store_path=self._parameter_store_path,
+            parameter_load_provenance=self._store.load_provenance,
+            seed=self._seed,
+        )
+
+    def _frame_provenance(
+        self,
+        *,
+        t: float,
+        quality: PreviewQuality,
+    ) -> CaptureProvenance | None:
+        """main process の確定 store を 1 frame の provenance へ固定する。"""
+
+        builder = getattr(self, "_provenance_builder", None)
+        if builder is None:
+            # constructor を経由しない小さい runtime test double では provenance
+            # source が存在しない。production instance は必ず builder を持つ。
+            return None
+        frame_index = int(getattr(self, "_provenance_frame_index", 0))
+        provenance = builder.frame(
+            self._store,
+            t=float(t),
+            frame_index=frame_index,
+            quality=quality,
+            origin="interactive",
+        )
+        self._provenance_frame_index = frame_index + 1
+        return provenance
+
+    def _capture_gcode_config(self) -> GCodeExportConfig | None:
+        """production session の effective G-code 設定を worker payload 用に返す。"""
+
+        config = getattr(self, "_effective_config", None)
+        return config.gcode if isinstance(config, RuntimeConfig) else None
+
+    def _capture_png_output_size(
+        self,
+        canvas_size: tuple[int, int],
+    ) -> tuple[int, int]:
+        """production session の effective PNG scale で出力寸法を固定する。"""
+
+        config = getattr(self, "_effective_config", None)
+        scale = config.png_scale if isinstance(config, RuntimeConfig) else None
+        return png_output_size(canvas_size, scale=scale)
+
     def save_svg(self, *, snapshot: FrameExportSnapshot | None = None) -> Path:
         """最後に描画したフレームを SVG として保存し、保存先パスを返す。
 
@@ -370,19 +559,19 @@ class DrawWindowSystem:
             if snapshot is not None
             else getattr(self, "_last_export_snapshot", None)
         )
-        layers = (
-            tuple(self._last_realized_layers)
-            if visible is None
-            else tuple(visible.layers)
-        )
-        canvas_size = (
-            self._settings.canvas_size
-            if visible is None
-            else visible.canvas_size
-        )
-        capture_t = (
-            float(self._last_frame_t) if visible is None else float(visible.t)
-        )
+        if visible is None:
+            visible = FrameExportSnapshot(
+                layers=tuple(self._last_realized_layers),
+                canvas_size=self._settings.canvas_size,
+                background_color_rgb01=self._style.resolve().bg_color_rgb01,
+                t=float(self._last_frame_t),
+                provenance=self._frame_provenance(
+                    t=float(self._last_frame_t),
+                    quality="final",
+                ),
+                gcode_config=self._capture_gcode_config(),
+            )
+        canvas_size = visible.canvas_size
 
         # SVG writer に正式 path を渡すと late collision を os.replace 等で上書きし得る。
         # 一度だけ private sibling へ完成させ、artifact + manifest を共通 transaction で
@@ -396,34 +585,28 @@ class DrawWindowSystem:
         )
         staged_path = staging_dir / self._svg_output_path.name
         try:
-            staged_saved = Path(
-                export_svg(
-                    layers,
-                    staged_path,
-                    canvas_size=canvas_size,
-                )
+            staged_paths = self._capture_service.encode(
+                visible,
+                staged_path,
+                mode=CaptureMode.SVG,
             )
             last_collision: FileExistsError | None = None
             for _attempt in range(_MAX_CAPTURE_PUBLISH_RETRIES):
                 path = self._allocate_capture_path(self._svg_output_path)
-                manifest = CaptureManifest(
-                    t=capture_t,
-                    canvas_size=canvas_size,
-                    format="svg",
-                    artifact_paths=(path,),
-                )
                 try:
-                    publish_capture_generation(
-                        staged_artifact_paths=(staged_saved,),
-                        artifact_paths=(path,),
-                        manifest_path=capture_manifest_path_for(path),
-                        manifest=manifest,
+                    published = self._capture_service.publish_staged(
+                        visible,
+                        path,
+                        staged_paths,
+                        mode=CaptureMode.SVG,
+                        output_size=canvas_size,
                     )
                 except FileExistsError as exc:
                     # allocation 後の late collision は外部 file を保持し、次 versionへ。
                     last_collision = exc
                     continue
-                return path
+                assert published is not None
+                return published.artifact_paths[0]
             raise FileExistsError(
                 "SVG capture publish が late collision の再試行上限に達しました: "
                 f"retries={_MAX_CAPTURE_PUBLISH_RETRIES}"
@@ -490,7 +673,13 @@ class DrawWindowSystem:
         status = getattr(export_jobs, "queue_status", None)
         if status is None:
             request_count = len(self._pending_export_requests)
-            request_limit = _MAX_PRE_FRAME_CAPTURE_REQUESTS
+            request_limit = int(
+                getattr(
+                    self,
+                    "_capture_request_limit",
+                    _MAX_PRE_FRAME_CAPTURE_REQUESTS,
+                )
+            )
             retained_bytes = 0
             byte_limit = 0
         else:
@@ -523,7 +712,37 @@ class DrawWindowSystem:
         notice = f"Capture rejected: {self._export_label(kind)}; {detail}"
         self._last_capture_queue_notice = notice
         print(notice)
+        self._publish_export_diagnostic(
+            summary=notice,
+            details=detail,
+            severity="warning",
+        )
         self._update_capture_queue_monitor()
+
+    def _publish_export_diagnostic(
+        self,
+        *,
+        summary: str,
+        details: str,
+        severity: DiagnosticSeverity,
+        source: str | Path | None = None,
+    ) -> None:
+        """capture/export failureを共通DiagnosticCenterへpublishする。"""
+
+        monitor = getattr(self, "_monitor", None)
+        if monitor is None:
+            return
+        monitor.publish_diagnostic(
+            DiagnosticEvent(
+                category="export",
+                severity=severity,
+                summary=summary,
+                details=details,
+                source=None if source is None else str(source),
+                actions=(DiagnosticAction("copy", "Copy details"),),
+                dedupe_key=f"export:{summary}:{source}",
+            )
+        )
 
     def _poll_export_results(self) -> None:
         """export worker の終端結果を回収して表示する。"""
@@ -539,6 +758,12 @@ class DrawWindowSystem:
                 continue
             if result.status is ExportJobStatus.CANCELLED:
                 print(f"Cancelled {label}: {result.output_path}")
+                self._publish_export_diagnostic(
+                    summary=f"Cancelled {label} export",
+                    details=f"output_path={result.output_path}",
+                    severity="info",
+                    source=result.output_path,
+                )
                 continue
             _logger.error(
                 "Failed to save %s (%s): %s",
@@ -550,6 +775,12 @@ class DrawWindowSystem:
                 f"Failed to save {label} ({result.status.value}): "
                 f"{result.output_path}\n{result.error or ''}"
             )
+            self._publish_export_diagnostic(
+                summary=f"Failed to save {label} ({result.status.value})",
+                details=result.error or "export worker returned no error details",
+                severity="error",
+                source=result.output_path,
+            )
         self._update_capture_queue_monitor()
 
     def _submit_export_request(self, request: _PendingExportRequest) -> bool:
@@ -559,7 +790,18 @@ class DrawWindowSystem:
         assert captured_snapshot is not None
 
         if request.kind is _SynchronousCaptureKind.SVG:
-            path = self.save_svg(snapshot=captured_snapshot)
+            try:
+                path = self.save_svg(snapshot=captured_snapshot)
+            except Exception as exc:
+                self._publish_export_diagnostic(
+                    summary="Failed to save SVG",
+                    details="".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    ),
+                    severity="error",
+                    source=getattr(self, "_svg_output_path", None),
+                )
+                return False
             self._last_capture_queue_notice = None
             self._update_capture_queue_monitor()
             print(f"Saved SVG: {path}")
@@ -593,7 +835,9 @@ class DrawWindowSystem:
                     kind=kind,
                     snapshot=captured_snapshot,
                     output_path=output_path,
-                    output_size=png_output_size(captured_snapshot.canvas_size),
+                    output_size=self._capture_png_output_size(
+                        captured_snapshot.canvas_size
+                    ),
                 )
             else:
                 job = self._export_jobs.submit(
@@ -605,6 +849,16 @@ class DrawWindowSystem:
             # preflight と submit は同じ UI thread だが custom implementation にも
             # 明示的な最終 admission を要求する。予約済 version の欠番は安全側の代償。
             self._report_capture_rejection(kind, exc)
+            return False
+        except Exception as exc:
+            self._publish_export_diagnostic(
+                summary=f"Failed to start {self._export_label(kind)} export",
+                details="".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                ),
+                severity="error",
+                source=output_path,
+            )
             return False
 
         self._pending_capture_by_job[job.job_id] = (
@@ -672,7 +926,11 @@ class DrawWindowSystem:
         # 録画は同期 fixed-fps timeline へ切り替わる不連続境界。
         self._clock.mark_discontinuity()
         self._preview_was_playing_before_recording = was_playing
-        self._recording_capture = (path, t0)
+        self._recording_capture = _RecordingCaptureState(
+            path=path,
+            t0=t0,
+            framebuffer_size=(int(fb_w), int(fb_h)),
+        )
 
     def _lock_draw_window_size_for_recording(self) -> None:
         """録画開始時のlogical sizeでdraw windowを固定する。"""
@@ -743,6 +1001,8 @@ class DrawWindowSystem:
         self,
         *,
         timeout_s: float = _CAPTURE_SHUTDOWN_TIMEOUT_S,
+        stop_reason: str = "user_stop",
+        abort_reason: str | None = None,
     ) -> None:
         """動画録画を終了する。"""
 
@@ -756,7 +1016,11 @@ class DrawWindowSystem:
         staged_capture = None
         stop_error: BaseException | None = None
         try:
-            staged_capture = self._recording.stop_to_staging(timeout_s=timeout_s)
+            staged_capture = self._recording.stop_to_staging(
+                timeout_s=timeout_s,
+                stop_reason=stop_reason,
+                abort_reason=abort_reason,
+            )
         except BaseException as exc:
             stop_error = exc
         finally:
@@ -794,18 +1058,20 @@ class DrawWindowSystem:
                 f"recovery={staging_path}"
             )
 
-        reserved_path, t0 = capture
         staging_path = Path(staged_capture.staging_path)
-        candidate = Path(reserved_path)
+        candidate = Path(capture.path)
         published = False
         last_collision: FileExistsError | None = None
         try:
             for _attempt in range(_MAX_CAPTURE_PUBLISH_RETRIES):
                 manifest = CaptureManifest(
-                    t=float(t0),
+                    t=float(capture.t0),
                     canvas_size=self._settings.canvas_size,
                     format=candidate.suffix.lstrip(".") or "video",
                     artifact_paths=(candidate,),
+                    provenance=capture.provenance,
+                    output_size=capture.framebuffer_size,
+                    recording=staged_capture.recording,
                 )
                 try:
                     publish_capture_generation(
@@ -903,7 +1169,13 @@ class DrawWindowSystem:
         self._last_frame_error = summary
         monitor = self._monitor
         if monitor is not None:
-            monitor.set_frame_error(summary)
+            details = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            source: str | None = None
+            tb = exc.__traceback__
+            while tb is not None:
+                source = f"{tb.tb_frame.f_code.co_filename}:{tb.tb_lineno}"
+                tb = tb.tb_next
+            monitor.set_frame_error(summary, details=details, source=source)
 
     def _clear_frame_error(self) -> None:
         """新しい scene 評価が成功したときだけ error 状態を解除する。"""
@@ -915,13 +1187,108 @@ class DrawWindowSystem:
         if monitor is not None:
             monitor.set_frame_error(None)
 
+    def _publish_reload_failure(
+        self,
+        *,
+        summary: str,
+        details: str,
+        source: str | None,
+    ) -> None:
+        """reload failureを共通診断へ出し、GUI無しならlogへ残す。"""
+
+        monitor = self._monitor
+        if monitor is None:
+            _logger.error("Sketch reload failed: %s\n%s", summary, details)
+            return
+        actions: list[DiagnosticAction] = [
+            DiagnosticAction("retry", "Retry reload"),
+            DiagnosticAction("copy", "Copy details"),
+        ]
+        if source is not None:
+            actions.append(DiagnosticAction("open", "Open source"))
+        monitor.publish_diagnostic(
+            DiagnosticEvent(
+                category="reload",
+                severity="error",
+                summary=f"Sketch reload failed: {summary}",
+                details=details,
+                source=source,
+                actions=tuple(actions),
+                dedupe_key=f"source-reload:{summary}:{source}",
+            )
+        )
+
+    def _poll_source_reload(self, *, force: bool = False) -> bool:
+        """source更新を検査し、registry/draw/workerを同じframe境界で交換する。"""
+
+        controller = getattr(self, "_source_reload", None)
+        if controller is None:
+            return False
+        result = controller.poll(force=force, retain_rollback=True)
+        if result.status == "unchanged":
+            return False
+        if result.status == "failed":
+            self._publish_reload_failure(
+                summary=result.summary or "unknown reload error",
+                details=result.details or result.summary or "unknown reload error",
+                source=result.source,
+            )
+            return False
+
+        replacement_provenance = None
+        try:
+            if hasattr(self, "_provenance_builder"):
+                replacement_provenance = self._new_provenance_builder(result.draw)
+            self._scene_runner.replace_draw(result.draw)
+        except Exception as exc:
+            rollback_details = ""
+            try:
+                controller.rollback_generation(result.generation)
+            except Exception as rollback_error:
+                rollback_details = (
+                    "\n\nRegistry rollback also failed:\n"
+                    + "".join(
+                        traceback.format_exception(
+                            type(rollback_error),
+                            rollback_error,
+                            rollback_error.__traceback__,
+                        )
+                    )
+                )
+            details = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )
+            self._publish_reload_failure(
+                summary=f"{type(exc).__name__}: {exc}",
+                details=details + rollback_details,
+                source=result.source,
+            )
+            return False
+
+        controller.accept_generation(result.generation)
+        if replacement_provenance is not None:
+            self._provenance_builder = replacement_provenance
+        monitor = self._monitor
+        if monitor is not None:
+            monitor.diagnostic_center.clear(category="reload")
+        return True
+
+    def _retry_source_reload(self, event: DiagnosticEvent) -> None:
+        """DiagnosticCenterのRetry actionから同じsourceを明示再評価する。"""
+
+        if self._poll_source_reload(force=True):
+            monitor = self._monitor
+            if monitor is not None:
+                monitor.diagnostic_center.dismiss(event)
+
     def _evaluate_scene(
         self,
         t: float,
         *,
-        cc_snapshot: dict[int, float] | None,
+        cc_snapshot: MidiFrameSnapshot | None,
         defaults: LayerStyleDefaults,
         recording: bool,
+        quality: PreviewQuality = "draft",
     ) -> list[RealizedLayer]:
         """user scene を評価し、失敗時は直近成功 frame を返す。
 
@@ -937,6 +1304,7 @@ class DrawWindowSystem:
                 cc_snapshot=cc_snapshot,
                 defaults=defaults,
                 recording=recording,
+                quality=quality,
                 transport_epoch=int(
                     getattr(getattr(self, "_clock", None), "epoch", 0)
                 ),
@@ -964,21 +1332,82 @@ class DrawWindowSystem:
             self._clear_frame_error()
         return realized_layers
 
+    def _final_capture_snapshot(self) -> FrameExportSnapshot:
+        """現在時刻をfinal品質で再評価し、artifact用snapshotを返す。"""
+
+        recording = bool(self._recording.is_recording)
+        t = float(self._recording.t()) if recording else float(self._clock.t())
+        style = self._style.resolve()
+        layers = self._evaluate_scene(
+            t,
+            cc_snapshot=self._midi_frame_snapshot(),
+            defaults=LayerStyleDefaults(
+                color=style.global_line_color_rgb01,
+                thickness=style.global_thickness,
+            ),
+            recording=recording,
+            quality="final",
+        )
+        if self._scene_runner.last_evaluation_succeeded is not True:
+            raise RuntimeError("Final capture evaluation did not produce a fresh frame")
+        return FrameExportSnapshot(
+            layers=tuple(layers),
+            canvas_size=self._settings.canvas_size,
+            background_color_rgb01=style.bg_color_rgb01,
+            t=float(self._last_frame_t),
+            provenance=self._frame_provenance(
+                t=float(self._last_frame_t),
+                quality="final",
+            ),
+            gcode_config=self._capture_gcode_config(),
+        )
+
+    def final_capture_frame(self) -> Frame:
+        """現在時刻を final 品質で評価し、thumbnail用の immutable Frame を返す。"""
+
+        snapshot = self._final_capture_snapshot()
+        provenance = snapshot.provenance
+        if provenance is None:
+            raise RuntimeError("capture provenance is unavailable")
+        style = self._style.resolve()
+        metadata = RenderSessionMetadata(
+            config_path=self._effective_config.config_path,
+            effective_config=self._effective_config,
+            parameter_source=self._parameter_source,
+            parameter_store_path=self._parameter_store_path,
+            parameter_load_provenance=self._store.load_provenance,
+            provenance=provenance.session,
+        )
+        return Frame(
+            t=snapshot.t,
+            layers=snapshot.layers,
+            options=self._render_options,
+            style=style,
+            metadata=metadata,
+            provenance=provenance,
+        )
+
+    def _midi_frame_snapshot(self) -> MidiFrameSnapshot | None:
+        """現在frameのMIDI値とlive/frozen由来を一つのsnapshotへ固定する。"""
+
+        session = self._midi_session
+        return None if session is None else session.frame_snapshot()
+
     def draw_frame(self) -> None:
         """1 フレーム分の描画を行う（`flip()` は呼ばない）。"""
 
         perf = self._perf
         with perf.frame():
             # --- 0) フレーム冒頭での軽い housekeeping ---
+            # source watchはstatだけを毎frame確認し、変更時だけtransactional loadする。
+            # recording generation 内では code provenance を一つに保つため、停止後の
+            # 最初の frame 境界まで swap を遅延する。
+            if not self._recording.is_recording:
+                self._poll_source_reload()
             # 非同期 PNG/G-code export の通知回収だけを行う。重い backend は worker 内で走る。
             self._poll_export_results()
 
-            midi = self._midi_controller
-            if midi is not None:
-                midi.poll_pending()
-                cc_snapshot = midi.snapshot()
-            else:
-                cc_snapshot = self._frozen_cc_snapshot
+            cc_snapshot = self._midi_frame_snapshot()
 
             # 注: 呼び出し側（pyglet.window.Window.draw）が事前に self.window.switch_to() 済みである前提。
             # その前提が崩れると、別 window のコンテキストへ描いてしまう可能性がある。
@@ -1020,11 +1449,29 @@ class DrawWindowSystem:
                 color=style.global_line_color_rgb01,
                 thickness=style.global_thickness,
             )
+            quality: PreviewQuality = (
+                "final"
+                if recording
+                or any(
+                    request.snapshot is None
+                    for request in self._pending_export_requests
+                )
+                else "draft"
+            )
+            profiles = getattr(
+                self,
+                "_runtime_limit_profiles",
+                DEFAULT_RUNTIME_LIMIT_PROFILES,
+            )
+            apply_limits = getattr(self._renderer, "apply_runtime_limits", None)
+            if callable(apply_limits):
+                apply_limits(profiles.for_quality(quality))
             realized_layers = self._evaluate_scene(
                 t,
                 cc_snapshot=cc_snapshot,
                 defaults=effective_defaults,
                 recording=recording,
+                quality=quality,
             )
             if monitor is not None:
                 waiting = bool(
@@ -1056,20 +1503,41 @@ class DrawWindowSystem:
             if monitor is not None:
                 monitor.set_draw_counts(vertices=int(frame_vertices), lines=int(frame_lines))
 
-            if recording:
-                with perf.section("video"):
-                    # GPU からの readback が入るため、perf では明示セクションに分ける。
-                    self._recording.write_frame(self._renderer.ctx.screen)
+            fresh_frame = self._scene_runner.last_evaluation_succeeded is True
+            frame_provenance: CaptureProvenance | None = None
+            if fresh_frame:
+                frame_provenance = self._frame_provenance(
+                    t=float(self._last_frame_t),
+                    quality=quality,
+                )
 
-            snapshot = FrameExportSnapshot(
-                layers=tuple(realized_layers),
-                canvas_size=self._settings.canvas_size,
-                background_color_rgb01=style.bg_color_rgb01,
-                t=float(self._last_frame_t),
-            )
-            self._last_export_snapshot = snapshot
-            if self._pending_export_requests:
-                self._submit_pending_exports(snapshot)
+            if recording:
+                if fresh_frame:
+                    with perf.section("video"):
+                        # GPU からの readback が入るため、perf では明示セクションに分ける。
+                        self._recording.write_frame(self._renderer.ctx.screen)
+                    capture = getattr(self, "_recording_capture", None)
+                    if capture is not None and capture.provenance is None:
+                        capture.provenance = frame_provenance
+                else:
+                    # preview は last-good を表示しても、動画には重複書込みせず、同じ
+                    # recording t を fresh scene が得られるまで再試行する。
+                    self._recording.pause_frame(
+                        self._last_frame_error or "Scene evaluation did not produce a fresh frame"
+                    )
+
+            if fresh_frame:
+                snapshot = FrameExportSnapshot(
+                    layers=tuple(realized_layers),
+                    canvas_size=self._settings.canvas_size,
+                    background_color_rgb01=style.bg_color_rgb01,
+                    t=float(self._last_frame_t),
+                    provenance=frame_provenance,
+                    gcode_config=self._capture_gcode_config(),
+                )
+                self._last_export_snapshot = snapshot
+                if self._pending_export_requests:
+                    self._submit_pending_exports(snapshot)
 
             if perf.enabled and perf.gpu_finish:
                 with perf.section("gpu_finish"):
@@ -1088,6 +1556,11 @@ class DrawWindowSystem:
             canvas_size=self._settings.canvas_size,
             background_color_rgb01=style.bg_color_rgb01,
             t=float(self._last_frame_t),
+            provenance=self._frame_provenance(
+                t=float(self._last_frame_t),
+                quality="final",
+            ),
+            gcode_config=self._capture_gcode_config(),
         )
 
     def _drain_exports_on_close(
@@ -1180,7 +1653,10 @@ class DrawWindowSystem:
         # export backlog より後にすると、強制終了時に録画を失い得る。
         def stop_recording() -> None:
             if self._recording.is_recording:
-                self.stop_video_recording(timeout_s=capture_time_remaining())
+                self.stop_video_recording(
+                    timeout_s=capture_time_remaining(),
+                    stop_reason="shutdown",
+                )
 
         attempt("stop video recording", stop_recording)
 
@@ -1197,12 +1673,11 @@ class DrawWindowSystem:
         attempt("poll terminal export results", self._poll_export_results)
 
         # --- MIDI ---
-        # MIDI controller はこのサブシステムが所有しているので、保存と close まで面倒を見る。
-        midi = self._midi_controller
-        self._midi_controller = None
+        # session は controller と frozen state を一体で所有する。
+        midi = self._midi_session
+        self._midi_session = None
         if midi is not None:
-            attempt("save MIDI CC snapshot", midi.save)
-            attempt("close MIDI controller", midi.close)
+            attempt("close MIDI session", midi.close)
 
         # --- mp-draw worker / scene 実行器 ---
         attempt("close scene runner", self._scene_runner.close)

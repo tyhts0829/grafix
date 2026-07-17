@@ -100,13 +100,14 @@ def preset(
     - 関数本体は自動で mute され、内部の `G.*` / `E.*` の観測（GUI/永続化）を行わない。
     - `activate` は予約引数として自動追加され、GUI/永続化の対象になる（meta に含めない）。
       `False` の場合は関数本体を実行せず、空の `Geometry` を返す。
-    - `name=` と `key=` を予約引数として使える（GUI には出さない）。
-      `key` は同一呼び出し箇所から複数回生成する場合の衝突回避に使う。
+    - `name=` / `key=` / `instance_key=` / `shared=` を予約引数として使える
+      （GUI には出さない）。``key`` は semantic site、``instance_key`` は
+      反復 instance、``shared=True`` は semantic site の意図的な共有を表す。
     """
 
     meta_norm = meta_dict_from_user(meta)
-    reserved = {"name", "key", "activate"}
-    # `name`/`key`/`activate` は予約引数:
+    reserved = {"name", "key", "instance_key", "shared", "activate"}
+    # identity/name/activate は予約引数:
     # - name: GUI 上のグループ見出し名（label）を差し替える（GUI には出さない）
     # - key: 同一呼び出し箇所で複数回呼ぶときの衝突回避（GUI には出さない）
     # - activate: preset を “有効化” するための公開 bool（GUI/永続化の対象）
@@ -152,12 +153,14 @@ def preset(
             activate_explicit = "activate" in kwargs
             activate_base = bool(kwargs.pop("activate", True))
 
-            # name/key は予約引数として「どの preset でも」受け付けたい。
+            # identity/name は予約引数として「どの preset でも」受け付けたい。
             # ただし、元のシグネチャに無い場合は sig.bind が落ちるため、
             # bind 前に pop して label/site_id のために保持しておく。
             _missing = object()
             name_input = kwargs.pop("name", _missing)
             key_input = kwargs.pop("key", _missing)
+            instance_key_input = kwargs.pop("instance_key", _missing)
+            shared_input = kwargs.pop("shared", _missing)
 
             # - bind: 呼び出しをシグネチャに当てはめ、引数名で扱えるようにする
             # - explicit_keys: 「ユーザーが明示的に渡した引数名」を記録する（apply_defaults 前）
@@ -166,9 +169,11 @@ def preset(
             explicit_keys = set(bound.arguments.keys())
             bound.apply_defaults()
 
-            # name/key がシグネチャに含まれる場合のみ、実関数呼び出しへ渡す。
+            # 予約引数がシグネチャに含まれる場合のみ、実関数呼び出しへ渡す。
             name_explicit = name_input is not _missing
             key_explicit = key_input is not _missing
+            instance_key_explicit = instance_key_input is not _missing
+            shared_explicit = shared_input is not _missing
 
             # GUI 非公開の予約引数（preset の挙動や GUI 表示だけに使い、パラメータ行は増やさない）
             display_name = None
@@ -189,15 +194,46 @@ def preset(
                     raise TypeError("preset の key は str|int|None である必要があります")
                 key = raw_key
 
-            # name/key がシグネチャに含まれる場合のみ、実関数呼び出しへ渡す。
+            if instance_key_explicit:
+                raw_instance_key = instance_key_input
+            elif "instance_key" in sig.parameters:
+                raw_instance_key = bound.arguments.get("instance_key", None)
+            else:
+                raw_instance_key = None
+            if raw_instance_key is not None and not isinstance(
+                raw_instance_key, (str, int)
+            ):
+                raise TypeError(
+                    "preset の instance_key は str|int|None である必要があります"
+                )
+            instance_key: str | int | None = raw_instance_key
+
+            if shared_explicit:
+                raw_shared = shared_input
+            elif "shared" in sig.parameters:
+                raw_shared = bound.arguments.get("shared", False)
+            else:
+                raw_shared = False
+            if not isinstance(raw_shared, bool):
+                raise TypeError("preset の shared は bool である必要があります")
+            shared = raw_shared
+
+            # 予約 identity が元シグネチャにある場合だけ、実関数呼び出しへ渡す。
             if "name" in sig.parameters and name_explicit:
                 bound.arguments["name"] = name_input
             if "key" in sig.parameters and key_explicit:
                 bound.arguments["key"] = key_input
+            if "instance_key" in sig.parameters and instance_key_explicit:
+                bound.arguments["instance_key"] = instance_key_input
+            if "shared" in sig.parameters and shared_explicit:
+                bound.arguments["shared"] = shared_input
 
-            # site_id は「ユーザーの呼び出し箇所」を指すようにする（skip=1）。
-            # 同じ行で複数回呼ぶ場合は key で区別する。
-            site_id = caller_site_id(skip=1, key=key)
+            site_id = caller_site_id(
+                skip=1,
+                key=key,
+                instance_key=instance_key,
+                shared=shared,
+            )
 
             # group header 名は、指定が無ければ関数名を使う（GUI 未使用時は何もしない）。
             if current_param_recording_enabled():

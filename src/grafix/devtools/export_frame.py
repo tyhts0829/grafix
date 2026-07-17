@@ -1,8 +1,4 @@
-"""
-どこで: `src/grafix/devtools/export_frame.py`。
-何を: `python -m grafix export ...` で `draw(t)` を headless で PNG に書き出す。
-なぜ: 対話ウィンドウ無しで複数候補画像を生成し、比較→改良のループを回せるようにするため。
-"""
+"""``python -m grafix export`` の共通 render/capture CLI。"""
 
 from __future__ import annotations
 
@@ -11,28 +7,29 @@ import importlib
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from grafix.api import Export
-from grafix.core.runtime_config import set_config_path
+from grafix.api import ExportFormat, ExportResult, RenderOptions, RenderSession, export
+from grafix.api.render import ParameterLoadMode
+from grafix.core.output_paths import output_path_for_draw
 from grafix.export.image import default_png_output_path
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="python -m grafix export")
-    p.add_argument(
+    parser = argparse.ArgumentParser(prog="python -m grafix export")
+    parser.add_argument(
         "--callable",
         required=True,
         help="module:attr 形式（例: sketch.main:draw）",
     )
-    p.add_argument(
+    parser.add_argument(
         "--t",
         nargs="+",
         type=float,
         default=None,
         help="draw(t) に渡す時刻（複数指定可、既定: 0.0）",
     )
-    p.add_argument(
+    parser.add_argument(
         "--canvas",
         nargs=2,
         type=int,
@@ -40,52 +37,95 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar=("W", "H"),
         help="canvas_size (width height)。既定: 800 800",
     )
-    p.add_argument(
+    parser.add_argument(
+        "--format",
+        choices=tuple(item.value for item in ExportFormat),
+        default=None,
+        help="出力形式。--out 指定時は suffix から推論し、省略時は PNG",
+    )
+    parser.add_argument(
         "--out",
         default=None,
-        help="出力 PNG パス（--t が 1 つのときのみ）",
+        help="出力 path（.svg/.png/.gcode、--t が 1 つのときのみ）",
     )
-    p.add_argument(
+    parser.add_argument(
         "--out-dir",
         default=None,
-        help="出力ディレクトリ（省略時: 既定の出力先）",
+        help="出力ディレクトリ（省略時: config の既定出力先）",
     )
-    p.add_argument(
+    parser.add_argument(
         "--run-id",
         default=None,
-        help="既定出力パスと ParamStore の run_id（ファイル名 suffix）",
+        help="既定出力 path と saved/recovery ParamStore の run_id suffix",
     )
-    p.add_argument(
+    parser.add_argument(
+        "--parameter-source",
+        default="code",
+        metavar="{code,saved,recovery}|PATH",
+        help="parameter 読み込み元（既定: code。暗黙ファイルを読まない）",
+    )
+    parser.add_argument(
         "--config",
         default=None,
         help="config.yaml のパス（指定した場合は探索より優先）",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="作品の再現用 seed（乱数 global state は変更せず manifest に記録）",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="要求 path の既存 artifact/manifest generation を明示的に置換する",
+    )
 
-    args = p.parse_args(argv)
-
+    args = parser.parse_args(argv)
     ts = [0.0] if args.t is None else list(args.t)
     if args.out is not None and args.out_dir is not None:
-        p.error("--out と --out-dir は同時に指定できません")
+        parser.error("--out と --out-dir は同時に指定できません")
     if args.out is not None and len(ts) != 1:
-        p.error("--out は --t が 1 つのときだけ指定できます（複数枚は --out-dir を使ってください）")
+        parser.error(
+            "--out は --t が 1 つのときだけ指定できます（複数枚は --out-dir を使ってください）"
+        )
 
+    if args.out is None:
+        args.export_format = (
+            ExportFormat.PNG if args.format is None else ExportFormat(args.format)
+        )
+    else:
+        try:
+            args.export_format = ExportFormat.resolve(args.out, args.format)
+        except ValueError as exc:
+            parser.error(str(exc))
     return args
 
 
 def _resolve_callable(spec: str) -> Callable[[float], Any]:
-    module_name, sep, attr_path = str(spec).partition(":")
-    if not sep:
-        raise ValueError("--callable は module:attr 形式で指定してください")
-    if not module_name.strip() or not attr_path.strip():
+    module_name, separator, attr_path = str(spec).partition(":")
+    if not separator or not module_name.strip() or not attr_path.strip():
         raise ValueError("--callable は module:attr 形式で指定してください")
 
-    mod = importlib.import_module(module_name)
-    out: Any = mod
+    module = importlib.import_module(module_name)
+    output: Any = module
     for part in attr_path.split("."):
-        out = getattr(out, part)
-    if not callable(out):
+        output = getattr(output, part)
+    if not callable(output):
         raise TypeError(f"指定された callable が呼び出し可能ではありません: {spec!r}")
-    return out
+    return output
+
+
+def _parameter_source(value: str) -> ParameterLoadMode:
+    """CLI 文字列を明示 parameter source または Path に変換する。"""
+
+    text = str(value).strip()
+    keyword = text.casefold()
+    if keyword in {"code", "saved", "recovery"}:
+        return cast(ParameterLoadMode, keyword)
+    if not text:
+        raise ValueError("--parameter-source は空にできません")
+    return Path(text)
 
 
 def _frame_output_paths(base_path: Path, *, n_frames: int) -> list[Path]:
@@ -97,30 +137,41 @@ def _frame_output_paths(base_path: Path, *, n_frames: int) -> list[Path]:
 
     width = max(3, len(str(n)))
     return [
-        base_path.with_name(f"{base_path.stem}_f{i:0{int(width)}d}{base_path.suffix}")
-        for i in range(1, n + 1)
+        base_path.with_name(f"{base_path.stem}_f{index:0{width}d}{base_path.suffix}")
+        for index in range(1, n + 1)
     ]
 
 
-def _export_png_frame(
+def _default_output_path(
     draw: Callable[[float], Any],
     *,
-    t: float,
-    path: Path,
-    canvas_size: tuple[int, int],
+    export_format: ExportFormat,
     run_id: str | None,
-) -> None:
-    """1 frame を PNG へ書き出し、保存先を表示する。"""
+    canvas_size: tuple[int, int],
+) -> Path:
+    """形式ごとの既存出力規則を使って要求 base path を返す。"""
 
-    Export(
-        draw,
-        t=float(t),
-        fmt="png",
-        path=path,
-        canvas_size=canvas_size,
+    if export_format is ExportFormat.PNG:
+        return default_png_output_path(
+            draw,
+            run_id=run_id,
+            canvas_size=canvas_size,
+        )
+    return output_path_for_draw(
+        kind=export_format.value,
+        ext=export_format.value,
+        draw=draw,
         run_id=run_id,
+        canvas_size=canvas_size,
     )
-    print(f"Saved PNG: {path} (t={float(t)})")
+
+
+def _print_result(*, t: float, result: ExportResult) -> None:
+    """要求 path ではなく CaptureService が確定した実 path を表示する。"""
+
+    print(f"Saved {result.format.value.upper()}: {result.path} (t={float(t)})")
+    if result.manifest_path is not None:
+        print(f"Manifest: {result.manifest_path}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -128,42 +179,41 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
 
     args = _parse_args(argv)
-
-    config_path = args.config
-    if config_path is not None:
-        set_config_path(config_path)
-
     draw = _resolve_callable(args.callable)
     ts = [0.0] if args.t is None else [float(t) for t in args.t]
     canvas_w, canvas_h = args.canvas
     canvas_size = (int(canvas_w), int(canvas_h))
     run_id = None if args.run_id is None else str(args.run_id)
+    parameter_source = _parameter_source(args.parameter_source)
+    export_format = ExportFormat(args.export_format)
 
-    out_path = None if args.out is None else Path(str(args.out))
-    if out_path is not None:
-        _export_png_frame(
-            draw,
-            t=float(ts[0]),
-            path=out_path,
-            canvas_size=canvas_size,
-            run_id=run_id,
+    with RenderSession(
+        draw,
+        options=RenderOptions(canvas_size=canvas_size),
+        parameter_source=parameter_source,
+        config_path=args.config,
+        run_id=run_id,
+        seed=args.seed,
+    ) as session:
+        explicit_path = None if args.out is None else Path(str(args.out))
+        base_path = (
+            _default_output_path(
+                draw,
+                export_format=export_format,
+                run_id=run_id,
+                canvas_size=canvas_size,
+            )
+            if explicit_path is None
+            else explicit_path
         )
-        return 0
+        if args.out_dir is not None:
+            base_path = Path(str(args.out_dir)) / base_path.name
 
-    base_path = default_png_output_path(draw, run_id=run_id, canvas_size=canvas_size)
-    out_dir = None if args.out_dir is None else Path(str(args.out_dir))
-    if out_dir is not None:
-        base_path = out_dir / base_path.name
-
-    paths = _frame_output_paths(base_path, n_frames=len(ts))
-    for t, path in zip(ts, paths, strict=True):
-        _export_png_frame(
-            draw,
-            t=float(t),
-            path=path,
-            canvas_size=canvas_size,
-            run_id=run_id,
-        )
+        paths = _frame_output_paths(base_path, n_frames=len(ts))
+        for frame_t, path in zip(ts, paths, strict=True):
+            frame = session.render(frame_t)
+            result = export(frame, path, overwrite=bool(args.overwrite))
+            _print_result(t=frame_t, result=result)
 
     return 0
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from grafix.api import E, G, L
+import pytest
+
+from grafix.api import E, G, L, P
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.snapshot_ops import store_snapshot
@@ -30,6 +32,48 @@ def test_explicit_keys_separate_loop_instances() -> None:
 
 
 def test_layer_explicit_key_sets_stable_site_id() -> None:
-    layer = L.layer(G.line(), key="outline")[0]
+    layer = L.layer(G.line(), key="outline")
 
     assert layer.site_id.endswith("|outline")
+
+
+def test_instance_key_separates_loop_and_comprehension_instances() -> None:
+    loop_store = ParamStore()
+    with parameter_context(loop_store):
+        for index in range(3):
+            G.line(key="petal", instance_key=index)
+
+    comprehension_store = ParamStore()
+    with parameter_context(comprehension_store):
+        [G.line(key="petal", instance_key=index) for index in range(3)]
+
+    for store in (loop_store, comprehension_store):
+        sites = {key.site_id for key in store_snapshot(store) if key.op == "line"}
+        assert {site.rsplit("|instance:", 1)[-1] for site in sites} == {
+            "0",
+            "1",
+            "2",
+        }
+        assert all("|petal|instance:" in site for site in sites)
+
+
+def test_shared_true_intentionally_reuses_semantic_site_in_loop() -> None:
+    store = ParamStore()
+    with parameter_context(store):
+        for _index in range(3):
+            G.line(key="petals", shared=True)
+
+    sites = {key.site_id for key in store_snapshot(store) if key.op == "line"}
+    assert len(sites) == 1
+    assert next(iter(sites)).endswith("|petals")
+
+
+def test_instance_key_and_shared_true_are_mutually_exclusive_across_namespaces() -> None:
+    with pytest.raises(ValueError, match="instance_key"):
+        G.line(instance_key=0, shared=True)
+    with pytest.raises(ValueError, match="instance_key"):
+        E.scale(instance_key=0, shared=True)
+    with pytest.raises(ValueError, match="instance_key"):
+        L.layer(G.line(), instance_key=0, shared=True)
+    with pytest.raises(ValueError, match="instance_key"):
+        P(instance_key=0, shared=True)

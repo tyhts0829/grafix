@@ -12,7 +12,7 @@ import pyglet
 
 @dataclass(frozen=True, slots=True)
 class WindowTask:
-    """1つの pyglet window と「flip しない描画関数」を束ねる。"""
+    """1つの pyglet window と描画・close の方針を束ねる。"""
 
     # 注: pyglet の Window 型は環境/バージョン差があるため Any に寄せる。
     window: Any
@@ -20,6 +20,10 @@ class WindowTask:
     # 1フレーム分の描画処理（back buffer へ描くだけ）。
     # `switch_to()` / `flip()` は pyglet（`Window.draw()`）が担当する前提。
     draw_frame: Callable[[], None]
+
+    # OS の close request を受けたときの方針。preview は app exit、
+    # Inspector は context を破棄せず hide するなど、配線側が明示する。
+    on_close: Callable[[], None]
 
 
 class MultiWindowLoop:
@@ -57,16 +61,18 @@ class MultiWindowLoop:
 
         tasks = list(self._tasks)
 
-        def request_exit(*_: object) -> object:
-            # pyglet の on_close から呼ばれるコールバックは引数が来る場合があるため *args を受ける。
-            # EVENT_HANDLED を返さないと default on_close が直ちに context/window を
-            # 破棄し、runner の renderer teardown より順序が先になる場合がある。
-            pyglet.app.exit()
-            return pyglet.event.EVENT_HANDLED
+        def close_handler(task: WindowTask) -> Callable[..., object]:
+            def handle_close(*_: object) -> object:
+                # EVENT_HANDLED を返さないと default on_close が context/window を
+                # 直ちに破棄し、runner の teardown より先になる場合がある。
+                task.on_close()
+                return pyglet.event.EVENT_HANDLED
 
-        # どれかのウィンドウを閉じたら、ループ全体を止める。
+            return handle_close
+
+        # close の結果は task ごとに異なる。default handler には委ねない。
         for task in tasks:
-            task.window.push_handlers(on_close=request_exit)
+            task.window.push_handlers(on_close=close_handler(task))
 
         # 各ウィンドウの on_draw で、そのウィンドウの描画処理を行う。
         for task in tasks:
@@ -80,8 +86,11 @@ class MultiWindowLoop:
                 on_frame_start()
 
             for task in tasks:
-                # 閉じられたウィンドウへ draw すると例外になり得るため、開いているものだけ描く。
-                if task.window not in pyglet.app.windows:
+                # 閉じられた window と hide 中の window は描画しない。
+                # test double など visible を持たない window は従来通り表示中とみなす。
+                if task.window not in pyglet.app.windows or not bool(
+                    getattr(task.window, "visible", True)
+                ):
                     continue
                 task.window.draw(dt)
 

@@ -7,9 +7,11 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from grafix.core.op_registry import (
+    CachePolicy,
     OpRegistry,
     OpSpec,
     UiVisiblePred,
+    op_callable_catalog_fields,
     op_defaults_and_order,
 )
 from grafix.core.parameters.meta import ParamMeta
@@ -30,6 +32,7 @@ def primitive(
     func: Callable[..., GeomTuple] | None = None,
     *,
     overwrite: bool = False,
+    cache_policy: CachePolicy = "content",
     meta: Mapping[str, ParamMeta | Mapping[str, object]] | None = None,
     ui_visible: Mapping[str, UiVisiblePred] | None = None,
 ):
@@ -44,6 +47,10 @@ def primitive(
         引数なしデコレータ利用時は None。
     overwrite : bool, optional
         既存エントリがある場合に上書きするかどうか。
+    cache_policy : {"content", "none"}, optional
+        ``"content"`` は同一入力の結果を再利用する既定契約。operation はpureかつ
+        deterministicにし、乱数は明示 ``seed`` 引数から生成する。時刻・global stateへ
+        依存するoperationだけ ``"none"`` を指定してCPU/GPU cacheを迂回する。
 
     Examples
     --------
@@ -101,6 +108,12 @@ def primitive(
             ui_visible={} if ui_visible is None else ui_visible,
             n_inputs=0,
             kind="primitive",
+            cache_policy=cache_policy,
+            **op_callable_catalog_fields(
+                kind="primitive",
+                func=f,
+                n_inputs=0,
+            ),
         )
         primitive_registry.register(
             f.__name__,

@@ -37,6 +37,20 @@ ui:
     # Parameter テーブルの列幅（stretch 比率）。
     # (source / parameter, value, range, MIDI)
     table_column_weights: [0.36, 0.35, 0.18, 0.23]
+    # Parameter GUI内だけで使うkeyboard shortcut。pyglet key名で指定する。
+    shortcuts:
+      play_pause: SPACE
+      reset_time: HOME
+      step_backward: LEFT
+      step_forward: RIGHT
+      slower: BRACKETLEFT
+      faster: BRACKETRIGHT
+      range_shift: R
+      range_min: E
+      range_max: T
+      cancel: ESCAPE
+      undo: Z
+      redo: Y
 
 export:
   # PNG 変換のスケール倍率（canvas_size に対するピクセル倍率）。

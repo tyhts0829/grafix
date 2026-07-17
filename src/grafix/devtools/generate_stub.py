@@ -1,12 +1,12 @@
 """
 どこで: `src/grafix/devtools/generate_stub.py`。
-何を: `grafix.api` の IDE 補完用スタブ `grafix/api/__init__.pyi` を自動生成する。
+何を: `grafix.api` の IDE 補完用スタブを project-local に自動生成する。
 なぜ: `G`/`E` が動的名前空間のため、静的解析が公開 API を把握できる形を用意するため。
 
 主な流れ（読む順）:
 - `generate_stubs_str()` が各 registry を初期化し、primitive/effect/preset の一覧を集計する。
 - 集計した名前から `_render_*_protocol()` で `Protocol` ベースの API（`G/E/L/P`）を文字列として生成する。
-- `main()` が `grafix.api` の隣に `__init__.pyi` を書き出す（既存ファイルは上書き）。
+- `main()` が project の `typings/grafix/api/__init__.pyi` へ書き出す。
 
 副作用:
 - `generate_stubs_str()` は registry 初期化と preset 自動ロードのために import を行う。
@@ -20,13 +20,20 @@
 from __future__ import annotations
 
 import importlib
-import inspect
+import importlib.util
+import argparse
 import hashlib
+import inspect
 import re
+import sys
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from grafix.core.atomic_write import atomic_write_text
+
+DEFAULT_PROJECT_STUB_PATH = Path("typings/grafix/api/__init__.pyi")
 
 # `G.<prim>(...)` / `E.<eff>(...)` / `P.<preset>(...)` といった
 # スタブ側メソッド名に使える識別子をフィルタするための正規表現。
@@ -61,10 +68,17 @@ _RESOLVABLE_TYPE_IDENTS = {
     "Geometry",
     "Layer",
     "Path",
+    "Literal",
     "SceneItem",
     "Sequence",
     "Vec3",
 }
+
+_PARAMETER_IDENTITY_STUB_PARAMS = (
+    "key: str | int | None = ...",
+    "instance_key: str | int | None = ...",
+    "shared: bool = ...",
+)
 
 
 def _is_valid_identifier(name: str) -> bool:
@@ -170,14 +184,27 @@ def _meta_hint(meta: Any) -> str | None:
     """`ParamMeta` 風オブジェクトから、docstring 用の短いヒント文字列を作る。
 
     stub 側の docstring は「型」よりも「UI/値の制約」が助けになることが多いので、
-    `kind` / `ui_min` / `ui_max` / `choices` を寄せ集めて 1 行にする。
+    semantic metadata と既存の range/choices を寄せ集めて 1 行にする。
     """
     kind = getattr(meta, "kind", None)
     ui_min = getattr(meta, "ui_min", None)
     ui_max = getattr(meta, "ui_max", None)
     choices = getattr(meta, "choices", None)
+    display_name = getattr(meta, "display_name", None)
+    description = getattr(meta, "description", None)
+    unit = getattr(meta, "unit", None)
+    step = getattr(meta, "step", None)
+    value_format = getattr(meta, "format", None)
+    scale = getattr(meta, "scale", None)
+    category = getattr(meta, "category", None)
+    advanced = bool(getattr(meta, "advanced", False))
+    recommended_range = getattr(meta, "recommended_range", None)
 
     parts: list[str] = []
+    if description:
+        parts.append(str(description))
+    if display_name:
+        parts.append(f"display {str(display_name)!r}")
     if kind:
         parts.append(str(kind))
 
@@ -188,6 +215,26 @@ def _meta_hint(meta: Any) -> str | None:
             parts.append(f"min {ui_min}")
         elif ui_max is not None:
             parts.append(f"max {ui_max}")
+
+    try:
+        recommended = list(recommended_range) if recommended_range is not None else []
+    except Exception:
+        recommended = []
+    if len(recommended) == 2:
+        parts.append(f"recommended [{recommended[0]}, {recommended[1]}]")
+
+    if unit:
+        parts.append(f"unit {unit}")
+    if step is not None:
+        parts.append(f"step {step}")
+    if scale:
+        parts.append(f"scale {scale}")
+    if value_format:
+        parts.append(f"format {value_format!r}")
+    if category:
+        parts.append(f"category {category!r}")
+    if advanced:
+        parts.append("advanced")
 
     try:
         seq = list(choices) if choices is not None else []
@@ -219,6 +266,17 @@ def _type_for_kind(kind: str) -> str:
     if kind == "rgb":
         return "tuple[int, int, int]"
     return "Any"
+
+
+def _type_for_meta(meta: Any, *, fallback: str | None = None) -> str:
+    """choice metadata は ``Literal``、それ以外は通常の kind 型へ変換する。"""
+
+    choices = getattr(meta, "choices", None)
+    if str(getattr(meta, "kind", "")) == "choice" and choices:
+        return f"Literal[{', '.join(repr(str(choice)) for choice in choices)}]"
+    if fallback is not None:
+        return fallback
+    return _type_for_kind(str(getattr(meta, "kind", "")))
 
 
 def _type_str_from_annotation(annotation: Any) -> str | None:
@@ -274,6 +332,30 @@ def _type_str_from_impl_param(impl: Any, param_name: str) -> str | None:
     return _type_str_from_annotation(p.annotation)
 
 
+def _type_str_for_code_owned_param(*, impl: Any | None, param_name: str) -> str:
+    """GUI metadataを持たないcode-owned引数の公開annotationを返す。"""
+
+    if impl is None:
+        return "Any"
+    type_str = _type_str_from_impl_param(impl, param_name)
+    if type_str is None:
+        return "Any"
+    normalized = _normalize_type_str(type_str)
+    return normalized if _is_resolvable_type_str(normalized) else "Any"
+
+
+def _operation_param_order(spec: Any) -> list[str]:
+    """wrapper引数の後に元callable順の引数を並べる。"""
+
+    accepted = [name for name in spec.accepted_args if _is_valid_identifier(name)]
+    wrapper_owned = [
+        name
+        for name in spec.param_order
+        if name not in spec.accepted_args and _is_valid_identifier(name)
+    ]
+    return list(dict.fromkeys((*wrapper_owned, *accepted)))
+
+
 def _type_str_for_effect_param(*, impl: Any | None, param_name: str, meta: Any) -> str:
     """effect の param に対する型文字列を決める。
 
@@ -282,7 +364,9 @@ def _type_str_for_effect_param(*, impl: Any | None, param_name: str, meta: Any) 
     - `vec3` は `tuple[float, float, float]` でも `Vec3` に寄せる
     """
     kind = str(getattr(meta, "kind", ""))
-    fallback = _type_for_kind(kind)
+    fallback = _type_for_meta(meta)
+    if kind == "choice":
+        return fallback
     if impl is None:
         return fallback
 
@@ -302,7 +386,9 @@ def _type_str_for_preset_param(*, impl: Any, param_name: str, meta: Any) -> str:
     `_normalize_type_str()` + `_is_resolvable_type_str()` でフィルタし、ダメなら `Any` に倒す。
     """
     kind = str(getattr(meta, "kind", ""))
-    fallback = _type_for_kind(kind)
+    fallback = _type_for_meta(meta)
+    if kind == "choice":
+        return fallback
 
     type_str = _type_str_from_impl_param(impl, param_name)
     if type_str is None:
@@ -315,17 +401,36 @@ def _type_str_for_preset_param(*, impl: Any, param_name: str, meta: Any) -> str:
 
 
 def _resolve_impl_callable(kind: str, name: str) -> Any | None:
-    """built-in 実装関数（docstring ソース）を最善で見つける。
+    """registry provenance から元の実装 callable を最善で見つける。
 
-    registry から取れるのは「名前とメタ情報」なので、docstring や型注釈を拾うために
-    `grafix.core.primitives.<name>` / `grafix.core.effects.<name>` を import して関数を探す。
+    project-local operation も対象にするため、まず ``module:qualname`` provenance を使う。
+    古い built-in spec の fallback として従来の module 命名規則も試す。
     """
+    operation_spec: Any
     if kind == "primitive":
+        from grafix.core.primitive_registry import primitive_registry
+
+        operation_spec = primitive_registry[name]
         module_name = f"grafix.core.primitives.{name}"
     elif kind == "effect":
+        from grafix.core.effect_registry import effect_registry
+
+        operation_spec = effect_registry[name]
         module_name = f"grafix.core.effects.{name}"
     else:
         raise ValueError(f"unknown kind: {kind!r}")
+
+    provenance = str(operation_spec.provenance)
+    provenance_module, separator, qualname = provenance.partition(":")
+    if separator and "<locals>" not in qualname:
+        try:
+            value: Any = importlib.import_module(provenance_module)
+            for part in qualname.split("."):
+                value = getattr(value, part)
+            if callable(value):
+                return value
+        except Exception:
+            pass
 
     try:
         mod = importlib.import_module(module_name)
@@ -334,6 +439,53 @@ def _resolve_impl_callable(kind: str, name: str) -> Any | None:
 
     fn = getattr(mod, name, None)
     return fn if callable(fn) else None
+
+
+def _source_is_within(source: str | Path | None, roots: tuple[Path, ...]) -> bool:
+    """source path がいずれかの project root 配下なら True を返す。"""
+
+    if source is None:
+        return False
+    source_path = Path(source).resolve(strict=False)
+    for root in roots:
+        try:
+            source_path.relative_to(root)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def _callable_source(value: Any) -> str | None:
+    """callable の source path を取得できない場合は None を返す。"""
+
+    try:
+        return inspect.getsourcefile(inspect.unwrap(value))
+    except TypeError:
+        return None
+
+
+def _include_operation(kind: str, name: str, roots: tuple[Path, ...]) -> bool:
+    """built-in または指定 project 配下の operation なら True を返す。"""
+
+    operation_spec: Any
+    if kind == "primitive":
+        from grafix.core.primitive_registry import primitive_registry
+
+        operation_spec = primitive_registry[name]
+        builtin_prefix = "grafix.core.primitives."
+    elif kind == "effect":
+        from grafix.core.effect_registry import effect_registry
+
+        operation_spec = effect_registry[name]
+        builtin_prefix = "grafix.core.effects."
+    else:
+        raise ValueError(f"unknown kind: {kind!r}")
+    module_name = str(operation_spec.provenance).partition(":")[0]
+    return module_name.startswith(builtin_prefix) or _source_is_within(
+        operation_spec.source,
+        roots,
+    )
 
 
 def _render_docstring(
@@ -418,23 +570,26 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
     for prim in primitive_names:
         spec = primitive_registry[prim]
         meta_by_name: dict[str, Any] = dict(spec.meta)
-        param_order = [name for name in spec.param_order if name in meta_by_name]
+        param_order = _operation_param_order(spec)
+        impl = _resolve_impl_callable("primitive", prim)
 
         params: list[str] = []
-        if meta_by_name:
+        if param_order or meta_by_name:
             for p in param_order:
-                pm = meta_by_name[p]
-                kind = str(getattr(pm, "kind", ""))
-                params.append(f"{p}: {_type_for_kind(kind)} = ...")
-            params.append("key: str | int | None = ...")
+                if p in meta_by_name:
+                    type_str = _type_for_meta(meta_by_name[p])
+                else:
+                    type_str = _type_str_for_code_owned_param(impl=impl, param_name=p)
+                default = "" if p in spec.required_args else " = ..."
+                params.append(f"{p}: {type_str}{default}")
+            params.extend(_PARAMETER_IDENTITY_STUB_PARAMS)
+            if spec.accepts_var_kwargs:
+                params.append("**params: Any")
         else:
-            params = ["key: str | int | None = ...", "**params: Any"]
+            params = [*_PARAMETER_IDENTITY_STUB_PARAMS, "**params: Any"]
 
-        impl = _resolve_impl_callable("primitive", prim)
-        if impl is not None:
-            parsed_summary, parsed_docs = _parse_numpy_doc(inspect.getdoc(impl) or "")
-        else:
-            parsed_summary, parsed_docs = (None, {})
+        doc = inspect.getdoc(impl) if impl is not None else spec.doc
+        parsed_summary, parsed_docs = _parse_numpy_doc(doc or "")
         doc_lines = _render_docstring(
             summary=parsed_summary,
             param_order=[p for p in param_order if _is_valid_identifier(p)],
@@ -473,22 +628,29 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
 
         spec = effect_registry[eff]
         meta_by_name: dict[str, Any] = dict(spec.meta)
-        param_order = [name for name in spec.param_order if name in meta_by_name]
+        param_order = _operation_param_order(spec)
 
         params: list[str] = []
-        if meta_by_name:
+        if param_order or meta_by_name:
             for p in param_order:
-                pm = meta_by_name[p]
-                type_str = _type_str_for_effect_param(impl=impl, param_name=p, meta=pm)
-                params.append(f"{p}: {type_str} = ...")
-            params.append("key: str | int | None = ...")
+                if p in meta_by_name:
+                    type_str = _type_str_for_effect_param(
+                        impl=impl,
+                        param_name=p,
+                        meta=meta_by_name[p],
+                    )
+                else:
+                    type_str = _type_str_for_code_owned_param(impl=impl, param_name=p)
+                default = "" if p in spec.required_args else " = ..."
+                params.append(f"{p}: {type_str}{default}")
+            params.extend(_PARAMETER_IDENTITY_STUB_PARAMS)
+            if spec.accepts_var_kwargs:
+                params.append("**params: Any")
         else:
-            params = ["key: str | int | None = ...", "**params: Any"]
+            params = [*_PARAMETER_IDENTITY_STUB_PARAMS, "**params: Any"]
 
-        if impl is not None:
-            parsed_summary, parsed_docs = _parse_numpy_doc(inspect.getdoc(impl) or "")
-        else:
-            parsed_summary, parsed_docs = (None, {})
+        doc = inspect.getdoc(impl) if impl is not None else spec.doc
+        parsed_summary, parsed_docs = _parse_numpy_doc(doc or "")
         doc_lines = _render_docstring(
             summary=parsed_summary,
             param_order=[p for p in param_order if _is_valid_identifier(p)],
@@ -526,22 +688,29 @@ def _render_e_protocol(effect_names: list[str]) -> str:
 
         spec = effect_registry[eff]
         meta_by_name: dict[str, Any] = dict(spec.meta)
-        param_order = [name for name in spec.param_order if name in meta_by_name]
+        param_order = _operation_param_order(spec)
 
         params: list[str] = []
-        if meta_by_name:
+        if param_order or meta_by_name:
             for p in param_order:
-                pm = meta_by_name[p]
-                type_str = _type_str_for_effect_param(impl=impl, param_name=p, meta=pm)
-                params.append(f"{p}: {type_str} = ...")
-            params.append("key: str | int | None = ...")
+                if p in meta_by_name:
+                    type_str = _type_str_for_effect_param(
+                        impl=impl,
+                        param_name=p,
+                        meta=meta_by_name[p],
+                    )
+                else:
+                    type_str = _type_str_for_code_owned_param(impl=impl, param_name=p)
+                default = "" if p in spec.required_args else " = ..."
+                params.append(f"{p}: {type_str}{default}")
+            params.extend(_PARAMETER_IDENTITY_STUB_PARAMS)
+            if spec.accepts_var_kwargs:
+                params.append("**params: Any")
         else:
-            params = ["key: str | int | None = ...", "**params: Any"]
+            params = [*_PARAMETER_IDENTITY_STUB_PARAMS, "**params: Any"]
 
-        if impl is not None:
-            parsed_summary, parsed_docs = _parse_numpy_doc(inspect.getdoc(impl) or "")
-        else:
-            parsed_summary, parsed_docs = (None, {})
+        doc = inspect.getdoc(impl) if impl is not None else spec.doc
+        parsed_summary, parsed_docs = _parse_numpy_doc(doc or "")
         doc_lines = _render_docstring(
             summary=parsed_summary,
             param_order=[p for p in param_order if _is_valid_identifier(p)],
@@ -579,11 +748,13 @@ def _render_l_protocol() -> str:
         "        geometry_or_list: Geometry | Sequence[Geometry],\n"
         "        *,\n"
         "        key: str | int | None = ...,\n"
+        "        instance_key: str | int | None = ...,\n"
+        "        shared: bool = ...,\n"
         "        color: Vec3 | None = ...,\n"
         "        thickness: float | None = ...,\n"
-        "    ) -> list[Layer]:\n"
+        "    ) -> Layer:\n"
     )
-    lines.append('        """単体/複数の Geometry から Layer を生成する。"""\n')
+    lines.append('        """単体/複数の Geometry を単一 Layer にする。"""\n')
     lines.append("        ...\n\n")
     return "".join(lines)
 
@@ -598,6 +769,8 @@ def _render_p_protocol(preset_names: list[str]) -> str:
         "        name: str | None = None,\n"
         "        *,\n"
         "        key: str | int | None = None,\n"
+        "        instance_key: str | int | None = None,\n"
+        "        shared: bool = False,\n"
         "    ) -> _P:\n"
     )
     lines.append('        """ラベル付き preset 名前空間を返す。"""\n')
@@ -630,7 +803,7 @@ def _render_p_protocol(preset_names: list[str]) -> str:
         params.extend(
             (
                 "name: str | None = ...",
-                "key: str | int | None = ...",
+                *_PARAMETER_IDENTITY_STUB_PARAMS,
             )
         )
 
@@ -655,13 +828,21 @@ def _render_p_protocol(preset_names: list[str]) -> str:
     return "".join(lines)
 
 
-def generate_stubs_str() -> str:
+def generate_stubs_str(
+    *,
+    source_roots: Sequence[str | Path] = (),
+) -> str:
     """`grafix/api/__init__.pyi` の生成結果を文字列として返す。
+
+    Parameters
+    ----------
+    source_roots : Sequence[str or Path], optional
+        built-in に加えて stub へ含める project-local operation/preset の source root。
 
     Notes
     -----
     - registry を初期化するために built-in 登録を行う（副作用あり）。
-    - primitives/effects は「実装関数が import できるもの」だけを採用する。
+    - project-local module は呼び出し前に import して registry へ登録する必要がある。
     - presets は `runtime_config().preset_module_dirs` 配下からロードされたものだけを採用する。
     """
 
@@ -676,23 +857,25 @@ def generate_stubs_str() -> str:
     from grafix.core.preset_registry import preset_func_registry, preset_registry  # type: ignore[import]
     from grafix.core.runtime_config import runtime_config  # type: ignore[import]
 
+    roots = tuple(Path(root).expanduser().resolve(strict=False) for root in source_roots)
+
     # IDE 補完に載せたい public 名だけ抽出する。
     # - 先頭が `_` の名前は除外
     # - method 名に使えない識別子は除外
-    # - 実装関数が見つからないものは除外（docstring/型注釈を拾えないため）
+    # - built-in と source_roots 配下の project-local operation だけを採用
     primitive_names = sorted(
         name
         for name in primitive_registry
         if _is_valid_identifier(name)
         and not name.startswith("_")
-        and _resolve_impl_callable("primitive", name) is not None
+        and _include_operation("primitive", name, roots)
     )
     effect_names = sorted(
         name
         for name in effect_registry
         if _is_valid_identifier(name)
         and not name.startswith("_")
-        and _resolve_impl_callable("effect", name) is not None
+        and _include_operation("effect", name, roots)
     )
 
     # user presets は、preset dir ごとに「パス由来のハッシュで作った擬似パッケージ名」
@@ -710,7 +893,16 @@ def generate_stubs_str() -> str:
         if _is_valid_identifier(name)
         and not name.startswith("_")
         and f"preset.{name}" in preset_registry
-        and any(str(getattr(fn, "__module__", "")).startswith(pref) for pref in preset_pkg_prefixes)
+        and (
+            (
+                any(
+                    str(getattr(fn, "__module__", "")).startswith(pref)
+                    for pref in preset_pkg_prefixes
+                )
+                and (not roots or _source_is_within(_callable_source(fn), roots))
+            )
+            or _source_is_within(_callable_source(fn), roots)
+        )
     )
 
     # 生成物の先頭には「自動生成」ヘッダと lint 抑制を入れる。
@@ -725,7 +917,7 @@ def generate_stubs_str() -> str:
     lines.append("from __future__ import annotations\n\n")
     lines.append("from collections.abc import Callable, Sequence\n")
     lines.append("from pathlib import Path\n")
-    lines.append("from typing import Any, Protocol, TypeAlias\n\n")
+    lines.append("from typing import Any, Literal, Protocol, TypeAlias\n\n")
 
     lines.append("from grafix.core.geometry import Geometry\n")
     lines.append("from grafix.core.layer import Layer\n")
@@ -745,13 +937,30 @@ def generate_stubs_str() -> str:
     lines.append("P: _P\n\n")
 
     # 実行時 API と整合する再エクスポート
-    lines.append("from grafix.api.export import Export as Export\n")
+    lines.append("from grafix.api.export import export as export\n")
+    lines.append(
+        "from grafix.api.render import (Color as Color, ExportFormat as ExportFormat, "
+        "ExportResult as ExportResult, Frame as Frame, RenderOptions as RenderOptions, "
+        "RenderSession as RenderSession, RenderSessionMetadata as RenderSessionMetadata, "
+        "render as render)\n"
+    )
+    lines.append(
+        "from grafix.api.variation_batch import ("
+        "VariationBatchResult as VariationBatchResult, "
+        "VariationRenderResult as VariationRenderResult, "
+        "render_variation_batch as render_variation_batch)\n"
+    )
     lines.append("from grafix.api.preset import preset as preset\n")
     lines.append("from grafix.core.effect_registry import effect as effect\n")
     lines.append("from grafix.core.primitive_registry import primitive as primitive\n")
     lines.append(
         "from grafix.core.resource_budget import ResourceBudget as ResourceBudget, "
         "ResourceLimitError as ResourceLimitError\n\n"
+    )
+    lines.append(
+        "from grafix.core.runtime_limits import ("
+        "RuntimeLimitProfiles as RuntimeLimitProfiles, "
+        "RuntimeLimits as RuntimeLimits)\n\n"
     )
 
     # `grafix.api.__init__.py` は遅延 import だが、型はここで固定する。
@@ -771,30 +980,226 @@ def generate_stubs_str() -> str:
         "    midi_port_name: str | None = ...,\n"
         "    midi_mode: str = ...,\n"
         "    n_worker: int = ...,\n"
+        "    evaluation_timeout: float | None = ...,\n"
         "    fps: float = ...,\n"
+        "    seed: int | None = ...,\n"
         "    resource_budget: ResourceBudget = ...,\n"
+        "    runtime_limit_profiles: RuntimeLimitProfiles | None = ...,\n"
         ") -> None:\n"
-        '    """pyglet ウィンドウを生成し `draw(t)` のシーンをリアルタイム描画する。"""\n'
+        '    """`draw(t)` を既定の background 1 worker で評価し、リアルタイム描画する。\n\n'
+        "    `n_worker=0` の場合だけ同期評価し、`>=1` は background worker 数を表す。\n"
+        '    """\n'
         "    ...\n\n"
     )
 
     lines.append(
-        "__all__ = ['E', 'Export', 'G', 'L', 'P', 'ResourceBudget', "
-        "'ResourceLimitError', 'effect', 'preset', 'primitive', 'run']\n"
+        "__all__ = ['Color', 'E', 'ExportFormat', 'ExportResult', 'Frame', "
+        "'G', 'L', 'P', 'RenderOptions', 'RenderSession', 'RenderSessionMetadata', "
+        "'ResourceBudget', 'ResourceLimitError', 'RuntimeLimitProfiles', "
+        "'RuntimeLimits', 'VariationBatchResult', 'VariationRenderResult', "
+        "'effect', 'export', 'preset', 'primitive', 'render', "
+        "'render_variation_batch', 'run']\n"
     )
     return "".join(lines)
 
 
-def main() -> None:
-    """`grafix/api/__init__.pyi` を生成してファイルに書き出す。"""
-    content = generate_stubs_str()
-    import grafix.api
+@contextmanager
+def _project_import_path(project_root: Path) -> Iterator[None]:
+    """project root を import path の先頭へ一時追加する。"""
 
-    api_init = Path(grafix.api.__file__).resolve()
-    out_path = api_init.with_name("__init__.pyi")
-    atomic_write_text(out_path, content)
-    print(f"Wrote {out_path}")  # noqa: T201
+    root_text = str(project_root)
+    sys.path.insert(0, root_text)
+    importlib.invalidate_caches()
+    try:
+        yield
+    finally:
+        try:
+            sys.path.remove(root_text)
+        except ValueError:
+            pass
+
+
+def _import_project_target(project_root: Path, target: str) -> None:
+    """dotted module または project-relative Python file を import する。"""
+
+    candidate = Path(target).expanduser()
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    if not candidate.is_file():
+        importlib.import_module(str(target))
+        return
+
+    resolved = candidate.resolve(strict=True)
+    token = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    module_name = f"grafix_project_module_{token}"
+    if module_name in sys.modules:
+        return
+    spec = importlib.util.spec_from_file_location(module_name, resolved)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"project module を読み込めません: {resolved}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+
+
+_ROOT_STUB = """from grafix.api import (
+    Color as Color,
+    E as E,
+    ExportFormat as ExportFormat,
+    ExportResult as ExportResult,
+    Frame as Frame,
+    G as G,
+    L as L,
+    P as P,
+    RenderOptions as RenderOptions,
+    RenderSession as RenderSession,
+    RenderSessionMetadata as RenderSessionMetadata,
+    ResourceBudget as ResourceBudget,
+    ResourceLimitError as ResourceLimitError,
+    RuntimeLimitProfiles as RuntimeLimitProfiles,
+    RuntimeLimits as RuntimeLimits,
+    VariationBatchResult as VariationBatchResult,
+    VariationRenderResult as VariationRenderResult,
+    effect as effect,
+    export as export,
+    preset as preset,
+    primitive as primitive,
+    render as render,
+    render_variation_batch as render_variation_batch,
+    run as run,
+)
+from grafix.cc import cc as cc
+
+__all__ = [
+    "Color",
+    "E",
+    "ExportFormat",
+    "ExportResult",
+    "Frame",
+    "G",
+    "L",
+    "P",
+    "RenderOptions",
+    "RenderSession",
+    "RenderSessionMetadata",
+    "ResourceBudget",
+    "ResourceLimitError",
+    "RuntimeLimitProfiles",
+    "RuntimeLimits",
+    "VariationBatchResult",
+    "VariationRenderResult",
+    "cc",
+    "effect",
+    "export",
+    "preset",
+    "primitive",
+    "render",
+    "render_variation_batch",
+    "run",
+]
+"""
+
+
+def _project_output_path(project_root: Path, output: Path | None) -> Path:
+    if output is None:
+        return project_root / DEFAULT_PROJECT_STUB_PATH
+    expanded = output.expanduser()
+    if not expanded.is_absolute():
+        expanded = project_root / expanded
+    return expanded.resolve(strict=False)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """project-local な ``grafix.api`` stub を生成する。
+
+    Parameters
+    ----------
+    argv : list[str] or None, optional
+        CLI 引数。None の場合は ``sys.argv`` を使う。
+
+    Returns
+    -------
+    int
+        生成成功時は 0、project module の import 失敗時は 2。
+
+    Notes
+    -----
+    既定出力は ``<project>/typings/grafix/api/__init__.pyi`` であり、installed
+    package は変更しない。``--output`` を指定した場合だけ任意 file へ出力する。
+    """
+
+    parser = argparse.ArgumentParser(prog="python -m grafix stub")
+    parser.add_argument("--project", type=Path, default=Path.cwd(), help="project root")
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="出力先（相対pathはproject root基準）",
+    )
+    parser.add_argument(
+        "--import",
+        "--module",
+        dest="imports",
+        action="append",
+        default=[],
+        help="事前importする dotted module または project-relative .py（複数指定可）",
+    )
+    parser.add_argument(
+        "--no-default-import",
+        action="store_true",
+        help="sketch.main の自動importを無効にする",
+    )
+    parser.add_argument("--config", type=Path, help="config.yaml（相対pathはproject root基準）")
+    args = parser.parse_args(argv)
+
+    project_root = args.project.expanduser().resolve(strict=False)
+    output_path = _project_output_path(project_root, args.output)
+    config_path = args.config
+    if config_path is None:
+        discovered = project_root / ".grafix" / "config.yaml"
+        config_path = discovered if discovered.is_file() else None
+    elif not config_path.is_absolute():
+        config_path = project_root / config_path
+
+    from grafix.core.runtime_config import runtime_config, set_config_path
+
+    try:
+        previous_config = runtime_config().config_path
+    except Exception:
+        previous_config = None
+
+    targets = list(args.imports)
+    if not args.no_default_import and (project_root / "sketch" / "main.py").is_file():
+        targets.insert(0, "sketch/main.py")
+
+    try:
+        if config_path is not None:
+            set_config_path(config_path)
+        with _project_import_path(project_root):
+            for target in targets:
+                _import_project_target(project_root, str(target))
+            content = generate_stubs_str(source_roots=(project_root,))
+    except Exception as exc:
+        print(
+            f"project-local stub の生成に失敗しました: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )  # noqa: T201
+        return 2
+    finally:
+        if config_path is not None:
+            set_config_path(previous_config)
+
+    atomic_write_text(output_path, content)
+    if args.output is None:
+        # 標準 MYPYPATH/stubPath で ``from grafix import G`` も解決できる root proxy。
+        atomic_write_text(output_path.parent.parent / "__init__.pyi", _ROOT_STUB)
+    print(f"Wrote {output_path}")  # noqa: T201
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

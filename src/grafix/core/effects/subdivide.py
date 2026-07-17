@@ -6,6 +6,10 @@ import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
+from grafix.core.operation_diagnostics import (
+    OperationDiagnosticValue,
+    emit_operation_diagnostic,
+)
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
 
@@ -51,11 +55,23 @@ def subdivide(
     if coords.shape[0] == 0:
         return coords, offsets
 
-    divisions = int(subdivisions)
-    if divisions <= 0:
+    requested_divisions = int(subdivisions)
+    divisions = requested_divisions
+    degradation_reasons: list[str] = []
+    if divisions < 0:
+        _emit_subdivide_diagnostic(
+            requested=requested_divisions,
+            effective=0,
+            reasons=("negative subdivisions was clamped to zero",),
+        )
+        return coords, offsets
+    if divisions == 0:
         return coords, offsets
     if divisions > MAX_SUBDIVISIONS:
         divisions = MAX_SUBDIVISIONS
+        degradation_reasons.append(
+            f"subdivisions was clamped to MAX_SUBDIVISIONS={MAX_SUBDIVISIONS}"
+        )
     if divisions <= 0:
         return coords, offsets
 
@@ -65,6 +81,13 @@ def subdivide(
 
     base_total = int(coords.shape[0])
     if base_total > MAX_TOTAL_VERTICES:
+        _emit_subdivide_diagnostic(
+            requested=requested_divisions,
+            effective=0,
+            reasons=(
+                "input already exceeded MAX_TOTAL_VERTICES; subdivision was skipped",
+            ),
+        )
         return coords, offsets
 
     # 全ポリラインを残せる共通の細分回数を、配列確保前に決める。
@@ -83,7 +106,17 @@ def subdivide(
         selected_divisions -= 1
 
     if selected_divisions <= 0:
+        _emit_subdivide_diagnostic(
+            requested=requested_divisions,
+            effective=0,
+            reasons=(*degradation_reasons, "vertex limit prevented subdivision"),
+        )
         return coords, offsets
+
+    if selected_divisions < divisions:
+        degradation_reasons.append(
+            "subdivisions was reduced to satisfy MAX_TOTAL_VERTICES"
+        )
 
     if not counts:
         counts = [
@@ -96,7 +129,31 @@ def subdivide(
 
     total_vertices = sum(counts)
     if total_vertices == base_total:
+        _emit_subdivide_diagnostic(
+            requested=requested_divisions,
+            effective=0,
+            reasons=(
+                *degradation_reasons,
+                "minimum segment length prevented subdivision",
+            ),
+        )
         return coords, offsets
+
+    applied_levels = tuple(
+        sorted(
+            {
+                _effective_subdivision_count(
+                    coords[int(offsets[i]) : int(offsets[i + 1])],
+                    selected_divisions,
+                )
+                for i in range(n_lines)
+            }
+        )
+    )
+    if any(level < selected_divisions for level in applied_levels):
+        degradation_reasons.append(
+            "minimum segment length stopped one or more polylines early"
+        )
 
     coords_out = np.empty((total_vertices, coords.shape[1]), dtype=np.float32)
     offsets_out = np.empty((n_lines + 1,), dtype=np.int32)
@@ -111,7 +168,32 @@ def subdivide(
         offsets_out[li + 1] = next_at
         write_at = next_at
 
+    if degradation_reasons:
+        effective: OperationDiagnosticValue = (
+            applied_levels[0] if len(applied_levels) == 1 else applied_levels
+        )
+        _emit_subdivide_diagnostic(
+            requested=requested_divisions,
+            effective=effective,
+            reasons=tuple(degradation_reasons),
+        )
     return coords_out, offsets_out
+
+
+def _emit_subdivide_diagnostic(
+    *,
+    requested: int,
+    effective: OperationDiagnosticValue,
+    reasons: tuple[str, ...],
+) -> None:
+    unique_reasons = tuple(dict.fromkeys(reason for reason in reasons if reason))
+    emit_operation_diagnostic(
+        op="subdivide",
+        original_value=int(requested),
+        effective_value=effective,
+        reason="; ".join(unique_reasons),
+        severity="warning",
+    )
 
 
 def _subdivided_vertex_count(vertices: np.ndarray, subdivisions: int) -> int:
@@ -121,18 +203,29 @@ def _subdivided_vertex_count(vertices: np.ndarray, subdivisions: int) -> int:
     if n < 2 or subdivisions <= 0:
         return n
 
+    for _ in range(_effective_subdivision_count(vertices, subdivisions)):
+        n = 2 * n - 1
+    return n
+
+
+def _effective_subdivision_count(vertices: np.ndarray, subdivisions: int) -> int:
+    """最短segment制約を含め、実際に適用される反復数を返す。"""
+
+    if int(vertices.shape[0]) < 2 or subdivisions <= 0:
+        return 0
     delta = vertices[1:] - vertices[:-1]
     distance_sq = np.einsum("ij,ij->i", delta, delta)
     min_distance_sq = float(np.min(distance_sq))
     if min_distance_sq < MIN_SEG_LEN_SQ:
-        return n
+        return 0
 
+    applied = 0
     for _ in range(min(int(subdivisions), MAX_SUBDIVISIONS)):
-        n = 2 * n - 1
+        applied += 1
         min_distance_sq *= 0.25
         if min_distance_sq < MIN_SEG_LEN_SQ:
             break
-    return n
+    return applied
 
 
 @njit(fastmath=True, cache=True)

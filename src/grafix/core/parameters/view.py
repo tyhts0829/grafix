@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from typing import Any, Iterable, Sequence
 
 from .key import ParameterKey
-from .meta import ParamMeta
+from .meta import ParamMeta, ParamScale
 from .state import ParamStateSnapshot
 
 
@@ -29,6 +29,16 @@ class ParameterRow:
     cc_key: int | tuple[int | None, int | None, int | None] | None
     override: bool
     ordinal: int
+    display_name: str | None = None
+    description: str | None = None
+    unit: str | None = None
+    step: float | None = None
+    format: str | None = None
+    scale: ParamScale | None = None
+    category: str | None = None
+    advanced: bool = False
+    recommended_range: tuple[float, float] | None = None
+    favorite: bool = False
     # 1 GUI frame だけ有効な command。永続 state ではなく store bridge が消費する。
     reset_to_code: bool = False
 
@@ -57,6 +67,15 @@ def rows_from_snapshot(
                 cc_key=state.cc_key,
                 override=state.override,
                 ordinal=ordinal,
+                display_name=meta.display_name,
+                description=meta.description,
+                unit=meta.unit,
+                step=meta.step,
+                format=meta.format,
+                scale=meta.scale,
+                category=meta.category,
+                advanced=meta.advanced,
+                recommended_range=meta.recommended_range,
             )
         )
     rows.sort(key=lambda r: (r.op, r.ordinal, r.arg))

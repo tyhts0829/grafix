@@ -37,9 +37,11 @@ class LayerNamespace:
         geometry_or_list: Geometry | Sequence[Geometry],
         *,
         key: str | int | None = None,
+        instance_key: str | int | None = None,
+        shared: bool = False,
         color: tuple[float, float, float] | None = None,
         thickness: float | None = None,
-    ) -> list[Layer]:
+    ) -> Layer:
         """単体/複数の Geometry から Layer を生成する。
 
         Parameters
@@ -47,7 +49,12 @@ class LayerNamespace:
         geometry_or_list : Geometry or Sequence[Geometry]
             入力 Geometry または Geometry の列。
         key : str or int or None, optional
-            行移動に影響されない明示 site key。
+            行移動に影響されない semantic site key。
+        instance_key : str or int or None, optional
+            loop/comprehension 内で Layer style を個別調整するための instance key。
+        shared : bool, optional
+            True なら同じ semantic site の反復 Layer で style group を共有する。
+            ``instance_key`` との同時指定はできない。
         color : tuple[float, float, float] or None, optional
             RGB 色。None の場合は既定値に委譲。
         thickness : float or None, optional
@@ -55,8 +62,8 @@ class LayerNamespace:
 
         Returns
         -------
-        list[Layer]
-            生成された Layer のリスト（長さ 1）。
+        Layer
+            単一の Layer。複数 Geometry は内部で concat する。
 
         Raises
         ------
@@ -94,7 +101,12 @@ class LayerNamespace:
 
         # site_id は「この Layer が生成された呼び出し箇所」を識別する安定 ID。
         # Layer style（line_thickness/line_color）の行は、この site_id をキーとして保存する。
-        site_id = caller_site_id(skip=1, key=key)
+        site_id = caller_site_id(
+            skip=1,
+            key=key,
+            instance_key=instance_key,
+            shared=shared,
+        )
 
         store = current_param_store()
         if store is not None and resolved_name is not None:
@@ -106,15 +118,13 @@ class LayerNamespace:
         else:
             geometry = Geometry.create(op="concat", inputs=tuple(geometries), params={})
 
-        return [
-            Layer(
-                geometry=geometry,
-                site_id=site_id,
-                color=color,
-                thickness=thickness,
-                name=resolved_name,
-            )
-        ]
+        return Layer(
+            geometry=geometry,
+            site_id=site_id,
+            color=color,
+            thickness=thickness,
+            name=resolved_name,
+        )
 
     _pending_name: str | None = None
 

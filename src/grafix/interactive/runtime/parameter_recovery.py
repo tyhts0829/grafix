@@ -1,0 +1,162 @@
+"""ParamStore session recovery を診断 action から解決する。"""
+
+from __future__ import annotations
+
+import difflib
+from copy import deepcopy
+from dataclasses import dataclass
+from pathlib import Path
+
+from grafix.core.parameters.codec import dumps_param_store
+from grafix.core.parameters.persistence import (
+    finalize_param_store_session,
+    load_param_store,
+    param_store_recovery_path,
+)
+from grafix.core.parameters.store import ParamStore
+from grafix.interactive.runtime.diagnostics import DiagnosticAction, DiagnosticEvent
+
+
+def param_store_load_diagnostic_events(
+    store: ParamStore,
+    *,
+    primary_path: Path,
+) -> tuple[DiagnosticEvent, ...]:
+    """ParamStore load 時の migration/quarantine 情報を共通診断へ変換する。"""
+
+    events: list[DiagnosticEvent] = []
+    for item in store.load_diagnostics:
+        source = item.backup_path if item.backup_path is not None else primary_path
+        actions: list[DiagnosticAction] = []
+        if item.details:
+            actions.append(DiagnosticAction("copy", "Copy details"))
+        if item.backup_path is not None:
+            actions.append(DiagnosticAction("open", "Open backup"))
+        events.append(
+            DiagnosticEvent(
+                category="recovery",
+                severity="warning",
+                summary=item.summary,
+                details=item.details,
+                source=str(source),
+                actions=tuple(actions),
+                dedupe_key=f"param-load:{item.code}:{source}",
+            )
+        )
+    return tuple(events)
+
+
+def recovered_session_diagnostic(primary_path: Path) -> DiagnosticEvent:
+    """未完了 session を復元したことと判断 action を表す。"""
+
+    recovery_path = param_store_recovery_path(primary_path)
+    return DiagnosticEvent(
+        category="recovery",
+        severity="warning",
+        summary="Recovered session",
+        details=(
+            "Grafix restored parameter changes from an unfinished session. "
+            "Keep accepts them, Discard restores the primary save, and Compare "
+            "shows the current difference."
+        ),
+        source=str(recovery_path),
+        actions=(
+            DiagnosticAction("keep", "Keep"),
+            DiagnosticAction("discard", "Discard"),
+            DiagnosticAction("compare", "Compare"),
+        ),
+        dedupe_key=f"recovered-session:{recovery_path}",
+    )
+
+
+def _replace_store_contents(target: ParamStore, source: ParamStore) -> None:
+    """共有中の ParamStore identity を保ったまま primary 内容へ置換する。"""
+
+    previous_revision = int(target.revision)
+    target._states = deepcopy(source._states)
+    target._meta = deepcopy(source._meta)
+    target._explicit_by_key = deepcopy(source._explicit_by_key)
+    target._labels = deepcopy(source._labels)
+    target._ordinals = deepcopy(source._ordinals)
+    target._effects = deepcopy(source._effects)
+    target._collapsed_headers = deepcopy(source._collapsed_headers)
+    target._locked_keys = deepcopy(source._locked_keys)
+    target._favorite_keys = deepcopy(source._favorite_keys)
+    target._variations = deepcopy(source._variations)
+    target._runtime = deepcopy(source._runtime)
+    target._revision = max(previous_revision, int(source.revision))
+    target._snapshot_cache_revision = -1
+    target._snapshot_cache = None
+    target._touch()
+
+
+@dataclass(slots=True)
+class ParamStoreRecoverySession:
+    """現在 store と primary/recovery file の判断操作を所有する。"""
+
+    store: ParamStore
+    primary_path: Path
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.store, ParamStore):
+            raise TypeError("store は ParamStore である必要があります")
+        self.primary_path = Path(self.primary_path)
+
+    @property
+    def recovery_path(self) -> Path:
+        return param_store_recovery_path(self.primary_path)
+
+    def keep(self) -> None:
+        """復元済みの現在状態を primary として確定する。"""
+
+        finalize_param_store_session(self.store, self.primary_path)
+        runtime = self.store._runtime_ref()
+        runtime.load_provenance = "primary"
+        runtime.load_diagnostics = ()
+
+    def discard(self) -> tuple[DiagnosticEvent, ...]:
+        """primary を同一 store object へ戻し、recovery journal を破棄する。"""
+
+        primary = load_param_store(self.primary_path)
+        _replace_store_contents(self.store, primary)
+        self.recovery_path.unlink(missing_ok=True)
+        return param_store_load_diagnostic_events(
+            self.store,
+            primary_path=self.primary_path,
+        )
+
+    def compare_diagnostic(self) -> DiagnosticEvent:
+        """primary と現在の recovered state の unified diff 診断を返す。"""
+
+        primary = load_param_store(self.primary_path)
+        primary_text = dumps_param_store(primary).splitlines(keepends=True)
+        recovered_text = dumps_param_store(
+            self.store,
+            preserve_explicit_overrides=True,
+        ).splitlines(keepends=True)
+        details = "".join(
+            difflib.unified_diff(
+                primary_text,
+                recovered_text,
+                fromfile=str(self.primary_path),
+                tofile=str(self.recovery_path),
+            )
+        )
+        if not details:
+            details = "Primary and recovered parameter states are identical."
+        return DiagnosticEvent(
+            category="recovery",
+            severity="info",
+            summary="Recovered session comparison",
+            details=details,
+            source=str(self.recovery_path),
+            actions=(DiagnosticAction("copy", "Copy comparison"),),
+            dedupe_key=f"recovery-compare:{self.recovery_path}:{self.store.revision}",
+        )
+
+
+__all__ = [
+    "ParamStoreRecoverySession",
+    "param_store_load_diagnostic_events",
+    "recovered_session_diagnostic",
+]

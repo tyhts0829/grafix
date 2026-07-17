@@ -8,7 +8,9 @@ import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.preview_quality import current_preview_quality
 from grafix.core.realized_geometry import GeomTuple
 
 from .util import (
@@ -22,6 +24,8 @@ from .util import (
 )
 
 MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
+DRAFT_MAX_GRID_POINTS = 262_144
+DRAFT_MAX_STEPS = 600
 
 _PLANAR_EPS_ABS = 1e-6
 _PLANAR_EPS_REL = 1e-5
@@ -265,13 +269,14 @@ def reaction_diffusion(
     maxs = np.max(ring_vertices, axis=0)
 
     margin = 2.0 * pitch
+    quality = current_preview_quality()
     grid = GridSpec.from_bbox(
         mins,
         maxs,
         pitch=pitch,
         padding=margin,
-        max_cells=MAX_GRID_POINTS,
-        overflow="reject",
+        max_cells=(DRAFT_MAX_GRID_POINTS if quality == "draft" else MAX_GRID_POINTS),
+        overflow=("coarsen" if quality == "draft" else "reject"),
     )
     if grid is None:
         return empty_geom()
@@ -326,11 +331,25 @@ def reaction_diffusion(
 
     boundary_s = str(boundary)
     boundary_i = 0 if boundary_s == "noflux" else 1 if boundary_s == "dirichlet" else 0
+    requested_steps = int(steps)
+    effective_steps = (
+        min(requested_steps, DRAFT_MAX_STEPS)
+        if quality == "draft"
+        else requested_steps
+    )
+    if effective_steps != requested_steps:
+        emit_operation_diagnostic(
+            op="reaction_diffusion.steps",
+            original_value=requested_steps,
+            effective_value=effective_steps,
+            reason="draft preview capped simulation steps; final capture keeps the requested value",
+            severity="info",
+        )
     v_final = _gray_scott_simulate_masked(
         u0,
         v0,
         domain_mask,
-        steps=int(steps),
+        steps=effective_steps,
         du=float(du),
         dv=float(dv),
         feed=float(feed),

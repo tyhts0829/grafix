@@ -17,6 +17,7 @@ import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
@@ -105,13 +106,29 @@ def extrude(
     if coords.shape[0] == 0:
         return coords, offsets
 
-    scale_clamped = max(0.0, min(MAX_SCALE, float(scale)))
+    requested_scale = float(scale)
+    scale_clamped = max(0.0, min(MAX_SCALE, requested_scale))
+    if scale_clamped != requested_scale:
+        emit_operation_diagnostic(
+            op="extrude.scale",
+            original_value=requested_scale,
+            effective_value=scale_clamped,
+            reason="scale was clamped to the supported range",
+        )
 
-    subdivisions_int = int(subdivisions)
+    requested_subdivisions = int(subdivisions)
+    subdivisions_int = requested_subdivisions
     if subdivisions_int < 0:
         subdivisions_int = 0
     if subdivisions_int > MAX_SUBDIVISIONS:
         subdivisions_int = MAX_SUBDIVISIONS
+    if subdivisions_int != requested_subdivisions:
+        emit_operation_diagnostic(
+            op="extrude.subdivisions",
+            original_value=requested_subdivisions,
+            effective_value=subdivisions_int,
+            reason="subdivisions was clamped to the supported range",
+        )
 
     dx, dy, dz = float(delta[0]), float(delta[1]), float(delta[2])
     extrude_vec = np.array([dx, dy, dz], dtype=np.float32)
@@ -119,6 +136,12 @@ def extrude(
     if norm_sq > MAX_DISTANCE * MAX_DISTANCE:
         norm = float(np.sqrt(norm_sq))
         extrude_vec = extrude_vec * np.float32(MAX_DISTANCE / norm)
+        emit_operation_diagnostic(
+            op="extrude.delta",
+            original_value=(dx, dy, dz),
+            effective_value=tuple(float(value) for value in extrude_vec),
+            reason="delta length was clamped to the supported maximum",
+        )
 
     if (
         subdivisions_int == 0

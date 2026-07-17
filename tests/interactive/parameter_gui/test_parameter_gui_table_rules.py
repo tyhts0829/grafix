@@ -35,7 +35,7 @@ def test_ui_rules_for_row_defaults_by_kind():
     assert ui_rules_for_row(_row(op="circle", arg="c", kind="rgb")).cc_key == "none"
 
     assert ui_rules_for_row(_row(op="circle", arg="b", kind="bool")).cc_key == "none"
-    assert ui_rules_for_row(_row(op="circle", arg="b", kind="bool")).show_override is False
+    assert ui_rules_for_row(_row(op="circle", arg="b", kind="bool")).show_override is True
     assert ui_rules_for_row(_row(op="circle", arg="s", kind="str")).cc_key == "none"
     assert ui_rules_for_row(_row(op="circle", arg="s", kind="str")).show_override is True
     assert ui_rules_for_row(_row(op="circle", arg="f", kind="font")).cc_key == "none"

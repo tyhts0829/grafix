@@ -174,6 +174,26 @@ def _format_kwargs_call(prefix: str, *, op: str, kwargs: Sequence[tuple[str, str
     return "\n".join(lines)
 
 
+def _with_explicit_key(
+    kwargs: list[tuple[str, str]],
+    *,
+    op: str,
+    site_id: str,
+    explicit_key_by_site: Mapping[tuple[str, str], str | int] | None,
+) -> list[tuple[str, str]]:
+    """指定された重要/反復 group の ``key=`` を kwargs 末尾へ加える。"""
+
+    if explicit_key_by_site is None:
+        return kwargs
+    group = (str(op), str(site_id))
+    if group not in explicit_key_by_site:
+        return kwargs
+    explicit_key = explicit_key_by_site[group]
+    if not isinstance(explicit_key, (str, int)):
+        raise TypeError("snippet の explicit key は str|int である必要があります")
+    return [*kwargs, ("key", _py_literal(explicit_key))]
+
+
 def snippet_for_block(
     block: GroupBlock,
     *,
@@ -181,6 +201,7 @@ def snippet_for_block(
     layer_style_name_by_site_id: Mapping[str, str] | None = None,
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
     raw_label_by_site: Mapping[tuple[str, str], str] | None = None,
+    explicit_key_by_site: Mapping[tuple[str, str], str | int] | None = None,
 ) -> str:
     """1 ブロック（collapsing header 1 つ相当）のスニペットを返す。
 
@@ -198,6 +219,9 @@ def snippet_for_block(
     raw_label_by_site:
         GUI 上でユーザーが付けた “生のラベル”。
         `((op, site_id) -> label)` の形で渡すと、`P(name=...)` / `G(name=...)` / `E(name=...)` などに反映される。
+    explicit_key_by_site:
+        重要 parameter や loop group に固定 semantic key を出すための map。
+        ``(op, site_id) -> key`` を指定した呼び出しだけに ``key=`` を追加する。
 
     Returns
     -------
@@ -277,6 +301,12 @@ def snippet_for_block(
             if LAYER_STYLE_LINE_THICKNESS in by_arg2:
                 th = _effective_or_ui_value(by_arg2[LAYER_STYLE_LINE_THICKNESS], last_effective_by_key=last_effective_by_key)
                 layer_items.append(("thickness", _py_literal(th)))
+            layer_items = _with_explicit_key(
+                layer_items,
+                op=LAYER_STYLE_OP,
+                site_id=site_id,
+                explicit_key_by_site=explicit_key_by_site,
+            )
 
             if layer_items:
                 named_layer_blocks.append(
@@ -320,10 +350,23 @@ def snippet_for_block(
                 raw_label_s = str(raw_label).strip()
                 if raw_label_s and raw_label_s != str(call_name):
                     prefix = f"P(name={_py_literal(raw_label_s)})."
-        kwargs = [
-            (str(r.arg), _py_literal(_effective_or_ui_value(r, last_effective_by_key=last_effective_by_key)))
-            for r in rows
-        ]
+        kwargs = _with_explicit_key(
+            [
+                (
+                    str(r.arg),
+                    _py_literal(
+                        _effective_or_ui_value(
+                            r,
+                            last_effective_by_key=last_effective_by_key,
+                        )
+                    ),
+                )
+                for r in rows
+            ],
+            op=op,
+            site_id=str(row0.site_id),
+            explicit_key_by_site=explicit_key_by_site,
+        )
         return _indent_code(_format_kwargs_call(prefix, op=call_name, kwargs=kwargs).rstrip() + "\n")
 
     if group_type == "primitive":
@@ -336,10 +379,23 @@ def snippet_for_block(
                 raw_label_s = str(raw_label).strip()
                 if raw_label_s:
                     prefix = f"G(name={_py_literal(raw_label_s)})."
-        kwargs = [
-            (str(r.arg), _py_literal(_effective_or_ui_value(r, last_effective_by_key=last_effective_by_key)))
-            for r in rows
-        ]
+        kwargs = _with_explicit_key(
+            [
+                (
+                    str(r.arg),
+                    _py_literal(
+                        _effective_or_ui_value(
+                            r,
+                            last_effective_by_key=last_effective_by_key,
+                        )
+                    ),
+                )
+                for r in rows
+            ],
+            op=op,
+            site_id=str(row0.site_id),
+            explicit_key_by_site=explicit_key_by_site,
+        )
         return _indent_code(_format_kwargs_call(prefix, op=op, kwargs=kwargs).rstrip() + "\n")
 
     if group_type == "effect_chain":
@@ -375,17 +431,22 @@ def snippet_for_block(
         for i, ((_step_index, op, _site_id), step_rows) in enumerate(
             sorted(steps.items(), key=lambda x: x[0])
         ):
-            kwargs = [
-                (
-                    str(r.arg),
-                    _py_literal(
-                        _effective_or_ui_value(
-                            r, last_effective_by_key=last_effective_by_key
-                        )
-                    ),
-                )
-                for r in step_rows
-            ]
+            kwargs = _with_explicit_key(
+                [
+                    (
+                        str(r.arg),
+                        _py_literal(
+                            _effective_or_ui_value(
+                                r, last_effective_by_key=last_effective_by_key
+                            )
+                        ),
+                    )
+                    for r in step_rows
+                ],
+                op=op,
+                site_id=_site_id,
+                explicit_key_by_site=explicit_key_by_site,
+            )
             if i == 0:
                 call = _format_kwargs_call(prefix, op=op, kwargs=kwargs)
                 out_lines.extend(call.splitlines())

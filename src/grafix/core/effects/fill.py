@@ -13,6 +13,7 @@ import numpy as np
 from numba import njit  # type: ignore[attr-defined]
 
 from grafix.core.effect_registry import effect
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from .util import PlanarFrame, empty_geom, pack_polylines
@@ -29,6 +30,32 @@ fill_meta = {
     "spacing_gradient": ParamMeta(kind="float", ui_min=-5.0, ui_max=5.0),
     "remove_boundary": ParamMeta(kind="bool"),
 }
+
+
+def _effective_angle_sets(value: int) -> int:
+    """angle set数を1以上にし、要求値との差を診断へ残す。"""
+
+    requested = int(value)
+    effective = max(1, requested)
+    if effective != requested:
+        emit_operation_diagnostic(
+            op="fill.angle_sets",
+            original_value=requested,
+            effective_value=effective,
+            reason="angle set count was clamped to at least one",
+        )
+    return effective
+
+
+def _emit_fill_fallback(original: str, *, reason: str) -> None:
+    """閉領域を生成できない入力のboundary-only fallbackを通知する。"""
+
+    emit_operation_diagnostic(
+        op="fill.input",
+        original_value=original,
+        effective_value="boundary_only",
+        reason=reason,
+    )
 
 
 def _as_float_cycle(value: float | Sequence[float]) -> tuple[float, ...]:
@@ -657,12 +684,20 @@ def fill(
         coords_xy_all = global_frame.to_local(coords)
         coords2d_all = coords_xy_all[:, :2].astype(np.float32, copy=False)
         if _is_degenerate_fill_input(coords2d_all, offsets):
+            _emit_fill_fallback(
+                "degenerate_planar_input",
+                reason="fill requires a non-degenerate closed planar region",
+            )
             return coords, offsets
         groups = _build_evenodd_groups(coords2d_all, offsets)
 
         out_lines: list[np.ndarray]
         if not groups:
             # ループが無い（またはリング条件を満たさない）場合は境界の有無だけを反映して返す。
+            _emit_fill_fallback(
+                "no_closed_rings",
+                reason="fill could not build a closed even-odd region",
+            )
             out_lines = []
             for poly_i in range(int(offsets.size) - 1):
                 if bool(remove_boundary_seq[poly_i % len(remove_boundary_seq)]):
@@ -692,9 +727,7 @@ def fill(
             density_i = float(density_seq[gi % len(density_seq)])
             grad_i = float(spacing_gradient_seq[gi % len(spacing_gradient_seq)])
             base_angle_rad = float(np.deg2rad(float(angle_seq[gi % len(angle_seq)])))
-            k_i = int(angle_sets_seq[gi % len(angle_sets_seq)])
-            if k_i < 1:
-                k_i = 1
+            k_i = _effective_angle_sets(angle_sets_seq[gi % len(angle_sets_seq)])
 
             # 境界保持（グループ単位）
             if not remove_boundary_i:
@@ -755,16 +788,28 @@ def fill(
         density_i = float(density_seq[poly_i % len(density_seq)])
         if vertices.shape[0] < 3:
             # 退化入力はそのまま返す（remove_boundary の有無に関わらず no-op）。
+            _emit_fill_fallback(
+                "polyline_with_fewer_than_three_points",
+                reason="fill requires at least three points per boundary",
+            )
             out_lines.append(vertices)
             continue
 
         frame = PlanarFrame.from_points(vertices)
         if not frame.valid:
             # 点・直線は閉領域を定義しないため、remove_boundary に関係なく no-op。
+            _emit_fill_fallback(
+                "invalid_planar_frame",
+                reason="fill could not determine a plane for the boundary",
+            )
             out_lines.append(vertices)
             continue
         if not frame.is_planar(_planarity_threshold(vertices)):
             # non-planar では「各ポリライン」をグループとみなし、poly_i でサイクルする。
+            _emit_fill_fallback(
+                "nonplanar_boundary",
+                reason="fill only hatches planar boundaries",
+            )
             if not bool(remove_boundary_seq[poly_i % len(remove_boundary_seq)]):
                 out_lines.append(vertices)
             continue
@@ -773,6 +818,10 @@ def fill(
         coords2d = vxy[:, :2].astype(np.float32, copy=False)
         if _is_degenerate_fill_input(coords2d, np.array([0, coords2d.shape[0]], dtype=np.int32)):
             # 退化入力はそのまま返す（remove_boundary / density の有無に関わらず no-op）。
+            _emit_fill_fallback(
+                "degenerate_boundary",
+                reason="fill requires a non-degenerate closed boundary",
+            )
             out_lines.append(vertices)
             continue
 
@@ -789,9 +838,7 @@ def fill(
             continue
 
         poly_offsets = np.array([0, coords2d.shape[0]], dtype=np.int32)
-        k_i = int(angle_sets_seq[poly_i % len(angle_sets_seq)])
-        if k_i < 1:
-            k_i = 1
+        k_i = _effective_angle_sets(angle_sets_seq[poly_i % len(angle_sets_seq)])
         base_angle_rad = float(np.deg2rad(float(angle_seq[poly_i % len(angle_seq)])))
         grad_i = float(spacing_gradient_seq[poly_i % len(spacing_gradient_seq)])
         hatch_chunks: list[np.ndarray] = []

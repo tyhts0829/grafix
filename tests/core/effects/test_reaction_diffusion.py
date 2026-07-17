@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
+from grafix.core.operation_diagnostics import operation_diagnostic_context
+from grafix.core.preview_quality import preview_quality_context
 from grafix.core.realize import realize
 
 
@@ -72,3 +75,44 @@ def test_reaction_diffusion_is_deterministic_for_fixed_seed() -> None:
 
     np.testing.assert_array_equal(first.coords, second.coords)
     np.testing.assert_array_equal(first.offsets, second.offsets)
+
+
+def test_reaction_diffusion_draft_caps_steps_and_reports_effective_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import grafix.core.effects.reaction_diffusion as module
+
+    seen_steps: list[int] = []
+
+    def simulate(
+        u0: np.ndarray,
+        _v0: np.ndarray,
+        _mask: np.ndarray,
+        *,
+        steps: int,
+        **_kwargs: object,
+    ) -> np.ndarray:
+        seen_steps.append(int(steps))
+        return np.zeros_like(u0)
+
+    monkeypatch.setattr(module, "_gray_scott_simulate_masked", simulate)
+    mask = G.polygon(n_sides=4, scale=10.0)
+    with operation_diagnostic_context() as diagnostics:
+        with preview_quality_context("draft"):
+            realize(
+                E.reaction_diffusion(
+                    grid_pitch=2.0,
+                    steps=5000,
+                    seed_radius=0.0,
+                    noise=0.0,
+                    min_points=4,
+                )(mask)
+            )
+
+    assert seen_steps == [600]
+    assert any(
+        item.op == "reaction_diffusion.steps"
+        and item.original_value == 5000
+        and item.effective_value == 600
+        for item in diagnostics.snapshot()
+    )

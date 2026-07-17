@@ -15,8 +15,8 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
 
-# `type_index`（0..N-1）で参照する型順序を固定する。
-_TYPE_ORDER = [
+# UI と stub の choice 順序を固定する。
+_TYPE_ORDER = (
     # Platonic solids
     "tetrahedron",
     "hexahedron",
@@ -39,13 +39,13 @@ _TYPE_ORDER = [
     "truncated_cuboctahedron",
     "rhombicosidodecahedron",
     "truncated_icosidodecahedron",
-]
+)
 
 _DATA_DIR = resources.files("grafix").joinpath("resource", "regular_polyhedron")
 _POLYHEDRON_CACHE: dict[str, tuple[np.ndarray, ...]] = {}
 
 polyhedron_meta = {
-    "type_index": ParamMeta(kind="int", ui_min=0, ui_max=len(_TYPE_ORDER) - 1),
+    "kind": ParamMeta(kind="choice", choices=_TYPE_ORDER),
     "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
     "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
 }
@@ -134,7 +134,7 @@ def _polylines_to_realized(
 @primitive(meta=polyhedron_meta)
 def polyhedron(
     *,
-    type_index: int = 0,
+    kind: str = "tetrahedron",
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
 ) -> GeomTuple:
@@ -142,16 +142,8 @@ def polyhedron(
 
     Parameters
     ----------
-    type_index : int, optional
-        形状の選択インデックス（0..N-1）。範囲外はクランプする。
-        0=tetrahedron, 1=hexahedron, 2=octahedron, 3=dodecahedron, 4=icosahedron,
-        5=cuboctahedron, 6=icosidodecahedron, 7=truncated_tetrahedron,
-        8=truncated_cube, 9=truncated_octahedron, 10=truncated_dodecahedron,
-        11=truncated_icosahedron, 12=rhombicuboctahedron,
-        13=snub_cube_left, 14=snub_cube_right,
-        15=snub_dodecahedron_left, 16=snub_dodecahedron_right,
-        17=truncated_cuboctahedron, 18=rhombicosidodecahedron,
-        19=truncated_icosidodecahedron。
+    kind : str, optional
+        多面体の名前。選択肢は ``polyhedron_meta["kind"].choices`` を参照する。
     center : tuple[float, float, float], optional
         平行移動ベクトル (cx, cy, cz)。
     scale : float, optional
@@ -167,14 +159,10 @@ def polyhedron(
     FileNotFoundError
         `grafix/resource/regular_polyhedron` のデータが見つからない場合。
     ValueError
-        データ内容が不正な場合。
+        ``kind`` が未登録、またはデータ内容が不正な場合。
     """
-    idx = int(type_index)
-    if idx < 0:
-        idx = 0
-    elif idx >= len(_TYPE_ORDER):
-        idx = len(_TYPE_ORDER) - 1
-
-    kind = _TYPE_ORDER[idx]
+    if kind not in _TYPE_ORDER:
+        choices = ", ".join(_TYPE_ORDER)
+        raise ValueError(f"polyhedron.kind must be one of: {choices}; got {kind!r}")
     polylines = _load_face_polylines(kind)
     return _polylines_to_realized(polylines, center=center, scale=scale)

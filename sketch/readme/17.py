@@ -142,7 +142,7 @@ def draw(t):
     displaced_primitive = e_displaced_primitive(displaced_primitive)
     displace = G.text(
         activate=True,
-        text="def draw(t):\n    dodeca = G.polyhedron(type_index=4)\n    effs = E.fill().subdivide().displace(t=t*0.1)\n    return effs(dodeca)",
+        text="def draw(t):\n    dodeca = G.polyhedron(kind='dodecahedron')\n    effs = E.fill().subdivide().displace(t=t*0.1)\n    return effs(dodeca)",
         font="HackGen35-Regular.ttf",
         font_index=0,
         text_align="left",

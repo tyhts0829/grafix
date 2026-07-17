@@ -12,17 +12,14 @@ def _g(name: str = "circle") -> Geometry:
     return Geometry.create(name, params={"r": 1.0})
 
 
-def test_L_returns_list_for_single_geometry() -> None:
-    layers = L.layer(_g())
-    assert len(layers) == 1
-    assert layers[0].geometry.op == "circle"
+def test_L_returns_layer_for_single_geometry() -> None:
+    layer = L.layer(_g())
+    assert layer.geometry.op == "circle"
 
 
 def test_L_applies_common_style_to_multiple_geometries() -> None:
     g1, g2 = _g("circle"), _g("circle")
-    layers = L(name="foo").layer([g1, g2], color=(1.0, 0.0, 0.0), thickness=0.02)
-    assert len(layers) == 1
-    layer = layers[0]
+    layer = L(name="foo").layer([g1, g2], color=(1.0, 0.0, 0.0), thickness=0.02)
     assert layer.color == (1.0, 0.0, 0.0)
     assert layer.thickness == 0.02
     assert layer.name == "foo"

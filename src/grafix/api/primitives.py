@@ -6,11 +6,16 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from grafix.core.builtins import (
+    ensure_builtin_primitive_registered,
+    ensure_builtin_primitives_registered,
+)
 from grafix.core.geometry import Geometry
-from grafix.core.builtins import ensure_builtin_primitive_registered
+from grafix.core.op_registry import OpCatalogEntry
 from grafix.core.parameters import caller_site_id
-from grafix.core.primitive_registry import primitive_registry
+from grafix.core.primitive_registry import PrimitiveFunc, primitive_registry
 
+from ._op_validation import validate_operation_kwargs
 from ._param_resolution import resolve_api_params, set_api_label
 
 class PrimitiveNamespace:
@@ -22,6 +27,44 @@ class PrimitiveNamespace:
         登録済み primitive 名ごとのファクトリ。
         例: G.circle(r=1.0) -> Geometry(op="circle", inputs=(), params=...)
     """
+
+    def catalog(self) -> tuple[OpCatalogEntry[PrimitiveFunc], ...]:
+        """登録済み primitive の catalog を名前順で返す。
+
+        Returns
+        -------
+        tuple[OpCatalogEntry[PrimitiveFunc], ...]
+            名前、説明、引数、source を含む immutable entry の列。
+        """
+
+        ensure_builtin_primitives_registered()
+        return primitive_registry.catalog()
+
+    def describe(self, name: str) -> OpCatalogEntry[PrimitiveFunc]:
+        """primitive の catalog entry を名前で取得する。
+
+        Parameters
+        ----------
+        name : str
+            primitive 名。
+
+        Returns
+        -------
+        OpCatalogEntry[PrimitiveFunc]
+            registry の :class:`~grafix.core.op_registry.OpSpec` を参照する entry。
+
+        Raises
+        ------
+        KeyError
+            ``name`` が未登録の場合。
+        """
+
+        name_s = str(name)
+        if name_s not in primitive_registry:
+            ensure_builtin_primitive_registered(name_s)
+        if name_s not in primitive_registry:
+            raise KeyError(f"未登録の primitive: {name_s!r}")
+        return primitive_registry.describe(name_s)
 
     def __getattr__(self, name: str) -> Callable[..., Geometry]:
         """primitive 名に対応する Geometry ファクトリを返す。
@@ -63,10 +106,20 @@ class PrimitiveNamespace:
                 生成された Geometry ノード。
             """
 
-            # site_id は「呼び出し箇所」を識別するための安定 ID。
-            # 同じ行（同じ呼び出し箇所）からの呼び出しであれば、フレームが変わっても同一になる。
+            spec = primitive_registry[name]
             key = params.pop("key", None)
-            site_id = caller_site_id(skip=1, key=key)
+            instance_key = params.pop("instance_key", None)
+            shared = params.pop("shared", False)
+            validate_operation_kwargs(op=name, spec=spec, params=params)
+
+            # key は semantic site、instance_key は loop/comprehension 内の個体を表す。
+            # shared=True は個体 suffix を付けず、同じ semantic site を意図的に共有する。
+            site_id = caller_site_id(
+                skip=1,
+                key=key,
+                instance_key=instance_key,
+                shared=shared,
+            )
 
             # ParamStore が利用できるコンテキスト（parameter_context）内なら、
             # G(name="...") のラベル情報を (op, site_id) に紐づけて保存する。
@@ -77,8 +130,6 @@ class PrimitiveNamespace:
             # defaults: meta に含まれる引数について、関数シグネチャから抽出した安全なデフォルト値。
             # これにより、G.circle() のように kwargs を省略しても ParamStore にキーが観測され、
             # GUI が空になりにくい。
-            spec = primitive_registry[name]
-
             resolved = resolve_api_params(
                 op=name,
                 site_id=site_id,
