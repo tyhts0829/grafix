@@ -451,7 +451,7 @@ def parameter_table_model_build_count() -> int:
 
 def _visible_mask_for_model(
     store: ParamStore,
-    rows: list[ParameterRow],
+    rows: Sequence[ParameterRow],
     *,
     show_inactive: bool,
     activity_mask: Sequence[bool] | None = None,
@@ -459,19 +459,18 @@ def _visible_mask_for_model(
     """静的 rows に active/loaded などフレーム動的な可視性を合成する。"""
 
     runtime = store._runtime_ref()
-    if activity_mask is None:
-        activity_mask = active_mask_for_rows(
-            rows,
-            show_inactive=False,
-            last_effective_by_key=runtime.last_effective_by_key,
-        )
-    if len(activity_mask) != len(rows):
-        raise ValueError("activity_mask は rows と同じ長さである必要があります")
-    active_mask = (
-        [True] * len(rows)
-        if bool(show_inactive)
-        else [bool(active) for active in activity_mask]
-    )
+    if bool(show_inactive):
+        active_mask = [True] * len(rows)
+    else:
+        if activity_mask is None:
+            activity_mask = active_mask_for_rows(
+                rows,
+                show_inactive=False,
+                last_effective_by_key=runtime.last_effective_by_key,
+            )
+        if len(activity_mask) != len(rows):
+            raise ValueError("activity_mask は rows と同じ長さである必要があります")
+        active_mask = [bool(active) for active in activity_mask]
     if not runtime.loaded_groups:
         return active_mask
 
@@ -530,13 +529,18 @@ def parameter_table_view_for_store(
         else favorite_keys
     )
     model = _parameter_table_model_for_store(store)
-    rows = list(model.rows)
+    rows = model.rows
     runtime = store._runtime_ref()
-    activity_mask = active_mask_for_rows(
-        rows,
-        show_inactive=False,
-        last_effective_by_key=runtime.last_effective_by_key,
-    )
+    # activity が表示条件にも filter にも不要なら、group ごとの値辞書と
+    # ui_visible rule の全行評価を省く。検索/favorite/error 等は active flag を
+    # 参照しないため、show_inactive=True ではこの fast path を共有できる。
+    activity_mask: Sequence[bool] | None = None
+    if not bool(show_inactive_params) or state.activity != "all":
+        activity_mask = active_mask_for_rows(
+            rows,
+            show_inactive=False,
+            last_effective_by_key=runtime.last_effective_by_key,
+        )
     base_visible_mask = _visible_mask_for_model(
         store,
         rows,
@@ -556,7 +560,7 @@ def parameter_table_view_for_store(
         )
 
     records: list[ParameterFilterRecord] = []
-    for row, active in zip(rows, activity_mask, strict=True):
+    for index, row in enumerate(rows):
         key = ParameterKey(op=str(row.op), site_id=str(row.site_id), arg=str(row.arg))
         records.append(
             ParameterFilterRecord(
@@ -566,7 +570,11 @@ def parameter_table_view_for_store(
                     row,
                     runtime.last_source_by_key.get(key),
                 ),
-                active=bool(active),
+                active=(
+                    True
+                    if activity_mask is None
+                    else bool(activity_mask[index])
+                ),
                 has_error=key in error_keys,
                 favorite=key in favorites,
             )
@@ -592,8 +600,8 @@ def parameter_table_view_for_store(
 def _apply_updated_rows_to_store(
     store: ParamStore,
     snapshot: Mapping[ParameterKey, tuple[ParamMeta, object, int, str | None]],
-    rows_before: list[ParameterRow],
-    rows_after: list[ParameterRow],
+    rows_before: Sequence[ParameterRow],
+    rows_after: Sequence[ParameterRow],
 ) -> None:
     """rows の変更を ParamStore に反映する。
 
@@ -777,8 +785,8 @@ def render_store_parameter_table(
             favorite_keys=favorite_keys,
         )
         model = table_view.model
-    rows_before = list(model.rows)
-    visible_mask = list(table_view.visible_mask)
+    rows_before = model.rows
+    visible_mask = table_view.visible_mask
     view_rows = [
         row for row, visible in zip(rows_before, visible_mask, strict=True) if visible
     ]
@@ -804,13 +812,13 @@ def render_store_parameter_table(
     collapsed_changed = collapsed_before != store._collapsed_headers_ref()
     if collapsed_changed:
         store._touch()
-    view_iter = iter(view_rows_after)
-    rows_after = [
-        next(view_iter) if visible else row
-        for row, visible in zip(rows_before, visible_mask, strict=True)
-    ]
 
     if changed:
+        view_iter = iter(view_rows_after)
+        rows_after = [
+            next(view_iter) if visible else row
+            for row, visible in zip(rows_before, visible_mask, strict=True)
+        ]
         _apply_updated_rows_to_store(
             store,
             model.snapshot,

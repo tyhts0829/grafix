@@ -2,179 +2,129 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
-from grafix.devtools.benchmarks import BENCHMARK_SCHEMA_VERSION
-from grafix.devtools.benchmarks.generate_report import (
-    build_timeseries_report,
+from grafix.devtools.benchmarks.report import (
+    load_runs,
     render_report_html,
+    write_report,
+)
+from grafix.devtools.benchmarks.schema import (
+    BenchmarkRun,
+    CaseResult,
+    CaseSpec,
+    EnvironmentFingerprint,
+    RunMeta,
+    Sample,
+    SourceIdentity,
+    case_compatibility_key,
+    environment_compatibility_key,
+    summarize_samples,
+    write_benchmark_run,
 )
 
 
-def _write_run(
+def _write_valid_run(
     runs_dir: Path,
     *,
-    run_id: str,
-    clip_mean_ms: float,
-    warp_result: dict[str, Any],
-    schema_version: int = BENCHMARK_SCHEMA_VERSION,
+    warnings: tuple[str, ...] = (),
 ) -> None:
-    payload = {
-        "schema_version": schema_version,
-        "meta": {"run_id": run_id, "created_at": run_id, "git_sha": "abc"},
-        "scenarios": [
-            {
-                "id": "binary_mask",
-                "label": "binary mask",
-                "description": "source + mask",
-                "tags": ["binary", "mask-grid"],
-                "n_inputs": 2,
-                "inputs": [
-                    {
-                        "n_vertices": 2,
-                        "n_lines": 1,
-                        "closed_lines": 0,
-                        "all_closed": False,
-                    },
-                    {
-                        "n_vertices": 5,
-                        "n_lines": 1,
-                        "closed_lines": 1,
-                        "all_closed": True,
-                    },
-                ],
-            }
-        ],
-        "effects": [
-            {
-                "name": "clip",
-                "n_inputs": 2,
-                "results": {
-                    "binary_mask": {
-                        "status": "ok",
-                        "mean_ms": clip_mean_ms,
-                        "median_ms": clip_mean_ms,
-                        "p95_ms": clip_mean_ms * 1.2,
-                        "cold": {
-                            "status": "ok",
-                            "median_ms": clip_mean_ms * 10,
-                            "peak_rss_bytes": 64 * 1024 * 1024,
-                        },
-                        "output": {
-                            "n_vertices": 2,
-                            "n_lines": 1,
-                            "bytes": 32,
-                        },
-                    }
-                },
-            },
-            {
-                "name": "warp",
-                "n_inputs": 2,
-                "results": {"binary_mask": warp_result},
-            },
-        ],
-    }
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    (runs_dir / f"{run_id}.json").write_text(
-        json.dumps(payload, ensure_ascii=False),
-        encoding="utf-8",
+    spec = CaseSpec(
+        case_id="system.example",
+        version=1,
+        label="System example",
+        category="system",
+        suite="pipeline",
+        fixture="fixture",
+        parameters={},
+        seed=0,
+        source_sha256="source",
+        compatibility_key=case_compatibility_key(
+            case_id="system.example",
+            version=1,
+            fixture="fixture",
+            parameters={},
+            seed=0,
+            source_sha256="source",
+        ),
     )
-
-
-def _write_system_run(runs_dir: Path, *, run_id: str) -> None:
-    payload = {
-        "schema_version": BENCHMARK_SCHEMA_VERSION,
-        "meta": {
-            "run_id": run_id,
-            "created_at": run_id,
-            "benchmark_mode": "system",
-        },
-        "scenarios": [],
-        "effects": [],
-        "system": {
-            "profile": "short",
-            "results": {
-                "realize_session_animated_soak": {
-                    "id": "realize_session_animated_soak",
-                    "label": "RealizeSession animated soak",
-                    "category": "system",
-                    "status": "ok",
-                    "median_ms": 1.2,
-                    "p95_ms": 1.5,
-                    "peak_rss_bytes": 32 * 1024 * 1024,
-                    "output": {"frames": 10, "n_vertices": 5},
-                    "cache": {
-                        "hits": 7,
-                        "misses": 3,
-                        "evictions": 1,
-                        "entries": 2,
-                        "bytes": 512,
-                    },
-                }
-            },
-        },
-    }
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    (runs_dir / f"{run_id}.json").write_text(
-        json.dumps(payload, ensure_ascii=False),
-        encoding="utf-8",
+    sample = Sample(elapsed_ns=1_250_000, iterations=1)
+    run = BenchmarkRun(
+        meta=RunMeta(
+            run_id="valid",
+            created_at="2026-07-17T00:00:00+00:00",
+            suite="pipeline",
+            profile="short",
+            mode="warm",
+            seed=0,
+            samples=1,
+            warmup=0,
+            target_ns=0,
+            timeout_seconds=120.0,
+        ),
+        source=SourceIdentity(commit="abcdef", dirty=False, diff_sha256=""),
+        environment=EnvironmentFingerprint(
+            compatibility_key=environment_compatibility_key({}, {}),
+            values={},
+        ),
+        cases=(
+            CaseResult(
+                spec=spec,
+                status="ok",
+                samples=(sample,),
+                stats=summarize_samples([sample]),
+                checksum="checksum",
+                checksum_kind="exact",
+                setup_rss_bytes=1 * 1024 * 1024,
+                baseline_rss_bytes=1 * 1024 * 1024,
+                peak_rss_bytes=3 * 1024 * 1024,
+                peak_rss_delta_bytes=2 * 1024 * 1024,
+            ),
+        ),
+        warnings=warnings,
     )
+    write_benchmark_run(runs_dir / "valid.json", run)
 
 
-def test_report_reads_schema_v2_scenarios_and_keeps_case_errors(tmp_path: Path) -> None:
+def test_report_keeps_broken_and_unsupported_runs_as_warnings(tmp_path: Path) -> None:
     runs_dir = tmp_path / "runs"
-    _write_run(
-        runs_dir,
-        run_id="20260713_010000",
-        clip_mean_ms=1.0,
-        warp_result={"status": "error", "error": "example"},
+    runs_dir.mkdir()
+    _write_valid_run(runs_dir)
+    (runs_dir / "broken.json").write_text("{broken", encoding="utf-8")
+    (runs_dir / "v2.json").write_text(
+        json.dumps({"schema_version": 2}),
+        encoding="utf-8",
     )
-    _write_run(
-        runs_dir,
-        run_id="20260713_020000",
-        clip_mean_ms=0.5,
-        warp_result={"status": "ok", "mean_ms": 2.0},
-    )
-    _write_run(
-        runs_dir,
-        run_id="20260713_030000",
-        clip_mean_ms=99.0,
-        warp_result={"status": "ok", "mean_ms": 99.0},
-        schema_version=BENCHMARK_SCHEMA_VERSION - 1,
-    )
-    _write_system_run(runs_dir, run_id="20260713_040000")
 
-    report = build_timeseries_report(runs_dir=runs_dir)
+    loaded = load_runs(runs_dir)
+    assert len(loaded.runs) == 1
+    assert len(loaded.warnings) == 2
+    assert any("broken.json" in warning for warning in loaded.warnings)
+    assert any("v2.json" in warning for warning in loaded.warnings)
 
-    assert report["meta"]["schema_version"] == BENCHMARK_SCHEMA_VERSION
-    assert report["meta"]["runs"] == 3
-    assert report["meta"]["effect_runs"] == 2
-    assert report["meta"]["system_runs"] == 1
-    assert len(report["runs"]) == 2
-    assert report["meta"]["last_system_run"] == "20260713_040000"
-    assert report["scenarios"] == [{"id": "binary_mask", "label": "binary mask"}]
+    html = render_report_html(loaded)
+    assert "System example" in html
+    assert "system.example" in html
+    assert "1.250000" in html
+    assert "2.00" in html
+    assert "cdn" not in html.lower()
+    assert "broken.json" in html
 
-    chart = report["charts"][0]
-    assert chart["scenario_id"] == "binary_mask"
-    datasets = {dataset["label"]: dataset["data"] for dataset in chart["datasets"]}
-    assert datasets["clip"] == [1.0, 0.5]
-    assert datasets["warp"] == [None, 2.0]
+    report_path, warnings_path, written = write_report(tmp_path)
+    assert written == loaded
+    assert report_path.is_file()
+    assert warnings_path.is_file()
+    warning_payload = json.loads(warnings_path.read_text(encoding="utf-8"))
+    assert warning_payload["valid_runs"] == 1
+    assert warning_payload["warning_count"] == 2
 
-    system = report["system"]
-    assert system["run_id"] == "20260713_040000"
-    assert system["profile"] == "short"
-    assert system["rows"][0]["cache"]["hits"] == 7
 
-    html = render_report_html(report)
-    assert "Scenario: binary mask" in html
-    assert "input[0]: verts=2 lines=1" in html
-    assert "input[1]: verts=5 lines=1" in html
-    assert "peak RSS MiB" in html
-    assert "64.0" in html
-    assert "2 / 1 / 0.0" in html
-    assert "System / micro benchmarks" in html
-    assert "RealizeSession animated soak" in html
-    assert "hits=7" in html
-    assert "frames=10" in html
-    assert "32.0" in html
+def test_report_includes_warnings_from_valid_runs(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_valid_run(runs_dir, warnings=("system.example: skipped",))
+
+    loaded = load_runs(runs_dir)
+
+    assert len(loaded.runs) == 1
+    assert len(loaded.warnings) == 1
+    assert "system.example: skipped" in loaded.warnings[0]

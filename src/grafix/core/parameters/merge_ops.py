@@ -12,8 +12,46 @@ from .reconcile_ops import reconcile_loaded_groups_for_runtime
 from .store import ParamStore
 from .view import canonicalize_ui_value
 
+_MISSING = object()
+
 
 def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> None:
+    """フレームを merge し、effective/source の最終差分を revision 化する。"""
+
+    runtime = store._runtime_ref()
+    keys = {record.key for record in records}
+    before = {
+        key: (
+            runtime.last_effective_by_key.get(key, _MISSING),
+            runtime.last_source_by_key.get(key, _MISSING),
+        )
+        for key in keys
+    }
+    try:
+        _merge_frame_params(store, records)
+    except BaseException:
+        # failed frame の effective/source は公開しない。永続 store 側の変更は
+        # 既存 revision が追跡するが、frame snapshot は last-good を維持する。
+        for key, (effective, source) in before.items():
+            if effective is _MISSING:
+                runtime.last_effective_by_key.pop(key, None)
+            else:
+                runtime.last_effective_by_key[key] = effective
+            if source is _MISSING:
+                runtime.last_source_by_key.pop(key, None)
+            else:
+                runtime.last_source_by_key[key] = source  # type: ignore[assignment]
+        raise
+
+    if any(
+        before[key][0] != runtime.last_effective_by_key.get(key, _MISSING)
+        or before[key][1] != runtime.last_source_by_key.get(key, _MISSING)
+        for key in keys
+    ):
+        runtime.effective_revision += 1
+
+
+def _merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> None:
     """フレーム内で観測したレコードをストアに保存し、関連情報を更新する。"""
 
     # `runtime` は永続化しない「実行時キャッシュ」。
@@ -37,7 +75,6 @@ def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> No
     # ただし、explicit が後から変化し得る（例: 引数を外した/追加した）ため、
     # フレーム境界で「既定値のままなら追従する」ポリシーを別関数で適用する。
     explicit_by_key_this_frame: dict[ParameterKey, bool] = {}
-
     for rec in records:
         # --- 1) このフレームで観測した group を runtime に記録 ---
         #
@@ -114,7 +151,6 @@ def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> No
     # explicit/implicit の変化に応じて、override を “必要なときだけ” 追従させる。
     # ここでの追従はユーザー操作を上書きしないよう、既定値判定つきで行う。
     _apply_explicit_override_follow_policy(store, explicit_by_key_this_frame)
-
 
 def _apply_explicit_override_follow_policy(
     store: ParamStore, explicit_by_key_this_frame: Mapping[ParameterKey, bool]

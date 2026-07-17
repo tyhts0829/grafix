@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from grafix.devtools.benchmarks.schema import (
+    BenchmarkRun,
+    BenchmarkSchemaError,
+    CaseResult,
+    CaseSpec,
+    EnvironmentFingerprint,
+    RunMeta,
+    Sample,
+    SourceIdentity,
+    benchmark_run_from_dict,
+    benchmark_run_to_dict,
+    case_compatibility_key,
+    environment_compatibility_key,
+    read_benchmark_run,
+    summarize_samples,
+    write_benchmark_run,
+)
+
+
+def _run() -> BenchmarkRun:
+    samples = tuple(Sample(elapsed_ns=index * 100, iterations=2) for index in range(1, 21))
+    spec = CaseSpec(
+        case_id="case",
+        version=1,
+        label="case",
+        category="micro",
+        suite="smoke",
+        fixture="fixture",
+        parameters={"size": 1},
+        seed=0,
+        source_sha256="case-source",
+        compatibility_key=case_compatibility_key(
+            case_id="case",
+            version=1,
+            fixture="fixture",
+            parameters={"size": 1},
+            seed=0,
+            source_sha256="case-source",
+        ),
+        tags=("exact",),
+    )
+    return BenchmarkRun(
+        meta=RunMeta(
+            run_id="run",
+            created_at="2026-07-17T00:00:00+00:00",
+            suite="smoke",
+            profile="short",
+            mode="warm",
+            seed=0,
+            samples=20,
+            warmup=2,
+            target_ns=1_000_000,
+            timeout_seconds=120.0,
+            argv=("run",),
+        ),
+        source=SourceIdentity(commit="abc", dirty=True, diff_sha256="diff"),
+        environment=EnvironmentFingerprint(
+            compatibility_key=environment_compatibility_key(
+                {"python": "3.12"},
+                {},
+            ),
+            values={"python": "3.12"},
+        ),
+        cases=(
+            CaseResult(
+                spec=spec,
+                status="ok",
+                samples=samples,
+                stats=summarize_samples(samples),
+                checksum="checksum",
+                checksum_kind="exact",
+                setup_rss_bytes=10,
+                baseline_rss_bytes=12,
+                peak_rss_bytes=20,
+                peak_rss_delta_bytes=8,
+            ),
+        ),
+    )
+
+
+def test_stats_keep_raw_units_and_only_emit_tail_for_enough_samples() -> None:
+    short = summarize_samples([Sample(elapsed_ns=30, iterations=3)])
+    assert short.median_ns == 10.0
+    assert short.mad_ns == 0.0
+    assert short.p95_ns is None
+    assert short.p99_ns is None
+
+    long = summarize_samples(
+        [Sample(elapsed_ns=index * 2, iterations=2) for index in range(1, 21)]
+    )
+    assert long.n == 20
+    assert long.median_ns == 10.5
+    assert long.p95_ns is not None
+    assert long.p99_ns is not None
+
+
+def test_schema_v3_round_trip_is_strict_and_run_is_no_clobber(tmp_path: Path) -> None:
+    run = _run()
+    path = tmp_path / "run.json"
+    write_benchmark_run(path, run)
+    assert read_benchmark_run(path) == run
+
+    with pytest.raises(FileExistsError):
+        write_benchmark_run(path, run)
+
+    with pytest.raises(BenchmarkSchemaError, match="unsupported schema"):
+        write_benchmark_run(
+            tmp_path / "wrong-version.json",
+            replace(run, schema_version=2),
+        )
+
+    float_version = replace(
+        run.cases[0],
+        spec=replace(run.cases[0].spec, version=1.0),  # type: ignore[arg-type]
+    )
+    with pytest.raises(BenchmarkSchemaError, match="integer is required"):
+        write_benchmark_run(
+            tmp_path / "float-version.json",
+            replace(run, cases=(float_version,)),
+        )
+
+    with pytest.raises(BenchmarkSchemaError, match="non-finite"):
+        write_benchmark_run(
+            tmp_path / "nan-timeout.json",
+            replace(run, meta=replace(run.meta, timeout_seconds=float("nan"))),
+        )
+
+    bad_result = replace(run.cases[0], metrics={"bad": float("nan")})
+    with pytest.raises(BenchmarkSchemaError, match="non-finite"):
+        write_benchmark_run(
+            tmp_path / "nan-metric.json",
+            replace(run, cases=(bad_result,)),
+        )
+
+    bad_rss = replace(
+        run.cases[0],
+        setup_rss_bytes=13,
+        baseline_rss_bytes=12,
+    )
+    with pytest.raises(BenchmarkSchemaError, match="RSS fields are inconsistent"):
+        write_benchmark_run(
+            tmp_path / "bad-rss.json",
+            replace(run, cases=(bad_rss,)),
+        )
+
+    payload = benchmark_run_to_dict(run)
+    payload["unknown"] = True
+    with pytest.raises(BenchmarkSchemaError, match="unknown"):
+        benchmark_run_from_dict(payload)
+
+    payload = benchmark_run_to_dict(run)
+    payload["schema_version"] = 2
+    with pytest.raises(BenchmarkSchemaError, match="unsupported schema"):
+        benchmark_run_from_dict(payload)
+
+    path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(BenchmarkSchemaError, match="JSONDecodeError"):
+        read_benchmark_run(path)
+
+    path.write_text('{"schema_version": NaN}', encoding="utf-8")
+    with pytest.raises(BenchmarkSchemaError, match="non-finite JSON"):
+        read_benchmark_run(path)
+
+
+def test_json_contains_raw_samples_and_separate_identities() -> None:
+    payload = json.loads(json.dumps(benchmark_run_to_dict(_run())))
+
+    assert payload["source"]["commit"] == "abc"
+    assert payload["environment"]["compatibility_key"]
+    assert payload["cases"][0]["spec"]["compatibility_key"]
+    assert len(payload["cases"][0]["samples"]) == 20
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (
+            lambda payload: payload["cases"][0]["stats"].__setitem__("n", 999),
+            "raw samples",
+        ),
+        (
+            lambda payload: payload["cases"][0]["spec"].__setitem__(
+                "compatibility_key", "tampered"
+            ),
+            "compatibility_key",
+        ),
+        (
+            lambda payload: payload["cases"][0].__setitem__("status", "mystery"),
+            "unsupported value",
+        ),
+        (
+            lambda payload: payload["cases"][0].__setitem__(
+                "peak_rss_delta_bytes", -1
+            ),
+            "non-negative",
+        ),
+    ],
+)
+def test_schema_rejects_semantically_inconsistent_payloads(
+    mutate,
+    match: str,
+) -> None:
+    payload = json.loads(json.dumps(benchmark_run_to_dict(_run())))
+    mutate(payload)
+
+    with pytest.raises(BenchmarkSchemaError, match=match):
+        benchmark_run_from_dict(payload)
+
+
+def test_reader_reports_invalid_utf8_as_schema_error(tmp_path: Path) -> None:
+    path = tmp_path / "invalid.json"
+    path.write_bytes(b"\xff")
+
+    with pytest.raises(BenchmarkSchemaError, match="UnicodeDecodeError"):
+        read_benchmark_run(path)
+
+
+def test_schema_rejects_duplicate_case_ids() -> None:
+    payload = json.loads(json.dumps(benchmark_run_to_dict(_run())))
+    payload["cases"].append(payload["cases"][0])
+
+    with pytest.raises(BenchmarkSchemaError, match="duplicate"):
+        benchmark_run_from_dict(payload)

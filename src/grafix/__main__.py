@@ -8,16 +8,6 @@ import argparse
 import sys
 
 
-def _extract_out_dir(argv: list[str]) -> str:
-    out = "data/output/benchmarks"
-    for i, a in enumerate(argv):
-        if a == "--out" and i + 1 < len(argv):
-            out = argv[i + 1]
-        elif a.startswith("--out="):
-            out = a.split("=", 1)[1]
-    return out
-
-
 def _delegated_args(rest: list[str]) -> list[str]:
     """親 parser と子 parser の境界に置かれた ``--`` を除く。"""
 
@@ -49,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser(
         "benchmark",
-        help="effect ベンチ計測 → レポート生成",
+        help="比較可能な性能 case の計測・比較・report 生成",
         add_help=False,
     )
     sub.add_parser(
@@ -106,24 +96,9 @@ def main(argv: list[str] | None = None) -> int:
     args, rest = p.parse_known_args(argv)
 
     if args.cmd == "benchmark":
-        from grafix.devtools.benchmarks import effect_benchmark, generate_report
+        from grafix.devtools.benchmarks import cli
 
-        bench_argv = list(rest)
-        if bench_argv and bench_argv[0] == "--":
-            bench_argv = bench_argv[1:]
-
-        if any(a in {"-h", "--help"} for a in bench_argv):
-            try:
-                effect_benchmark.main(["--help"])
-            except SystemExit as exc:
-                return int(exc.code) if exc.code is not None else 0
-            return 0
-
-        code = int(effect_benchmark.main(bench_argv))
-        if code != 0:
-            return code
-        out_dir = _extract_out_dir(bench_argv)
-        return int(generate_report.main(out=out_dir))
+        return int(cli.main(_delegated_args(rest)))
 
     if args.cmd == "stub":
         from grafix.devtools import generate_stub

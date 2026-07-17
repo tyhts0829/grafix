@@ -1,178 +1,146 @@
-# interactive perf 計測メモ
+# Grafix 性能計測
 
-## 目的
+## 1. 目的
 
-- 1 フレームの中で「CPU（draw/realize/indices）」「GPU/転送（upload/draw）」のどこが支配的かを切り分ける。
-- stutter（カクつき）対策の優先順位を間違えないための、最小の区間計測を提供する。
+Grafix の性能計測は、次の 2 系統を分けて扱う。
 
-## 仕組み（実装）
+- **再現可能な比較**: `python -m grafix benchmark` の schema v3 runner
+- **実ウィンドウの診断**: `PerfCollector` による interactive frame 計測
 
-- `src/grafix/interactive/runtime/perf.py` の `PerfCollector` が、区間時間を集計して N フレームごとに平均値を出力する。
-- operation/layer ごとの時間、CPU cache hit/miss/eviction、mp-draw worker lag は bounded snapshot として Inspector の `PROFILER` に表示する。
-- `src/grafix/interactive/runtime/draw_window_system.py` が `draw_frame()` 内で以下を計測する:
-  - `frame`: `draw_frame()` 全体
-  - `scene`: `realize_scene(...)` 全体（内部で `draw(t)` を含む）
-  - `draw`: user `draw(t)`（`scene` の内側＝ subset）
-  - `indices`: `build_line_indices(offsets)`
-  - `render_layer`: `render_layer(...)`（upload + draw 呼び出し）
-  - `gpu_finish`: `ctx.finish()`（診断用。明示的同期待ち）
+wall time だけで最適化を判断せず、出力 checksum、実行環境、case 定義、
+memory 増分も同時に保存する。
 
-## 使い方（共通）
+## 2. Packaged benchmark
 
-### 最小の実行例
+### Case を確認する
 
 ```bash
-GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 python sketch/perf_sketch.py
+python -m grafix benchmark list
+python -m grafix benchmark list --suite smoke
+python -m grafix benchmark list --json
 ```
 
-### GPU 側が怪しいとき（診断用）
+case は Grafix package 内に定義される。リポジトリに存在しない専用 sketch への
+依存はない。
+
+### 計測する
+
+短い動作確認:
 
 ```bash
-GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 GRAFIX_PERF_GPU_FINISH=1 python sketch/perf_sketch.py
+python -m grafix benchmark run \
+  --suite smoke \
+  --profile smoke \
+  --out /tmp/grafix-benchmark
 ```
 
-### Parameter GUI を切って測る（任意）
+対象を限定する:
 
 ```bash
-GRAFIX_SKETCH_PARAMETER_GUI=0 GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 python sketch/perf_sketch.py
+python -m grafix benchmark run \
+  --case runtime.provenance.rows_1000 \
+  --case gui.parameter_table.rows_1000 \
+  --profile short \
+  --out /tmp/grafix-benchmark
 ```
 
-### GUI 無しで structured trace を保存する
+測定 mode:
+
+- `warm`: 同一 child process 内で warmup と calibration を行う。
+- `process-cold`: sample ごとに fresh process を起動する。
+- `compile-cold`: sample ごとに fresh process と空の `NUMBA_CACHE_DIR` を使う。
+
+各 case は別 process で setup・計測される。JSON には以下が保存される。
+
+- iteration 数を含む raw nanosecond samples
+- median、MAD、min/max
+- 20 samples 以上の場合だけ p95/p99
+- setup/warmup/calibration 後 baseline と timed loop 後 peak の RSS delta
+- geometry の dtype・shape・bytes を含む exact checksum
+- source identity（commit、dirty、diff hash）
+- environment compatibility key
+- case source・fixture・parameter・seed の compatibility key
+
+同じ出力先に既存 run ID がある場合は上書きしない。run ID を省略すると、
+microsecond timestamp と random suffix を持つ ID が生成される。
+
+### 比較する
 
 ```bash
-GRAFIX_SKETCH_PARAMETER_GUI=0 GRAFIX_PERF_TRACE=data/output/performance.jsonl GRAFIX_PERF_EVERY=60 python sketch/perf_sketch.py
+python -m grafix benchmark compare \
+  /tmp/grafix-before/runs/BEFORE.json \
+  /tmp/grafix-after/runs/AFTER.json
 ```
 
-trace は `grafix.performance.trace.v1` の JSON Lines で、履歴をメモリへ保持せず指定ファイルへ追記する。
+source identity が違うことは比較目的上許可する。一方、environment、measurement
+mode、case identity が違う比較は既定で拒否する。`--allow-incompatible` は調査用で
+あり、正式な before/after 判定には使わない。
 
-## 環境変数（Perf）
+checksum が変わった正常 case がある場合、`compare` は非 0 で終了する。
 
-- `GRAFIX_PERF=1` : 計測を有効化する（既定は無効）。
-- `GRAFIX_PERF_EVERY=60` : 何フレームごとに出力するか（既定 60）。
-- `GRAFIX_PERF_GPU_FINISH=1` : `ctx.finish()` を呼び、GPU 同期待ち込みで計測する（既定は無効）。
-  - 注意: 同期待ちは挙動を変えるので、常用の計測には使わない。
-- `GRAFIX_PERF_TRACE=path/to/performance.jsonl` : GUI の有無に依存しない structured JSON trace を有効化する。
-
-## 出力の読み方
-
-出力例:
-
-```text
-[grafix-perf] frame=26.900ms draw=0.090ms indices=17.850ms render_layer=1.780ms scene=6.200ms
-```
-
-- すべて「直近 N フレームの平均（ms/frame）」。
-- `(...x)` が付くラベルは「1 フレーム内で複数回呼ばれている」ことを示す。
-  - 例: `render_layer=202.1ms (500.0x)` は、1 フレームに 500 回呼ばれていて、合計 202.1ms/frame かかっている。
-- `draw` は `scene` の一部（subset）なので、`draw + scene` のように足し算しない。
-
-## 計測時の注意
-
-- 最初の 1 回（最初の出力ウィンドウ）は import/初期化/キャッシュ等が混ざるので、安定した 2 回目以降を重視する。
-- `GRAFIX_PERF_GPU_FINISH=1` は「GPU 待ちが発生しているか」を見るための粗い診断。
-  - `gpu_finish` が大きい ≒ GPU/ドライバ待ちの可能性が上がる。
-  - ただし `finish()` 自体が待ちを作るので、値は“目安”として扱う。
-
-## 計測用スケッチ（負荷の作り分け）
-
-`sketch/perf_sketch.py` は `GRAFIX_SKETCH_CASE` で負荷タイプを切り替えられる。
-
-- `GRAFIX_SKETCH_CASE=polyhedron`（既定）: ほどよい総合例
-- `GRAFIX_SKETCH_CASE=cpu_draw` : `draw(t)` を意図的に重くして mp-draw の検証をする
-- `GRAFIX_SKETCH_CASE=many_vertices` : 1 本の巨大ポリラインで indices/realize/転送の支配項を観測する
-- `GRAFIX_SKETCH_CASE=many_layers` : 多レイヤーで upload/draw 呼び出し回数を重くする
-- `GRAFIX_SKETCH_CASE=static_layers` : 多レイヤーだがジオメトリは静的（GPU upload skip の効果確認用）
-- `GRAFIX_SKETCH_CASE=upload_skip` : 少数レイヤー + 巨大静的ジオメトリ（upload skip が効くかを確認する）
-
-`GRAFIX_SKETCH_N_WORKER` は `1` 以上で `run(..., n_worker=...)` の mp-draw worker 数になる。
-`0` の場合だけ main process で同期評価する。
-
-- 注意（spawn 前提）:
-  - `draw` はモジュールトップレベル定義（picklable）である必要がある。
-  - スケッチ側は `if __name__ == "__main__":` ガード必須。
-  - ワーカーは CPU 計算のみ（pyglet/pyimgui/OpenGL は触らない）。
-- 重要: mp-draw 有効時、`draw` 区間はメインでは計測されない（worker 側で実行されるため）。
-  - `scene` は「realize_scene のうち draw 以外」（主に realize 側）になる。
-
-### cpu_draw（draw 支配）
+### Offline report
 
 ```bash
-GRAFIX_SKETCH_CASE=cpu_draw GRAFIX_SKETCH_CPU_ITERS=500000 GRAFIX_SKETCH_PARAMETER_GUI=0 \
-  GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 python sketch/perf_sketch.py
+python -m grafix benchmark report --out /tmp/grafix-benchmark
 ```
 
-代表値（例）:
+次を生成する。
 
-```text
-[grafix-perf] frame=50.1ms draw=48.8ms indices=0.03ms render_layer=1.05ms scene=48.8ms
-```
+- `/tmp/grafix-benchmark/report.html`
+- `/tmp/grafix-benchmark/warnings.json`
 
-読み:
+HTML は CDN、JavaScript、ネットワークを必要としない。壊れた JSON や非対応 schema
+は黙って除外せず、HTML と warning summary に path と理由を残す。
 
-- `draw` が支配的 → mp-draw（Phase 2）が効くタイプ。
+## 3. CI での扱い
 
-mp-draw を有効にして再計測する例:
+- hosted runner の wall time は artifact として観察し、hard gate にしない。
+- smoke job は checksum 生成、case 完走、schema 検証を確認する。
+- JSON、HTML、warning summary は GitHub Actions artifact として保存する。
+- wall-time ratio の gate が必要な場合は、固定された self-hosted Mac で base/head を
+  同一 job 内に交互実行する。
+
+## 4. Interactive frame 診断
+
+既存 sketch を通常どおり interactive 実行し、環境変数で計測を有効にする。
 
 ```bash
-GRAFIX_SKETCH_CASE=cpu_draw GRAFIX_SKETCH_CPU_ITERS=500000 GRAFIX_SKETCH_N_WORKER=4 \
-  GRAFIX_SKETCH_PARAMETER_GUI=0 GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 python sketch/perf_sketch.py
+GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 python -m grafix run path/to/sketch.py
 ```
 
-### many_vertices（巨大ポリライン）
+structured trace:
 
 ```bash
-GRAFIX_SKETCH_CASE=many_vertices GRAFIX_SKETCH_SEGMENTS=200000 GRAFIX_SKETCH_PARAMETER_GUI=0 \
-  GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 GRAFIX_PERF_GPU_FINISH=1 python sketch/perf_sketch.py
+GRAFIX_PERF=1 \
+GRAFIX_PERF_TRACE=data/output/performance.jsonl \
+python -m grafix run path/to/sketch.py
 ```
 
-代表値（例）:
-
-```text
-[grafix-perf] frame=9.0ms draw=0.08ms gpu_finish=0.72ms indices=0.003ms render_layer=1.6ms scene=6.5ms
-```
-
-読み:
-
-- Phase 1A（indices キャッシュ）後は `indices` がほぼ消え、支配項が `scene`（realize）へ移動する。
-- もし `indices` が大きいままなら、indices キャッシュが外れている（または無効化されている）可能性が高い。
-
-### many_layers（render_layer 支配）
+GPU 同期待ちを診断する場合だけ次を使う。
 
 ```bash
-GRAFIX_SKETCH_CASE=many_layers GRAFIX_SKETCH_LAYERS=500 GRAFIX_SKETCH_PARAMETER_GUI=0 \
-  GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 python sketch/perf_sketch.py
+GRAFIX_PERF=1 GRAFIX_PERF_GPU_FINISH=1 \
+python -m grafix run path/to/sketch.py
 ```
 
-代表値（例）:
+`GRAFIX_PERF_GPU_FINISH=1` は `ctx.finish()` 自体が待ちを作るため、通常の性能比較には
+使わない。
 
-```text
-[grafix-perf] frame=231ms draw=11ms indices=1.43ms (500.0x) render_layer=202ms (500.0x) scene=22ms
-```
+主な区間:
 
-読み:
+- `frame`: `draw_frame()` 全体
+- `scene`: scene の評価と realize
+- `draw`: user `draw(t)`。`scene` の部分区間
+- `render_layer`: layer の upload と draw submit
+- `gpu_finish`: 明示的 GPU 同期待ちを有効にした場合のみ
 
-- `render_layer` が支配的で呼び出し回数も多い → upload/VAO/描画呼び出し回数の削減（Phase 1B）が最優先。
+`draw` は `scene` の部分区間なので、両者を足さない。最初の window には import、
+JIT、cache 構築が混ざるため、steady な複数 window と tail latency を確認する。
 
-### static_layers（静的ジオメトリ多レイヤー）
+## 5. 比較時の原則
 
-```bash
-GRAFIX_SKETCH_CASE=static_layers GRAFIX_SKETCH_LAYERS=500 GRAFIX_SKETCH_STATIC_UNIQUE=64 \
-  GRAFIX_SKETCH_PARAMETER_GUI=0 GRAFIX_PERF=1 GRAFIX_PERF_EVERY=60 python sketch/perf_sketch.py
-```
-
-読み:
-
-- `geometry_id` が安定するため、GPU メッシュキャッシュ（upload skip）が効く状況を作れる。
-- `GRAFIX_SKETCH_STATIC_UNIQUE` を小さくするほど同一ジオメトリが繰り返され、upload skip が効きやすい。
-
-### upload_skip（静的 upload の有無を見分ける）
-
-```bash
-GRAFIX_SKETCH_CASE=upload_skip GRAFIX_SKETCH_UPLOAD_SEGMENTS=500000 GRAFIX_SKETCH_UPLOAD_LAYERS=2 \
-  GRAFIX_SKETCH_PARAMETER_GUI=0 GRAFIX_PERF=1 GRAFIX_PERF_EVERY=1 python sketch/perf_sketch.py
-```
-
-読み:
-
-- 1 フレーム目は upload が走る（重い）→ 2 フレーム目以降は GPU メッシュキャッシュで upload が消える（軽い）ことを期待する。
-- `GRAFIX_PERF_EVERY=1` にして「フレームごとの変化」を見ると分かりやすい。
+1. 同一 machine・同一 environment compatibility key を使う。
+2. case compatibility key と output checksum を先に確認する。
+3. hosted CI の数 sample から p95/p99 を推定しない。
+4. time 改善と RSS delta 悪化を分けて記録する。
+5. fake GL case の結果だけで実 GPU の改善を断定しない。

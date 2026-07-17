@@ -45,23 +45,27 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Deterministic benchmark smoke
         run: >-
-          python -m grafix benchmark
-          --only rotate,scale
-          --cases line_small
-          --repeats 3
-          --warmup 1
-          --cold-processes 0
+          python -m grafix benchmark run
+          --suite smoke
+          --profile smoke
+          --samples 3
           --run-id 20000101_000000
           --out "${{ runner.temp }}/grafix-benchmark"
-      - name: System benchmark smoke
+      - name: Offline benchmark report
+        if: always()
         run: >-
-          python -m grafix benchmark
-          --system
-          --repeats 1
-          --warmup 0
-          --cold-processes 0
-          --run-id 20000101_000001
+          python -m grafix benchmark report
           --out "${{ runner.temp }}/grafix-benchmark"
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grafix-benchmark-smoke
+          path: |
+            ${{ runner.temp }}/grafix-benchmark/runs/*.json
+            ${{ runner.temp }}/grafix-benchmark/report.html
+            ${{ runner.temp }}/grafix-benchmark/warnings.json
+          if-no-files-found: error
 
   performance-manual:
     if: github.event_name == 'workflow_dispatch'
@@ -77,18 +81,33 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Full cold and warm benchmark
         run: >-
-          python -m grafix benchmark
-          --repeats 10
-          --warmup 2
-          --cold-processes 5
+          python -m grafix benchmark run
+          --suite all
+          --profile long
+          --mode warm
           --run-id 20000101_000000
           --out "${{ runner.temp }}/grafix-benchmark"
-      - name: Long system benchmark
+      - name: Compile-cold representative cases
         run: >-
-          python -m grafix benchmark
-          --system-long
-          --repeats 5
-          --warmup 1
-          --cold-processes 0
+          python -m grafix benchmark run
+          --case effect.translate.line_small
+          --case core.concat_recipe.parts_1000
+          --profile smoke
+          --mode compile-cold
           --run-id 20000101_000001
           --out "${{ runner.temp }}/grafix-benchmark"
+      - name: Offline benchmark report
+        if: always()
+        run: >-
+          python -m grafix benchmark report
+          --out "${{ runner.temp }}/grafix-benchmark"
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grafix-benchmark-full
+          path: |
+            ${{ runner.temp }}/grafix-benchmark/runs/*.json
+            ${{ runner.temp }}/grafix-benchmark/report.html
+            ${{ runner.temp }}/grafix-benchmark/warnings.json
+          if-no-files-found: error

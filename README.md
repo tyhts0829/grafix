@@ -424,10 +424,12 @@ PYTHONPATH=src pytest -q
 ruff check src/grafix tests
 mypy src/grafix
 
-# short deterministic measurements (JSON + HTML report)
-PYTHONPATH=src python -m grafix benchmark --system --repeats 3 --warmup 1
-# long comparison is explicit; it is not a normal CI speed gate
-PYTHONPATH=src python -m grafix benchmark --system-long --repeats 5 --warmup 1
+# short deterministic measurements (fresh process per case)
+PYTHONPATH=src python -m grafix benchmark run --suite system --profile smoke
+# long measurements are explicit; hosted CI does not use wall time as a hard gate
+PYTHONPATH=src python -m grafix benchmark run --suite all --profile long
+# generate the offline HTML report from schema v3 run JSON
+PYTHONPATH=src python -m grafix benchmark report
 ```
 
 See: `architecture.md` and `docs/developer_guide.md`.

@@ -429,10 +429,39 @@ class CaptureProvenanceBuilder:
             parameter_load_provenance=parameter_load_provenance,
             seed=seed,
         )
+        # Parameter snapshot は immutable であり、store の永続状態と
+        # effective/source の両 revision が同じ間は安全に共有できる。
+        # 複数 store を跨いだ誤 hit を防ぐため identity も key に含める。
+        self._parameter_cache_store: ParamStore | None = None
+        self._parameter_cache_store_revision = -1
+        self._parameter_cache_effective_revision = -1
+        self._parameter_cache_snapshot: ParameterSnapshotProvenance | None = None
 
     @property
     def session(self) -> SessionProvenance:
         return self._session
+
+    def _parameter_snapshot_for_store(
+        self, store: ParamStore
+    ) -> ParameterSnapshotProvenance:
+        runtime = store._runtime_ref()
+        store_revision = int(store.revision)
+        effective_revision = int(runtime.effective_revision)
+        cached = self._parameter_cache_snapshot
+        if (
+            cached is not None
+            and self._parameter_cache_store is store
+            and self._parameter_cache_store_revision == store_revision
+            and self._parameter_cache_effective_revision == effective_revision
+        ):
+            return cached
+
+        snapshot = _parameter_snapshot(store)
+        self._parameter_cache_store = store
+        self._parameter_cache_store_revision = store_revision
+        self._parameter_cache_effective_revision = effective_revision
+        self._parameter_cache_snapshot = snapshot
+        return snapshot
 
     def frame(
         self,
@@ -468,7 +497,7 @@ class CaptureProvenanceBuilder:
                 frame_index=None if frame_index is None else int(frame_index),
                 quality=quality,
                 origin=origin,
-                parameters=_parameter_snapshot(store),
+                parameters=self._parameter_snapshot_for_store(store),
             ),
         )
 

@@ -7,6 +7,7 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.interactive.parameter_gui import store_bridge
+from grafix.interactive.parameter_gui.parameter_filter import ParameterFilterState
 
 
 def _store_with_rows(count: int) -> tuple[ParamStore, list[FrameParamRecord]]:
@@ -87,3 +88,84 @@ def test_table_model_invalidates_on_store_or_registry_revision(monkeypatch) -> N
     third = store_bridge._parameter_table_model_for_store(store)
     assert third is not second
     assert store_bridge.parameter_table_model_build_count() == 3
+
+
+def test_show_inactive_without_activity_filter_skips_activity_mask(
+    monkeypatch,
+) -> None:
+    store, records = _store_with_rows(3)
+
+    def fail_activity_mask(*_args, **_kwargs):
+        raise AssertionError("activity mask should not be evaluated")
+
+    monkeypatch.setattr(store_bridge, "active_mask_for_rows", fail_activity_mask)
+
+    cases = (
+        (None, frozenset(), frozenset()),
+        (ParameterFilterState(query="model_bench"), frozenset(), frozenset()),
+        (
+            ParameterFilterState(favorite_only=True),
+            frozenset(),
+            frozenset({records[0].key}),
+        ),
+        (
+            ParameterFilterState(error_only=True),
+            frozenset({records[1].key}),
+            frozenset(),
+        ),
+    )
+    for state, error_keys, favorite_keys in cases:
+        view = store_bridge.parameter_table_view_for_store(
+            store,
+            show_inactive_params=True,
+            filter_state=state,
+            error_keys=error_keys,
+            favorite_keys=favorite_keys,
+        )
+        assert view.total_count == 3
+
+
+def test_activity_mask_is_kept_when_visibility_or_activity_filter_needs_it(
+    monkeypatch,
+) -> None:
+    store, _records = _store_with_rows(3)
+    calls = 0
+
+    def count_activity_mask(rows, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return [True] * len(rows)
+
+    monkeypatch.setattr(store_bridge, "active_mask_for_rows", count_activity_mask)
+
+    store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=False,
+    )
+    store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=True,
+        filter_state=ParameterFilterState(activity="active"),
+    )
+    assert calls == 2
+
+
+def test_unchanged_render_does_not_consume_returned_rows(monkeypatch) -> None:
+    store, _records = _store_with_rows(3)
+
+    class RowsThatMustNotBeConsumed:
+        def __iter__(self):
+            raise AssertionError("unchanged rows should not be restored")
+
+    def fake_render(_rows, **_kwargs):
+        return False, RowsThatMustNotBeConsumed()
+
+    monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
+
+    assert (
+        store_bridge.render_store_parameter_table(
+            store,
+            show_inactive_params=True,
+        )
+        is False
+    )

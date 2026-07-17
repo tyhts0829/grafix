@@ -77,38 +77,6 @@ def test_small_workloads_report_deterministic_output_and_cache_stats() -> None:
     ) == system_benchmark._gcode_ordering_workload(strokes)
 
 
-def test_short_suite_uses_standard_result_schema_without_speed_gates() -> None:
-    suite = system_benchmark.run_system_benchmarks(
-        repeats=1,
-        warmup=0,
-        long=False,
-        include_cold_import=False,
-        include_mp_draw=False,
-    )
-
-    assert suite["profile"] == "short"
-    assert set(suite["results"]) == {
-        "realize_session_animated_soak",
-        "draw_realize_indices",
-        "geometry_signature",
-        "rotate_scale_identity",
-        "cached_site_id",
-        "parameter_snapshot_model",
-        "renderer_cache",
-        "concat",
-        "asemic",
-        "gcode_ordering",
-    }
-    for case_id, result in suite["results"].items():
-        assert result["id"] == case_id
-        assert result["status"] == "ok"
-        assert result["n"] == 1
-        assert result["median_ms"] >= 0.0
-        assert result["p95_ms"] >= result["median_ms"]
-        assert result["peak_rss_bytes"] > 0
-        assert result["output"]
-
-
 def test_cold_import_runs_in_fresh_process_and_reports_rss() -> None:
     result = system_benchmark._cold_import_benchmark(repeats=1)
 

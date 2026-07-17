@@ -10,7 +10,6 @@ import subprocess
 import sys
 import time
 from collections import OrderedDict
-from collections.abc import Callable
 from dataclasses import dataclass
 from types import CodeType
 from typing import Any
@@ -40,14 +39,6 @@ from grafix.interactive.gl.index_buffer import build_line_indices_and_stats
 from grafix.interactive.parameter_gui import store_bridge
 
 
-@dataclass(frozen=True, slots=True)
-class _SystemCase:
-    case_id: str
-    label: str
-    category: str
-    workload: Callable[[], dict[str, Any]]
-
-
 @dataclass(slots=True)
 class _FakeBuffer:
     size: int
@@ -68,237 +59,37 @@ class _BenchmarkFakeMesh:
         self.vbo = _FakeBuffer(size=int(initial_reserve))
         self.ibo = _FakeBuffer(size=int(initial_reserve))
         self.upload_count = 0
+        self.vertex_upload_count = 0
+        self.full_vertex_upload_bytes = 0
+        self.full_index_upload_bytes = 0
+        self.vertex_only_upload_bytes = 0
+        self.last_vertices: np.ndarray | None = None
+        self.last_indices: np.ndarray | None = None
         self.released = False
         self.instances.append(self)
 
     def upload(self, vertices: np.ndarray, indices: np.ndarray) -> None:
+        vertices_f32 = np.ascontiguousarray(vertices, dtype=np.float32)
+        indices_u32 = np.ascontiguousarray(indices, dtype=np.uint32)
         self.upload_count += 1
-        self.vbo.size = max(self.vbo.size, int(vertices.nbytes))
-        self.ibo.size = max(self.ibo.size, int(indices.nbytes))
+        self.full_vertex_upload_bytes += int(vertices_f32.nbytes)
+        self.full_index_upload_bytes += int(indices_u32.nbytes)
+        self.last_vertices = vertices_f32
+        self.last_indices = indices_u32
+        self.vbo.size = max(self.vbo.size, int(vertices_f32.nbytes))
+        self.ibo.size = max(self.ibo.size, int(indices_u32.nbytes))
+
+    def upload_vertices(self, vertices: np.ndarray) -> None:
+        """scratch topology 再利用時の VBO-only upload を再現する。"""
+
+        vertices_f32 = np.ascontiguousarray(vertices, dtype=np.float32)
+        self.vertex_upload_count += 1
+        self.vertex_only_upload_bytes += int(vertices_f32.nbytes)
+        self.last_vertices = vertices_f32
+        self.vbo.size = max(self.vbo.size, int(vertices_f32.nbytes))
 
     def release(self) -> None:
         self.released = True
-
-
-def run_system_benchmarks(
-    *,
-    repeats: int,
-    warmup: int,
-    long: bool,
-    include_cold_import: bool = True,
-    include_mp_draw: bool = True,
-) -> dict[str, Any]:
-    """短いsystem suite、または明示指定されたlong suiteを計測する。"""
-
-    profile = "long" if long else "short"
-    sizes = _profile_sizes(long=long)
-    concat_inputs = _concat_inputs(
-        parts=int(sizes["concat_parts"]),
-        vertices_per_part=int(sizes["concat_vertices"]),
-    )
-    strokes = _random_strokes(count=int(sizes["gcode_strokes"]), seed=20260713)
-    parameter_store = _parameter_store(rows=int(sizes["model_rows"]))
-    renderer_geometry = _renderer_geometry(polylines=int(sizes["renderer_polylines"]))
-    identity_geometry = _identity_geometry(points=int(sizes["identity_points"]))
-
-    _generate_asemic_glyph.cache_clear()
-    cases = [
-        _SystemCase(
-            case_id="realize_session_animated_soak",
-            label="RealizeSession animated soak",
-            category="system",
-            workload=lambda: _animated_soak(
-                frames=int(sizes["soak_frames"]),
-                sides=int(sizes["soak_sides"]),
-            ),
-        ),
-        _SystemCase(
-            case_id="draw_realize_indices",
-            label="draw → realize → indices",
-            category="system",
-            workload=lambda: _draw_realize_indices(grid_size=int(sizes["grid_size"])),
-        ),
-        _SystemCase(
-            case_id="geometry_signature",
-            label="Geometry signature",
-            category="micro",
-            workload=lambda: _geometry_signature_workload(
-                iterations=int(sizes["signature_iterations"])
-            ),
-        ),
-        _SystemCase(
-            case_id="rotate_scale_identity",
-            label="rotate/scale identity (50k points)",
-            category="micro",
-            workload=lambda: _rotate_scale_identity_workload(
-                identity_geometry,
-                iterations=int(sizes["identity_iterations"]),
-            ),
-        ),
-        _SystemCase(
-            case_id="cached_site_id",
-            label="cached site ID",
-            category="micro",
-            workload=lambda: _cached_site_id_workload(
-                iterations=int(sizes["site_iterations"]),
-                code=_cached_site_id_workload.__code__,
-            ),
-        ),
-        _SystemCase(
-            case_id="parameter_snapshot_model",
-            label="parameter snapshot/model steady frames",
-            category="system",
-            workload=lambda: _parameter_snapshot_model_workload(
-                parameter_store,
-                frames=int(sizes["model_frames"]),
-            ),
-        ),
-        _SystemCase(
-            case_id="renderer_cache",
-            label="renderer 100k-polyline cache hit",
-            category="system",
-            workload=lambda: _renderer_cache_workload(
-                renderer_geometry,
-                frames=int(sizes["renderer_frames"]),
-            ),
-        ),
-        _SystemCase(
-            case_id="concat",
-            label="packed concat",
-            category="micro",
-            workload=lambda: _concat_workload(concat_inputs),
-        ),
-        _SystemCase(
-            case_id="asemic",
-            label="asemic cached glyph/layout",
-            category="micro",
-            workload=lambda: _asemic_workload(
-                text=str(sizes["asemic_text"]),
-                nodes=int(sizes["asemic_nodes"]),
-            ),
-        ),
-        _SystemCase(
-            case_id="gcode_ordering",
-            label="G-code stroke ordering",
-            category="micro",
-            workload=lambda: _gcode_ordering_workload(strokes),
-        ),
-    ]
-
-    results: dict[str, dict[str, Any]] = {}
-    for case in cases:
-        results[case.case_id] = _measure_case(
-            case,
-            repeats=max(1, int(repeats)),
-            warmup=max(0, int(warmup)),
-        )
-
-    if include_cold_import:
-        cold_repeats = min(5, max(3, int(repeats))) if long else 1
-        results["cold_import_grafix"] = _cold_import_benchmark(repeats=cold_repeats)
-
-    if include_mp_draw:
-        from grafix.devtools.benchmarks.mp_draw_benchmark import (
-            run_mp_draw_benchmarks,
-        )
-
-        try:
-            results["mp_draw_n_worker"] = run_mp_draw_benchmarks(
-                repeats=min(3, max(1, int(repeats))),
-                steady_frames=int(sizes["mp_steady_frames"]),
-                heavy_iterations=int(sizes["mp_heavy_iterations"]),
-                n_worker=4,
-            )
-        except Exception as exc:  # noqa: BLE001
-            results["mp_draw_n_worker"] = {
-                "id": "mp_draw_n_worker",
-                "label": "MpDraw sync n=1 vs multiprocessing",
-                "category": "system",
-                "status": "error",
-                "error": f"{exc.__class__.__name__}: {exc}",
-            }
-
-    return {"profile": profile, "results": results}
-
-
-def _profile_sizes(*, long: bool) -> dict[str, int | str]:
-    if long:
-        return {
-            "soak_frames": 2_000,
-            "soak_sides": 128,
-            "grid_size": 250,
-            "signature_iterations": 100_000,
-            "identity_points": 50_000,
-            "identity_iterations": 100_000,
-            "site_iterations": 1_000_000,
-            "model_rows": 10_000,
-            "model_frames": 600,
-            "renderer_polylines": 1_000_000,
-            "renderer_frames": 600,
-            "concat_parts": 10_000,
-            "concat_vertices": 4,
-            "asemic_text": "PERFORMANCE MEASUREMENT " * 20,
-            "asemic_nodes": 64,
-            "gcode_strokes": 5_000,
-            "mp_steady_frames": 96,
-            "mp_heavy_iterations": 200_000,
-        }
-    return {
-        "soak_frames": 48,
-        "soak_sides": 48,
-        "grid_size": 24,
-        "signature_iterations": 1_000,
-        "identity_points": 50_000,
-        "identity_iterations": 1_000,
-        "site_iterations": 10_000,
-        "model_rows": 1_000,
-        "model_frames": 60,
-        "renderer_polylines": 100_000,
-        "renderer_frames": 60,
-        "concat_parts": 128,
-        "concat_vertices": 3,
-        "asemic_text": "CACHE CACHE\nSYSTEM",
-        "asemic_nodes": 24,
-        "gcode_strokes": 200,
-        "mp_steady_frames": 24,
-        "mp_heavy_iterations": 100_000,
-    }
-
-
-def _measure_case(
-    case: _SystemCase,
-    *,
-    repeats: int,
-    warmup: int,
-) -> dict[str, Any]:
-    try:
-        for _ in range(warmup):
-            case.workload()
-        samples: list[int] = []
-        payload: dict[str, Any] = {}
-        for _ in range(repeats):
-            started = time.perf_counter_ns()
-            payload = case.workload()
-            samples.append(time.perf_counter_ns() - started)
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "id": case.case_id,
-            "label": case.label,
-            "category": case.category,
-            "status": "error",
-            "error": f"{exc.__class__.__name__}: {exc}",
-        }
-
-    result: dict[str, Any] = {
-        "id": case.case_id,
-        "label": case.label,
-        "category": case.category,
-        "status": "ok",
-        **_summarize_ns(samples),
-        "peak_rss_bytes": _peak_rss_bytes(),
-    }
-    result.update(payload)
-    return result
 
 
 def _summarize_ns(samples: list[int]) -> dict[str, float | int]:
@@ -439,6 +230,7 @@ def _rotate_scale_identity_workload(
     geometry: RealizedGeometry,
     *,
     iterations: int,
+    include_semantic_outputs: bool = False,
 ) -> dict[str, Any]:
     ensure_builtin_effect_registered("rotate")
     ensure_builtin_effect_registered("scale")
@@ -450,12 +242,16 @@ def _rotate_scale_identity_workload(
 
     count = max(1, int(iterations))
     reused = 0
+    rotate_output: object = geometry
+    scale_output: object = geometry
     for _ in range(count):
-        reused += int(rotate(inputs, rotate_args) is geometry)
-        reused += int(scale(inputs, scale_args) is geometry)
+        rotate_output = rotate(inputs, rotate_args)
+        scale_output = scale(inputs, scale_args)
+        reused += int(rotate_output is geometry)
+        reused += int(scale_output is geometry)
 
     operations = count * 2
-    return {
+    result: dict[str, Any] = {
         "output": {
             **_describe_realized(geometry),
             "iterations": count,
@@ -464,6 +260,9 @@ def _rotate_scale_identity_workload(
             "input_object_reused": reused == operations,
         }
     }
+    if include_semantic_outputs:
+        result["_semantic_outputs"] = (rotate_output, scale_output)
+    return result
 
 
 def _cached_site_id_workload(*, iterations: int, code: CodeType) -> dict[str, Any]:
@@ -579,12 +378,16 @@ def _fake_renderer() -> Any:
     renderer.ctx = object()
     renderer.program = object()
     renderer._scratch_mesh = _BenchmarkFakeMesh(renderer.ctx, renderer.program)
+    renderer._scratch_topology = None
     renderer._mesh_cache = OrderedDict()
     renderer._mesh_candidates = OrderedDict()
     renderer._mesh_cache_bytes = 0
-    renderer._mesh_candidates_bytes = 0
     renderer._mesh_cache_max_bytes = 256 * 1024 * 1024
+    # 最適化前 source も同じ schema v3 harness で測れるよう、旧candidate
+    # accounting fieldもfake instanceにだけ用意する。
+    renderer._mesh_candidates_bytes = 0
     renderer._mesh_candidates_max_bytes = 64 * 1024 * 1024
+    renderer._mesh_candidates_max_entries = 4_096
     return renderer
 
 
@@ -592,6 +395,7 @@ def _renderer_cache_workload(
     geometry: RealizedGeometry,
     *,
     frames: int,
+    include_semantic_frames: bool = False,
 ) -> dict[str, Any]:
     """fake mesh で candidate→昇格→steady cache hit を計測する。"""
 
@@ -610,6 +414,7 @@ def _renderer_cache_workload(
         return original_build(offsets)
 
     steady_samples: list[int] = []
+    semantic_frames: list[tuple[np.ndarray, np.ndarray]] = []
     stats = None
     with (
         patch.object(renderer_module, "LineMesh", _BenchmarkFakeMesh),
@@ -629,6 +434,10 @@ def _renderer_cache_workload(
             elapsed = time.perf_counter_ns() - started
             if mesh is None:
                 raise RuntimeError("renderer benchmark が空 mesh を返した")
+            if include_semantic_frames:
+                if mesh.last_vertices is None or mesh.last_indices is None:
+                    raise RuntimeError("renderer benchmark mesh upload state is missing")
+                semantic_frames.append((mesh.last_vertices, mesh.last_indices))
             cache_hits += int(cached_before)
             cache_misses += int(not cached_before)
             if frame >= 2:
@@ -637,14 +446,26 @@ def _renderer_cache_workload(
     if stats is None:
         raise RuntimeError("renderer benchmark の stats が未生成")
     uploads = sum(mesh.upload_count for mesh in _BenchmarkFakeMesh.instances)
+    full_vertex_upload_bytes = sum(
+        mesh.full_vertex_upload_bytes for mesh in _BenchmarkFakeMesh.instances
+    )
+    full_index_upload_bytes = sum(
+        mesh.full_index_upload_bytes for mesh in _BenchmarkFakeMesh.instances
+    )
+    vertex_only_upload_bytes = sum(
+        mesh.vertex_only_upload_bytes for mesh in _BenchmarkFakeMesh.instances
+    )
     steady = _summarize_ns(steady_samples)
-    return {
+    result: dict[str, Any] = {
         "output": {
             **_describe_realized(geometry),
             "frames": frame_count,
             "index_count": stats.draw_vertices + max(0, stats.draw_lines - 1),
             "index_builds": index_builds,
             "uploads": uploads,
+            "full_vertex_upload_bytes": full_vertex_upload_bytes,
+            "full_index_upload_bytes": full_index_upload_bytes,
+            "vertex_only_upload_bytes": vertex_only_upload_bytes,
             "steady_median_ms": steady["median_ms"],
             "steady_p95_ms": steady["p95_ms"],
         },
@@ -653,10 +474,14 @@ def _renderer_cache_workload(
             "misses": cache_misses,
             "evictions": 0,
             "entries": len(renderer._mesh_cache),
+            "candidate_entries": len(renderer._mesh_candidates),
             "bytes": int(renderer._mesh_cache_bytes),
             "budget_bytes": int(renderer._mesh_cache_max_bytes),
         },
     }
+    if include_semantic_frames:
+        result["_semantic_frames"] = tuple(semantic_frames)
+    return result
 
 
 def _concat_inputs(*, parts: int, vertices_per_part: int) -> tuple[RealizedGeometry, ...]:
@@ -678,7 +503,12 @@ def _concat_workload(inputs: tuple[RealizedGeometry, ...]) -> dict[str, Any]:
     return {"output": {**_describe_realized(output), "parts": len(inputs)}}
 
 
-def _asemic_workload(*, text: str, nodes: int) -> dict[str, Any]:
+def _asemic_workload(
+    *,
+    text: str,
+    nodes: int,
+    include_semantic_geometry: bool = False,
+) -> dict[str, Any]:
     coords, offsets = asemic(
         text=text,
         seed=17,
@@ -692,7 +522,7 @@ def _asemic_workload(*, text: str, nodes: int) -> dict[str, Any]:
         bezier_samples=8,
     )
     info = _generate_asemic_glyph.cache_info()
-    return {
+    result: dict[str, Any] = {
         "output": _describe_arrays(coords, offsets),
         "cache": {
             "hits": int(info.hits),
@@ -702,6 +532,9 @@ def _asemic_workload(*, text: str, nodes: int) -> dict[str, Any]:
             "bytes": 0,
         },
     }
+    if include_semantic_geometry:
+        result["_semantic_geometry"] = (coords, offsets)
+    return result
 
 
 def _random_strokes(*, count: int, seed: int) -> list[_Stroke]:
@@ -811,4 +644,4 @@ def _peak_rss_bytes() -> int:
     return rss if sys.platform == "darwin" else rss * 1024
 
 
-__all__ = ["run_system_benchmarks"]
+__all__: list[str] = []

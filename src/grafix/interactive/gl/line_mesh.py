@@ -106,7 +106,7 @@ class LineMesh:
         )
 
     def upload(self, vertices: np.ndarray, indices: np.ndarray) -> None:
-        """実際にデータをGPUへ送り込む"""
+        """頂点とインデックスを GPU へ送り込む。"""
         vertices_f32 = np.ascontiguousarray(vertices, dtype=np.float32)
         indices_u32 = np.ascontiguousarray(indices, dtype=np.uint32)
         self._ensure_capacity(vertices_f32.nbytes, indices_u32.nbytes)
@@ -118,6 +118,15 @@ class LineMesh:
         self.ibo.write(indices_u32)
 
         self.index_count = len(indices_u32)
+
+    def upload_vertices(self, vertices: np.ndarray) -> None:
+        """IBO を維持したまま頂点だけを GPU へ送り込む。"""
+
+        vertices_f32 = np.ascontiguousarray(vertices, dtype=np.float32)
+        self._ensure_capacity(vertices_f32.nbytes, 0)
+
+        self.vbo.orphan()
+        self.vbo.write(vertices_f32)
 
     def release(self) -> None:
         """GPUのメモリを解放する（終了時に使う）"""

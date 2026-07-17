@@ -30,3 +30,4 @@ def test_new_runtime_field_preserves_legacy_positional_argument_order() -> None:
     assert runtime.last_effective_by_key is effective
     assert runtime.warned_unknown_args is warned
     assert runtime.last_source_by_key == {}
+    assert runtime.effective_revision == 0

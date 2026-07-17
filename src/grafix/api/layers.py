@@ -116,7 +116,7 @@ class LayerNamespace:
         if len(geometries) == 1:
             geometry = geometries[0]
         else:
-            geometry = Geometry.create(op="concat", inputs=tuple(geometries), params={})
+            geometry = Geometry.concat(geometries)
 
         return Layer(
             geometry=geometry,

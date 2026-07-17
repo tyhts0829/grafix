@@ -46,6 +46,10 @@ class ParamStoreRuntime:
     reconcile_orphans: dict[tuple[str, str], ReconcileOrphan] = field(
         default_factory=dict
     )
+    # effective/source の最終 snapshot が変わった frame ごとに 1 回だけ進む。
+    # 永続 store の revision と分け、毎 frame 更新され得る provenance/GUI cache の
+    # 無効化に使う。
+    effective_revision: int = 0
 
 
 __all__ = [

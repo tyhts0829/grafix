@@ -10,9 +10,15 @@ from hashlib import blake2b
 from math import isfinite
 from struct import Struct
 from types import NotImplementedType
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 GeometryId = str
+_GeometryRecord = tuple[
+    GeometryId,
+    str,
+    tuple[GeometryId, ...],
+    tuple[tuple[str, Any], ...],
+]
 
 DEFAULT_SCHEMA_VERSION = 2
 
@@ -230,7 +236,7 @@ def compute_geometry_id(
     return blake2b(payload, digest_size=16).hexdigest()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Geometry:
     """幾何レシピを表す不変 Geometry ノード。
 
@@ -254,6 +260,54 @@ class Geometry:
     op: str
     inputs: tuple["Geometry", ...]
     args: tuple[tuple[str, Any], ...]
+
+    def __eq__(self, other: object) -> bool | NotImplementedType:
+        """内容署名だけを比較し、深い recipe でも再帰しない。"""
+
+        if not isinstance(other, Geometry):
+            return NotImplemented
+        return self.id == other.id
+
+    def __hash__(self) -> int:
+        """内容署名から非再帰で hash を返す。"""
+
+        return hash(self.id)
+
+    def __repr__(self) -> str:
+        """入力の内容署名だけを示す非再帰表現を返す。"""
+
+        input_ids = tuple(item.id for item in self.inputs)
+        return (
+            f"Geometry(id={self.id!r}, op={self.op!r}, "
+            f"input_ids={input_ids!r}, args={self.args!r})"
+        )
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """DAG を平坦な node record にして深さ非依存で pickle 化する。"""
+
+        records: list[_GeometryRecord] = []
+        visited: set[GeometryId] = set()
+        stack: list[tuple[Geometry, bool]] = [(self, False)]
+        while stack:
+            geometry, expanded = stack.pop()
+            if expanded:
+                records.append(
+                    (
+                        geometry.id,
+                        geometry.op,
+                        tuple(item.id for item in geometry.inputs),
+                        geometry.args,
+                    )
+                )
+                continue
+            if geometry.id in visited:
+                continue
+            visited.add(geometry.id)
+            stack.append((geometry, True))
+            for item in reversed(geometry.inputs):
+                if item.id not in visited:
+                    stack.append((item, False))
+        return _restore_geometry_dag, (tuple(records), self.id)
 
     @classmethod
     def create(
@@ -308,17 +362,107 @@ class Geometry:
 
     @staticmethod
     def _concat(*geometries: "Geometry") -> "Geometry":
-        """Geometry を `concat` としてまとめる。"""
-        inputs: list[Geometry] = []
-        for g in geometries:
-            if g.op == "concat" and not g.args:
-                inputs.extend(g.inputs)
-            else:
-                inputs.append(g)
+        """少数の Geometry を二分 concat recipe としてまとめる。"""
 
+        if len(geometries) == 1:
+            return geometries[0]
+        return Geometry.create(op="concat", inputs=geometries, params={})
+
+    @staticmethod
+    def _flatten_concat_inputs(
+        geometries: Sequence["Geometry"],
+    ) -> tuple["Geometry", ...]:
+        """共有 concat を境界として、非共有の内部 concat だけを平坦化する。"""
+
+        def is_internal_concat(geometry: Geometry) -> bool:
+            return geometry.op == "concat" and not geometry.args
+
+        reference_counts: dict[GeometryId, int] = {}
+        for geometry in geometries:
+            if is_internal_concat(geometry):
+                reference_counts[geometry.id] = (
+                    reference_counts.get(geometry.id, 0) + 1
+                )
+
+        # 同じ concat が直下に複数回あれば、その部分木は最初から評価境界である。
+        # shared doubling の各段で同じ suffix を再走査しないよう、既知の境界は
+        # 参照解析の対象にも入れない。
+        stack = [
+            geometry
+            for geometry in geometries
+            if (
+                is_internal_concat(geometry)
+                and reference_counts[geometry.id] == 1
+            )
+        ]
+
+        visited: set[GeometryId] = set()
+        while stack:
+            geometry = stack.pop()
+            if (
+                geometry.id in visited
+                or reference_counts.get(geometry.id, 0) > 1
+            ):
+                continue
+            visited.add(geometry.id)
+            for item in geometry.inputs:
+                if not is_internal_concat(item):
+                    continue
+                reference_counts[item.id] = reference_counts.get(item.id, 0) + 1
+                if item.id not in visited:
+                    stack.append(item)
+
+        flattened: list[Geometry] = []
+        stack = list(reversed(geometries))
+        while stack:
+            geometry = stack.pop()
+            if (
+                is_internal_concat(geometry)
+                and reference_counts[geometry.id] == 1
+            ):
+                stack.extend(reversed(geometry.inputs))
+            else:
+                flattened.append(geometry)
+        return tuple(flattened)
+
+    @classmethod
+    def concat(cls, geometries: Iterable["Geometry"]) -> "Geometry":
+        """Geometry 列を一度の走査で concat recipe にまとめる。
+
+        Parameters
+        ----------
+        geometries : Iterable[Geometry]
+            出力順に連結する Geometry 列。共有されていない引数なしの内部
+            concat は反復的に平坦化する。
+
+        Returns
+        -------
+        Geometry
+            空列では空の concat、1 要素では元の Geometry、それ以外では平坦な
+            concat recipe。複数箇所から参照される concat は、DAG を指数的に
+            展開しないため評価境界として残す。
+
+        Raises
+        ------
+        TypeError
+            Geometry 以外の要素が含まれる場合。
+        """
+
+        roots: list[Geometry] = []
+        for geometry in geometries:
+            if not isinstance(geometry, Geometry):
+                raise TypeError("concat の要素は Geometry である必要がある")
+            roots.append(geometry)
+
+        if not roots:
+            return cls.create(op="concat")
+        if len(roots) == 1:
+            return roots[0]
+
+        inputs = cls._flatten_concat_inputs(roots)
         if len(inputs) == 1:
             return inputs[0]
-        return Geometry.create(op="concat", inputs=tuple(inputs), params={})
+        return cls.create(op="concat", inputs=inputs)
 
     def __add__(self, other: object) -> "Geometry | NotImplementedType":
         """`g1 + g2` を `concat` として表現する。"""
@@ -333,3 +477,20 @@ class Geometry:
         if not isinstance(other, Geometry):
             return NotImplemented
         return Geometry._concat(other, self)
+
+
+def _restore_geometry_dag(
+    records: tuple[_GeometryRecord, ...],
+    root_id: GeometryId,
+) -> Geometry:
+    """pickle 用の平坦な node record から DAG を復元する。"""
+
+    geometries: dict[GeometryId, Geometry] = {}
+    for geometry_id, op, input_ids, args in records:
+        geometries[geometry_id] = Geometry(
+            id=geometry_id,
+            op=op,
+            inputs=tuple(geometries[input_id] for input_id in input_ids),
+            args=args,
+        )
+    return geometries[root_id]

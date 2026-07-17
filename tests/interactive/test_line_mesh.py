@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pytest
 
 from grafix.interactive.gl.line_mesh import LineMesh
@@ -11,6 +12,14 @@ class _Buffer:
     def __init__(self, size: int) -> None:
         self.size = int(size)
         self.released = False
+        self.orphan_count = 0
+        self.write_sizes: list[int] = []
+
+    def orphan(self) -> None:
+        self.orphan_count += 1
+
+    def write(self, value: np.ndarray) -> None:
+        self.write_sizes.append(int(value.nbytes))
 
     def release(self) -> None:
         self.released = True
@@ -117,3 +126,41 @@ def test_line_mesh_keeps_old_resources_when_allocation_fails() -> None:
     assert original_vbo.released is False
     assert original_ibo.released is False
     assert original_vao.released is False
+
+
+def test_line_mesh_upload_vertices_keeps_index_buffer_and_count() -> None:
+    context = _Context()
+    mesh = LineMesh(context, object(), initial_reserve=8)
+    vertices = np.asarray([[0, 0, 0], [1, 0, 0]], dtype=np.float64)
+    indices = np.asarray([0, 1], dtype=np.int64)
+
+    mesh.upload(vertices, indices)
+    ibo = mesh.ibo
+    index_count = mesh.index_count
+    ibo_orphans = ibo.orphan_count
+    ibo_writes = list(ibo.write_sizes)
+
+    mesh.upload_vertices(vertices + 1)
+
+    assert mesh.ibo is ibo
+    assert mesh.index_count == index_count
+    assert mesh.vbo.orphan_count == 2
+    assert mesh.vbo.write_sizes == [24, 24]
+    assert ibo.orphan_count == ibo_orphans == 1
+    assert ibo.write_sizes == ibo_writes == [8]
+
+
+def test_line_mesh_accepts_empty_vertex_and_index_uploads() -> None:
+    context = _Context()
+    mesh = LineMesh(context, object(), initial_reserve=8)
+    vertices = np.empty((0, 3), dtype=np.float32)
+    indices = np.empty((0,), dtype=np.uint32)
+
+    mesh.upload(vertices, indices)
+    mesh.upload_vertices(vertices)
+
+    assert mesh.index_count == 0
+    assert mesh.vbo.orphan_count == 2
+    assert mesh.vbo.write_sizes == [0, 0]
+    assert mesh.ibo.orphan_count == 1
+    assert mesh.ibo.write_sizes == [0]

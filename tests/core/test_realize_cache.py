@@ -17,6 +17,7 @@ from grafix.core.op_registry import OpRegistry, OpSpec
 from grafix.core.primitive_registry import PrimitiveFunc
 from grafix.core.realize import RealizeError, RealizeSession, realize
 from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.resource_budget import ResourceBudget
 
 realize_module = importlib.import_module("grafix.core.realize")
 
@@ -179,6 +180,185 @@ def test_uncached_input_makes_content_parent_uncached(
     assert primitive_calls == 2
     assert effect_calls == 2
     assert stats.entries == 0
+
+
+def test_uncached_shared_input_is_evaluated_for_each_occurrence(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, _ = isolated_registries
+    calls = 0
+
+    def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        nonlocal calls
+        calls += 1
+        return _realized(2, value=float(calls))
+
+    primitives.register("live", _uncached_primitive_spec(evaluate))
+    live = Geometry.create("live")
+    geometry = Geometry.concat([live, live])
+
+    with RealizeSession() as session:
+        result = session.realize(geometry)
+
+    assert calls == 2
+    np.testing.assert_array_equal(result.coords[:2], np.full((2, 3), 1.0))
+    np.testing.assert_array_equal(result.coords[2:], np.full((2, 3), 2.0))
+
+
+def test_deep_unary_dag_is_realized_without_python_recursion(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, effects = isolated_registries
+    primitives.register("shape", _primitive_spec(lambda _args: _realized(2)))
+    effects.register(
+        "pass_through",
+        _effect_spec(lambda inputs, _args: inputs[0]),
+    )
+    geometry = Geometry.create("shape")
+    for index in range(10_000):
+        geometry = Geometry.create(
+            "pass_through",
+            inputs=(geometry,),
+            params={"index": index},
+        )
+
+    with RealizeSession() as session:
+        result = session.realize(geometry)
+
+    assert result.coords.shape == (2, 3)
+
+
+def test_deep_binary_concat_is_flattened_once_without_python_recursion(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, _ = isolated_registries
+    primitive_calls = 0
+
+    def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        nonlocal primitive_calls
+        primitive_calls += 1
+        return _realized(2)
+
+    primitives.register("shape", _primitive_spec(evaluate))
+    leaf = Geometry.create("shape")
+    geometry = leaf
+    for _ in range(9_999):
+        geometry = geometry + leaf
+
+    with RealizeSession() as session:
+        result = session.realize(geometry)
+
+    assert primitive_calls == 1
+    assert result.coords.shape == (20_000, 3)
+    assert result.offsets.size == 10_001
+
+
+def test_shared_concat_dag_hits_resource_limit_without_exponential_expansion(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, _ = isolated_registries
+    primitive_calls = 0
+
+    def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        nonlocal primitive_calls
+        primitive_calls += 1
+        return _realized(1)
+
+    primitives.register("shape", _primitive_spec(evaluate))
+    geometry = Geometry.create("shape")
+    depth = 5_000
+    for _ in range(depth):
+        geometry = geometry + geometry
+
+    budget = ResourceBudget(
+        max_output_vertices=100,
+        max_output_lines=10,
+        max_output_bytes=10_000,
+    )
+    with RealizeSession(resource_budget=budget) as session:
+        with pytest.raises(RealizeError, match="Geometry の評価に失敗"):
+            session.realize(geometry)
+        stats = session.stats()
+        assert session._inflight == {}
+
+    assert primitive_calls == 1
+    assert stats.hits < 20
+    assert stats.misses == depth + 1
+
+
+def test_binary_and_bulk_concat_realize_in_the_same_leaf_order(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, _ = isolated_registries
+
+    def evaluate(args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        return _realized(2, value=float(cast(int, dict(args)["value"])))
+
+    primitives.register("shape", _primitive_spec(evaluate))
+    leaves = tuple(
+        Geometry.create("shape", params={"value": value}) for value in (1, 2, 3)
+    )
+    binary = (leaves[0] + leaves[1]) + leaves[2]
+    bulk = Geometry.concat(leaves)
+
+    with RealizeSession() as session:
+        binary_result = session.realize(binary)
+        bulk_result = session.realize(bulk)
+
+    assert binary.id != bulk.id
+    np.testing.assert_array_equal(binary_result.coords, bulk_result.coords)
+    np.testing.assert_array_equal(binary_result.offsets, bulk_result.offsets)
+
+
+def test_warm_root_hit_skips_deep_cacheability_walk(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primitives, effects = isolated_registries
+    primitives.register("shape", _primitive_spec(lambda _args: _realized(2)))
+    effects.register("pass_through", _effect_spec(lambda inputs, _args: inputs[0]))
+    geometry = Geometry.create("shape")
+    for index in range(5_000):
+        geometry = Geometry.create(
+            "pass_through",
+            inputs=(geometry,),
+            params={"index": index},
+        )
+
+    with RealizeSession() as session:
+        first = session.realize(geometry)
+        monkeypatch.setattr(
+            session,
+            "_geometry_cacheability",
+            lambda *_args: pytest.fail("warm root hitでcacheabilityを再計算した"),
+        )
+        second = session.realize(geometry)
+
+    assert second is first
+
+
+def test_input_preparation_failure_releases_inflight_leader(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primitives, _ = isolated_registries
+    primitives.register("shape", _primitive_spec(lambda _args: _realized(2)))
+    geometry = Geometry.create("shape")
+    session = RealizeSession()
+    original = session._evaluation_inputs
+
+    monkeypatch.setattr(
+        session,
+        "_evaluation_inputs",
+        lambda _geometry: (_ for _ in ()).throw(ValueError("prepare failed")),
+    )
+    with pytest.raises(RealizeError, match=geometry.id):
+        session.realize(geometry)
+    assert session._inflight == {}
+
+    monkeypatch.setattr(session, "_evaluation_inputs", original)
+    assert session.realize(geometry).coords.shape == (2, 3)
+    session.close()
 
 
 def test_lru_evicts_least_recently_used_entry_by_byte_budget(

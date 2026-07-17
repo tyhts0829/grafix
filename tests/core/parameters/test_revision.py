@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from typing import Any, cast
 
 import pytest
@@ -9,6 +9,7 @@ from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.labels_ops import set_label
 from grafix.core.parameters.merge_ops import merge_frame_params
+from grafix.core.parameters import merge_ops
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.store import ParamStore
@@ -72,6 +73,84 @@ def test_large_unchanged_snapshot_is_built_once() -> None:
 
     assert all(snapshot is snapshots[0] for snapshot in snapshots)
     assert len(snapshots[0]) == 1_000
+
+
+def test_effective_revision_advances_once_only_when_final_snapshot_changes() -> None:
+    store = ParamStore()
+    first = replace(_record(1), source="code")
+
+    merge_frame_params(store, [first])
+    runtime = store._runtime_ref()
+    assert runtime.effective_revision == 1
+
+    # 同じ record の再 merge と、途中値だけが異なる同一 key の merge は不変。
+    merge_frame_params(store, [first])
+    merge_frame_params(
+        store,
+        [
+            replace(first, effective=2.0),
+            first,
+        ],
+    )
+    assert runtime.effective_revision == 1
+
+    # effective が複数 key で変わっても、1 frame につき 1 回だけ進む。
+    second = replace(_record(2), source="code")
+    merge_frame_params(
+        store,
+        [
+            replace(first, effective=3.0),
+            second,
+        ],
+    )
+    assert runtime.effective_revision == 2
+
+    # 値が同じでも source が変われば provenance snapshot は変わる。
+    merge_frame_params(
+        store,
+        [
+            replace(first, effective=3.0, source="ui"),
+            second,
+        ],
+    )
+    assert runtime.effective_revision == 3
+
+    # effective/source を持たない観測は runtime snapshot を変更しない。
+    merge_frame_params(
+        store,
+        [replace(first, effective=None, source=None)],
+    )
+    assert runtime.effective_revision == 3
+
+
+def test_failed_merge_restores_effective_snapshot_and_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ParamStore()
+    first = replace(_record(1), source="code")
+    merge_frame_params(store, [first])
+    runtime = store._runtime_ref()
+    before_effective = dict(runtime.last_effective_by_key)
+    before_source = dict(runtime.last_source_by_key)
+    before_revision = runtime.effective_revision
+
+    def fail_follow(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("follow failed")
+
+    monkeypatch.setattr(
+        merge_ops,
+        "_apply_explicit_override_follow_policy",
+        fail_follow,
+    )
+    with pytest.raises(RuntimeError, match="follow failed"):
+        merge_frame_params(
+            store,
+            [replace(first, effective=9.0, source="ui")],
+        )
+
+    assert runtime.last_effective_by_key == before_effective
+    assert runtime.last_source_by_key == before_source
+    assert runtime.effective_revision == before_revision
 
 
 def test_cached_snapshot_outer_mapping_cannot_be_mutated() -> None:

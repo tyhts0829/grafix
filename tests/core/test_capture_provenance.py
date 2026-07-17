@@ -106,6 +106,71 @@ def test_parameter_snapshot_hash_tracks_effective_frame_values() -> None:
         first.provenance.frame.t = 9.0  # type: ignore[misc]
 
 
+def test_parameter_snapshot_is_cached_until_store_or_effective_revision_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_calls = 0
+    parameter_snapshot = provenance_module._parameter_snapshot
+    length = 10.0
+
+    def changing_draw(_t: float):
+        return G.line(
+            center=(0.0, 0.0, 0.0),
+            anchor="left",
+            length=length,
+            angle=0.0,
+        )
+
+    def count_parameter_snapshot(store):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return parameter_snapshot(store)
+
+    monkeypatch.setattr(
+        provenance_module,
+        "_parameter_snapshot",
+        count_parameter_snapshot,
+    )
+
+    with RenderSession(changing_draw) as session:
+        # 初回 merge では初期 override policy が確定するため、source が安定する
+        # 次 frame を cache 比較の起点にする。
+        session.render(0.0)
+        first = session.render(1.0)
+        stable = session.render(2.0)
+        assert stable.provenance.frame.parameters is first.provenance.frame.parameters
+        assert snapshot_calls == 2
+
+        store_revision = session.param_store.revision
+        length = 11.0
+        effective_changed = session.render(3.0)
+        assert session.param_store.revision == store_revision
+        assert snapshot_calls == 3
+        assert (
+            effective_changed.provenance.frame.parameters.sha256
+            != first.provenance.frame.parameters.sha256
+        )
+
+        key = style_key("background_color")
+        meta = session.param_store.get_meta(key)
+        assert meta is not None
+        ok, error = update_state_from_ui(
+            session.param_store,
+            key,
+            (255, 0, 0),
+            meta=meta,
+        )
+        assert ok, error
+        changed = session.render(4.0)
+
+    assert snapshot_calls == 4
+    assert changed.provenance.frame.parameters is not first.provenance.frame.parameters
+    assert (
+        changed.provenance.frame.parameters.sha256
+        != first.provenance.frame.parameters.sha256
+    )
+
+
 def test_git_unavailable_is_explicit_in_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

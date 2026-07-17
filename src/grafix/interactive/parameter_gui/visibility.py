@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from grafix.core.builtins import (
@@ -23,7 +23,7 @@ _logger = logging.getLogger(__name__)
 
 
 def active_mask_for_rows(
-    rows: list[ParameterRow],
+    rows: Sequence[ParameterRow],
     *,
     show_inactive: bool,
     last_effective_by_key: Mapping[ParameterKey, object] | None,

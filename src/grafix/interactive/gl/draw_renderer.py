@@ -26,6 +26,33 @@ if TYPE_CHECKING:
     from pyglet.window import Window
 
 
+_CACHED_MESH_INITIAL_RESERVE = 4096
+_CACHED_MESH_BUFFER_GROWTH_FACTOR = LineMesh.BUFFER_GROWTH_FACTOR
+_MESH_CANDIDATE_ENTRY_BUDGET_BYTES = 256
+_MESH_CANDIDATE_MAX_ENTRIES = 4096
+
+
+def _mesh_candidate_entry_limit(byte_budget: int) -> int:
+    """candidate 用 byte 枠を、metadata の明示的な件数上限へ変換する。"""
+
+    return min(
+        _MESH_CANDIDATE_MAX_ENTRIES,
+        max(0, int(byte_budget)) // _MESH_CANDIDATE_ENTRY_BUDGET_BYTES,
+    )
+
+
+def _new_mesh_buffer_capacity(required: int) -> int:
+    """新規 cache mesh が最初の upload 後に確保する buffer byte 数を返す。"""
+
+    required_bytes = int(required)
+    if required_bytes <= _CACHED_MESH_INITIAL_RESERVE:
+        return _CACHED_MESH_INITIAL_RESERVE
+    return max(
+        required_bytes,
+        _CACHED_MESH_INITIAL_RESERVE * _CACHED_MESH_BUFFER_GROWTH_FACTOR,
+    )
+
+
 def _aspect_fit_viewport(
     framebuffer_size: tuple[int, int],
     canvas_size: tuple[int, int],
@@ -83,15 +110,19 @@ class DrawRenderer:
         self._mesh_cache: OrderedDict[GeometryCacheKey, _MeshCacheEntry] = OrderedDict()
         # 初見を即キャッシュすると「毎フレーム別 id」ケースで逆効果になりうるため、
         # 2 回目以降にキャッシュへ昇格させる。
-        self._mesh_candidates: OrderedDict[GeometryCacheKey, _IndexCandidate] = OrderedDict()
+        self._mesh_candidates: OrderedDict[GeometryCacheKey, None] = OrderedDict()
+        # scratch IBO に現在入っている topology。offsets を strong reference で
+        # 保持し、object identity が一致する場合に限って再利用する。
+        self._scratch_topology: _ScratchTopology | None = None
         self._mesh_cache_bytes = 0
-        self._mesh_candidates_bytes = 0
         limits = RuntimeLimits() if runtime_limits is None else runtime_limits
         if not isinstance(limits, RuntimeLimits):
             raise TypeError("runtime_limits は RuntimeLimits である必要があります")
         self._diagnostic_center = diagnostic_center
         self._mesh_cache_max_bytes = int(limits.gpu_cache_bytes)
-        self._mesh_candidates_max_bytes = int(limits.gpu_candidate_cache_bytes)
+        self._mesh_candidates_max_entries = _mesh_candidate_entry_limit(
+            limits.gpu_candidate_cache_bytes
+        )
         self._canvas_w, self._canvas_h = settings.canvas_size
         self._framebuffer_size = (1, 1)
         self._viewport = (0, 0, 1, 1)
@@ -111,10 +142,10 @@ class DrawRenderer:
         return int(self._mesh_cache_max_bytes)
 
     @property
-    def mesh_candidate_cache_max_bytes(self) -> int:
-        """index candidate cache の byte 上限を返す。"""
+    def mesh_candidate_cache_max_entries(self) -> int:
+        """mesh admission candidate の件数上限を返す。"""
 
-        return int(self._mesh_candidates_max_bytes)
+        return int(self._mesh_candidates_max_entries)
 
     def apply_runtime_limits(self, limits: RuntimeLimits) -> None:
         """quality 切替時に GPU cache 上限を適用する。"""
@@ -122,31 +153,36 @@ class DrawRenderer:
         if not isinstance(limits, RuntimeLimits):
             raise TypeError("limits は RuntimeLimits である必要があります")
         self._mesh_cache_max_bytes = int(limits.gpu_cache_bytes)
-        self._mesh_candidates_max_bytes = int(limits.gpu_candidate_cache_bytes)
+        self._mesh_candidates_max_entries = _mesh_candidate_entry_limit(
+            limits.gpu_candidate_cache_bytes
+        )
         self._evict_meshes_to_budget()
         self._evict_candidates_to_budget()
 
     def _publish_gpu_cache_limit(
         self,
         *,
-        requested_bytes: int,
-        limit_bytes: int,
+        requested: int,
+        limit: int,
         reason: str,
+        unit: str = "bytes",
     ) -> None:
         center = getattr(self, "_diagnostic_center", None)
         if center is None:
             return
+        requested_label = f"requested_{unit}"
+        limit_label = f"limit_{unit}"
         center.publish(
             DiagnosticEvent(
                 category="resource",
                 severity="warning",
                 summary=f"GPU cache limit reached: {reason}",
                 details=(
-                    f"requested_bytes={int(requested_bytes)}\n"
-                    f"limit_bytes={int(limit_bytes)}"
+                    f"{requested_label}={int(requested)}\n"
+                    f"{limit_label}={int(limit)}"
                 ),
                 dedupe_key=(
-                    f"gpu-cache:{reason}:{int(requested_bytes)}:{int(limit_bytes)}"
+                    f"gpu-cache:{reason}:{unit}:{int(requested)}:{int(limit)}"
                 ),
             )
         )
@@ -207,59 +243,140 @@ class DrawRenderer:
             self._mesh_cache.move_to_end(cache_key)
             return entry.mesh, entry.stats
 
-        candidate = self._mesh_candidates.pop(cache_key, None)
-        if candidate is not None:
-            self._mesh_candidates_bytes -= candidate.byte_size
-            indices = candidate.indices
-            stats = candidate.stats
-            # 小さく作って upload 時に VBO/IBO を別々に必要量まで成長させる。
-            # 両方を大きい側のサイズで予約すると、頂点だけ巨大な geometry で IBO も
-            # 同量確保され、統合 byte budget を無駄に消費する。
-            mesh = LineMesh(self.ctx, self.program, initial_reserve=4096)
-            mesh.upload(vertices=realized.coords, indices=indices)
-            byte_size = int(indices.nbytes + mesh.vbo.size + mesh.ibo.size)
-            if byte_size <= self._mesh_cache_max_bytes:
-                self._mesh_cache[cache_key] = _MeshCacheEntry(
-                    mesh=mesh,
+        was_candidate = cache_key in self._mesh_candidates
+        if was_candidate:
+            del self._mesh_candidates[cache_key]
+
+        scratch_topology = self._scratch_topology
+        topology_hit = (
+            scratch_topology is not None
+            and scratch_topology.offsets is realized.offsets
+        )
+        if topology_hit:
+            assert scratch_topology is not None
+            indices = scratch_topology.indices
+            stats = scratch_topology.stats
+        else:
+            indices, stats = build_line_indices_and_stats(realized.offsets)
+
+        if indices.size == 0:
+            if not topology_hit:
+                self._scratch_topology = _ScratchTopology(
+                    offsets=realized.offsets,
                     indices=indices,
                     stats=stats,
-                    byte_size=byte_size,
                 )
-                self._mesh_cache_bytes += byte_size
-                self._evict_meshes_to_budget()
-                return mesh, stats
-
-            self._publish_gpu_cache_limit(
-                requested_bytes=byte_size,
-                limit_bytes=self._mesh_cache_max_bytes,
-                reason="mesh was not cached",
-            )
-            mesh.release()
-            self._scratch_mesh.upload(vertices=realized.coords, indices=indices)
-            return self._scratch_mesh, stats
-
-        indices, stats = build_line_indices_and_stats(realized.offsets)
-        if indices.size == 0:
             return None, stats
 
-        candidate = _IndexCandidate(
-            indices=indices,
-            stats=stats,
-            byte_size=int(indices.nbytes),
-        )
-        if candidate.byte_size <= self._mesh_candidates_max_bytes:
-            self._mesh_candidates[cache_key] = candidate
-            self._mesh_candidates_bytes += candidate.byte_size
-            self._evict_candidates_to_budget()
+        if was_candidate:
+            mesh = self._promote_mesh(
+                realized=realized,
+                cache_key=cache_key,
+                indices=indices,
+                stats=stats,
+            )
+            if mesh is not None:
+                return mesh, stats
+
+        if topology_hit:
+            self._scratch_mesh.upload_vertices(realized.coords)
         else:
-            self._publish_gpu_cache_limit(
-                requested_bytes=candidate.byte_size,
-                limit_bytes=self._mesh_candidates_max_bytes,
-                reason="index candidate was not cached",
+            self._scratch_mesh.upload(vertices=realized.coords, indices=indices)
+            self._scratch_topology = _ScratchTopology(
+                offsets=realized.offsets,
+                indices=indices,
+                stats=stats,
             )
 
-        self._scratch_mesh.upload(vertices=realized.coords, indices=indices)
+        if not was_candidate:
+            self._remember_mesh_candidate(
+                cache_key,
+                vertices_nbytes=int(realized.coords.nbytes),
+                indices_nbytes=int(indices.nbytes),
+            )
         return self._scratch_mesh, stats
+
+    def _promote_mesh(
+        self,
+        *,
+        realized: RealizedGeometry,
+        cache_key: GeometryCacheKey,
+        indices: np.ndarray,
+        stats: LineIndexStats,
+    ) -> LineMesh | None:
+        """2 回目の geometry を専用 GPU mesh へ昇格する。"""
+
+        estimated_bytes = self._new_mesh_byte_size(
+            vertices_nbytes=int(realized.coords.nbytes),
+            indices_nbytes=int(indices.nbytes),
+        )
+        if estimated_bytes > self._mesh_cache_max_bytes:
+            self._publish_gpu_cache_limit(
+                requested=estimated_bytes,
+                limit=self._mesh_cache_max_bytes,
+                reason="mesh was not cached",
+            )
+            return None
+
+        # VBO/IBO は別々に必要量まで成長させる。両方を大きい側の
+        # サイズで予約すると、頂点だけ巨大な geometry で budget を浪費する。
+        mesh = LineMesh(
+            self.ctx,
+            self.program,
+            initial_reserve=_CACHED_MESH_INITIAL_RESERVE,
+        )
+        mesh.upload(vertices=realized.coords, indices=indices)
+        byte_size = int(mesh.vbo.size + mesh.ibo.size)
+        if byte_size <= self._mesh_cache_max_bytes:
+            self._mesh_cache[cache_key] = _MeshCacheEntry(
+                mesh=mesh,
+                stats=stats,
+                byte_size=byte_size,
+            )
+            self._mesh_cache_bytes += byte_size
+            self._evict_meshes_to_budget()
+            return mesh
+
+        self._publish_gpu_cache_limit(
+            requested=byte_size,
+            limit=self._mesh_cache_max_bytes,
+            reason="mesh was not cached",
+        )
+        mesh.release()
+        return None
+
+    def _remember_mesh_candidate(
+        self,
+        cache_key: GeometryCacheKey,
+        *,
+        vertices_nbytes: int,
+        indices_nbytes: int,
+    ) -> None:
+        """初見 key だけを、件数上限付き admission set へ記録する。"""
+
+        estimated_bytes = self._new_mesh_byte_size(
+            vertices_nbytes=vertices_nbytes,
+            indices_nbytes=indices_nbytes,
+        )
+        if estimated_bytes > self._mesh_cache_max_bytes:
+            self._publish_gpu_cache_limit(
+                requested=estimated_bytes,
+                limit=self._mesh_cache_max_bytes,
+                reason="mesh was not cached",
+            )
+            return
+        if self._mesh_candidates_max_entries <= 0:
+            return
+        self._mesh_candidates[cache_key] = None
+        self._evict_candidates_to_budget()
+
+    @staticmethod
+    def _new_mesh_byte_size(*, vertices_nbytes: int, indices_nbytes: int) -> int:
+        """新規専用 mesh の初回 upload 後の GPU 確保量を見積もる。"""
+
+        return _new_mesh_buffer_capacity(vertices_nbytes) + _new_mesh_buffer_capacity(
+            indices_nbytes
+        )
 
     def _evict_meshes_to_budget(self) -> None:
         requested_bytes = self._mesh_cache_bytes
@@ -271,27 +388,17 @@ class DrawRenderer:
             evicted += 1
         if evicted:
             self._publish_gpu_cache_limit(
-                requested_bytes=requested_bytes,
-                limit_bytes=self._mesh_cache_max_bytes,
+                requested=requested_bytes,
+                limit=self._mesh_cache_max_bytes,
                 reason=f"evicted {evicted} mesh entrie(s)",
             )
 
     def _evict_candidates_to_budget(self) -> None:
-        requested_bytes = self._mesh_candidates_bytes
-        evicted = 0
         while (
-            self._mesh_candidates_bytes > self._mesh_candidates_max_bytes
+            len(self._mesh_candidates) > self._mesh_candidates_max_entries
             and self._mesh_candidates
         ):
-            _, candidate = self._mesh_candidates.popitem(last=False)
-            self._mesh_candidates_bytes -= candidate.byte_size
-            evicted += 1
-        if evicted:
-            self._publish_gpu_cache_limit(
-                requested_bytes=requested_bytes,
-                limit_bytes=self._mesh_candidates_max_bytes,
-                reason=f"evicted {evicted} index candidate entrie(s)",
-            )
+            self._mesh_candidates.popitem(last=False)
 
     def draw_prepared_mesh(
         self,
@@ -312,13 +419,13 @@ class DrawRenderer:
 
     def release(self) -> None:
         """GPU リソースを解放する。"""
+        self._scratch_topology = None
         self._scratch_mesh.release()
         for entry in self._mesh_cache.values():
             entry.mesh.release()
         self._mesh_cache.clear()
         self._mesh_candidates.clear()
         self._mesh_cache_bytes = 0
-        self._mesh_candidates_bytes = 0
         self.program.release()
         self.ctx.release()
 
@@ -328,15 +435,14 @@ class DrawRenderer:
 
 
 @dataclass(frozen=True, slots=True)
-class _IndexCandidate:
+class _ScratchTopology:
+    offsets: np.ndarray
     indices: np.ndarray
     stats: LineIndexStats
-    byte_size: int
 
 
 @dataclass(frozen=True, slots=True)
 class _MeshCacheEntry:
     mesh: LineMesh
-    indices: np.ndarray
     stats: LineIndexStats
     byte_size: int

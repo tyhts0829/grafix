@@ -74,4 +74,36 @@ def atomic_write_text(
         stream.write(text)
 
 
-__all__ = ["atomic_output_path", "atomic_text_writer", "atomic_write_text"]
+def atomic_write_text_no_clobber(
+    path: str | Path,
+    text: str,
+    *,
+    encoding: str = "utf-8",
+    newline: str | None = None,
+) -> None:
+    """完成済み一時ファイルを hard link し、既存 path を上書きせず保存する。"""
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline=newline) as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temp_path, target)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+__all__ = [
+    "atomic_output_path",
+    "atomic_text_writer",
+    "atomic_write_text",
+    "atomic_write_text_no_clobber",
+]

@@ -6,9 +6,9 @@ import contextlib
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from typing import NoReturn, Protocol, TypeAlias
 
 from grafix.core.builtins import (
     ensure_builtin_effect_registered,
@@ -92,6 +92,19 @@ class _CacheTransaction:
 
     def commit(self) -> None:
         self.commit_requested = True
+
+
+@dataclass(slots=True)
+class _EvaluationFrame:
+    """再帰を使わず 1 node の入力評価状態を保持する。"""
+
+    geometry: Geometry
+    key: GeometryCacheKey
+    cacheable: bool
+    inflight: _InflightEntry | None
+    inputs: tuple[Geometry, ...]
+    next_input: int
+    realized_inputs: list[RealizedGeometry]
 
 
 def current_registry_revision() -> RegistryRevision:
@@ -268,17 +281,23 @@ class RealizeSession:
         # lazy import による revision 増加を key の取得前に完了させる。
         self._ensure_geometry_ops_registered(geometry)
         revision = current_registry_revision()
+        key = (geometry.id, revision)
+        with self._lock:
+            cached = self._get_cached_locked(key)
+        if cached is not None:
+            return cached, key
+
         cacheable = self._is_geometry_cacheable(geometry, revision)
-        result = self._realize(geometry, revision)
+        result = self._realize(geometry, revision, cacheable=cacheable)
         if cacheable:
-            key = (geometry.id, revision)
+            result_key = key
         else:
             # GPU mesh cacheにも毎評価を別内容として伝え、stateful outputを固定しない。
             with self._lock:
                 self._uncached_generation += 1
                 generation = self._uncached_generation
-            key = (f"{geometry.id}:uncached:{generation}", revision)
-        return result, key
+            result_key = (f"{geometry.id}:uncached:{generation}", revision)
+        return result, result_key
 
     def _is_geometry_cacheable(
         self,
@@ -287,31 +306,58 @@ class RealizeSession:
     ) -> bool:
         """node自身と全入力がcontent cache契約かを返す。"""
 
-        key = (geometry.id, revision)
-        with self._lock:
-            cached = self._cacheability.get(key)
-            if cached is not None:
-                self._cacheability.move_to_end(key)
-                return cached
+        return self._geometry_cacheability(geometry, revision)
 
-        if geometry.op == "concat":
-            cacheable = all(
-                self._is_geometry_cacheable(item, revision) for item in geometry.inputs
-            )
-        elif geometry.inputs:
-            spec = effect_registry[geometry.op]
-            cacheable = spec.cache_policy == "content" and all(
-                self._is_geometry_cacheable(item, revision) for item in geometry.inputs
-            )
-        else:
-            cacheable = primitive_registry[geometry.op].cache_policy == "content"
+    def _geometry_cacheability(
+        self,
+        geometry: Geometry,
+        revision: RegistryRevision,
+    ) -> bool:
+        """部分木の cacheability を既知の部分木を省略しながら計算する。"""
 
-        with self._lock:
-            self._cacheability.pop(key, None)
-            self._cacheability[key] = cacheable
-            while len(self._cacheability) > _MAX_PREPARED_GEOMETRIES:
-                self._cacheability.popitem(last=False)
-        return cacheable
+        resolved: dict[GeometryId, bool] = {}
+        scheduled: set[GeometryId] = set()
+        stack: list[tuple[Geometry, bool]] = [(geometry, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if expanded:
+                inputs_cacheable = all(resolved[item.id] for item in node.inputs)
+                if node.op == "concat":
+                    cacheable = inputs_cacheable
+                elif node.inputs:
+                    cacheable = (
+                        effect_registry[node.op].cache_policy == "content"
+                        and inputs_cacheable
+                    )
+                else:
+                    cacheable = (
+                        primitive_registry[node.op].cache_policy == "content"
+                    )
+                resolved[node.id] = cacheable
+
+                key = (node.id, revision)
+                with self._lock:
+                    self._cacheability.pop(key, None)
+                    self._cacheability[key] = cacheable
+                    while len(self._cacheability) > _MAX_PREPARED_GEOMETRIES:
+                        self._cacheability.popitem(last=False)
+                continue
+
+            if node.id in scheduled:
+                continue
+            scheduled.add(node.id)
+            key = (node.id, revision)
+            with self._lock:
+                cached = self._cacheability.get(key)
+                if cached is not None:
+                    self._cacheability.move_to_end(key)
+                    resolved[node.id] = cached
+                    continue
+            stack.append((node, True))
+            for item in reversed(node.inputs):
+                if item.id not in scheduled:
+                    stack.append((item, False))
+        return resolved[geometry.id]
 
     def _ensure_geometry_ops_registered(self, geometry: Geometry) -> None:
         """DAG が参照する組み込み operation を必要なものだけ import する。"""
@@ -344,7 +390,9 @@ class RealizeSession:
         with self._lock:
             if self._closed:
                 return
-            for geometry_id in prepared_now:
+            # 深い DAG でも次回は root で部分木全体を省略できるよう、root 側を
+            # LRU の末尾へ残す。登録そのものは上の走査中に完了している。
+            for geometry_id in reversed(prepared_now):
                 self._prepared_geometries.pop(geometry_id, None)
                 self._prepared_geometries[geometry_id] = None
             while len(self._prepared_geometries) > _MAX_PREPARED_GEOMETRIES:
@@ -354,28 +402,95 @@ class RealizeSession:
         self,
         geometry: Geometry,
         revision: RegistryRevision,
+        *,
+        cacheable: bool,
     ) -> RealizedGeometry:
-        key = (geometry.id, revision)
+        """DAG を明示 frame stack で評価する。"""
 
-        if not self._is_geometry_cacheable(geometry, revision):
+        frames: list[_EvaluationFrame] = []
+        current: Geometry | None = geometry
+        current_cacheable = cacheable
+        pending: RealizedGeometry | None = None
+        try:
+            while True:
+                if current is not None:
+                    started = self._start_evaluation(
+                        current,
+                        revision,
+                        cacheable=current_cacheable,
+                    )
+                    if isinstance(started, RealizedGeometry):
+                        pending = started
+                        current = None
+                    else:
+                        frames.append(started)
+                        if started.inputs:
+                            current = started.inputs[0]
+                            current_cacheable = (
+                                True
+                                if started.cacheable
+                                else self._is_geometry_cacheable(current, revision)
+                            )
+                            started.next_input = 1
+                            continue
+                        pending = self._finish_evaluation(started)
+                        frames.pop()
+                        current = None
+
+                if pending is None:
+                    raise RuntimeError("Geometry evaluator が結果を返さなかった")
+                if not frames:
+                    return pending
+
+                parent = frames[-1]
+                parent.realized_inputs.append(pending)
+                pending = None
+                if parent.next_input < len(parent.inputs):
+                    current = parent.inputs[parent.next_input]
+                    current_cacheable = (
+                        True
+                        if parent.cacheable
+                        else self._is_geometry_cacheable(current, revision)
+                    )
+                    parent.next_input += 1
+                    continue
+
+                pending = self._finish_evaluation(parent)
+                frames.pop()
+                current = None
+        except BaseException as error:  # noqa: BLE001
+            self._abort_evaluations(frames, error)
+
+    def _start_evaluation(
+        self,
+        geometry: Geometry,
+        revision: RegistryRevision,
+        *,
+        cacheable: bool,
+    ) -> RealizedGeometry | _EvaluationFrame:
+        """1 node の cache/inflight 状態を確定する。"""
+
+        key = (geometry.id, revision)
+        if not cacheable:
             with self._lock:
                 self._misses += 1
                 self._record_cache(misses=1)
             try:
-                return self._evaluate_geometry_node(geometry, revision)
-            except BaseException as uncached_error:  # noqa: BLE001
-                if not isinstance(uncached_error, Exception):
+                return _EvaluationFrame(
+                    geometry=geometry,
+                    key=key,
+                    cacheable=False,
+                    inflight=None,
+                    inputs=self._evaluation_inputs(geometry),
+                    next_input=0,
+                    realized_inputs=[],
+                )
+            except BaseException as error:  # noqa: BLE001
+                if not isinstance(error, Exception):
                     raise
                 raise RealizeError(
                     f"Geometry の評価に失敗した: id={geometry.id}"
-                ) from uncached_error
-
-        # cache fast path と coordinator の leader 選択を分け、leader 確定直前に
-        # 同じ lock で再確認する。両区間の間に完了した計算を取りこぼさない。
-        with self._lock:
-            cached = self._get_cached_locked(key)
-            if cached is not None:
-                return cached
+                ) from error
 
         with self._lock:
             cached = self._get_cached_locked(key)
@@ -388,11 +503,7 @@ class RealizeSession:
                 self._inflight[key] = entry
                 self._misses += 1
                 self._record_cache(misses=1)
-                is_leader = True
             else:
-                is_leader = False
-
-            if not is_leader:
                 while not entry.done:
                     entry.condition.wait()
                 if entry.error is not None:
@@ -405,34 +516,89 @@ class RealizeSession:
                     raise RuntimeError("inflight entry に評価結果が設定されていない")
                 return entry.result
 
-        result: RealizedGeometry | None = None
-        error: BaseException | None = None
         try:
-            result = self._evaluate_geometry_node(geometry, revision)
-        except BaseException as exc:  # noqa: BLE001
-            error = exc
-        finally:
+            inputs = self._evaluation_inputs(geometry)
+            frame = _EvaluationFrame(
+                geometry=geometry,
+                key=key,
+                cacheable=True,
+                inflight=entry,
+                inputs=inputs,
+                next_input=0,
+                realized_inputs=[],
+            )
+        except BaseException as error:  # noqa: BLE001
             with self._lock:
-                try:
-                    if error is None and result is not None and not self._closed:
-                        self._store_locked(key, result)
-                except BaseException as exc:  # noqa: BLE001
-                    result = None
-                    error = exc
-                finally:
-                    completed = self._inflight.pop(key)
-                    completed.result = result
+                completed = self._inflight.pop(key, None)
+                if completed is entry:
                     completed.error = error
                     completed.done = True
                     completed.condition.notify_all()
-
-        if error is not None:
             if not isinstance(error, Exception):
-                raise error
-            raise RealizeError(f"Geometry の評価に失敗した: id={geometry.id}") from error
-        if result is None:
-            raise RuntimeError("Geometry evaluator が結果を返さなかった")
+                raise
+            raise RealizeError(
+                f"Geometry の評価に失敗した: id={geometry.id}"
+            ) from error
+
+        return frame
+
+    @staticmethod
+    def _evaluation_inputs(geometry: Geometry) -> tuple[Geometry, ...]:
+        """非共有の内部 concat tree を leaf 列へ平坦化して返す。"""
+
+        if geometry.op != "concat":
+            return geometry.inputs
+        return Geometry._flatten_concat_inputs(geometry.inputs)
+
+    def _finish_evaluation(self, frame: _EvaluationFrame) -> RealizedGeometry:
+        """入力評価済み frame を実行し、所有する inflight を完了する。"""
+
+        result = self._evaluate_geometry_node(
+            frame.geometry,
+            frame.realized_inputs,
+        )
+        if not frame.cacheable:
+            return result
+
+        entry = frame.inflight
+        if entry is None:
+            raise RuntimeError("cacheable evaluation に inflight entry がない")
+        with self._lock:
+            if not self._closed:
+                self._store_locked(frame.key, result)
+            completed = self._inflight.pop(frame.key)
+            if completed is not entry:
+                raise RuntimeError("inflight entry の所有者が一致しない")
+            completed.result = result
+            completed.done = True
+            completed.condition.notify_all()
         return result
+
+    def _abort_evaluations(
+        self,
+        frames: list[_EvaluationFrame],
+        error: BaseException,
+    ) -> NoReturn:
+        """未完了 frame を内側から失敗完了し、再帰時と同じ例外境界を作る。"""
+
+        current_error = error
+        while frames:
+            frame = frames.pop()
+            entry = frame.inflight
+            if entry is not None:
+                with self._lock:
+                    completed = self._inflight.pop(frame.key, None)
+                    if completed is entry:
+                        completed.error = current_error
+                        completed.done = True
+                        completed.condition.notify_all()
+            if isinstance(current_error, Exception):
+                wrapped = RealizeError(
+                    f"Geometry の評価に失敗した: id={frame.geometry.id}"
+                )
+                wrapped.__cause__ = current_error
+                current_error = wrapped
+        raise current_error
 
     def _get_cached_locked(self, key: GeometryCacheKey) -> RealizedGeometry | None:
         transaction = getattr(self._cache_transaction_local, "current", None)
@@ -484,13 +650,11 @@ class RealizeSession:
     def _evaluate_geometry_node(
         self,
         geometry: Geometry,
-        revision: RegistryRevision,
+        realized_inputs: Sequence[RealizedGeometry],
     ) -> RealizedGeometry:
         op = geometry.op
         with resource_budget_context(self._resource_budget):
             if op == "concat":
-                realized_inputs = [self._realize(item, revision) for item in geometry.inputs]
-
                 def evaluate() -> RealizedGeometry:
                     ensure_geometry_output(
                         "concat",
@@ -514,7 +678,6 @@ class RealizeSession:
                     return primitive_spec.evaluator(geometry.args)
 
             else:
-                realized_inputs = [self._realize(item, revision) for item in geometry.inputs]
                 if op not in effect_registry:
                     ensure_builtin_effect_registered(op)
                 effect_spec = effect_registry[op]

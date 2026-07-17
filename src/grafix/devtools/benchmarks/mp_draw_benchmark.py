@@ -2,18 +2,11 @@
 
 from __future__ import annotations
 
-import argparse
-import json
-import platform
 import statistics
-import sys
 import time
-from datetime import datetime
 from functools import partial
-from pathlib import Path
 from typing import Any
 
-from grafix.core.atomic_write import atomic_write_text
 from grafix.core.geometry import Geometry
 from grafix.core.scene import normalize_scene
 from grafix.interactive.runtime.mp_draw import MpDraw
@@ -213,38 +206,4 @@ def _summarize(values: list[float]) -> dict[str, float | int]:
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="grafix mp-draw-benchmark")
-    parser.add_argument(
-        "--out",
-        default="data/output/benchmarks/mp_draw_n_worker.json",
-    )
-    parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--steady-frames", type=int, default=48)
-    parser.add_argument("--heavy-iterations", type=int, default=100_000)
-    parser.add_argument("--n-worker", type=int, default=4)
-    args = parser.parse_args(argv)
-
-    result = run_mp_draw_benchmarks(
-        repeats=int(args.repeats),
-        steady_frames=int(args.steady_frames),
-        heavy_iterations=int(args.heavy_iterations),
-        n_worker=int(args.n_worker),
-    )
-    payload = {
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "python": sys.version.replace("\n", " "),
-        "platform": platform.platform(),
-        "benchmark": result,
-    }
-    out = Path(args.out).expanduser().resolve()
-    atomic_write_text(out, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    print(f"[grafix-bench] wrote: {out}")  # noqa: T201
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
-__all__ = ["heavy_draw", "light_draw", "main", "run_mp_draw_benchmarks"]
+__all__ = ["heavy_draw", "light_draw", "run_mp_draw_benchmarks"]
