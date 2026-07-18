@@ -125,6 +125,16 @@ def test_registry_selects_suite_and_rejects_unknown_case() -> None:
         definition.case_id == "runtime.provenance_changed.rows_1000"
         for definition in case_definitions()
     )
+    slider_churn = next(
+        definition
+        for definition in case_definitions()
+        if definition.case_id == "mp.draw.slider_churn"
+    )
+    assert slider_churn.parameters == {
+        "frames": 120,
+        "frame_interval_s": pytest.approx(1.0 / 60.0),
+    }
+    assert "mp" in slider_churn.selectable_suites
 
 
 def test_isolated_runner_returns_raw_samples_checksum_and_rss_delta() -> None:

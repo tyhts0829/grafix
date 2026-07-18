@@ -159,6 +159,11 @@ def test_structured_json_trace_works_without_gui(tmp_path) -> None:
         perf.record_layer("Ink", 3_000_000)
         perf.record_cache(hits=3, misses=1, evictions=2)
         perf.record_worker_lag(12.5)
+        perf.record_preview_result(
+            requested_revision=8,
+            presented_revision=6,
+            fresh=False,
+        )
 
     [payload] = [json.loads(line) for line in trace_path.read_text().splitlines()]
     assert payload["schema"] == "grafix.performance.trace.v1"
@@ -172,6 +177,74 @@ def test_structured_json_trace_works_without_gui(tmp_path) -> None:
         "misses": 1,
     }
     assert payload["worker"]["average_lag_ms"] == pytest.approx(12.5)
+    assert payload["preview"] == {
+        "average_revision_lag": 2.0,
+        "fresh_result_ratio": 0.0,
+        "fresh_results": 0,
+        "max_consecutive_stale_frames": 1,
+        "max_revision_lag": 2,
+        "revision_lag_samples": 1,
+        "samples": 1,
+    }
+
+
+def test_profiler_tracks_preview_freshness_revision_lag_and_stale_streaks() -> None:
+    perf = PerfCollector(enabled=True, console_output=False)
+
+    with perf.frame():
+        perf.record_preview_result(
+            requested_revision=10,
+            presented_revision=8,
+            fresh=False,
+        )
+        perf.record_preview_result(
+            requested_revision=11,
+            presented_revision=9,
+            fresh=False,
+        )
+        perf.record_preview_result(
+            requested_revision=12,
+            presented_revision=12,
+            fresh=True,
+        )
+
+    snapshot = perf.snapshot()
+    assert snapshot.preview_samples == 3
+    assert snapshot.preview_fresh_results == 1
+    assert snapshot.preview_fresh_result_ratio == pytest.approx(1.0 / 3.0)
+    assert snapshot.preview_max_consecutive_stale_frames == 2
+    assert snapshot.preview_revision_lag_samples == 3
+    assert snapshot.preview_revision_lag == pytest.approx(4.0 / 3.0)
+    assert snapshot.preview_revision_lag_max == 2
+
+
+def test_profiler_stale_streak_resets_with_the_aggregation_window() -> None:
+    perf = PerfCollector(
+        enabled=True,
+        console_output=False,
+        print_every=2,
+    )
+
+    for revision in (1, 2):
+        with perf.frame():
+            perf.record_preview_result(
+                requested_revision=revision,
+                presented_revision=0,
+                fresh=False,
+            )
+
+    assert perf.snapshot().preview_max_consecutive_stale_frames == 2
+
+    with perf.frame():
+        perf.record_preview_result(
+            requested_revision=3,
+            presented_revision=0,
+            fresh=False,
+        )
+
+    snapshot = perf.snapshot()
+    assert snapshot.frame_count == 1
+    assert snapshot.preview_max_consecutive_stale_frames == 1
 
 
 def test_trace_path_enables_collection_from_environment(

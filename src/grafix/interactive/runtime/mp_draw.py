@@ -8,7 +8,9 @@
 1. メインプロセスが `submit()` でタスク（t と snapshot revision）を enqueue する。
    - task queue は有限なので、詰まったら古いタスクを捨てて「最新優先」にする。
    - snapshot 本体は revision 変更時だけ worker 別 control queue へ broadcast する。
-2. worker プロセスが revision を照合し、snapshot を固定して `draw(t)` を実行する。
+   - worker の revision 適用を未確認なら task 自体にも snapshot を同梱し、ACK 待ちを
+     draw 開始の barrier にしない。
+2. worker プロセスが task と同じ revision の snapshot を固定して `draw(t)` を実行する。
 3. worker が `DrawResult` を返し、メインは `poll_latest()` で最も新しい結果だけを採用する。
 4. メインは受け取った `layers` を描画パイプライン（例: `realize_scene()`）へ渡して表示/出力する。
    - worker は draw/normalize までで、realize は行わない（mp-draw は realize の並列化ではない）。
@@ -87,8 +89,8 @@ class _DrawTask:
 
     Notes
     -----
-    - parameter snapshot 本体は revision が変わったときだけ別 queue で配信する。
-      フレーム task は revision だけを持ち、毎フレームの pickle を避ける。
+    - worker が revision を適用済みと確認できた通常時は snapshot を省略する。
+    - 未確認時は snapshot を同梱し、control queue の ACK より先に評価を進める。
     - `frame_id` はメインプロセス側で単調増加し、結果の新旧判定に使う。
     """
 
@@ -96,6 +98,7 @@ class _DrawTask:
     t: float
     snapshot_revision: int
     cc_snapshot: MidiFrameSnapshot | None
+    snapshot: ParamSnapshot | None = None
     epoch: int = 0
     generation: int = 0
     quality: PreviewQuality = "draft"
@@ -160,9 +163,10 @@ class DrawResult:
     - `t` はこの結果を生成した task の時刻で、非同期 preview の capture metadata に使う。
     - `epoch` は transport discontinuity の識別子。現在より古い結果は親側で破棄する。
     - `generation` は timeout/restart をまたぐ worker 世代。旧世代の結果は親側で破棄する。
+    - `snapshot_revision` は worker が実際に評価へ使った parameter snapshot の revision。
 
-    `t` と `epoch` は既存の positional/keyword constructor を壊さないよう、
-    旧 field（`error` を含む）の後ろに default 付きで追加している。
+    `t`、`epoch`、`snapshot_revision` は既存の positional/keyword constructor を
+    壊さないよう、旧 field（`error` を含む）の後ろに default 付きで追加している。
     """
 
     frame_id: int
@@ -176,6 +180,7 @@ class DrawResult:
     worker_pid: int | None = None
     diagnostics: tuple[OperationDiagnostic, ...] = ()
     worker_lag_ms: float | None = None
+    snapshot_revision: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,7 +274,20 @@ def _draw_worker_main(
                 continue
             drain_snapshot_updates()
             requested_revision = int(task.snapshot_revision)
-            if snapshot_revision != requested_revision or snapshot is None:
+            evaluation_snapshot = task.snapshot
+            if task.snapshot is not None:
+                # task と snapshot を同じ work item に束ねることで、slider drag 中に
+                # control ACK が 1 revision 遅れても、この task の評価を開始できる。
+                apply_snapshot(
+                    _SnapshotUpdate(
+                        revision=requested_revision,
+                        snapshot=task.snapshot,
+                        generation=worker_generation,
+                    )
+                )
+            elif snapshot_revision == requested_revision:
+                evaluation_snapshot = snapshot
+            if evaluation_snapshot is None:
                 reason = (
                     "unknown"
                     if snapshot_revision is None or requested_revision > snapshot_revision
@@ -301,7 +319,7 @@ def _draw_worker_main(
                 # GUI の状態（ParamStore）と独立に「このフレームで解決すべき値」を決定できる。
                 with preview_quality_context(task.quality):
                     with parameter_context_from_snapshot(
-                        snapshot, cc_snapshot=task.cc_snapshot
+                        evaluation_snapshot, cc_snapshot=task.cc_snapshot
                     ) as frame_params:
                         try:
                             scene = draw(float(task.t))
@@ -323,6 +341,7 @@ def _draw_worker_main(
                         generation=worker_generation,
                         worker_pid=pid,
                         diagnostics=frame_operation_diagnostics,
+                        snapshot_revision=requested_revision,
                     )
                 )
             except Exception:
@@ -340,6 +359,7 @@ def _draw_worker_main(
                         generation=worker_generation,
                         worker_pid=pid,
                         diagnostics=frame_operation_diagnostics,
+                        snapshot_revision=requested_revision,
                     )
                 )
     finally:
@@ -432,6 +452,8 @@ class MpDraw:
         self._snapshot_broadcast_count = 0
         self._snapshot_ack_count = 0
         self._last_snapshot_ack: _SnapshotAck | None = None
+        self._task_enqueue_count = 0
+        self._task_drop_count = 0
         self._rejected_task_count = 0
         self._last_rejection: _TaskRejected | None = None
         # latest-wins queue で結果が返らない task もあるため、submit 時刻は明示的に
@@ -795,25 +817,35 @@ class MpDraw:
 
         try:
             self._task_q.put_nowait(task)
+            self._task_enqueue_count = int(
+                getattr(self, "_task_enqueue_count", 0)
+            ) + 1
             return True
         except queue.Full:
             try:
-                _ = self._task_q.get_nowait()
+                dropped = self._task_q.get_nowait()
             except queue.Empty:
                 # multiprocessing.Queue は feeder thread が pipe へ反映するまで、
                 # `full()` 相当の semaphore と `get_nowait()` の可視性が一瞬ずれる。
                 # 呼び出し側が task を pending latest として保持し、次の poll/submit
                 # で再試行できるよう失敗を返す。
                 return False
+            if isinstance(dropped, _DrawTask):
+                self._task_drop_count = int(
+                    getattr(self, "_task_drop_count", 0)
+                ) + 1
             try:
                 self._task_q.put_nowait(task)
+                self._task_enqueue_count = int(
+                    getattr(self, "_task_enqueue_count", 0)
+                ) + 1
                 return True
             except queue.Full:
                 return False
 
-    def _enqueue_pending_if_ready(self) -> None:
+    def _enqueue_pending(self) -> None:
         task = self._pending_task
-        if task is None or not self._workers_have_revision(task.snapshot_revision):
+        if task is None:
             return
         if self._enqueue_latest(task):
             self._pending_task = None
@@ -868,6 +900,9 @@ class MpDraw:
                 except queue.Full:
                     pass
                 break
+            self._task_drop_count = int(
+                getattr(self, "_task_drop_count", 0)
+            ) + 1
         return int(self._current_epoch)
 
     def submit(
@@ -907,16 +942,20 @@ class MpDraw:
                 )
             if requested_epoch > self._current_epoch:
                 self.begin_epoch(requested_epoch)
-            # 前フレームまでの ack を先に反映し、この submit の最新 task だけを残す。
+            # 前フレームまでの ACK を先に反映する。ACK は snapshot 省略の最適化に
+            # だけ使い、task enqueue の correctness barrier にはしない。
             self._drain_result_queue()
             self._restart_if_timed_out()
             self._flush_snapshot_updates()
             self._next_frame_id += 1
+            revision = int(snapshot_revision)
+            worker_snapshot_confirmed = self._workers_have_revision(revision)
             task = _DrawTask(
                 frame_id=self._next_frame_id,
                 t=float(t),
-                snapshot_revision=int(snapshot_revision),
+                snapshot_revision=revision,
                 cc_snapshot=cc_snapshot,
+                snapshot=None if worker_snapshot_confirmed else dict(snapshot),
                 quality=quality,
                 epoch=int(requested_epoch),
                 generation=int(getattr(self, "_generation", 0)),
@@ -925,20 +964,18 @@ class MpDraw:
             submitted_at[int(task.frame_id)] = time.monotonic()
             while len(submitted_at) > _MAX_SUBMITTED_TIMESTAMPS:
                 submitted_at.popitem(last=False)
-            if self._snapshot_broadcast_revision != int(snapshot_revision):
+            if self._snapshot_broadcast_revision != revision:
                 self._broadcast_snapshot(
-                    revision=int(snapshot_revision),
+                    revision=revision,
                     snapshot=snapshot,
                 )
 
-            if self._workers_have_revision(int(snapshot_revision)):
-                # queue の feeder race で即時投入できなくても、最新 task を親側に
-                # 1 件だけ保持し、次の submit/poll で再試行する。
-                self._pending_task = task
-                self._enqueue_pending_if_ready()
-            else:
-                # ack 待ちの間に複数 submit されても、実行するのは最新だけ。
-                self._pending_task = task
+            # queue の feeder race で即時投入できなくても、最新 task を親側に
+            # 1 件だけ保持し、次の submit/poll で再試行する。
+            if self._pending_task is not None:
+                self._task_drop_count += 1
+            self._pending_task = task
+            self._enqueue_pending()
         finally:
             # enqueue 中に worker が落ちても次の frame まで空画面で待たない。
             self._check_health()
@@ -970,7 +1007,7 @@ class MpDraw:
         self._drain_result_queue()
         self._restart_if_timed_out()
         self._flush_snapshot_updates()
-        self._enqueue_pending_if_ready()
+        self._enqueue_pending()
 
         # drain 中に process が終了した場合も、その場で明示的に失敗させる。
         self._check_health()
@@ -1015,6 +1052,18 @@ class MpDraw:
         """未知または古い snapshot revision で拒否された task 数を返す。"""
 
         return int(self._rejected_task_count)
+
+    @property
+    def task_enqueue_count(self) -> int:
+        """task queue への投入に成功した回数を返す。"""
+
+        return int(self._task_enqueue_count)
+
+    @property
+    def task_drop_count(self) -> int:
+        """latest-wins または epoch 境界で未開始 task を破棄した回数を返す。"""
+
+        return int(self._task_drop_count)
 
     @property
     def completed_result_count(self) -> int:

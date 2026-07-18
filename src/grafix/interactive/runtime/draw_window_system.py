@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import logging
 from math import isfinite
@@ -140,6 +140,18 @@ class _RecordingCaptureState:
     t0: float
     framebuffer_size: tuple[int, int]
     provenance: CaptureProvenance | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _FrameProvenanceToken:
+    """preview frame と provenance の生成条件を O(1) で結び付ける。"""
+
+    builder: CaptureProvenanceBuilder
+    store: ParamStore
+    frame_index: int
+    quality: PreviewQuality
+    store_revision: int
+    effective_revision: int
 
 
 class DrawWindowSystem:
@@ -300,7 +312,10 @@ class DrawWindowSystem:
             self._recording_window_constraints_locked = False
             self._last_realized_layers: list[RealizedLayer] = []
             self._last_frame_t = 0.0
+            self._fresh_scene_serial = 0
+            self._presented_snapshot_revision: int | None = None
             self._last_export_snapshot: FrameExportSnapshot | None = None
+            self._last_export_provenance_token: _FrameProvenanceToken | None = None
             self._last_frame_error: str | None = None
             self._last_capture_queue_notice: str | None = None
             # 初回frame前intent以外は直接 ExportJobSystem の bounded admissionへ渡す。
@@ -514,21 +529,119 @@ class DrawWindowSystem:
     ) -> CaptureProvenance | None:
         """main process の確定 store を 1 frame の provenance へ固定する。"""
 
+        token = self._new_frame_provenance_token(quality=quality)
+        if token is None:
+            return None
+        provenance = self._materialize_frame_provenance(token, t=t)
+        if provenance is None:
+            raise RuntimeError("provenance token no longer matches the parameter store")
+        self._commit_frame_provenance_token(token)
+        return provenance
+
+    def _new_frame_provenance_token(
+        self,
+        *,
+        quality: PreviewQuality,
+        snapshot_revision: int | None = None,
+    ) -> _FrameProvenanceToken | None:
+        """fresh frame の provenance 条件を hash 未生成のまま固定する。"""
+
         builder = getattr(self, "_provenance_builder", None)
         if builder is None:
             # constructor を経由しない小さい runtime test double では provenance
             # source が存在しない。production instance は必ず builder を持つ。
             return None
+        store = self._store
+        runtime = store._runtime_ref()
         frame_index = int(getattr(self, "_provenance_frame_index", 0))
-        provenance = builder.frame(
-            self._store,
-            t=float(t),
+        return _FrameProvenanceToken(
+            builder=builder,
+            store=store,
             frame_index=frame_index,
             quality=quality,
+            store_revision=(
+                int(store.revision)
+                if snapshot_revision is None
+                else int(snapshot_revision)
+            ),
+            effective_revision=int(runtime.effective_revision),
+        )
+
+    def _materialize_frame_provenance(
+        self,
+        token: _FrameProvenanceToken,
+        *,
+        t: float,
+    ) -> CaptureProvenance | None:
+        """token と同じ parameter 世代なら完全な provenance を生成する。"""
+
+        if not self._frame_provenance_token_is_current(token):
+            return None
+        store = token.store
+        return token.builder.frame(
+            store,
+            t=float(t),
+            frame_index=token.frame_index,
+            quality=token.quality,
             origin="interactive",
         )
-        self._provenance_frame_index = frame_index + 1
-        return provenance
+
+    def _frame_provenance_token_is_current(
+        self,
+        token: _FrameProvenanceToken,
+    ) -> bool:
+        """token の parameter 世代がまだ保持されているか返す。"""
+
+        store = token.store
+        if store is not self._store:
+            return False
+        runtime = store._runtime_ref()
+        return (
+            int(store.revision) == token.store_revision
+            and int(runtime.effective_revision) == token.effective_revision
+        )
+
+    def _commit_frame_provenance_token(self, token: _FrameProvenanceToken) -> None:
+        """fresh frame として確定した token の次へ frame index を進める。"""
+
+        self._provenance_frame_index = max(
+            int(getattr(self, "_provenance_frame_index", 0)),
+            token.frame_index + 1,
+        )
+
+    def _snapshot_with_provenance(
+        self,
+        snapshot: FrameExportSnapshot,
+        *,
+        quality: PreviewQuality,
+        token: _FrameProvenanceToken | None = None,
+    ) -> FrameExportSnapshot:
+        """capture 境界でだけ snapshot の provenance を具体化する。"""
+
+        if snapshot.provenance is not None:
+            return snapshot
+        provenance = (
+            self._frame_provenance(t=snapshot.t, quality=quality)
+            if token is None
+            else self._materialize_frame_provenance(token, t=snapshot.t)
+        )
+        if token is not None and provenance is None:
+            raise RuntimeError(
+                "preview snapshot parameters changed before provenance materialization"
+            )
+        if provenance is None:
+            return snapshot
+        return replace(snapshot, provenance=provenance)
+
+    def _token_for_snapshot(
+        self,
+        snapshot: FrameExportSnapshot,
+    ) -> _FrameProvenanceToken | None:
+        """最新 preview snapshot に対応する token だけを返す。"""
+
+        if snapshot is not getattr(self, "_last_export_snapshot", None):
+            return None
+        return getattr(self, "_last_export_provenance_token", None)
 
     def _capture_gcode_config(self) -> GCodeExportConfig | None:
         """production session の effective G-code 設定を worker payload 用に返す。"""
@@ -559,18 +672,33 @@ class DrawWindowSystem:
             if snapshot is not None
             else getattr(self, "_last_export_snapshot", None)
         )
+        provenance_token = (
+            None if visible is None else self._token_for_snapshot(visible)
+        )
         if visible is None:
             visible = FrameExportSnapshot(
                 layers=tuple(self._last_realized_layers),
                 canvas_size=self._settings.canvas_size,
                 background_color_rgb01=self._style.resolve().bg_color_rgb01,
                 t=float(self._last_frame_t),
-                provenance=self._frame_provenance(
-                    t=float(self._last_frame_t),
-                    quality="final",
-                ),
                 gcode_config=self._capture_gcode_config(),
             )
+        if visible.provenance is None:
+            if (
+                provenance_token is not None
+                and not self._frame_provenance_token_is_current(provenance_token)
+                and snapshot is None
+                and hasattr(self, "_scene_runner")
+            ):
+                # preview 後に parameter が変わった場合、古い geometry と現在値を
+                # 誤って結び付けず、明示 capture と同じ final 再評価へ寄せる。
+                visible = self._final_capture_snapshot()
+            else:
+                visible = self._snapshot_with_provenance(
+                    visible,
+                    quality="final",
+                    token=provenance_token,
+                )
         canvas_size = visible.canvas_size
 
         # SVG writer に正式 path を渡すと late collision を os.replace 等で上書きし得る。
@@ -788,6 +916,13 @@ class DrawWindowSystem:
 
         captured_snapshot = request.snapshot
         assert captured_snapshot is not None
+        if captured_snapshot.provenance is None:
+            captured_snapshot = self._snapshot_with_provenance(
+                captured_snapshot,
+                quality="final",
+                token=self._token_for_snapshot(captured_snapshot),
+            )
+            request.snapshot = captured_snapshot
 
         if request.kind is _SynchronousCaptureKind.SVG:
             try:
@@ -875,9 +1010,23 @@ class DrawWindowSystem:
             print(f"Exporting G-code: {output_path}")
         return True
 
-    def _submit_pending_exports(self, snapshot: FrameExportSnapshot) -> int:
+    def _submit_pending_exports(
+        self,
+        snapshot: FrameExportSnapshot,
+        *,
+        provenance_token: _FrameProvenanceToken | None = None,
+    ) -> int:
         """初回 draw 前の intent を表示 snapshot へ固定して順に admission する。"""
 
+        if (
+            snapshot.provenance is None
+            and any(request.snapshot is None for request in self._pending_export_requests)
+        ):
+            snapshot = self._snapshot_with_provenance(
+                snapshot,
+                quality="final",
+                token=provenance_token,
+            )
         # request はこの時点で必ず snapshot を持ち、待機中に後続 frame へ差し替えない。
         for request in self._pending_export_requests:
             if request.snapshot is None:
@@ -1473,6 +1622,38 @@ class DrawWindowSystem:
                 recording=recording,
                 quality=quality,
             )
+            fresh_frame = self._scene_runner.last_evaluation_succeeded is True
+            runner_revision = getattr(
+                self._scene_runner,
+                "last_realized_snapshot_revision",
+                None,
+            )
+            if runner_revision is not None:
+                presented_snapshot_revision: int | None = int(runner_revision)
+                self._presented_snapshot_revision = presented_snapshot_revision
+            else:
+                presented_snapshot_revision = getattr(
+                    self,
+                    "_presented_snapshot_revision",
+                    None,
+                )
+                if fresh_frame:
+                    # constructor を経由しない旧 test double は表示 revision を
+                    # 公開しないため、同期成功と同じ current revision を使う。
+                    presented_snapshot_revision = int(self._store.revision)
+                    self._presented_snapshot_revision = presented_snapshot_revision
+
+            fresh_scene_serial = int(
+                getattr(self, "_fresh_scene_serial", 0)
+            )
+            if fresh_frame:
+                fresh_scene_serial += 1
+                self._fresh_scene_serial = fresh_scene_serial
+            perf.record_preview_result(
+                requested_revision=int(self._store.revision),
+                presented_revision=presented_snapshot_revision,
+                fresh=fresh_frame,
+            )
             if monitor is not None:
                 waiting = bool(
                     getattr(self._scene_runner, "is_waiting_for_fresh_result", False)
@@ -1496,6 +1677,12 @@ class DrawWindowSystem:
                         cache_key=item.cache_key,
                         color=item.color,
                         thickness=item.thickness,
+                        scene_serial=(
+                            fresh_scene_serial
+                            if presented_snapshot_revision is not None
+                            else None
+                        ),
+                        snapshot_revision=presented_snapshot_revision,
                     )
                 frame_vertices += int(stats.draw_vertices)
                 frame_lines += int(stats.draw_lines)
@@ -1503,13 +1690,33 @@ class DrawWindowSystem:
             if monitor is not None:
                 monitor.set_draw_counts(vertices=int(frame_vertices), lines=int(frame_lines))
 
-            fresh_frame = self._scene_runner.last_evaluation_succeeded is True
+            provenance_token: _FrameProvenanceToken | None = None
             frame_provenance: CaptureProvenance | None = None
             if fresh_frame:
-                frame_provenance = self._frame_provenance(
-                    t=float(self._last_frame_t),
+                provenance_token = self._new_frame_provenance_token(
                     quality=quality,
+                    snapshot_revision=presented_snapshot_revision,
                 )
+                recording_capture = getattr(self, "_recording_capture", None)
+                if provenance_token is not None and (
+                    bool(self._pending_export_requests)
+                    or (
+                        recording
+                        and recording_capture is not None
+                        and recording_capture.provenance is None
+                    )
+                ):
+                    frame_provenance = self._materialize_frame_provenance(
+                        provenance_token,
+                        t=float(self._last_frame_t),
+                    )
+                    if frame_provenance is None:
+                        raise RuntimeError(
+                            "fresh frame parameters changed before provenance materialization"
+                        )
+                if provenance_token is not None:
+                    # 通常 preview は hash を作らないが、従来の frame.index は保つ。
+                    self._commit_frame_provenance_token(provenance_token)
 
             if recording:
                 if fresh_frame:
@@ -1527,17 +1734,28 @@ class DrawWindowSystem:
                     )
 
             if fresh_frame:
+                # 通常 preview は immutable geometry/style/t だけを保持する。provenance は
+                # pending capture、recording first frame、明示 export の境界で具体化する。
                 snapshot = FrameExportSnapshot(
                     layers=tuple(realized_layers),
                     canvas_size=self._settings.canvas_size,
                     background_color_rgb01=style.bg_color_rgb01,
                     t=float(self._last_frame_t),
-                    provenance=frame_provenance,
+                    provenance=None,
                     gcode_config=self._capture_gcode_config(),
                 )
                 self._last_export_snapshot = snapshot
+                self._last_export_provenance_token = provenance_token
                 if self._pending_export_requests:
-                    self._submit_pending_exports(snapshot)
+                    capture_snapshot = (
+                        snapshot
+                        if frame_provenance is None
+                        else replace(snapshot, provenance=frame_provenance)
+                    )
+                    self._submit_pending_exports(
+                        capture_snapshot,
+                        provenance_token=provenance_token,
+                    )
 
             if perf.enabled and perf.gpu_finish:
                 with perf.section("gpu_finish"):
@@ -1548,20 +1766,28 @@ class DrawWindowSystem:
 
         snapshot = self._last_export_snapshot
         if snapshot is not None:
-            return snapshot
+            token = self._token_for_snapshot(snapshot)
+            if (
+                token is not None
+                and not self._frame_provenance_token_is_current(token)
+                and hasattr(self, "_scene_runner")
+            ):
+                return self._final_capture_snapshot()
+            return self._snapshot_with_provenance(
+                snapshot,
+                quality="final",
+                token=token,
+            )
         # 初回 draw 前の key event にも空 scene の明示的な capture を与える。
         style = self._style.resolve()
-        return FrameExportSnapshot(
+        fallback = FrameExportSnapshot(
             layers=tuple(self._last_realized_layers),
             canvas_size=self._settings.canvas_size,
             background_color_rgb01=style.bg_color_rgb01,
             t=float(self._last_frame_t),
-            provenance=self._frame_provenance(
-                t=float(self._last_frame_t),
-                quality="final",
-            ),
             gcode_config=self._capture_gcode_config(),
         )
+        return self._snapshot_with_provenance(fallback, quality="final")
 
     def _drain_exports_on_close(
         self,

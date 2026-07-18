@@ -32,6 +32,11 @@ def _profiled_monitor() -> RuntimeMonitor:
         perf.record_layer("Foreground", 12_000_000)
         perf.record_cache(hits=7, misses=3, evictions=1)
         perf.record_worker_lag(15.0)
+        perf.record_preview_result(
+            requested_revision=12,
+            presented_revision=10,
+            fresh=False,
+        )
     monitor.set_profiler(perf.snapshot())
     return monitor
 
@@ -54,6 +59,12 @@ def test_profiler_lines_show_actionable_slowest_items_and_runtime_pressure() -> 
     assert any("Foreground" in line for line in lines)
     assert any("Cache" in line and "70% hit" in line and "1 eviction" in line for line in lines)
     assert any("Worker lag" in line and "15.0 ms" in line for line in lines)
+    assert any(
+        "Preview freshness" in line
+        and "0% fresh" in line
+        and "2.0 revisions" in line
+        for line in lines
+    )
 
 
 def test_profiler_panel_renders_inside_inspector() -> None:

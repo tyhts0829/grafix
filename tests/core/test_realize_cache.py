@@ -390,6 +390,70 @@ def test_lru_evicts_least_recently_used_entry_by_byte_budget(
     assert final_stats.bytes <= entry_size * 2
 
 
+def test_lru_evicts_least_recently_used_entry_by_entry_budget(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primitives, _ = isolated_registries
+    diagnostics: list[dict[str, object]] = []
+
+    def evaluate(args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        return _realized(3, value=float(cast(int, dict(args)["value"])))
+
+    primitives.register("shape", _primitive_spec(evaluate))
+    geometries = [
+        Geometry.create("shape", params={"value": value}) for value in range(3)
+    ]
+    monkeypatch.setattr(
+        realize_module,
+        "emit_operation_diagnostic",
+        lambda **payload: diagnostics.append(payload),
+    )
+
+    with RealizeSession(
+        max_cache_bytes=1_000_000,
+        max_cache_entries=2,
+    ) as session:
+        first = session.realize(geometries[0])
+        second = session.realize(geometries[1])
+        assert session.realize(geometries[0]) is first
+
+        session.realize(geometries[2])
+        after_eviction = session.stats()
+        assert session.realize(geometries[0]) is first
+        assert session.realize(geometries[1]) is not second
+
+    assert after_eviction.evictions == 1
+    assert after_eviction.entries == 2
+    assert diagnostics == []
+
+
+def test_cache_transaction_applies_entry_budget_only_after_commit(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, _ = isolated_registries
+    primitives.register("shape", _primitive_spec(lambda _args: _realized(3)))
+    geometries = [
+        Geometry.create("shape", params={"value": value}) for value in range(3)
+    ]
+
+    with RealizeSession(
+        max_cache_bytes=1_000_000,
+        max_cache_entries=2,
+    ) as session:
+        with session.cache_transaction() as transaction:
+            results = [session.realize(geometry) for geometry in geometries]
+            assert session.stats().entries == 0
+            transaction.commit()
+
+        committed = session.stats()
+        assert session.realize(geometries[2]) is results[2]
+        assert session.realize(geometries[0]) is not results[0]
+
+    assert committed.entries == 2
+    assert committed.evictions == 1
+
+
 def test_result_larger_than_budget_is_delivered_but_not_cached(
     isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
 ) -> None:
@@ -688,6 +752,72 @@ def test_animation_soak_stays_bounded_and_keeps_static_upstream_hot(
     assert stats.evictions > 0
 
 
+def test_entry_bounded_animation_keeps_frequently_used_base_hot(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, effects = isolated_registries
+    primitive_calls = 0
+
+    def make_base(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        nonlocal primitive_calls
+        primitive_calls += 1
+        return _realized(2)
+
+    primitives.register("base", _primitive_spec(make_base))
+    effects.register(
+        "animate",
+        _effect_spec(lambda inputs, _args: inputs[0]),
+    )
+    base = Geometry.create("base")
+
+    with RealizeSession(
+        max_cache_bytes=1_000_000,
+        max_cache_entries=4,
+    ) as session:
+        base_result = session.realize(base)
+        for frame in range(100):
+            session.realize(
+                Geometry.create(
+                    "animate",
+                    inputs=(base,),
+                    params={"frame": frame},
+                )
+            )
+            assert session.stats().entries <= 4
+        stats = session.stats()
+        cached_base = session.realize(base)
+
+    assert primitive_calls == 1
+    assert cached_base is base_result
+    assert stats.entries == 4
+    assert stats.evictions > 0
+
+
+def test_zero_cache_entry_budget_disables_cache(
+    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+) -> None:
+    primitives, _ = isolated_registries
+    calls = 0
+
+    def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        nonlocal calls
+        calls += 1
+        return _realized(2)
+
+    primitives.register("shape", _primitive_spec(evaluate))
+    geometry = Geometry.create("shape")
+
+    with RealizeSession(max_cache_entries=0) as session:
+        first = session.realize(geometry)
+        second = session.realize(geometry)
+        stats = session.stats()
+
+    assert calls == 2
+    assert first is not second
+    assert stats.entries == 0
+    assert stats.bytes == 0
+
+
 def test_clear_and_close_release_cache_and_close_is_idempotent(
     isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
 ) -> None:
@@ -752,3 +882,5 @@ def test_close_allows_inflight_leader_to_finish_without_repopulating_cache(
 def test_negative_cache_budget_is_rejected() -> None:
     with pytest.raises(ValueError, match="0 以上"):
         RealizeSession(max_cache_bytes=-1)
+    with pytest.raises(ValueError, match="max_cache_entries"):
+        RealizeSession(max_cache_entries=-1)

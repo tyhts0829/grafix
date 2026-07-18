@@ -251,6 +251,81 @@ def test_renderer_candidate_cache_is_key_only_and_count_bounded(
     assert list(renderer._mesh_candidates.values()) == [None, None]
 
 
+def test_renderer_stale_result_redisplay_does_not_promote_mesh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    renderer = _renderer()
+    geometry = _geometry()
+    cache_key = _cache_key("held-mp-result")
+
+    first_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=1,
+        snapshot_revision=10,
+    )
+    stale_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=1,
+        snapshot_revision=10,
+    )
+
+    assert first_mesh is stale_mesh is renderer._scratch_mesh
+    assert not renderer._mesh_cache
+    assert cache_key in renderer._mesh_candidates
+
+    stable_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=2,
+        snapshot_revision=10,
+    )
+
+    assert stable_mesh is not None
+    assert stable_mesh is not renderer._scratch_mesh
+    assert list(renderer._mesh_cache) == [cache_key]
+
+
+def test_renderer_revisited_transient_revision_waits_for_stability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    renderer = _renderer()
+    geometry = _geometry()
+    cache_key = _cache_key("forward-reverse")
+
+    renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=1,
+        snapshot_revision=20,
+    )
+    revisited_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=2,
+        snapshot_revision=21,
+    )
+
+    assert revisited_mesh is renderer._scratch_mesh
+    assert not renderer._mesh_cache
+
+    stable_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=3,
+        snapshot_revision=21,
+    )
+
+    assert stable_mesh is not None
+    assert stable_mesh is not renderer._scratch_mesh
+    assert list(renderer._mesh_cache) == [cache_key]
+
+
 def test_renderer_reuses_empty_scratch_topology_without_upload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

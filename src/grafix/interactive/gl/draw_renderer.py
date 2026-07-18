@@ -110,7 +110,9 @@ class DrawRenderer:
         self._mesh_cache: OrderedDict[GeometryCacheKey, _MeshCacheEntry] = OrderedDict()
         # 初見を即キャッシュすると「毎フレーム別 id」ケースで逆効果になりうるため、
         # 2 回目以降にキャッシュへ昇格させる。
-        self._mesh_candidates: OrderedDict[GeometryCacheKey, None] = OrderedDict()
+        self._mesh_candidates: OrderedDict[
+            GeometryCacheKey, _MeshAdmission | None
+        ] = OrderedDict()
         # scratch IBO に現在入っている topology。offsets を strong reference で
         # 保持し、object identity が一致する場合に限って再利用する。
         self._scratch_topology: _ScratchTopology | None = None
@@ -223,9 +225,16 @@ class DrawRenderer:
         cache_key: GeometryCacheKey,
         color: tuple[float, float, float],
         thickness: float,
+        scene_serial: int | None = None,
+        snapshot_revision: int | None = None,
     ) -> LineIndexStats:
         """RealizedGeometry をライン描画する。"""
-        mesh, stats = self.prepare_layer_mesh(realized, cache_key=cache_key)
+        mesh, stats = self.prepare_layer_mesh(
+            realized,
+            cache_key=cache_key,
+            scene_serial=scene_serial,
+            snapshot_revision=snapshot_revision,
+        )
         if mesh is None:
             return stats
         self.draw_prepared_mesh(mesh, color=color, thickness=thickness)
@@ -236,6 +245,8 @@ class DrawRenderer:
         realized: RealizedGeometry,
         *,
         cache_key: GeometryCacheKey,
+        scene_serial: int | None = None,
+        snapshot_revision: int | None = None,
     ) -> tuple[LineMesh | None, LineIndexStats]:
         """upload（必要なら）を行い、描画に使う LineMesh を返す。"""
         entry = self._mesh_cache.get(cache_key)
@@ -243,9 +254,32 @@ class DrawRenderer:
             self._mesh_cache.move_to_end(cache_key)
             return entry.mesh, entry.stats
 
+        admission = self._mesh_admission(
+            scene_serial=scene_serial,
+            snapshot_revision=snapshot_revision,
+        )
         was_candidate = cache_key in self._mesh_candidates
-        if was_candidate:
+        previous_admission = self._mesh_candidates.get(cache_key)
+        should_promote = was_candidate and (
+            admission is None
+            or (
+                previous_admission is not None
+                and admission.scene_serial > previous_admission.scene_serial
+                and admission.snapshot_revision
+                == previous_admission.snapshot_revision
+            )
+        )
+        if should_promote:
             del self._mesh_candidates[cache_key]
+        elif was_candidate and admission is not None:
+            # 同一 result の再表示は admission hit と数えない。parameter revision が
+            # 変わった場合も候補を現在値へ進め、安定した次の fresh scene を待つ。
+            if (
+                previous_admission is None
+                or admission.scene_serial >= previous_admission.scene_serial
+            ):
+                self._mesh_candidates[cache_key] = admission
+                self._mesh_candidates.move_to_end(cache_key)
 
         scratch_topology = self._scratch_topology
         topology_hit = (
@@ -268,7 +302,7 @@ class DrawRenderer:
                 )
             return None, stats
 
-        if was_candidate:
+        if should_promote:
             mesh = self._promote_mesh(
                 realized=realized,
                 cache_key=cache_key,
@@ -293,8 +327,34 @@ class DrawRenderer:
                 cache_key,
                 vertices_nbytes=int(realized.coords.nbytes),
                 indices_nbytes=int(indices.nbytes),
+                admission=admission,
             )
         return self._scratch_mesh, stats
+
+    @staticmethod
+    def _mesh_admission(
+        *,
+        scene_serial: int | None,
+        snapshot_revision: int | None,
+    ) -> _MeshAdmission | None:
+        """renderer 単体利用との互換を保ちつつ fresh scene 情報を正規化する。"""
+
+        if scene_serial is None and snapshot_revision is None:
+            return None
+        if scene_serial is None or snapshot_revision is None:
+            raise ValueError(
+                "scene_serial と snapshot_revision は同時に指定する必要があります"
+            )
+        serial = int(scene_serial)
+        revision = int(snapshot_revision)
+        if serial < 0:
+            raise ValueError("scene_serial は 0 以上である必要があります")
+        if revision < 0:
+            raise ValueError("snapshot_revision は 0 以上である必要があります")
+        return _MeshAdmission(
+            scene_serial=serial,
+            snapshot_revision=revision,
+        )
 
     def _promote_mesh(
         self,
@@ -351,6 +411,7 @@ class DrawRenderer:
         *,
         vertices_nbytes: int,
         indices_nbytes: int,
+        admission: _MeshAdmission | None,
     ) -> None:
         """初見 key だけを、件数上限付き admission set へ記録する。"""
 
@@ -367,7 +428,7 @@ class DrawRenderer:
             return
         if self._mesh_candidates_max_entries <= 0:
             return
-        self._mesh_candidates[cache_key] = None
+        self._mesh_candidates[cache_key] = admission
         self._evict_candidates_to_budget()
 
     @staticmethod
@@ -446,3 +507,9 @@ class _MeshCacheEntry:
     mesh: LineMesh
     stats: LineIndexStats
     byte_size: int
+
+
+@dataclass(frozen=True, slots=True)
+class _MeshAdmission:
+    scene_serial: int
+    snapshot_revision: int

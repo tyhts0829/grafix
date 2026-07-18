@@ -17,9 +17,11 @@ pyglet.options["shadow_window"] = False
 
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.capture_manifest import RecordingManifest, capture_manifest_path_for
+from grafix.core.capture_provenance import CaptureProvenanceBuilder
 from grafix.core.output_paths import VersionedPathAllocator
 from grafix.core.parameters import ParamStore
 from grafix.core.pipeline import RealizedLayer
+from grafix.core.runtime_config import runtime_config
 from grafix.interactive.midi import MidiSession
 from grafix.interactive.runtime.draw_window_system import DrawWindowSystem
 import grafix.interactive.runtime.draw_window_system as draw_window_module
@@ -39,6 +41,27 @@ from grafix.export.capture import CaptureService
 
 
 _DEFAULTS = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
+
+
+def _provenance_draw(_t: float) -> list[object]:
+    return []
+
+
+class _CountingProvenanceBuilder:
+    def __init__(self, draw: object, store: ParamStore) -> None:
+        self.inner = CaptureProvenanceBuilder(
+            cast(Any, draw),
+            config=runtime_config(),
+            parameter_source="code",
+            parameter_store_path=None,
+            parameter_load_provenance=store.load_provenance,
+            seed=1847,
+        )
+        self.calls: list[dict[str, object]] = []
+
+    def frame(self, store: ParamStore, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        return self.inner.frame(store, **cast(Any, kwargs))
 
 
 def test_source_reload_rolls_back_when_worker_swap_fails() -> None:
@@ -355,6 +378,12 @@ def test_capture_snapshot_re_evaluates_with_final_quality() -> None:
         monitor=_FakeMonitor(),
         last_good=[],
     )
+    provenance_builder = _CountingProvenanceBuilder(
+        _provenance_draw,
+        system._store,
+    )
+    system._provenance_builder = cast(Any, provenance_builder)
+    system._provenance_frame_index = 0
     system._midi_session = None
     system._clock = cast(Any, SimpleNamespace(t=lambda: 1.25, epoch=0))
     system._recording = cast(Any, SimpleNamespace(is_recording=False))
@@ -376,6 +405,10 @@ def test_capture_snapshot_re_evaluates_with_final_quality() -> None:
     assert runner.run_kwargs[-1]["quality"] == "final"
     assert snapshot.t == pytest.approx(1.25)
     assert snapshot.canvas_size == (100, 80)
+    assert snapshot.provenance is not None
+    assert snapshot.provenance.frame.quality == "final"
+    assert snapshot.provenance.frame.frame_index == 0
+    assert len(provenance_builder.calls) == 1
 
 
 class _RenderFailure(RuntimeError):
@@ -396,6 +429,16 @@ class _FakeRenderer:
         raise _RenderFailure("GL render failed")
 
 
+class _CollectingRenderer(_FakeRenderer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.render_calls: list[dict[str, object]] = []
+
+    def render_layer(self, **kwargs: object) -> object:
+        self.render_calls.append(dict(kwargs))
+        return SimpleNamespace(draw_vertices=0, draw_lines=0)
+
+
 class _FakeStyleResolver:
     def resolve(self) -> object:
         return SimpleNamespace(
@@ -407,6 +450,135 @@ class _FakeStyleResolver:
 
 class _FakeRecording:
     is_recording = False
+
+
+def _make_provenance_preview_system(
+    *,
+    frame_count: int,
+    draw: object = _provenance_draw,
+    recording: object | None = None,
+    clock: object | None = None,
+) -> tuple[DrawWindowSystem, _CountingProvenanceBuilder]:
+    store = ParamStore()
+    builder = _CountingProvenanceBuilder(draw, store)
+    runner = _FakeSceneRunner([([], True) for _ in range(frame_count)])
+    system = object.__new__(DrawWindowSystem)
+    system._perf = PerfCollector(enabled=False)
+    system._poll_export_results = lambda: None
+    system._source_reload = None
+    system._midi_session = None
+    system._renderer = cast(Any, _FakeRenderer())
+    system._framebuffer_size = lambda: (100, 100)
+    system._style = cast(Any, _FakeStyleResolver())
+    system._recording = cast(
+        Any,
+        _FakeRecording() if recording is None else recording,
+    )
+    system._recording_capture = None
+    system._clock = cast(
+        Any,
+        (
+            SimpleNamespace(
+                t=lambda: 2.5,
+                epoch=0,
+                is_playing=False,
+                speed=1.0,
+            )
+            if clock is None
+            else clock
+        ),
+    )
+    system._scene_runner = cast(Any, runner)
+    system._store = store
+    system._settings = SimpleNamespace(canvas_size=(100, 100))
+    system._last_realized_layers = []
+    system._last_frame_t = 0.0
+    system._last_export_snapshot = None
+    system._last_export_provenance_token = None
+    system._last_frame_error = None
+    system._last_capture_queue_notice = None
+    system._monitor = None
+    system._pending_export_requests = deque()
+    system._provenance_builder = cast(Any, builder)
+    system._provenance_frame_index = 0
+    return system, builder
+
+
+def test_changed_preview_does_not_materialize_provenance() -> None:
+    system, builder = _make_provenance_preview_system(frame_count=120)
+
+    for _ in range(120):
+        # slider edit と同じく、毎 fresh frame で store revision を変える。
+        system._store._touch()
+        system.draw_frame()
+
+    assert builder.calls == []
+    assert system._provenance_frame_index == 120
+    assert system._last_export_snapshot is not None
+    assert system._last_export_snapshot.provenance is None
+    token = system._last_export_provenance_token
+    assert token is not None
+    assert token.store_revision == system._store.revision
+    assert token.frame_index == 119
+
+
+def test_shutdown_re_evaluates_when_preview_parameter_revision_is_stale() -> None:
+    system, builder = _make_provenance_preview_system(frame_count=2)
+    system._store._touch()
+    # MP worker が一つ前の parameter revision を表示した状況を再現する。
+    system._scene_runner.last_realized_snapshot_revision = 0
+
+    system.draw_frame()
+
+    preview = system._last_export_snapshot
+    token = system._last_export_provenance_token
+    assert preview is not None and preview.provenance is None
+    assert token is not None
+    assert token.store_revision == 0
+    assert token.store_revision != system._store.revision
+    assert builder.calls == []
+
+    capture = system._shutdown_export_snapshot()
+
+    assert capture.provenance is not None
+    assert capture.provenance.frame.quality == "final"
+    assert capture.provenance.frame.parameters.revision == system._store.revision
+    assert system._scene_runner.run_kwargs[-1]["quality"] == "final"
+    assert len(builder.calls) == 1
+
+
+def test_draw_frame_marks_only_new_results_as_fresh_renderer_admission() -> None:
+    realized = cast(
+        RealizedLayer,
+        SimpleNamespace(
+            realized=object(),
+            cache_key=("held-result", (1, 1)),
+            color=(0.0, 0.0, 0.0),
+            thickness=0.01,
+        ),
+    )
+    system, _builder = _make_provenance_preview_system(frame_count=0)
+    runner = _FakeSceneRunner(
+        [
+            ([realized], True),
+            ([realized], None),
+        ]
+    )
+    runner.last_realized_snapshot_revision = 0
+    renderer = _CollectingRenderer()
+    system._scene_runner = cast(Any, runner)
+    system._renderer = cast(Any, renderer)
+    system._perf = PerfCollector(enabled=True, console_output=False)
+
+    system.draw_frame()
+    system.draw_frame()
+
+    assert [call["scene_serial"] for call in renderer.render_calls] == [1, 1]
+    assert [call["snapshot_revision"] for call in renderer.render_calls] == [0, 0]
+    snapshot = system._perf.snapshot()
+    assert snapshot.preview_samples == 2
+    assert snapshot.preview_fresh_results == 1
+    assert snapshot.preview_max_consecutive_stale_frames == 1
 
 
 def test_gl_render_error_is_not_swallowed_by_scene_error_boundary() -> None:
@@ -488,6 +660,50 @@ def test_recording_frame_mirrors_time_without_advancing_transport_epoch() -> Non
 
     assert clock.synchronized == [2.25]
     assert runner.run_kwargs[-1]["transport_epoch"] == 7
+
+
+def test_recording_materializes_only_the_first_fresh_frame_provenance() -> None:
+    class Clock:
+        epoch = 4
+        is_playing = False
+        speed = 1.0
+
+        def synchronize(self, _t: float) -> None:
+            return
+
+    class Recording:
+        is_recording = True
+
+        def __init__(self) -> None:
+            self.write_calls = 0
+
+        def t(self) -> float:
+            return 3.25
+
+        def write_frame(self, _screen: object) -> None:
+            self.write_calls += 1
+
+    recording = Recording()
+    system, builder = _make_provenance_preview_system(
+        frame_count=2,
+        recording=recording,
+        clock=Clock(),
+    )
+    capture = SimpleNamespace(provenance=None)
+    system._recording_capture = capture
+
+    system.draw_frame()
+    system.draw_frame()
+
+    assert recording.write_calls == 2
+    assert len(builder.calls) == 1
+    assert capture.provenance is not None
+    assert capture.provenance.frame.t == pytest.approx(3.25)
+    assert capture.provenance.frame.frame_index == 0
+    assert capture.provenance.frame.quality == "final"
+    assert system._provenance_frame_index == 2
+    assert system._last_export_snapshot is not None
+    assert system._last_export_snapshot.provenance is None
 
 
 def test_recording_scene_error_pauses_without_writing_last_good_frame() -> None:
@@ -614,6 +830,97 @@ def test_svg_captures_are_versioned_and_write_a_manifest(
     assert payload["t"] == pytest.approx(1.25)
     assert payload["format"] == "svg"
     assert payload["artifact_paths"] == [str(first)]
+
+
+def test_direct_svg_after_source_reload_keeps_the_visible_frame_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def old_draw(_t: float) -> list[object]:
+        return []
+
+    def new_draw(_t: float) -> list[object]:
+        return []
+
+    setattr(old_draw, "__grafix_source_bytes__", b"old source generation")
+    setattr(new_draw, "__grafix_source_bytes__", b"new source generation")
+
+    def fake_export_svg(
+        _layers: object,
+        path: Path,
+        *,
+        canvas_size: tuple[int, int],
+    ) -> Path:
+        assert canvas_size == (100, 100)
+        path.write_text("<svg/>", encoding="utf-8")
+        return path
+
+    system, old_builder = _make_provenance_preview_system(
+        frame_count=1,
+        draw=old_draw,
+    )
+    system.draw_frame()
+    visible = system._last_export_snapshot
+    assert visible is not None and visible.provenance is None
+
+    new_builder = _CountingProvenanceBuilder(new_draw, system._store)
+
+    class Controller:
+        def __init__(self) -> None:
+            self.accepted: list[int] = []
+
+        def poll(
+            self,
+            *,
+            force: bool,
+            retain_rollback: bool,
+        ) -> SourceReloadResult:
+            assert force is True
+            assert retain_rollback is True
+            return SourceReloadResult(
+                status="reloaded",
+                generation=1,
+                draw=new_draw,
+                source=tmp_path / "sketch.py",
+            )
+
+        def accept_generation(self, generation: int) -> None:
+            self.accepted.append(int(generation))
+
+    controller = Controller()
+    system._source_reload = cast(Any, controller)
+    replaced: list[object] = []
+    system._scene_runner.replace_draw = lambda draw: replaced.append(draw)
+    monkeypatch.setattr(
+        system,
+        "_new_provenance_builder",
+        lambda _draw: new_builder,
+    )
+
+    assert system._poll_source_reload(force=True) is True
+    assert controller.accepted == [1]
+    assert replaced == [new_draw]
+    assert system._provenance_builder is new_builder
+
+    monkeypatch.setattr(capture_module, "export_svg", fake_export_svg)
+    system._capture_paths = VersionedPathAllocator()
+    system._capture_service = CaptureService(path_allocator=system._capture_paths)
+    system._svg_output_path = tmp_path / "piece.svg"
+
+    saved = system.save_svg()
+
+    assert saved == tmp_path / "piece.svg"
+    assert len(old_builder.calls) == 1
+    assert new_builder.calls == []
+    payload = json.loads(
+        capture_manifest_path_for(saved).read_text(encoding="utf-8")
+    )
+    assert (
+        payload["source"]["hash"]["value"]
+        == old_builder.inner.session.source.sha256
+    )
+    assert payload["frame"]["index"] == 0
+    assert payload["frame"]["quality"] == "draft"
 
 
 def test_svg_request_before_first_draw_uses_first_visible_frame(
@@ -808,6 +1115,40 @@ class _FakeExportJobs:
     def poll(self) -> list[ExportJobResult]:
         results, self.results = self.results, []
         return results
+
+
+def test_pending_capture_materializes_the_first_fresh_frame_once(
+    tmp_path: Path,
+) -> None:
+    system, builder = _make_provenance_preview_system(frame_count=1)
+    jobs = _FakeExportJobs()
+    system._export_jobs = cast(Any, jobs)
+    system._pending_capture_by_job = {}
+    system._capture_paths = VersionedPathAllocator()
+    system._png_output_path = tmp_path / "piece.png"
+    system._gcode_output_path = tmp_path / "piece.gcode"
+
+    assert system._queue_export_request(ExportKind.PNG) is True
+    system.draw_frame()
+
+    assert len(builder.calls) == 1
+    assert len(jobs.submissions) == 1
+    captured = cast(FrameExportSnapshot, jobs.submissions[0]["snapshot"])
+    assert captured.provenance is not None
+    assert captured.provenance.frame.t == pytest.approx(2.5)
+    assert captured.provenance.frame.frame_index == 0
+    assert captured.provenance.frame.quality == "final"
+    expected = builder.inner.frame(
+        system._store,
+        t=2.5,
+        frame_index=0,
+        quality="final",
+        origin="interactive",
+    )
+    assert captured.provenance == expected
+    assert system._last_export_snapshot is not None
+    assert system._last_export_snapshot.provenance is None
+    assert not system._pending_export_requests
 
 
 class _DrainingExportJobs:

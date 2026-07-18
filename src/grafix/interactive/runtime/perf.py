@@ -78,6 +78,12 @@ class PerfSnapshot:
     worker_lag_samples: int = 0
     worker_lag_ms: float | None = None
     worker_lag_max_ms: float | None = None
+    preview_samples: int = 0
+    preview_fresh_results: int = 0
+    preview_max_consecutive_stale_frames: int = 0
+    preview_revision_lag_samples: int = 0
+    preview_revision_lag: float | None = None
+    preview_revision_lag_max: int | None = None
 
     @property
     def cache_hit_rate(self) -> float:
@@ -85,6 +91,17 @@ class PerfSnapshot:
 
         total = int(self.cache_hits) + int(self.cache_misses)
         return 0.0 if total <= 0 else float(self.cache_hits) / float(total)
+
+    @property
+    def preview_fresh_result_ratio(self) -> float:
+        """preview 観測 frame に対する fresh result の比率を返す。"""
+
+        samples = int(self.preview_samples)
+        return (
+            0.0
+            if samples <= 0
+            else float(self.preview_fresh_results) / float(samples)
+        )
 
     def as_dict(self) -> dict[str, object]:
         """JSON Lines trace の 1 record に変換する。"""
@@ -107,6 +124,17 @@ class PerfSnapshot:
                 "samples": self.worker_lag_samples,
                 "average_lag_ms": self.worker_lag_ms,
                 "max_lag_ms": self.worker_lag_max_ms,
+            },
+            "preview": {
+                "samples": self.preview_samples,
+                "fresh_results": self.preview_fresh_results,
+                "fresh_result_ratio": self.preview_fresh_result_ratio,
+                "max_consecutive_stale_frames": (
+                    self.preview_max_consecutive_stale_frames
+                ),
+                "revision_lag_samples": self.preview_revision_lag_samples,
+                "average_revision_lag": self.preview_revision_lag,
+                "max_revision_lag": self.preview_revision_lag_max,
             },
         }
 
@@ -192,6 +220,13 @@ class PerfCollector:
         self._worker_lag_sum_ms = 0.0
         self._worker_lag_max_ms = 0.0
         self._worker_lag_samples = 0
+        self._preview_samples = 0
+        self._preview_fresh_results = 0
+        self._preview_consecutive_stale_frames = 0
+        self._preview_max_consecutive_stale_frames = 0
+        self._preview_revision_lag_sum = 0
+        self._preview_revision_lag_max = 0
+        self._preview_revision_lag_samples = 0
         self._snapshot = PerfSnapshot()
 
     @classmethod
@@ -297,6 +332,39 @@ class PerfCollector:
         self._worker_lag_max_ms = max(self._worker_lag_max_ms, value)
         self._worker_lag_samples += 1
 
+    def record_preview_result(
+        self,
+        *,
+        requested_revision: int,
+        presented_revision: int | None,
+        fresh: bool,
+    ) -> None:
+        """preview の freshness と parameter revision 遅延を記録する。"""
+
+        if not self.enabled:
+            return
+        requested = max(0, int(requested_revision))
+        self._preview_samples += 1
+        if bool(fresh):
+            self._preview_fresh_results += 1
+            self._preview_consecutive_stale_frames = 0
+        else:
+            self._preview_consecutive_stale_frames += 1
+            self._preview_max_consecutive_stale_frames = max(
+                self._preview_max_consecutive_stale_frames,
+                self._preview_consecutive_stale_frames,
+            )
+
+        if presented_revision is None:
+            return
+        lag = max(0, requested - int(presented_revision))
+        self._preview_revision_lag_sum += lag
+        self._preview_revision_lag_max = max(
+            self._preview_revision_lag_max,
+            lag,
+        )
+        self._preview_revision_lag_samples += 1
+
     def snapshot(self) -> PerfSnapshot:
         """直近フレーム境界の immutable snapshot を返す。"""
 
@@ -358,6 +426,7 @@ class PerfCollector:
             float(self._sum_ns.get("frame", 0)) / float(frames) / 1_000_000.0
         )
         lag_samples = int(self._worker_lag_samples)
+        revision_lag_samples = int(self._preview_revision_lag_samples)
         self._snapshot = PerfSnapshot(
             frame_index=int(self._frame_index),
             frame_count=int(self._window_frames),
@@ -384,6 +453,23 @@ class PerfCollector:
             worker_lag_max_ms=(
                 None if lag_samples <= 0 else float(self._worker_lag_max_ms)
             ),
+            preview_samples=int(self._preview_samples),
+            preview_fresh_results=int(self._preview_fresh_results),
+            preview_max_consecutive_stale_frames=int(
+                self._preview_max_consecutive_stale_frames
+            ),
+            preview_revision_lag_samples=revision_lag_samples,
+            preview_revision_lag=(
+                None
+                if revision_lag_samples <= 0
+                else float(self._preview_revision_lag_sum)
+                / float(revision_lag_samples)
+            ),
+            preview_revision_lag_max=(
+                None
+                if revision_lag_samples <= 0
+                else int(self._preview_revision_lag_max)
+            ),
         )
 
     def _emit_window(self) -> None:
@@ -408,6 +494,12 @@ class PerfCollector:
                     "slow-layer="
                     f"{snapshot.layers[0].name}:"
                     f"{snapshot.layers[0].per_frame_ms:.3f}ms"
+                )
+            if snapshot.preview_samples:
+                parts.append(
+                    "fresh="
+                    f"{snapshot.preview_fresh_result_ratio * 100.0:.0f}%"
+                    f" stale-max={snapshot.preview_max_consecutive_stale_frames}"
                 )
             print("[grafix-perf]", " ".join(parts))
 
@@ -439,6 +531,13 @@ class PerfCollector:
         self._worker_lag_sum_ms = 0.0
         self._worker_lag_max_ms = 0.0
         self._worker_lag_samples = 0
+        self._preview_samples = 0
+        self._preview_fresh_results = 0
+        self._preview_consecutive_stale_frames = 0
+        self._preview_max_consecutive_stale_frames = 0
+        self._preview_revision_lag_sum = 0
+        self._preview_revision_lag_max = 0
+        self._preview_revision_lag_samples = 0
 
 
 __all__ = ["PerfCollector", "PerfSnapshot", "PerfTiming"]

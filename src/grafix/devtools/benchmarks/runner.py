@@ -291,6 +291,24 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             workload=_workload_mp_draw,
             support_source_files=(_MP_SOURCE_FILE,),
         ),
+        _definition(
+            "mp.draw.slider_churn",
+            "MpDraw 1-worker slider revision churn",
+            category="mp",
+            suite="mp",
+            fixture="light_translate_scale_slider",
+            parameters={"frames": 120, "frame_interval_s": 1.0 / 60.0},
+            tags=(
+                "multiprocessing",
+                "slider",
+                "revision-churn",
+                "input-to-result",
+            ),
+            selectable_suites=("mp",),
+            setup=_setup_passthrough,
+            workload=_workload_mp_slider_churn,
+            support_source_files=(_MP_SOURCE_FILE,),
+        ),
         *_legacy_system_definitions(),
     ]
     return tuple(sorted(definitions, key=lambda definition: definition.case_id))
@@ -1447,6 +1465,19 @@ def _workload_mp_draw(state: object) -> _CaseOutput:
         steady_frames=int(state["steady_frames"]),  # type: ignore[index]
         heavy_iterations=int(state["heavy_iterations"]),  # type: ignore[index]
         n_worker=2,
+    )
+    return _CaseOutput(value=payload["output"], metrics=payload)
+
+
+def _workload_mp_slider_churn(state: object) -> _CaseOutput:
+    from grafix.devtools.benchmarks.mp_draw_benchmark import (
+        run_mp_slider_churn_benchmarks,
+    )
+
+    parameters = cast(dict[str, Any], state)
+    payload = run_mp_slider_churn_benchmarks(
+        frames=int(parameters["frames"]),
+        frame_interval_s=float(parameters["frame_interval_s"]),
     )
     return _CaseOutput(value=payload["output"], metrics=payload)
 

@@ -22,16 +22,33 @@ def _defaults() -> LayerStyleDefaults:
 
 
 def test_runtime_limits_are_immutable_and_validate_integral_limits() -> None:
-    limits = RuntimeLimits(cpu_cache_bytes=123, capture_queue_pending_jobs=2)
+    limits = RuntimeLimits(
+        cpu_cache_bytes=123,
+        cpu_cache_entries=7,
+        capture_queue_pending_jobs=2,
+    )
 
     assert limits.cpu_cache_bytes == 123
+    assert limits.cpu_cache_entries == 7
     assert limits.capture_queue_pending_jobs == 2
     with pytest.raises(AttributeError):
         limits.cpu_cache_bytes = 1  # type: ignore[misc]
     with pytest.raises(TypeError, match="cpu_cache_bytes"):
         RuntimeLimits(cpu_cache_bytes=True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="cpu_cache_entries"):
+        RuntimeLimits(cpu_cache_entries=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="cpu_cache_entries"):
+        RuntimeLimits(cpu_cache_entries=-1)
     with pytest.raises(ValueError, match="gpu_cache_bytes"):
         RuntimeLimits(gpu_cache_bytes=-1)
+
+
+def test_runtime_limits_default_cpu_cache_entry_bound_is_4096() -> None:
+    limits = RuntimeLimits()
+
+    assert limits.cpu_cache_entries == 4096
+    with RealizeSession() as session:
+        assert session.max_cache_entries == 4096
 
 
 def test_runtime_limit_profiles_keep_preview_and_final_independent() -> None:
@@ -138,6 +155,33 @@ def test_runtime_limits_configure_per_operation_and_cpu_cache() -> None:
     with RealizeSession(runtime_limits=no_cache) as session:
         session.realize(geometry)
         assert session.stats().entries == 0
+
+
+def test_runtime_limits_configure_cpu_cache_entry_bound() -> None:
+    limits = RuntimeLimits(
+        per_operation=_budget(vertices=10),
+        scene=_budget(vertices=100),
+        cpu_cache_bytes=1_000_000,
+        cpu_cache_entries=1,
+    )
+    geometries = [
+        G.polygon(
+            n_sides=3 + index,
+            key=f"runtime-entry-limit-{index}",
+        )
+        for index in range(2)
+    ]
+
+    with RealizeSession(runtime_limits=limits) as session:
+        for geometry in geometries:
+            session.realize(geometry)
+        stats = session.stats()
+
+        assert session.runtime_limits is limits
+        assert session.max_cache_entries == 1
+
+    assert stats.entries == 1
+    assert stats.evictions == 1
 
 
 def _cause_chain(error: BaseException) -> tuple[BaseException, ...]:

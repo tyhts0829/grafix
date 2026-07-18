@@ -57,6 +57,24 @@ def profiler_lines(snapshot: PerfSnapshot) -> tuple[str, ...]:
             f"{snapshot.worker_lag_ms:.1f} ms average"
             f" · {max_lag:.1f} ms peak"
         )
+    if snapshot.preview_samples > 0:
+        line = (
+            "Preview freshness · "
+            f"{snapshot.preview_fresh_result_ratio * 100.0:.0f}% fresh"
+            " · "
+            f"{snapshot.preview_max_consecutive_stale_frames} stale frames max"
+        )
+        if snapshot.preview_revision_lag is not None:
+            max_revision_lag = (
+                snapshot.preview_revision_lag
+                if snapshot.preview_revision_lag_max is None
+                else float(snapshot.preview_revision_lag_max)
+            )
+            line += (
+                f" · {snapshot.preview_revision_lag:.1f} revisions average"
+                f" · {max_revision_lag:.0f} max"
+            )
+        lines.append(line)
     return tuple(lines)
 
 

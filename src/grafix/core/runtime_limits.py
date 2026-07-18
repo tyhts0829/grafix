@@ -10,6 +10,7 @@ from grafix.core.preview_quality import PreviewQuality
 from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET, ResourceBudget
 
 DEFAULT_CPU_CACHE_BYTES = 256 * 1024 * 1024
+DEFAULT_CPU_CACHE_ENTRIES = 4096
 DEFAULT_GPU_CACHE_BYTES = 256 * 1024 * 1024
 DEFAULT_CAPTURE_QUEUE_PENDING_JOBS = 16
 DEFAULT_CAPTURE_QUEUE_BYTES = int(DEFAULT_RESOURCE_BUDGET.max_output_bytes)
@@ -34,6 +35,7 @@ class RuntimeLimits:
     per_operation: ResourceBudget = DEFAULT_RESOURCE_BUDGET
     scene: ResourceBudget = DEFAULT_RESOURCE_BUDGET
     cpu_cache_bytes: int = DEFAULT_CPU_CACHE_BYTES
+    cpu_cache_entries: int = DEFAULT_CPU_CACHE_ENTRIES
     gpu_cache_bytes: int = DEFAULT_GPU_CACHE_BYTES
     capture_queue_pending_jobs: int = DEFAULT_CAPTURE_QUEUE_PENDING_JOBS
     capture_queue_bytes: int = DEFAULT_CAPTURE_QUEUE_BYTES
@@ -45,6 +47,7 @@ class RuntimeLimits:
             raise TypeError("scene は ResourceBudget である必要があります")
         for name in (
             "cpu_cache_bytes",
+            "cpu_cache_entries",
             "gpu_cache_bytes",
             "capture_queue_pending_jobs",
             "capture_queue_bytes",
@@ -109,6 +112,7 @@ __all__ = [
     "DEFAULT_CAPTURE_QUEUE_BYTES",
     "DEFAULT_CAPTURE_QUEUE_PENDING_JOBS",
     "DEFAULT_CPU_CACHE_BYTES",
+    "DEFAULT_CPU_CACHE_ENTRIES",
     "DEFAULT_FINAL_RUNTIME_LIMITS",
     "DEFAULT_GPU_CACHE_BYTES",
     "DEFAULT_PREVIEW_RUNTIME_LIMITS",

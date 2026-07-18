@@ -97,12 +97,14 @@ class SceneRunner:
         # error 通知の次の run で初めて realize される。その出力時刻を
         # manifest と結び付けるため、終端 status とは別に保持する。
         self._last_realized_t: float | None = None
+        self._last_realized_snapshot_revision: int | None = None
         self._last_merged_mp_success_frame_id: int | None = None
         self._last_merged_mp_success_epoch: int | None = None
         # transport discontinuity 後に fresh mp result を待つ間も、実際に
         # 画面へ出していた frame とその時刻を対で維持する。
         self._retained_realized_layers: list[RealizedLayer] = []
         self._retained_realized_t: float | None = None
+        self._retained_realized_snapshot_revision: int | None = None
         self._waiting_for_fresh_result = False
         self._mp_epoch = 0
         self._last_transport_epoch: int | None = None
@@ -143,6 +145,9 @@ class SceneRunner:
         self._last_evaluation_succeeded = None
         self._last_evaluation_t = None
         self._last_realized_t = self._retained_realized_t
+        self._last_realized_snapshot_revision = (
+            self._retained_realized_snapshot_revision
+        )
         self._waiting_for_fresh_result = replacement is not None
 
         if previous is None:
@@ -192,6 +197,17 @@ class SceneRunner:
         """
 
         return self._last_realized_t
+
+    @property
+    def last_realized_snapshot_revision(self) -> int | None:
+        """直近の `run()` が実際に返した表示 frame の parameter revision。
+
+        sync 評価では run 開始時の store revision、MP 評価では worker が実際に
+        適用した snapshot revision を返す。fresh MP result 待ちで直前の表示を
+        保持する場合は、その保持中 frame の revision を返す。
+        """
+
+        return self._last_realized_snapshot_revision
 
     @property
     def is_waiting_for_fresh_result(self) -> bool:
@@ -279,9 +295,11 @@ class SceneRunner:
         self._last_evaluation_succeeded = None
         self._last_evaluation_t = None
         self._last_realized_t = None
+        self._last_realized_snapshot_revision = None
         self._waiting_for_fresh_result = False
         operation_diagnostics: OperationDiagnosticBuffer | None = None
         effective_quality: PreviewQuality = "final" if recording else quality
+        input_snapshot_revision = int(store.revision)
         try:
             self._update_epoch(
                 recording=bool(recording),
@@ -301,7 +319,12 @@ class SceneRunner:
                         self._last_evaluation_succeeded = True
                         self._last_evaluation_t = float(t)
                         self._last_realized_t = float(t)
-                        self._retain_output(realized_layers, t=float(t))
+                        self._last_realized_snapshot_revision = input_snapshot_revision
+                        self._retain_output(
+                            realized_layers,
+                            t=float(t),
+                            snapshot_revision=input_snapshot_revision,
+                        )
                         return realized_layers
                     return self._run_mp(
                         t,
@@ -365,17 +388,27 @@ class SceneRunner:
         self._last_merged_mp_success_frame_id = None
         self._last_merged_mp_success_epoch = None
 
-    def _retain_output(self, layers: list[RealizedLayer], *, t: float) -> None:
-        """実表示として採用できた layers/t を同時に更新する。"""
+    def _retain_output(
+        self,
+        layers: list[RealizedLayer],
+        *,
+        t: float,
+        snapshot_revision: int,
+    ) -> None:
+        """実表示として採用できた layers/t/revision を同時に更新する。"""
 
         self._retained_realized_layers = list(layers)
         self._retained_realized_t = float(t)
+        self._retained_realized_snapshot_revision = int(snapshot_revision)
 
     def _fresh_result_pending_output(self) -> list[RealizedLayer]:
         """fresh mp result 待ち中に直近の実表示 frame を返す。"""
 
         self._waiting_for_fresh_result = True
         self._last_realized_t = self._retained_realized_t
+        self._last_realized_snapshot_revision = (
+            self._retained_realized_snapshot_revision
+        )
         return list(self._retained_realized_layers)
 
     def _run_sync(
@@ -479,7 +512,14 @@ class SceneRunner:
             self._last_merged_mp_success_frame_id = latest_success_frame_id
             self._last_merged_mp_success_epoch = latest_success_epoch
         self._last_realized_t = float(latest_successful.t)
-        self._retain_output(realized_layers, t=float(latest_successful.t))
+        self._last_realized_snapshot_revision = int(
+            latest_successful.snapshot_revision
+        )
+        self._retain_output(
+            realized_layers,
+            t=float(latest_successful.t),
+            snapshot_revision=int(latest_successful.snapshot_revision),
+        )
         if new_result is not None:
             # ここに到達する new_result は error=None。新しい成功結果が
             # 終端結果である場合のみ、既存 error 表示を解除する。

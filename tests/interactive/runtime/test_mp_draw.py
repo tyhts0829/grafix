@@ -185,11 +185,14 @@ def test_hung_evaluation_restarts_worker_and_recovers_without_child_leak() -> No
             {int(proc.pid) for proc in old_procs if proc.pid is not None}
         )
 
-        mp_draw.submit(t=0.25, snapshot_revision=0, snapshot={})
+        # 新世代は snapshot ACK をまだ持たないため、task 同梱 snapshot だけで
+        # 新しい revision を評価できなければならない。
+        mp_draw.submit(t=0.25, snapshot_revision=7, snapshot={})
         recovered = _wait_for_result(mp_draw)
         assert recovered.error is None
         assert recovered.t == pytest.approx(0.25)
         assert recovered.generation == 1
+        assert recovered.snapshot_revision == 7
         assert recovered.worker_pid in new_pids
     finally:
         mp_draw.close()
@@ -224,10 +227,12 @@ def test_single_slot_task_queue_drops_old_frame_and_keeps_latest() -> None:
     mp_draw._worker_snapshot_revisions = {101: 7}
     mp_draw._pending_task = latest
 
-    mp_draw._enqueue_pending_if_ready()
+    mp_draw._enqueue_pending()
 
     assert mp_draw._pending_task is None
     assert task_q.get_nowait() is latest
+    assert mp_draw.task_enqueue_count == 1
+    assert mp_draw.task_drop_count == 1
 
 
 def test_error_result_keeps_last_successful_layers_for_preview() -> None:
@@ -289,6 +294,7 @@ def test_worker_roundtrip_preserves_frozen_midi_value_source() -> None:
     radius_record = next(record for record in result.records if record.key == radius_key)
     assert radius_record.source == "midi_frozen"
     assert radius_record.effective == pytest.approx(100.0)
+    assert result.snapshot_revision == store.revision
 
 
 def test_worker_result_carries_explicit_epoch() -> None:
@@ -358,8 +364,10 @@ def test_draw_result_keeps_legacy_constructor_shape() -> None:
     assert positional.error == "legacy error"
     assert positional.t == pytest.approx(0.0)
     assert positional.epoch == 0
+    assert positional.snapshot_revision == 0
     assert keyword.t == pytest.approx(0.0)
     assert keyword.epoch == 0
+    assert keyword.snapshot_revision == 0
 
 
 def test_result_drain_discards_old_epoch_and_keeps_diagnostic() -> None:
@@ -834,6 +842,7 @@ def test_scene_runner_zero_runs_synchronously_without_constructing_worker(
         assert draw_calls == [2.5]
         assert runner.last_evaluation_succeeded is True
         assert runner.last_evaluation_t == pytest.approx(2.5)
+        assert runner.last_realized_snapshot_revision == 0
     finally:
         runner.close()
 
@@ -1002,6 +1011,7 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
         labels=[],
         t=1.0,
         epoch=0,
+        snapshot_revision=3,
     )
     epoch_mp = _EpochMpDraw(old_preview)
     runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
@@ -1018,6 +1028,7 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
             transport_epoch=0,
         )
         assert runner.last_realized_t == pytest.approx(1.0)
+        assert runner.last_realized_snapshot_revision == 3
 
         # 録画開始でも epoch を進め、以後は同期評価した t=5 の frame を
         # 実表示として保持する。
@@ -1030,6 +1041,7 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
             transport_epoch=1,
         )
         assert runner.last_realized_t == pytest.approx(5.0)
+        assert runner.last_realized_snapshot_revision == store.revision
 
         # 録画終了は epoch を進めて old_preview を無効化する。fresh result が
         # 未到着でも同期録画 frame と t の組を維持する。
@@ -1043,6 +1055,7 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
         )
         assert waiting_layers == recording_layers
         assert runner.last_realized_t == pytest.approx(5.0)
+        assert runner.last_realized_snapshot_revision == store.revision
         assert runner.last_evaluation_succeeded is None
         assert runner.is_waiting_for_fresh_result is True
         assert epoch_mp.begin_calls == [1, 2]
@@ -1059,6 +1072,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
         labels=[],
         t=2.0,
         epoch=0,
+        snapshot_revision=4,
     )
     epoch_mp = _EpochMpDraw(initial)
     runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
@@ -1075,6 +1089,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
             transport_epoch=0,
         )
         assert runner.last_realized_t == pytest.approx(2.0)
+        assert runner.last_realized_snapshot_revision == 4
 
         waiting = runner.run(
             20.0,
@@ -1086,6 +1101,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
         )
         assert waiting == before_seek
         assert runner.last_realized_t == pytest.approx(2.0)
+        assert runner.last_realized_snapshot_revision == 4
         assert runner.is_waiting_for_fresh_result is True
 
         epoch_mp.result = DrawResult(
@@ -1095,6 +1111,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
             labels=[],
             t=20.0,
             epoch=1,
+            snapshot_revision=9,
         )
         epoch_mp._published = False
         fresh = runner.run(
@@ -1107,6 +1124,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
         )
         assert fresh
         assert runner.last_realized_t == pytest.approx(20.0)
+        assert runner.last_realized_snapshot_revision == 9
         assert runner.last_evaluation_t == pytest.approx(20.0)
         assert runner.is_waiting_for_fresh_result is False
     finally:
@@ -1337,6 +1355,53 @@ def test_rapid_revision_changes_keep_snapshot_control_backlog_bounded() -> None:
         assert mp_draw.snapshot_broadcast_count == 200
         assert mp_draw.pending_snapshot_update_count == 0
         assert mp_draw.queued_snapshot_update_count == 0
+        assert mp_draw.rejected_task_count == 0
+    finally:
+        mp_draw.close()
+
+
+@pytest.mark.parametrize("n_worker", [1, 2])
+def test_revision_churn_keeps_results_moving_and_reaches_latest(
+    n_worker: int,
+) -> None:
+    """GUI と同じ submit→poll 順でも revision ACK が draw を飢餓させない。"""
+
+    mp_draw = MpDraw(_empty_draw, n_worker=n_worker)
+    revisions_during_drag: list[int] = []
+    try:
+        for revision in range(1, 61):
+            mp_draw.submit(
+                t=float(revision),
+                snapshot_revision=revision,
+                snapshot={},
+            )
+            result = mp_draw.poll_latest()
+            if result is not None:
+                revisions_during_drag.append(int(result.snapshot_revision))
+            assert mp_draw.pending_snapshot_update_count <= n_worker
+            assert mp_draw.queued_snapshot_update_count <= n_worker
+            time.sleep(0.005)
+
+        # wall time そのものではなく、連続 edit 中にも評価が前進することを契約にする。
+        assert len(revisions_during_drag) >= 2
+        assert revisions_during_drag == sorted(set(revisions_during_drag))
+
+        final_result: DrawResult | None = None
+        deadline = time.monotonic() + _WAIT_TIMEOUT_S
+        while time.monotonic() < deadline:
+            mp_draw.submit(
+                t=60.0,
+                snapshot_revision=60,
+                snapshot={},
+            )
+            result = mp_draw.poll_latest()
+            if result is not None and int(result.snapshot_revision) == 60:
+                final_result = result
+                break
+            time.sleep(0.005)
+
+        assert final_result is not None
+        assert final_result.error is None
         assert mp_draw.rejected_task_count == 0
     finally:
         mp_draw.close()
