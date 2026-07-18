@@ -16,4 +16,4 @@ def draw(t: float):
 
 
 if __name__ == "__main__":
-    run(draw, canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT), render_scale=5)
+    run(draw, canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT), render_scale=5, n_worker=4)
