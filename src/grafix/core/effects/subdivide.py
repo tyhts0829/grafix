@@ -144,34 +144,34 @@ def subdivide(
         )
         return coords, offsets
 
-    applied_levels = tuple(
-        sorted(
-            {
-                _effective_subdivision_count(
-                    coords[int(offsets[i]) : int(offsets[i + 1])],
-                    selected_divisions,
-                )
-                for i in range(n_lines)
-            }
+    coords_out = np.empty((total_vertices, coords.shape[1]), dtype=np.float32)
+    offsets_out = np.empty((n_lines + 1,), dtype=np.int32)
+    offsets_out[0] = 0
+    applied_levels_list: list[int] = []
+    write_at = 0
+    # 解析的な count は確保容量にだけ使い、実出力数は core の結果に従う。
+    for li, capacity in enumerate(counts):
+        start = int(offsets[li])
+        end = int(offsets[li + 1])
+        line, applied_level = _subdivide_core(
+            coords[start:end],
+            selected_divisions,
+            capacity,
         )
-    )
+        applied_levels_list.append(applied_level)
+        next_at = write_at + int(line.shape[0])
+        coords_out[write_at:next_at] = line
+        offsets_out[li + 1] = next_at
+        write_at = next_at
+
+    if write_at < total_vertices:
+        coords_out = coords_out[:write_at].copy()
+
+    applied_levels = tuple(sorted(set(applied_levels_list)))
     if any(level < selected_divisions for level in applied_levels):
         degradation_reasons.append(
             "minimum segment length stopped one or more polylines early"
         )
-
-    coords_out = np.empty((total_vertices, coords.shape[1]), dtype=np.float32)
-    offsets_out = np.empty((n_lines + 1,), dtype=np.int32)
-    offsets_out[0] = 0
-    write_at = 0
-    for li, count in enumerate(counts):
-        start = int(offsets[li])
-        end = int(offsets[li + 1])
-        line = _subdivide_core(coords[start:end], selected_divisions, count)
-        next_at = write_at + count
-        coords_out[write_at:next_at] = line
-        offsets_out[li + 1] = next_at
-        write_at = next_at
 
     if degradation_reasons:
         effective: OperationDiagnosticValue = (
@@ -234,21 +234,26 @@ def _effective_subdivision_count(vertices: np.ndarray, subdivisions: int) -> int
 
 
 @njit(fastmath=True, cache=True)
-def _subdivide_core(vertices: np.ndarray, subdivisions: int, max_vertices: int) -> np.ndarray:
+def _subdivide_core(
+    vertices: np.ndarray,
+    subdivisions: int,
+    max_vertices: int,
+) -> tuple[np.ndarray, int]:
     """単一頂点配列の細分化処理（旧仕様踏襲の Numba 経路）。"""
     n0 = vertices.shape[0]
     if n0 < 2 or subdivisions <= 0:
-        return vertices
+        return vertices, 0
 
     d0 = vertices[1:] - vertices[:-1]
     if d0.shape[0] > 0:
         dsq0 = d0[:, 0] * d0[:, 0] + d0[:, 1] * d0[:, 1] + d0[:, 2] * d0[:, 2]
         if np.min(dsq0) < MIN_SEG_LEN_SQ:  # type: ignore[operator]
-            return vertices
+            return vertices, 0
 
     subdivisions = subdivisions if subdivisions <= MAX_SUBDIVISIONS else MAX_SUBDIVISIONS
 
     result = vertices.copy()
+    applied_levels = 0
     for _ in range(subdivisions):
         n = result.shape[0]
         if n < 2:
@@ -262,6 +267,7 @@ def _subdivide_core(vertices: np.ndarray, subdivisions: int, max_vertices: int) 
         new_vertices[::2] = result
         new_vertices[1::2] = (result[:-1] + result[1:]) / 2
         result = new_vertices
+        applied_levels += 1
 
         d = result[1:] - result[:-1]
         if d.shape[0] > 0:
@@ -269,4 +275,4 @@ def _subdivide_core(vertices: np.ndarray, subdivisions: int, max_vertices: int) 
             if np.min(dsq) < MIN_SEG_LEN_SQ:  # type: ignore[operator]
                 break
 
-    return result
+    return result, applied_levels

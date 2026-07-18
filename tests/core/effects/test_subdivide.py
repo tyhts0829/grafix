@@ -46,6 +46,35 @@ def subdivide_test_two_lines() -> GeomTuple:
 
 
 @primitive
+def subdivide_test_float32_stop_boundary() -> GeomTuple:
+    """事前見積もりと実生成の停止段数がずれる float32 境界線を返す。"""
+    endpoint = np.nextafter(np.float32(0.32), np.float32(np.inf))
+    coords = np.array(
+        [[0.0, 0.0, 0.0], [endpoint, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    offsets = np.array([0, 2], dtype=np.int32)
+    return coords, offsets
+
+
+@primitive
+def subdivide_test_float32_boundary_with_trailing_line() -> GeomTuple:
+    """float32 境界線と、通常どおり細分される後続線を返す。"""
+    endpoint = np.nextafter(np.float32(0.32), np.float32(np.inf))
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [endpoint, 0.0, 0.0],
+            [0.0, 7.0, 0.0],
+            [10.0, 7.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    offsets = np.array([0, 2, 4], dtype=np.int32)
+    return coords, offsets
+
+
+@primitive
 def subdivide_test_empty() -> GeomTuple:
     """空ジオメトリを返す。"""
     coords = np.zeros((0, 3), dtype=np.float32)
@@ -110,6 +139,64 @@ def test_subdivide_multiple_polylines_preserves_offsets() -> None:
     assert realized.offsets.tolist() == [0, 3, 6]
     np.testing.assert_allclose(polylines[0][:, 0], [0.0, 5.0, 10.0], rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(polylines[1][:, 0], [0.0, 1.0, 2.0], rtol=0.0, atol=1e-6)
+
+
+def test_subdivide_float32_stop_boundary_uses_actual_vertex_count() -> None:
+    realized = realize(
+        E.subdivide(subdivisions=10)(G.subdivide_test_float32_stop_boundary())
+    )
+
+    assert realized.coords.shape == (33, 3)
+    assert realized.offsets.tolist() == [0, 33]
+    np.testing.assert_array_equal(
+        realized.coords[[0, -1]],
+        np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [
+                    np.nextafter(np.float32(0.32), np.float32(np.inf)),
+                    0.0,
+                    0.0,
+                ],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_subdivide_handles_translated_polyhedron_fill_chain() -> None:
+    geometry = E.fill()(
+        G.polyhedron(
+            center=(255.8, 0.0, 0.0),
+            scale=1.0,
+        )
+    )
+    realized = realize(E.subdivide(subdivisions=6)(geometry))
+
+    assert realized.coords.shape[0] > 0
+    assert int(realized.offsets[-1]) == len(realized.coords)
+    assert np.all(realized.offsets[1:] >= realized.offsets[:-1])
+
+
+def test_subdivide_float32_stop_boundary_preserves_trailing_polyline() -> None:
+    realized = realize(
+        E.subdivide(subdivisions=6)(
+            G.subdivide_test_float32_boundary_with_trailing_line()
+        )
+    )
+
+    polylines = list(_iter_polylines(realized))
+    assert len(polylines) == 2
+    assert realized.offsets.tolist() == [0, 33, 98]
+    assert int(realized.offsets[-1]) == len(realized.coords)
+    assert polylines[1].shape == (65, 3)
+    np.testing.assert_array_equal(
+        polylines[1][[0, -1]],
+        np.array(
+            [[0.0, 7.0, 0.0], [10.0, 7.0, 0.0]],
+            dtype=np.float32,
+        ),
+    )
 
 
 def test_subdivide_empty_geometry_is_noop() -> None:

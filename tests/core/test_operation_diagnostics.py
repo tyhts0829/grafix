@@ -18,6 +18,14 @@ def _line() -> tuple[np.ndarray, np.ndarray]:
     )
 
 
+def _float32_stop_boundary_line() -> tuple[np.ndarray, np.ndarray]:
+    endpoint = np.nextafter(np.float32(0.32), np.float32(np.inf))
+    return (
+        np.asarray([[0.0, 0.0, 0.0], [endpoint, 0.0, 0.0]], dtype=np.float32),
+        np.asarray([0, 2], dtype=np.int32),
+    )
+
+
 def test_operation_diagnostic_context_isolated_and_deduplicated() -> None:
     with operation_diagnostic_context() as buffer:
         for _ in range(2):
@@ -64,6 +72,22 @@ def test_subdivide_negative_value_emits_one_clamp_diagnostic() -> None:
     assert diagnostic.original_value == -2
     assert diagnostic.effective_value == 0
     assert "clamped" in diagnostic.reason
+
+
+def test_subdivide_float32_early_stop_reports_actual_effective_level() -> None:
+    with operation_diagnostic_context() as buffer:
+        coords, offsets = subdivide(
+            _float32_stop_boundary_line(),
+            subdivisions=10,
+        )
+
+    assert coords.shape == (33, 3)
+    assert offsets.tolist() == [0, 33]
+    assert len(buffer) == 1
+    diagnostic = buffer.snapshot()[0]
+    assert diagnostic.original_value == 10
+    assert diagnostic.effective_value == 5
+    assert "minimum segment length stopped" in diagnostic.reason
 
 
 def test_grid_normal_path_has_no_diagnostic() -> None:
