@@ -47,7 +47,8 @@ def test_mp_slider_churn_benchmark_checks_progress_revision_and_checksum() -> No
         case = result["cases"][case_id]
         stable = case["stable"]
         changing = case["changing"]
-        assert stable["snapshot_broadcasts"] == 1
+        assert stable["snapshot_broadcasts"] == 0
+        assert stable["snapshot_payload_copies"] == 1
         assert stable["checksum_matches_sync"] is True
         assert changing["fresh_result_ratio"] >= 0.5
         assert changing["max_consecutive_stale_frames"] <= 6

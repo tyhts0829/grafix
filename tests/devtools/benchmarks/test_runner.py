@@ -25,7 +25,12 @@ from grafix.devtools.benchmarks.runner import (
     run_case_isolated,
     select_case_definitions,
 )
-from grafix.devtools.benchmarks.schema import CaseResult, case_result_to_dict
+from grafix.devtools.benchmarks.schema import (
+    CaseResult,
+    Metric,
+    case_result_to_dict,
+    evaluate_contract,
+)
 
 
 def test_isolated_process_timeout_kills_the_process_group(
@@ -135,6 +140,22 @@ def test_registry_selects_suite_and_rejects_unknown_case() -> None:
         "frame_interval_s": pytest.approx(1.0 / 60.0),
     }
     assert "mp" in slider_churn.selectable_suites
+    assert slider_churn.self_sampling is True
+    multilayer = next(
+        definition
+        for definition in case_definitions()
+        if definition.case_id
+        == "interactive.renderer.multilayer.stable_offsets.layers_8"
+    )
+    assert multilayer.parameters["layers"] == 8
+    assert multilayer.parameters["stable_topology"] is True
+    assert "interactive" in multilayer.selectable_suites
+    assert any(
+        definition.case_id
+        == "interactive.renderer.multilayer.stable_offsets.layers_100"
+        and definition.selectable_suites == ("soak",)
+        for definition in case_definitions()
+    )
 
 
 def test_isolated_runner_returns_raw_samples_checksum_and_rss_delta() -> None:
@@ -162,6 +183,268 @@ def test_isolated_runner_returns_raw_samples_checksum_and_rss_delta() -> None:
     assert result.baseline_rss_bytes is not None
     assert result.peak_rss_delta_bytes is not None
     assert result.peak_rss_delta_bytes >= 0
+    assert all(isinstance(metric, Metric) for metric in result.metrics)
+    assert {metric.name for metric in result.metrics} >= {"parts", "recipe_id"}
+
+
+def test_self_sampling_scenario_runs_one_semantic_outer_sample() -> None:
+    definition = next(
+        definition
+        for definition in case_definitions()
+        if definition.case_id
+        == "interactive.slider.input_to_present.rows_32.workers_0"
+    )
+    result = run_case_isolated(
+        definition,
+        seed=0,
+        mode="warm",
+        samples=3,
+        warmup=2,
+        target_ns=1_000_000_000,
+        disable_gc=False,
+        timeout_seconds=30.0,
+    )
+
+    assert result.status == "ok", result.error
+    assert len(result.samples) == 1
+    assert result.stats is not None and result.stats.n == 1
+    latency = next(
+        metric
+        for metric in result.metrics
+        if metric.name == "ux01.input_to_present"
+    )
+    assert latency.distribution is not None
+    assert latency.distribution.count == definition.parameters["drag_frames"]
+
+
+def test_runner_normalizes_legacy_metrics_and_hard_contract_fails_case() -> None:
+    metrics = runner.normalize_metrics(
+        {
+            "completed_results": 4,
+            "cases": {
+                "translate": {
+                    "changing": {
+                        "input_to_result_ms": {
+                            "n": 3,
+                            "median": 12.0,
+                            "p95": 18.0,
+                            "p99": 20.0,
+                            "max": 20.0,
+                        }
+                    }
+                }
+            },
+        }
+    )
+    by_name = {metric.name: metric for metric in metrics}
+    assert by_name["completed_results"].kind == "counter"
+    latency = by_name[
+        "cases.translate.changing.input_to_result_ms"
+    ]
+    assert latency.kind == "distribution"
+    assert latency.unit == "ms"
+    assert latency.phase == "drag"
+    assert latency.scope == "scenario"
+    assert latency.distribution is not None
+    assert latency.distribution.p95 == 18.0
+
+    definition = next(
+        definition
+        for definition in case_definitions()
+        if definition.case_id == "core.concat_recipe.parts_10"
+    )
+    failed = evaluate_contract(
+        contract_id="synthetic.hard",
+        severity="hard",
+        actual=False,
+        comparator="eq",
+        limit=True,
+        reason="synthetic hard guardrail",
+    )
+    failing_definition = replace(
+        definition,
+        setup=lambda _parameters, _seed: None,
+        workload=lambda _state: runner._CaseOutput(
+            value={"ok": True},
+            metrics={"interactive_target_met": False},
+            contracts=(failed,),
+        ),
+    )
+    result = runner._measure_in_process(
+        failing_definition,
+        spec=definition.spec(seed=0),
+        seed=0,
+        mode="warm",
+        samples=1,
+        warmup=0,
+        target_ns=0,
+        disable_gc=False,
+    )
+
+    assert result.status == "contract-failure"
+    assert result.samples
+    assert result.checksum
+    assert result.contracts == (failed,)
+    assert "synthetic.hard" in (result.error or "")
+
+
+def test_warm_samples_preserve_an_earlier_hard_contract_failure() -> None:
+    definition = next(
+        definition
+        for definition in case_definitions()
+        if definition.case_id == "core.concat_recipe.parts_10"
+    )
+    calls = 0
+
+    def workload(_state: object) -> runner._CaseOutput:
+        nonlocal calls
+        calls += 1
+        contract = evaluate_contract(
+            contract_id="synthetic.across-samples",
+            severity="hard",
+            actual=calls > 1,
+            comparator="eq",
+            limit=True,
+            reason="all outer samples must pass",
+        )
+        return runner._CaseOutput(
+            value={"stable": True},
+            metrics=(
+                Metric(
+                    name="stable",
+                    kind="gauge",
+                    unit="count",
+                    phase="measure",
+                    scope="test",
+                    value=1,
+                ),
+            ),
+            contracts=(contract,),
+        )
+
+    result = runner._measure_in_process(
+        replace(
+            definition,
+            setup=lambda _parameters, _seed: None,
+            workload=workload,
+        ),
+        spec=definition.spec(seed=0),
+        seed=0,
+        mode="warm",
+        samples=3,
+        warmup=0,
+        target_ns=0,
+        disable_gc=False,
+    )
+
+    assert result.status == "contract-failure"
+    assert result.contracts[0].passed is False
+
+
+def test_warm_samples_reject_semantic_or_typed_metric_drift() -> None:
+    definition = next(
+        definition
+        for definition in case_definitions()
+        if definition.case_id == "core.concat_recipe.parts_10"
+    )
+    calls = 0
+
+    def changing_output(_state: object) -> runner._CaseOutput:
+        nonlocal calls
+        calls += 1
+        return runner._CaseOutput(value={"sample": calls})
+
+    checksum_result = runner._measure_in_process(
+        replace(
+            definition,
+            setup=lambda _parameters, _seed: None,
+            workload=changing_output,
+        ),
+        spec=definition.spec(seed=0),
+        seed=0,
+        mode="warm",
+        samples=2,
+        warmup=0,
+        target_ns=0,
+        disable_gc=False,
+    )
+    assert checksum_result.status == "error"
+    assert "different output checksums" in (checksum_result.error or "")
+
+    calls = 0
+
+    def changing_metric(_state: object) -> runner._CaseOutput:
+        nonlocal calls
+        calls += 1
+        return runner._CaseOutput(
+            value={"stable": True},
+            metrics=(
+                Metric(
+                    name="changing",
+                    kind="gauge",
+                    unit="count",
+                    phase="measure",
+                    scope="test",
+                    value=calls,
+                ),
+            ),
+        )
+
+    metric_result = runner._measure_in_process(
+        replace(
+            definition,
+            setup=lambda _parameters, _seed: None,
+            workload=changing_metric,
+        ),
+        spec=definition.spec(seed=0),
+        seed=0,
+        mode="warm",
+        samples=2,
+        warmup=0,
+        target_ns=0,
+        disable_gc=False,
+    )
+    assert metric_result.status == "error"
+    assert "typed metrics changed" in (metric_result.error or "")
+
+
+def test_slider_interactive_target_is_a_hard_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from grafix.devtools.benchmarks import mp_draw_benchmark
+
+    monkeypatch.setattr(
+        mp_draw_benchmark,
+        "run_mp_slider_churn_benchmarks",
+        lambda **_kwargs: {
+            "output": {"progress_contract_met": True},
+            "cases": {
+                "light_translate": {
+                    "stable": {
+                        "progress_contract_met": True,
+                        "interactive_target_met": True,
+                    },
+                    "changing": {
+                        "progress_contract_met": True,
+                        "interactive_target_met": False,
+                    },
+                }
+            },
+        },
+    )
+
+    output = runner._workload_mp_slider_churn(
+        {"frames": 1, "frame_interval_s": 0.0}
+    )
+    failed = [
+        contract
+        for contract in output.contracts
+        if contract.severity == "hard" and not contract.passed
+    ]
+
+    assert [contract.contract_id for contract in failed] == [
+        "mp.slider.light_translate.changing.interactive_target"
+    ]
 
 
 def test_renderer_cases_separate_static_offsets_from_animated_topology() -> None:

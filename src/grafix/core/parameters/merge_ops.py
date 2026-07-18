@@ -19,16 +19,12 @@ def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> No
     """フレームを merge し、effective/source の最終差分を revision 化する。"""
 
     runtime = store._runtime_ref()
-    keys = {record.key for record in records}
-    before = {
-        key: (
-            runtime.last_effective_by_key.get(key, _MISSING),
-            runtime.last_source_by_key.get(key, _MISSING),
-        )
-        for key in keys
-    }
+    # effective/source を実際に書く key だけ変更前値を遅延保存する。
+    # 大きな frame で ``records -> set -> before dict`` と全件を先行走査せず、
+    # merge 本体と同じ pass で rollback 情報を集める。
+    before: dict[ParameterKey, tuple[object, object]] = {}
     try:
-        _merge_frame_params(store, records)
+        _merge_frame_params(store, records, runtime_before=before)
     except BaseException:
         # failed frame の effective/source は公開しない。永続 store 側の変更は
         # 既存 revision が追跡するが、frame snapshot は last-good を維持する。
@@ -44,14 +40,19 @@ def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> No
         raise
 
     if any(
-        before[key][0] != runtime.last_effective_by_key.get(key, _MISSING)
-        or before[key][1] != runtime.last_source_by_key.get(key, _MISSING)
-        for key in keys
+        effective != runtime.last_effective_by_key.get(key, _MISSING)
+        or source != runtime.last_source_by_key.get(key, _MISSING)
+        for key, (effective, source) in before.items()
     ):
         runtime.effective_revision += 1
 
 
-def _merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> None:
+def _merge_frame_params(
+    store: ParamStore,
+    records: list[FrameParamRecord],
+    *,
+    runtime_before: dict[ParameterKey, tuple[object, object]],
+) -> None:
     """フレーム内で観測したレコードをストアに保存し、関連情報を更新する。"""
 
     # `runtime` は永続化しない「実行時キャッシュ」。
@@ -100,6 +101,19 @@ def _merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> N
         #
         # 注意: record には effective=None のケースがあり得る（テストなど）。
         #       その場合はキャッシュを更新しない（直近値を保持）。
+        if rec.effective is not None or rec.source in {
+            "code",
+            "ui",
+            "midi_live",
+            "midi_frozen",
+        }:
+            runtime_before.setdefault(
+                rec.key,
+                (
+                    runtime.last_effective_by_key.get(rec.key, _MISSING),
+                    runtime.last_source_by_key.get(rec.key, _MISSING),
+                ),
+            )
         if rec.effective is not None:
             runtime.last_effective_by_key[rec.key] = rec.effective
         if rec.source in {"code", "ui", "midi_live", "midi_frozen"}:

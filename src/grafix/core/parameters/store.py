@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from .effects import EffectChainIndex
@@ -45,6 +47,16 @@ class ParamStore:
         # 永続化しない実行時情報（loaded/observed/reconcile-applied）。
         self._runtime = ParamStoreRuntime()
         self._revision = 0
+        self._table_revision = 0
+        self._value_revision = 0
+        self._style_revision = 0
+        self._value_change_log: deque[tuple[int, tuple[ParameterKey, ...]]] = deque(
+            maxlen=4096
+        )
+        self._history_key_observer: Callable[[ParameterKey], None] | None = None
+        self._history_headers_observer: (
+            Callable[[frozenset[str] | None], None] | None
+        ) = None
         self._snapshot_cache_revision = -1
         self._snapshot_cache: object | None = None
 
@@ -53,6 +65,24 @@ class ParamStore:
         """snapshot/model に影響する永続状態の変更時だけ増える単調 revision。"""
 
         return self._revision
+
+    @property
+    def table_revision(self) -> int:
+        """Parameter GUI の行構造・静的属性が変わったときだけ増える revision。"""
+
+        return self._table_revision
+
+    @property
+    def value_revision(self) -> int:
+        """既存 parameter の表示値が変わったときだけ増える revision。"""
+
+        return self._value_revision
+
+    @property
+    def style_revision(self) -> int:
+        """global/layer style の値または関連し得る構造が変わる revision。"""
+
+        return self._style_revision
 
     @property
     def load_provenance(self) -> LoadProvenance:
@@ -121,6 +151,7 @@ class ParamStore:
         if state is not None:
             return state
 
+        self._observe_history_key_before(key)
         state = ParamState(ui_value=base_value)
         if initial_override is not None:
             state.override = bool(initial_override)
@@ -134,6 +165,7 @@ class ParamStore:
     def _set_meta(self, key: ParameterKey, meta: ParamMeta) -> None:
         if self._meta.get(key) == meta:
             return
+        self._observe_history_key_before(key)
         self._meta[key] = meta
         self._touch()
 
@@ -171,10 +203,91 @@ class ParamStore:
     def _runtime_ref(self) -> ParamStoreRuntime:
         return self._runtime
 
-    def _touch(self) -> None:
+    def _touch(
+        self,
+        *,
+        structure: bool = True,
+        value_keys: Iterable[ParameterKey] = (),
+    ) -> None:
+        """永続 revision と用途別 revision を一度に更新する。
+
+        ``structure=False`` は、既存行の値だけが変わる hot path でのみ使う。
+        呼び出し側が指定を忘れた場合は静的モデルを再構築する安全側へ倒す。
+        """
+
+        changed_keys = tuple(dict.fromkeys(value_keys))
         self._revision += 1
+        if structure:
+            self._table_revision += 1
+            # 構造変更には style parameter の追加・削除や復元も含まれる。
+            # 呼び出し側が値 key を列挙できない bulk 経路でも、保持中 scene の
+            # style overlay を取りこぼさないよう安全側へ倒す。
+            self._style_revision += 1
+        if changed_keys:
+            self._value_revision += 1
+            if not structure and any(
+                key.op in {"__style__", "__layer_style__"}
+                for key in changed_keys
+            ):
+                self._style_revision += 1
+            self._value_change_log.append((self._value_revision, changed_keys))
         self._snapshot_cache = None
         self._snapshot_cache_revision = -1
+
+    def value_changes_since(
+        self,
+        revision: int,
+    ) -> frozenset[ParameterKey] | None:
+        """指定 value revision 以降の key を返す。log 欠落時は ``None``。"""
+
+        since = int(revision)
+        if since == self._value_revision:
+            return frozenset()
+        if since < 0 or since > self._value_revision:
+            return None
+        if not self._value_change_log:
+            return None
+        first_revision = self._value_change_log[0][0]
+        if since < first_revision - 1:
+            return None
+        changed: set[ParameterKey] = set()
+        for change_revision, keys in reversed(self._value_change_log):
+            if change_revision <= since:
+                break
+            changed.update(keys)
+        return frozenset(changed)
+
+    def _begin_history_patch_capture(
+        self,
+        *,
+        observe_key: Callable[[ParameterKey], None],
+        observe_headers: Callable[[frozenset[str] | None], None],
+    ) -> None:
+        """単一 GUI transaction の変更前値 observer を登録する。"""
+
+        if self._history_key_observer is not None:
+            raise RuntimeError("history patch capture is already active")
+        self._history_key_observer = observe_key
+        self._history_headers_observer = observe_headers
+
+    def _end_history_patch_capture(self) -> None:
+        """現在の GUI transaction observer を解除する。"""
+
+        self._history_key_observer = None
+        self._history_headers_observer = None
+
+    def _observe_history_key_before(self, key: ParameterKey) -> None:
+        observer = self._history_key_observer
+        if observer is not None:
+            observer(key)
+
+    def _observe_history_headers_before(
+        self,
+        headers: frozenset[str] | None = None,
+    ) -> None:
+        observer = self._history_headers_observer
+        if observer is not None:
+            observer(headers)
 
     def _get_snapshot_cache(self) -> object | None:
         if self._snapshot_cache_revision != self._revision:

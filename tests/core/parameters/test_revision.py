@@ -13,6 +13,8 @@ from grafix.core.parameters import merge_ops
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.store import ParamStore
+from grafix.core.parameters.style import STYLE_GLOBAL_THICKNESS, style_key
+from grafix.core.parameters.style_ops import ensure_style_entries
 from grafix.core.parameters.ui_ops import update_state_from_ui
 
 
@@ -62,6 +64,43 @@ def test_ui_and_label_updates_advance_revision_only_on_real_change() -> None:
     revision = store.revision
     set_label(store, op=key.op, site_id=key.site_id, label="line")
     assert store.revision == revision
+
+
+def test_style_revision_only_tracks_style_value_or_conservative_structure_changes() -> None:
+    store = ParamStore()
+    merge_frame_params(store, [_record(1)])
+    style_before_geometry = store.style_revision
+    table_before_geometry = store.table_revision
+
+    geometry_key = _record(1).key
+    assert update_state_from_ui(
+        store,
+        geometry_key,
+        2.0,
+        meta=_record(1).meta,
+    )[0]
+    assert store.style_revision == style_before_geometry
+    assert store.table_revision == table_before_geometry
+
+    ensure_style_entries(
+        store,
+        background_color_rgb01=(1.0, 1.0, 1.0),
+        global_thickness=0.01,
+        global_line_color_rgb01=(0.0, 0.0, 0.0),
+    )
+    thickness_key = style_key(STYLE_GLOBAL_THICKNESS)
+    thickness_meta = store.get_meta(thickness_key)
+    assert thickness_meta is not None
+    style_before_value = store.style_revision
+    table_before_value = store.table_revision
+    assert update_state_from_ui(
+        store,
+        thickness_key,
+        0.005,
+        meta=thickness_meta,
+    )[0]
+    assert store.style_revision == style_before_value + 1
+    assert store.table_revision == table_before_value
 
 
 def test_large_unchanged_snapshot_is_built_once() -> None:

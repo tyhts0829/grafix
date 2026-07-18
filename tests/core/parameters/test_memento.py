@@ -11,6 +11,8 @@ from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.store import ParamStore
+from grafix.core.parameters.style import STYLE_GLOBAL_THICKNESS, style_key
+from grafix.core.parameters.style_ops import ensure_style_entries
 from grafix.core.parameters.ui_ops import update_state_from_ui
 
 
@@ -197,6 +199,29 @@ def test_restore_invalidates_cached_snapshot() -> None:
 
     assert after is not before
     assert after[key][1].ui_value == 0.75
+
+
+def test_restore_style_value_advances_style_without_rebuilding_table() -> None:
+    store = ParamStore()
+    ensure_style_entries(
+        store,
+        background_color_rgb01=(1.0, 1.0, 1.0),
+        global_thickness=0.01,
+        global_line_color_rgb01=(0.0, 0.0, 0.0),
+    )
+    key = style_key(STYLE_GLOBAL_THICKNESS)
+    meta = store.get_meta(key)
+    assert meta is not None
+    memento = capture_param_store_memento(store)
+    assert update_state_from_ui(store, key, 0.005, meta=meta)[0]
+    table_revision = store.table_revision
+    style_revision = store.style_revision
+    value_revision = store.value_revision
+
+    assert restore_param_store_memento(store, memento) is True
+    assert store.table_revision == table_revision
+    assert store.style_revision == style_revision + 1
+    assert store.value_revision == value_revision + 1
 
 
 def test_restoring_the_same_memento_is_a_revision_noop() -> None:

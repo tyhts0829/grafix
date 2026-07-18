@@ -178,6 +178,7 @@ def make_case_spec(
     support_source_files: tuple[str | Path, ...] = (),
     tags: tuple[str, ...] = (),
     checksum_policy: str = "exact",
+    self_sampling: bool = False,
 ) -> CaseSpec:
     """case 定義と workload source から CaseSpec を作る。"""
 
@@ -227,9 +228,11 @@ def make_case_spec(
             seed=seed,
             source_sha256=source_sha256,
             checksum_policy=checksum_policy,
+            self_sampling=self_sampling,
         ),
         checksum_policy=str(checksum_policy),
         tags=tuple(str(tag) for tag in tags),
+        self_sampling=bool(self_sampling),
     )
 
 

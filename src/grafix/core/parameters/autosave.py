@@ -46,6 +46,7 @@ class ParamStoreAutosave:
         self._first_dirty_at: float | None = None
         self._status: AutosaveStatus = "clean"
         self._last_error: str | None = None
+        self._was_suspended = False
 
     @property
     def path(self) -> Path:
@@ -71,11 +72,32 @@ class ParamStoreAutosave:
 
         return self._last_error
 
-    def tick(self, *, now: float | None = None) -> bool:
-        """変更を観測し、debounce または最大間隔到達時に保存する。"""
+    def tick(
+        self,
+        *,
+        now: float | None = None,
+        suspended: bool = False,
+    ) -> bool:
+        """変更を観測し、操作終了後の debounce を経て保存する。
+
+        ``suspended=True`` の間は同期 I/O を行わない。slider release 後に
+        debounce を開始し直すため、長い drag が最大保存間隔を越えても
+        操作中の frame を停止させない。
+        """
 
         current_time = self._clock() if now is None else float(now)
         self._observe(current_time)
+        if suspended:
+            self._was_suspended = True
+            return False
+        if self._was_suspended:
+            self._was_suspended = False
+            if self.dirty:
+                self._dirty_since = current_time
+                self._first_dirty_at = current_time
+                if self._status != "failed":
+                    self._status = "dirty"
+            return False
         if not self.dirty or self._dirty_since is None:
             return False
         settled = current_time - self._dirty_since >= self._debounce_seconds
@@ -105,6 +127,7 @@ class ParamStoreAutosave:
         self._first_dirty_at = None
         self._status = "clean"
         self._last_error = None
+        self._was_suspended = False
 
     def _observe(self, now: float) -> None:
         revision = self._store.revision
@@ -137,6 +160,7 @@ class ParamStoreAutosave:
         self._first_dirty_at = None
         self._status = "clean"
         self._last_error = None
+        self._was_suspended = False
         return True
 
 

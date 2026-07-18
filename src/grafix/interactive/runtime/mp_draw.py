@@ -39,7 +39,7 @@ import traceback
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 from math import isfinite
-from typing import Any, Callable, cast
+from typing import Any, Callable, Protocol, cast
 
 from grafix.core.layer import Layer
 from grafix.core.operation_diagnostics import (
@@ -57,6 +57,18 @@ _WORKER_READY_TIMEOUT_S = 10.0
 _WORKER_JOIN_TIMEOUT_S = 1.0
 _WORKER_RESTART_JOIN_TIMEOUT_S = 0.05
 _MAX_SUBMITTED_TIMESTAMPS = 256
+
+
+class _PerfEventCallback(Protocol):
+    """親 process で観測した causal event を受け取る callback。"""
+
+    def __call__(
+        self,
+        name: str,
+        *,
+        frame_id: int | None = None,
+        revision: int | None = None,
+    ) -> None: ...
 
 
 class MpDrawWorkerError(RuntimeError):
@@ -391,6 +403,7 @@ class MpDraw:
         *,
         n_worker: int,
         evaluation_timeout: float | None = 5.0,
+        event_callback: _PerfEventCallback | None = None,
     ) -> None:
         """worker 群を起動して mp-draw を開始する。
 
@@ -431,6 +444,7 @@ class MpDraw:
         self._draw = draw
         self._n_worker = int(n_worker)
         self._evaluation_timeout = timeout
+        self._event_callback = event_callback
         self._generation = 0
         self._restart_count = 0
         self._last_restart_reason: str | None = None
@@ -451,6 +465,7 @@ class MpDraw:
         self._last_stale_generation_result: tuple[int, int, int] | None = None
         self._snapshot_broadcast_count = 0
         self._snapshot_ack_count = 0
+        self._snapshot_payload_copy_count = 0
         self._last_snapshot_ack: _SnapshotAck | None = None
         self._task_enqueue_count = 0
         self._task_drop_count = 0
@@ -459,6 +474,7 @@ class MpDraw:
         # latest-wins queue で結果が返らない task もあるため、submit 時刻は明示的に
         # bounded とする。worker lag はこの時刻から result 到着までを測る。
         self._submitted_at_by_frame: OrderedDict[int, float] = OrderedDict()
+        self._submitted_revision_by_frame: OrderedDict[int, int] = OrderedDict()
         # `poll_latest()` の「同じ結果を二度返さない」ためのブックキーピング。
         self._last_published_frame_id = 0
 
@@ -498,6 +514,8 @@ class MpDraw:
         self._active_tasks_by_pid: dict[int, tuple[int, float]] = {}
         self._pending_task: _DrawTask | None = None
         self._snapshot_broadcast_revision: int | None = None
+        self._snapshot_payload_revision: int | None = None
+        self._snapshot_payload: ParamSnapshot | None = None
 
     def _start_generation(self, *, wait_ready: bool) -> None:
         """現在世代の worker を起動する。restart 時は ready を待たない。"""
@@ -587,6 +605,7 @@ class MpDraw:
         self._last_restart_reason = normalized_reason
         self._latest_received = None
         self._submitted_at_by_frame.clear()
+        self._submitted_revision_by_frame.clear()
 
         try:
             self._create_generation_resources()
@@ -725,6 +744,10 @@ class MpDraw:
                     self._worker_snapshot_revisions[pid] = applied
                 self._snapshot_ack_count += 1
                 self._last_snapshot_ack = message
+                self._record_event(
+                    "mp_snapshot_applied",
+                    revision=int(message.applied_revision),
+                )
                 control_index = self._control_index_by_pid.get(pid)
                 if control_index is not None:
                     queued_revision = self._queued_snapshot_revisions.get(control_index)
@@ -741,6 +764,15 @@ class MpDraw:
                     int(message.frame_id),
                     time.monotonic(),
                 )
+                self._record_event(
+                    "mp_task_started",
+                    frame_id=int(message.frame_id),
+                    revision=getattr(
+                        self,
+                        "_submitted_revision_by_frame",
+                        {},
+                    ).get(int(message.frame_id)),
+                )
             else:
                 worker_pid = message.worker_pid
                 if worker_pid is not None:
@@ -748,6 +780,14 @@ class MpDraw:
                     if active is not None and int(active[0]) == int(message.frame_id):
                         self._active_tasks_by_pid.pop(int(worker_pid), None)
                 self._completed_result_count += 1
+                getattr(
+                    self,
+                    "_submitted_revision_by_frame",
+                    {},
+                ).pop(
+                    int(message.frame_id),
+                    None,
+                )
                 current_epoch = int(getattr(self, "_current_epoch", 0))
                 result_epoch = int(message.epoch)
                 if result_epoch != current_epoch:
@@ -775,14 +815,44 @@ class MpDraw:
                     # preview fallback 用の成功結果は、後続の error で上書きしない。
                     self._latest_successful = message
 
-    def _broadcast_snapshot(self, *, revision: int, snapshot: ParamSnapshot) -> None:
+    def _plain_snapshot_for_revision(
+        self,
+        *,
+        revision: int,
+        snapshot: ParamSnapshot,
+    ) -> ParamSnapshot:
+        """同じ revision の queue 用 plain snapshot を 1 回だけ構築する。"""
+
+        normalized_revision = int(revision)
+        cached = self._snapshot_payload
+        if (
+            cached is not None
+            and self._snapshot_payload_revision == normalized_revision
+        ):
+            return cached
+        payload: ParamSnapshot = dict(snapshot)
+        self._snapshot_payload_revision = normalized_revision
+        self._snapshot_payload = payload
+        self._snapshot_payload_copy_count += 1
+        self._record_event(
+            "parameter_snapshot_built",
+            revision=normalized_revision,
+        )
+        return payload
+
+    def _broadcast_snapshot(
+        self,
+        *,
+        revision: int,
+        snapshot: ParamSnapshot,
+    ) -> None:
         """snapshot 本体を各 worker へ 1 回ずつ配信する。"""
 
-        # store snapshot は外側を read-only にしているため、そのままでは spawn Queue で
-        # pickle できない。revision 変更時だけ plain dict へ 1 回コピーして配信する。
+        # `snapshot` は submit() が revision ごとに一度だけ plain dict 化した payload。
+        # task 同梱分と control 配布分で全 ParamStore を二重コピーしない。
         update = _SnapshotUpdate(
             revision=int(revision),
-            snapshot=dict(snapshot),
+            snapshot=snapshot,
             generation=int(getattr(self, "_generation", 0)),
         )
         # worker ごとに「queue 内 1 件 + 親側 latest 1 件」だけを保持する。
@@ -792,6 +862,27 @@ class MpDraw:
         self._flush_snapshot_updates()
         self._snapshot_broadcast_revision = int(revision)
         self._snapshot_broadcast_count += 1
+        self._record_event(
+            "mp_snapshot_sent",
+            revision=int(revision),
+        )
+
+    def _record_event(
+        self,
+        name: str,
+        *,
+        frame_id: int | None = None,
+        revision: int | None = None,
+    ) -> None:
+        """有効な callback があれば main-process event を転送する。"""
+
+        callback = getattr(self, "_event_callback", None)
+        if callback is not None:
+            callback(
+                str(name),
+                frame_id=frame_id,
+                revision=revision,
+            )
 
     def _flush_snapshot_updates(self) -> None:
         """各 worker の空いた control queue へ pending latest を 1 件だけ送る。"""
@@ -950,12 +1041,24 @@ class MpDraw:
             self._next_frame_id += 1
             revision = int(snapshot_revision)
             worker_snapshot_confirmed = self._workers_have_revision(revision)
+            needs_control_broadcast = (
+                self._n_worker > 1
+                and self._snapshot_broadcast_revision != revision
+            )
+            payload = (
+                None
+                if worker_snapshot_confirmed and not needs_control_broadcast
+                else self._plain_snapshot_for_revision(
+                    revision=revision,
+                    snapshot=snapshot,
+                )
+            )
             task = _DrawTask(
                 frame_id=self._next_frame_id,
                 t=float(t),
                 snapshot_revision=revision,
                 cc_snapshot=cc_snapshot,
-                snapshot=None if worker_snapshot_confirmed else dict(snapshot),
+                snapshot=None if worker_snapshot_confirmed else payload,
                 quality=quality,
                 epoch=int(requested_epoch),
                 generation=int(getattr(self, "_generation", 0)),
@@ -963,12 +1066,27 @@ class MpDraw:
             submitted_at = self._submitted_at_by_frame
             submitted_at[int(task.frame_id)] = time.monotonic()
             while len(submitted_at) > _MAX_SUBMITTED_TIMESTAMPS:
-                submitted_at.popitem(last=False)
-            if self._snapshot_broadcast_revision != revision:
+                expired_frame_id, _ = submitted_at.popitem(last=False)
+                self._submitted_revision_by_frame.pop(expired_frame_id, None)
+            self._submitted_revision_by_frame[int(task.frame_id)] = revision
+            if task.snapshot is not None and not needs_control_broadcast:
+                # 1-worker の task-carried snapshot も control broadcast と同じ
+                # causal stage として扱う。payload は task と同時に一度だけ送られる。
+                self._record_event(
+                    "mp_snapshot_sent",
+                    frame_id=int(task.frame_id),
+                    revision=revision,
+                )
+            if needs_control_broadcast:
+                assert payload is not None
                 self._broadcast_snapshot(
                     revision=revision,
-                    snapshot=snapshot,
+                    snapshot=payload,
                 )
+            elif self._n_worker == 1:
+                # 1 worker では task-carried snapshot の apply ACK だけで全 worker が
+                # current になる。control queue へ同じ payload を重複送信しない。
+                self._snapshot_broadcast_revision = revision
 
             # queue の feeder race で即時投入できなくても、最新 task を親側に
             # 1 件だけ保持し、次の submit/poll で再試行する。
@@ -1027,10 +1145,22 @@ class MpDraw:
         return int(self._snapshot_broadcast_count)
 
     @property
+    def last_submitted_frame_id(self) -> int:
+        """親 process が最後に割り当てた frame ID を返す。"""
+
+        return int(self._next_frame_id)
+
+    @property
     def snapshot_ack_count(self) -> int:
         """worker から受信した snapshot ack 数を返す。"""
 
         return int(self._snapshot_ack_count)
+
+    @property
+    def snapshot_payload_copy_count(self) -> int:
+        """queue 用 plain snapshot を構築した revision 数を返す。"""
+
+        return int(self._snapshot_payload_copy_count)
 
     @property
     def worker_snapshot_revisions(self) -> dict[int, int]:

@@ -324,6 +324,7 @@ def _measure_slider_sequence(
             "expected_geometry_checksum": expected_checksum,
             "checksum_matches_sync": final_checksum == expected_checksum,
             "snapshot_broadcasts": mp_draw.snapshot_broadcast_count,
+            "snapshot_payload_copies": mp_draw.snapshot_payload_copy_count,
             "snapshot_acks": mp_draw.snapshot_ack_count,
             "submitted_tasks": submitted,
             "enqueued_tasks": mp_draw.task_enqueue_count,

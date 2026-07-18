@@ -18,6 +18,7 @@ from numba import njit, prange  # type: ignore[attr-defined, import-untyped]
 from grafix.core.effect_registry import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.preview_quality import current_preview_quality
 from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
 
 from .util import (
@@ -35,6 +36,9 @@ _PLANAR_EPS_REL = 1e-5
 _MAX_ITERS = 10_000
 _MAX_TOTAL_POINTS = 200_000
 _MAX_POINTS_PER_RING = 20_000
+DRAFT_MAX_ITERS = 32
+DRAFT_MAX_TOTAL_POINTS = 4_096
+DRAFT_MAX_FORCE_GRID_CELLS = 65_536
 
 _BOUNDARY_PUSH_GAIN = 0.1
 _MAX_SDF_GRID_CELLS = 1_000_000
@@ -87,6 +91,17 @@ class _Ring2D:
     vertices: np.ndarray  # (N,2) float64, closed (first == last)
     mins: np.ndarray  # (2,) float64
     maxs: np.ndarray  # (2,) float64
+
+
+@dataclass(frozen=True, slots=True)
+class _GrowthSimulationResult:
+    rings: list[np.ndarray]
+    iterations: int
+    max_total_points: int
+    point_budget_hit: bool
+    rejected_total_points: int | None
+    force_grid_requested_cells: int = 0
+    force_grid_effective_cells: int = 0
 
 
 def _planarity_threshold(points: np.ndarray) -> float:
@@ -527,6 +542,57 @@ def _insert_points_ring_xy(points: np.ndarray, target_spacing: float) -> np.ndar
     return out
 
 
+def _bounded_spatial_hash_grid(
+    points_xy: np.ndarray,
+    *,
+    requested_cell: float,
+    max_cells: int,
+) -> tuple[float, int, int, int]:
+    """draft の spatial hash を確保前に上限内へ決定的に粗粒化する。"""
+
+    cell = float(requested_cell)
+    limit = max(1, int(max_cells))
+    min_x = float(np.min(points_xy[:, 0]))
+    max_x = float(np.max(points_xy[:, 0]))
+    min_y = float(np.min(points_xy[:, 1]))
+    max_y = float(np.max(points_xy[:, 1]))
+    span_x = max(0.0, max_x - min_x)
+    span_y = max(0.0, max_y - min_y)
+
+    def shape(candidate: float) -> tuple[int, int, int]:
+        width = max(1, int(math.floor(span_x / candidate)) + 1)
+        height = max(1, int(math.floor(span_y / candidate)) + 1)
+        return width, height, width * height
+
+    requested_width, requested_height, requested_cells = shape(cell)
+    if requested_cells <= limit:
+        return cell, requested_width, requested_height, requested_cells
+
+    low = cell
+    high = max(
+        cell,
+        max(span_x, span_y) / math.sqrt(float(limit)),
+    )
+    high_width, high_height, high_cells = shape(high)
+    while high_cells > limit:
+        high *= 2.0
+        high_width, high_height, high_cells = shape(high)
+
+    for _ in range(64):
+        middle = low + 0.5 * (high - low)
+        if middle == low or middle == high:
+            break
+        middle_width, middle_height, middle_cells = shape(middle)
+        if middle_cells > limit:
+            low = middle
+        else:
+            high = middle
+            high_width = middle_width
+            high_height = middle_height
+
+    return high, high_width, high_height, requested_cells
+
+
 @njit(cache=True, fastmath=True)
 def _compute_forces_numba(
     points_xy: np.ndarray,
@@ -535,6 +601,9 @@ def _compute_forces_numba(
     target_spacing: float,
     repel_strength: float,
     repel_radius: float,
+    grid_cell_size: float = 0.0,
+    bounded_grid_width: int = 0,
+    bounded_grid_height: int = 0,
 ) -> np.ndarray:
     n = int(points_xy.shape[0])
     forces = np.zeros((n, 2), dtype=np.float64)
@@ -579,12 +648,20 @@ def _compute_forces_numba(
         if y > maxy:
             maxy = y
 
-    cell = float(repel_radius)
+    cell = (
+        float(grid_cell_size)
+        if float(grid_cell_size) > 0.0
+        else float(repel_radius)
+    )
     if cell <= 0.0:
         return forces
 
-    grid_w = int(math.floor((maxx - minx) / cell)) + 1
-    grid_h = int(math.floor((maxy - miny) / cell)) + 1
+    grid_w = int(bounded_grid_width)
+    grid_h = int(bounded_grid_height)
+    if grid_w <= 0:
+        grid_w = int(math.floor((maxx - minx) / cell)) + 1
+    if grid_h <= 0:
+        grid_h = int(math.floor((maxy - miny) / cell)) + 1
     if grid_w < 1:
         grid_w = 1
     if grid_h < 1:
@@ -841,10 +918,12 @@ def _simulate_growth_in_mask_xy(
     sdf_origin_x: float,
     sdf_origin_y: float,
     sdf_pitch: float,
-) -> list[np.ndarray]:
+    max_total_points: int | None = None,
+    max_force_grid_cells: int | None = None,
+) -> _GrowthSimulationResult:
     spacing = float(target_spacing)
     if not np.isfinite(spacing) or spacing <= 0.0:
-        return []
+        return _GrowthSimulationResult([], 0, 0, False, None)
 
     iters_i = int(iters)
     if iters_i < 0:
@@ -853,11 +932,12 @@ def _simulate_growth_in_mask_xy(
         iters_i = _MAX_ITERS
 
     if iters_i == 0 or not rings_xy:
-        return rings_xy
+        initial_points = int(sum(int(r.shape[0]) for r in rings_xy))
+        return _GrowthSimulationResult(rings_xy, 0, initial_points, False, None)
 
     mode_s = str(boundary_mode)
     if mode_s not in {"slide", "bounce"}:
-        return []
+        return _GrowthSimulationResult([], 0, 0, False, None)
     mode_i = 0 if mode_s == "slide" else 1
 
     avoid_f = float(boundary_avoid)
@@ -869,18 +949,57 @@ def _simulate_growth_in_mask_xy(
     step = 0.15
 
     rings = [r.astype(np.float64, copy=True) for r in rings_xy]
+    point_limit = (
+        _MAX_TOTAL_POINTS
+        if max_total_points is None
+        else max(1, min(int(max_total_points), _MAX_TOTAL_POINTS))
+    )
+    executed_iterations = 0
+    max_points_observed = int(sum(int(r.shape[0]) for r in rings))
+    point_budget_hit = max_total_points is not None and max_points_observed > point_limit
+    rejected_total_points: int | None = (
+        max_points_observed if point_budget_hit else None
+    )
+    force_grid_requested_cells = 0
+    force_grid_effective_cells = 0
 
     for _it in range(iters_i):
         total_points = int(sum(int(r.shape[0]) for r in rings))
         if total_points <= 0:
-            return []
+            return _GrowthSimulationResult(
+                [],
+                executed_iterations,
+                max_points_observed,
+                point_budget_hit,
+                rejected_total_points,
+                force_grid_requested_cells,
+                force_grid_effective_cells,
+            )
 
-        if total_points < _MAX_TOTAL_POINTS:
-            rings = [_insert_points_ring_xy(r, spacing) for r in rings]
+        if total_points < point_limit:
+            expanded_rings = [_insert_points_ring_xy(r, spacing) for r in rings]
+            expanded_points = int(sum(int(r.shape[0]) for r in expanded_rings))
+            if max_total_points is None or expanded_points <= point_limit:
+                rings = expanded_rings
+            else:
+                point_budget_hit = True
+                rejected_total_points = max(
+                    expanded_points,
+                    0 if rejected_total_points is None else rejected_total_points,
+                )
 
         total_points = int(sum(int(r.shape[0]) for r in rings))
         if total_points <= 0:
-            return []
+            return _GrowthSimulationResult(
+                [],
+                executed_iterations,
+                max_points_observed,
+                point_budget_hit,
+                rejected_total_points,
+                force_grid_requested_cells,
+                force_grid_effective_cells,
+            )
+        max_points_observed = max(max_points_observed, total_points)
 
         # flatten
         points = np.empty((total_points, 2), dtype=np.float64)
@@ -894,14 +1013,45 @@ def _simulate_growth_in_mask_xy(
 
         prev_idx, next_idx = _build_prev_next(total_points, roff)
 
-        forces = _compute_forces_numba(
-            points,
-            next_idx=next_idx,
-            prev_idx=prev_idx,
-            target_spacing=spacing,
-            repel_strength=repel_strength,
-            repel_radius=repel_radius,
-        )
+        if max_force_grid_cells is None:
+            forces = _compute_forces_numba(
+                points,
+                next_idx=next_idx,
+                prev_idx=prev_idx,
+                target_spacing=spacing,
+                repel_strength=repel_strength,
+                repel_radius=repel_radius,
+            )
+        else:
+            (
+                grid_cell_size,
+                grid_width,
+                grid_height,
+                requested_grid_cells,
+            ) = _bounded_spatial_hash_grid(
+                points,
+                requested_cell=repel_radius,
+                max_cells=max_force_grid_cells,
+            )
+            force_grid_requested_cells = max(
+                force_grid_requested_cells,
+                requested_grid_cells,
+            )
+            force_grid_effective_cells = max(
+                force_grid_effective_cells,
+                grid_width * grid_height,
+            )
+            forces = _compute_forces_numba(
+                points,
+                next_idx=next_idx,
+                prev_idx=prev_idx,
+                target_spacing=spacing,
+                repel_strength=repel_strength,
+                repel_radius=repel_radius,
+                grid_cell_size=grid_cell_size,
+                bounded_grid_width=grid_width,
+                bounded_grid_height=grid_height,
+            )
 
         disp = forces * float(step)
 
@@ -927,8 +1077,17 @@ def _simulate_growth_in_mask_xy(
             if e - s >= 3:
                 out_rings.append(points[s:e].copy())
         rings = out_rings
+        executed_iterations += 1
 
-    return rings
+    return _GrowthSimulationResult(
+        rings,
+        executed_iterations,
+        max_points_observed,
+        point_budget_hit,
+        rejected_total_points,
+        force_grid_requested_cells,
+        force_grid_effective_cells,
+    )
 
 
 @effect(meta=growth_meta, n_inputs=1)
@@ -1070,6 +1229,20 @@ def growth(
             effective_value=iters_i,
             reason="growth iterations was clamped to the supported range",
         )
+    quality = current_preview_quality()
+    if quality == "draft" and iters_i > DRAFT_MAX_ITERS:
+        before_draft_cap = iters_i
+        iters_i = DRAFT_MAX_ITERS
+        emit_operation_diagnostic(
+            op="growth.iters",
+            original_value=before_draft_cap,
+            effective_value=iters_i,
+            reason=(
+                "draft preview capped simulation iterations; final capture keeps "
+                "the requested value"
+            ),
+            severity="info",
+        )
 
     requested_boundary_avoid = float(boundary_avoid)
     effective_boundary_avoid = requested_boundary_avoid
@@ -1135,7 +1308,7 @@ def growth(
     for c in centers:
         rings_xy.append(_make_seed_ring_xy(rng, c, target_spacing=spacing))
 
-    out_rings_xy = _simulate_growth_in_mask_xy(
+    simulation = _simulate_growth_in_mask_xy(
         rings_xy,
         target_spacing=spacing,
         boundary_avoid=effective_boundary_avoid,
@@ -1145,7 +1318,37 @@ def growth(
         sdf_origin_x=sdf_origin_x,
         sdf_origin_y=sdf_origin_y,
         sdf_pitch=sdf_pitch,
+        max_total_points=(DRAFT_MAX_TOTAL_POINTS if quality == "draft" else None),
+        max_force_grid_cells=(
+            DRAFT_MAX_FORCE_GRID_CELLS if quality == "draft" else None
+        ),
     )
+    if simulation.point_budget_hit:
+        emit_operation_diagnostic(
+            op="growth.total_points",
+            original_value=simulation.rejected_total_points,
+            effective_value=simulation.max_total_points,
+            reason=(
+                "draft preview stopped point insertion at the total-point budget; "
+                "final capture keeps the full simulation"
+            ),
+            severity="info",
+        )
+    if (
+        simulation.force_grid_requested_cells
+        > simulation.force_grid_effective_cells
+    ):
+        emit_operation_diagnostic(
+            op="growth.force_grid_cells",
+            original_value=simulation.force_grid_requested_cells,
+            effective_value=simulation.force_grid_effective_cells,
+            reason=(
+                "draft preview coarsened the repulsion spatial hash before "
+                "allocation; final capture keeps the requested spacing"
+            ),
+            severity="info",
+        )
+    out_rings_xy = simulation.rings
 
     lines_out: list[np.ndarray] = []
     for ring_xy in out_rings_xy:

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
+from grafix.core.operation_diagnostics import operation_diagnostic_context
+from grafix.core.preview_quality import preview_quality_context
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple
@@ -143,3 +146,115 @@ def test_metaball_output_exterior_filters_holes() -> None:
 
     assert widths
     assert min(widths) > 10.0
+
+
+def test_metaball_draft_coarsens_grid_and_resamples_ring_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import grafix.core.effects.metaball as module
+
+    seen_work: list[tuple[int, int]] = []
+
+    def evaluate(
+        xs: np.ndarray,
+        ys: np.ndarray,
+        ring_vertices: np.ndarray,
+        ring_offsets: np.ndarray,
+        inside_mask: np.ndarray,
+        _inv_r2: float,
+    ) -> np.ndarray:
+        segment_count = int(ring_vertices.shape[0]) - (
+            int(ring_offsets.shape[0]) - 1
+        )
+        seen_work.append((int(xs.size) * int(ys.size), segment_count))
+        return inside_mask.astype(np.float64, copy=True)
+
+    monkeypatch.setattr(module, "_evaluate_field_grid_numba", evaluate)
+    coords = _circle_xy(center=(0.0, 0.0), r=100.0, n=1024)
+    geometry = (coords, np.asarray([0, coords.shape[0]], dtype=np.int32))
+    kwargs = {"radius": 3.0, "threshold": 0.5, "grid_pitch": 0.25}
+
+    with operation_diagnostic_context() as diagnostics:
+        with preview_quality_context("draft"):
+            first = module.metaball(geometry, **kwargs)
+    with preview_quality_context("draft"):
+        second = module.metaball(geometry, **kwargs)
+    with preview_quality_context("final"):
+        module.metaball(geometry, **kwargs)
+
+    assert seen_work[0] == seen_work[1]
+    assert seen_work[0][0] <= module.DRAFT_MAX_GRID_POINTS
+    assert seen_work[0][1] < 1024
+    assert seen_work[2][0] > seen_work[0][0]
+    assert seen_work[2][1] == 1024
+    np.testing.assert_array_equal(first[0], second[0])
+    np.testing.assert_array_equal(first[1], second[1])
+    assert any(
+        item.op == "metaball.grid_pitch"
+        and item.original_value == 0.25
+        and float(item.effective_value) > 0.25
+        for item in diagnostics.snapshot()
+    )
+    assert any(
+        item.op == "metaball.ring_segments"
+        and item.original_value == 1024
+        and int(item.effective_value) < 1024
+        for item in diagnostics.snapshot()
+    )
+
+
+def test_metaball_draft_bounds_cells_times_segments_for_many_dense_rings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import grafix.core.effects.metaball as module
+
+    rings = [
+        _circle_xy(
+            center=(5.0 * float(index % 16), 5.0 * float(index // 16)),
+            r=1.0,
+            n=128,
+        )
+        for index in range(128)
+    ]
+    coords = np.concatenate(rings, axis=0)
+    counts = np.asarray([ring.shape[0] for ring in rings], dtype=np.int32)
+    offsets = np.concatenate(
+        [
+            np.zeros((1,), dtype=np.int32),
+            np.cumsum(counts, dtype=np.int32),
+        ]
+    )
+    seen_work: list[int] = []
+
+    def evaluate(
+        xs: np.ndarray,
+        ys: np.ndarray,
+        ring_vertices: np.ndarray,
+        ring_offsets: np.ndarray,
+        inside_mask: np.ndarray,
+        _inv_r2: float,
+    ) -> np.ndarray:
+        segment_count = int(ring_vertices.shape[0]) - (
+            int(ring_offsets.shape[0]) - 1
+        )
+        seen_work.append(int(xs.size) * int(ys.size) * segment_count)
+        return inside_mask.astype(np.float64, copy=True)
+
+    monkeypatch.setattr(module, "_evaluate_field_grid_numba", evaluate)
+    with operation_diagnostic_context() as diagnostics:
+        with preview_quality_context("draft"):
+            module.metaball(
+                (coords, offsets),
+                radius=1.0,
+                threshold=0.5,
+                grid_pitch=0.05,
+            )
+
+    assert seen_work
+    assert seen_work[0] <= module.DRAFT_MAX_CELL_SEGMENTS
+    assert any(
+        item.op == "metaball.cell_segments"
+        and int(item.effective_value) <= module.DRAFT_MAX_CELL_SEGMENTS
+        and int(item.original_value) > int(item.effective_value)
+        for item in diagnostics.snapshot()
+    )

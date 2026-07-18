@@ -66,6 +66,33 @@ def test_small_workloads_report_deterministic_output_and_cache_stats() -> None:
     assert renderer["cache"]["entries"] == 1
     assert 0 < renderer["cache"]["bytes"] <= renderer["cache"]["budget_bytes"]
 
+    multilayer = system_benchmark._renderer_multilayer_dynamic_workload(
+        layers=8,
+        frames=6,
+        polylines=12,
+        stable_topology=True,
+    )
+    assert multilayer["output"]["index_builds"] == 8
+    assert multilayer["output"]["full_uploads"] == 8
+    assert multilayer["output"]["vertex_only_uploads"] == 8 * 5
+    assert multilayer["output"]["dynamic_entries"] == 8
+    assert (
+        multilayer["output"]["dynamic_entries"]
+        <= multilayer["output"]["dynamic_entry_limit"]
+    )
+
+    changing_multilayer = (
+        system_benchmark._renderer_multilayer_dynamic_workload(
+            layers=3,
+            frames=4,
+            polylines=12,
+            stable_topology=False,
+        )
+    )
+    assert changing_multilayer["output"]["index_builds"] == 3 * 4
+    assert changing_multilayer["output"]["full_uploads"] == 3 * 4
+    assert changing_multilayer["output"]["vertex_only_uploads"] == 0
+
     inputs = system_benchmark._concat_inputs(parts=3, vertices_per_part=2)
     concat = system_benchmark._concat_workload(inputs)
     assert concat["output"]["n_vertices"] == 6

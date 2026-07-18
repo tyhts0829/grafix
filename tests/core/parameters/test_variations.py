@@ -353,9 +353,15 @@ def test_randomize_is_seeded_scoped_locked_and_one_history_transaction() -> None
     ]
     original = {key: _typed_value(store, key) for key in scope}
     history = ParamStoreHistory(store)
+    table_revision = store.table_revision
+    value_revision = store.value_revision
+    style_revision = store.style_revision
 
     changed = randomize_parameters(store, scope, seed=1234, history=history)
 
+    assert store.table_revision == table_revision
+    assert store.value_revision == value_revision + 1
+    assert store.style_revision == style_revision
     assert changed == (float_key, int_key, rgb_key, vec_key)
     assert 10.0 <= float(_typed_value(store, float_key)) <= 20.0
     assert _typed_value(store, int_key) in {2, 3, 4}

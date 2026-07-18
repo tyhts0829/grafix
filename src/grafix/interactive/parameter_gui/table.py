@@ -1231,6 +1231,11 @@ def render_parameter_row_4cols(
         # push_id と必ず対になるよう finally で pop_id する。
         imgui.pop_id()
 
+    if not changed_any:
+        # steady frame では全 visible row の dataclass を作り直さない。
+        # store bridge は object identity で sparse change を判定できる。
+        return False, row
+
     # ローカル変数へ反映した結果を、新しい ParameterRow として返す。
     updated = replace(
         row,

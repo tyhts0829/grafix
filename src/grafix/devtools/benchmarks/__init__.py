@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-BENCHMARK_SCHEMA_VERSION = 3
+BENCHMARK_SCHEMA_VERSION = 4
 """benchmark result JSON の schema version。"""
 
 __all__ = ["BENCHMARK_SCHEMA_VERSION"]

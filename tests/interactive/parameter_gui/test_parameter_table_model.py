@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.merge_ops import merge_frame_params
@@ -64,7 +66,7 @@ def test_1000_rows_reuse_one_table_model_for_60_frames(monkeypatch) -> None:
     assert store_bridge.parameter_table_model_build_count() == 1
 
 
-def test_table_model_invalidates_on_store_or_registry_revision(monkeypatch) -> None:
+def test_table_model_patches_value_change_and_rebuilds_for_registry(monkeypatch) -> None:
     store, records = _store_with_rows(2)
     store_bridge.clear_parameter_table_model_cache()
 
@@ -78,6 +80,9 @@ def test_table_model_invalidates_on_store_or_registry_revision(monkeypatch) -> N
     assert ok is True and error is None
     second = store_bridge._parameter_table_model_for_store(store)
     assert second is not first
+    assert store_bridge.parameter_table_model_build_count() == 1
+    row_index = second.row_index_by_key[records[0].key]
+    assert second.rows[row_index].ui_value == 1.5
 
     primitive, effect, preset = store_bridge._registry_revision()
     monkeypatch.setattr(
@@ -87,7 +92,7 @@ def test_table_model_invalidates_on_store_or_registry_revision(monkeypatch) -> N
     )
     third = store_bridge._parameter_table_model_for_store(store)
     assert third is not second
-    assert store_bridge.parameter_table_model_build_count() == 3
+    assert store_bridge.parameter_table_model_build_count() == 2
 
 
 def test_show_inactive_without_activity_filter_skips_activity_mask(
@@ -169,3 +174,40 @@ def test_unchanged_render_does_not_consume_returned_rows(monkeypatch) -> None:
         )
         is False
     )
+
+
+def test_changed_render_refreshes_only_value_without_model_rebuild(monkeypatch) -> None:
+    store, records = _store_with_rows(1_000)
+    store_bridge.clear_parameter_table_model_cache()
+
+    def fake_render(rows, **_kwargs):
+        updated = list(rows)
+        updated[0] = replace(updated[0], ui_value=123.5)
+        return True, updated
+
+    monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
+    assert store_bridge.render_store_parameter_table(store) is True
+
+    model = store_bridge._parameter_table_model_for_store(store)
+    index = model.row_index_by_key[records[0].key]
+    assert model.rows[index].ui_value == 123.5
+    assert store_bridge.parameter_table_model_build_count() == 1
+
+
+def test_value_change_log_overflow_falls_back_to_safe_model_rebuild() -> None:
+    store, records = _store_with_rows(1)
+    store_bridge.clear_parameter_table_model_cache()
+    store_bridge._parameter_table_model_for_store(store)
+
+    for value in range(4_100):
+        ok, error = update_state_from_ui(
+            store,
+            records[0].key,
+            float(value),
+            meta=records[0].meta,
+        )
+        assert ok is True and error is None
+
+    model = store_bridge._parameter_table_model_for_store(store)
+    assert model.rows[0].ui_value == 4_099.0
+    assert store_bridge.parameter_table_model_build_count() == 2

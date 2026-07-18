@@ -1099,6 +1099,10 @@ def run(
                 window=draw_window.window,
                 draw_frame=draw_window.draw_frame,
                 on_close=pyglet.app.exit,
+                on_presented=lambda elapsed_ns: draw_window.record_window_present(
+                    "preview_draw_flip",
+                    elapsed_ns,
+                ),
             )
         ]
 
@@ -1141,6 +1145,11 @@ def run(
                 variation_thumbnail_capture=variation_thumbnail_capture,
                 variation_thumbnail_preview=_draw_variation_thumbnail_status,
                 ui_scale=workspace_result.state.ui_scale,
+                on_parameter_revision_created=getattr(
+                    draw_window,
+                    "record_parameter_revision_created",
+                    None,
+                ),
             )
             closers.append(gui.close)
             gui_window = gui.window
@@ -1161,7 +1170,12 @@ def run(
             if not layout_applied:
                 # screen / size API を持たない test double や backend では従来設定を維持する。
                 gui.window.set_location(*cfg.window_pos_parameter_gui)
-            tasks.append(
+            # Inspector を preview より先に描く。pyglet が配送済みの slider edit を
+            # 同じ tick の preview evaluation へ渡し、従来の固定 1-frame 遅延を除く。
+            # GUI hot path は値変更時も全 table rebuild を行わないため、先行描画が
+            # preview の critical path を不必要に伸ばさない。
+            tasks.insert(
+                0,
                 WindowTask(
                     window=gui.window,
                     draw_frame=gui.draw_frame,
@@ -1169,6 +1183,10 @@ def run(
                         preview_window=draw_window.window,
                         inspector_window=gui.window,
                         visible=False,
+                    ),
+                    on_presented=lambda elapsed_ns: draw_window.record_window_present(
+                        "parameter_gui_draw_flip",
+                        elapsed_ns,
                     ),
                 )
             )
@@ -1198,6 +1216,12 @@ def run(
             tasks,
             fps=fps,
             on_frame_start=None if monitor is None else monitor.tick_frame,
+            on_frame_finished=draw_window.record_full_loop,
+            on_scheduler_jitter=getattr(
+                draw_window,
+                "record_scheduler_jitter",
+                None,
+            ),
         )
         loop.run()
         session_completed_cleanly = True

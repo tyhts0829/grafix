@@ -88,6 +88,9 @@ def test_each_window_uses_its_own_close_policy(monkeypatch: Any) -> None:
 def test_hidden_window_is_skipped_by_draw_loop(monkeypatch: Any) -> None:
     scheduled: list[Any] = []
     drawn: list[str] = []
+    presented: list[int] = []
+    full_loops: list[int] = []
+    scheduler_jitter: list[int] = []
 
     class Window:
         def __init__(self, name: str, *, visible: bool) -> None:
@@ -108,6 +111,7 @@ def test_hidden_window_is_skipped_by_draw_loop(monkeypatch: Any) -> None:
                 window=preview,
                 draw_frame=lambda: None,
                 on_close=lambda: None,
+                on_presented=presented.append,
             ),
             WindowTask(
                 window=inspector,
@@ -116,6 +120,8 @@ def test_hidden_window_is_skipped_by_draw_loop(monkeypatch: Any) -> None:
             ),
         ],
         fps=60.0,
+        on_frame_finished=full_loops.append,
+        on_scheduler_jitter=scheduler_jitter.append,
     )
     monkeypatch.setattr(pyglet.app, "windows", {preview, inspector})
     monkeypatch.setattr(pyglet.app, "run", lambda **_kwargs: None)
@@ -128,5 +134,12 @@ def test_hidden_window_is_skipped_by_draw_loop(monkeypatch: Any) -> None:
 
     loop.run()
     scheduled[0](1.0 / 60.0)
+    scheduled[0](1.0 / 60.0)
 
-    assert drawn == ["preview"]
+    assert drawn == ["preview", "preview"]
+    assert len(presented) == 2
+    assert presented[0] >= 0
+    assert len(full_loops) == 2
+    assert full_loops[0] >= presented[0]
+    assert len(scheduler_jitter) == 1
+    assert scheduler_jitter[0] >= 0

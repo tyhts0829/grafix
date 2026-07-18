@@ -1,4 +1,4 @@
-"""``python -m grafix benchmark`` の schema v3 CLI。"""
+"""``python -m grafix benchmark`` の schema v4 CLI。"""
 
 from __future__ import annotations
 
@@ -90,6 +90,12 @@ def _parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("base")
     compare_parser.add_argument("head")
     compare_parser.add_argument("--allow-incompatible", action="store_true")
+    compare_parser.add_argument(
+        "--metric",
+        action="append",
+        default=[],
+        help="比較する typed metric 名。複数回またはカンマ区切りで指定する",
+    )
     compare_parser.add_argument("--output")
 
     report_parser = subparsers.add_parser("report", help="offline HTML report を生成する")
@@ -264,11 +270,16 @@ def _run(args: argparse.Namespace, *, argv: list[str]) -> int:
 
 
 def _compare(args: argparse.Namespace) -> int:
+    metric_names = _split_values(tuple(args.metric))
+    if args.metric and not metric_names:
+        print("--metric に空でない値が必要です", file=sys.stderr)  # noqa: T201
+        return 2
     try:
         comparison = compare_run_files(
             args.base,
             args.head,
             allow_incompatible=bool(args.allow_incompatible),
+            metric_names=metric_names,
         )
     except (OSError, ValueError) as exc:
         print(f"benchmark compare failed: {exc}", file=sys.stderr)  # noqa: T201
@@ -290,7 +301,12 @@ def _compare(args: argparse.Namespace) -> int:
         row["base_status"] != "ok" or row["head_status"] != "ok"
         for row in comparison.rows
     )
-    return int(checksum_failure or status_failure)
+    hard_contract_failure = any(
+        not row["base_hard_contracts_passed"]
+        or not row["head_hard_contracts_passed"]
+        for row in comparison.rows
+    )
+    return int(checksum_failure or status_failure or hard_contract_failure)
 
 
 def _report(args: argparse.Namespace) -> int:
@@ -300,9 +316,15 @@ def _report(args: argparse.Namespace) -> int:
     for warning in loaded.warnings:
         print(f"[grafix-bench] warning: {warning}", file=sys.stderr)  # noqa: T201
     if not loaded.runs:
-        print("no valid schema v3 runs found", file=sys.stderr)  # noqa: T201
+        print("no valid schema v4 runs found", file=sys.stderr)  # noqa: T201
         return 2
-    return 0
+    hard_contract_failure = any(
+        contract.severity == "hard" and not contract.passed
+        for run in loaded.runs
+        for result in run.cases
+        for contract in result.contracts
+    )
+    return int(hard_contract_failure)
 
 
 def _split_values(values: tuple[str, ...]) -> tuple[str, ...]:

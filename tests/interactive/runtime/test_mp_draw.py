@@ -23,6 +23,11 @@ from grafix.core.parameters import (
     parameter_context,
 )
 from grafix.core.parameters.snapshot_ops import store_snapshot
+from grafix.core.parameters.layer_style import (
+    LAYER_STYLE_LINE_COLOR,
+    LAYER_STYLE_LINE_THICKNESS,
+    layer_style_key,
+)
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.resource_budget import ResourceBudget
 from grafix.core.preview_quality import current_preview_quality
@@ -993,12 +998,102 @@ def test_scene_runner_couples_output_time_to_batched_success_before_later_error(
         # status は None のまま。一方、出力時刻は実際に realize した
         # frame 10 の t=0.25 を返す。
         assert runner.last_evaluation_succeeded is None
+        assert runner.last_output_updated is True
         assert runner.last_evaluation_t is None
         assert runner.last_realized_t == pytest.approx(0.25)
     finally:
         runner.close()
 
     assert batched.close_calls == 1
+
+
+def test_scene_runner_does_not_rerealize_same_mp_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = DrawResult(
+        frame_id=1,
+        layers=normalize_scene(_empty_draw(1.0)),
+        records=[],
+        labels=[],
+        t=1.0,
+        snapshot_revision=0,
+    )
+    mp_draw = _EpochMpDraw(result)
+    original_realize_scene = scene_runner_module.realize_scene
+    realize_calls = 0
+
+    def counted_realize_scene(*args: object, **kwargs: object):
+        nonlocal realize_calls
+        realize_calls += 1
+        return original_realize_scene(*args, **kwargs)
+
+    monkeypatch.setattr(
+        scene_runner_module,
+        "realize_scene",
+        counted_realize_scene,
+    )
+    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
+    runner._mp_draw = cast(Any, mp_draw)
+    store = ParamStore()
+    defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
+    try:
+        first = runner.run(
+            1.0,
+            store=store,
+            cc_snapshot=None,
+            defaults=defaults,
+            recording=False,
+        )
+        assert runner.last_output_updated is True
+        color_key = layer_style_key("implicit:1", LAYER_STYLE_LINE_COLOR)
+        thickness_key = layer_style_key(
+            "implicit:1",
+            LAYER_STYLE_LINE_THICKNESS,
+        )
+        color_meta = store.get_meta(color_key)
+        thickness_meta = store.get_meta(thickness_key)
+        assert color_meta is not None
+        assert thickness_meta is not None
+        assert update_state_from_ui(
+            store,
+            color_key,
+            (255, 0, 0),
+            meta=color_meta,
+            override=True,
+        )[0]
+        assert update_state_from_ui(
+            store,
+            thickness_key,
+            0.02,
+            meta=thickness_meta,
+            override=True,
+        )[0]
+        second = runner.run(
+            2.0,
+            store=store,
+            cc_snapshot=None,
+            defaults=defaults,
+            recording=False,
+        )
+        third = runner.run(
+            3.0,
+            store=store,
+            cc_snapshot=None,
+            defaults=defaults,
+            recording=False,
+        )
+        assert second[0].realized is first[0].realized
+        assert third[0] is second[0]
+        assert second[0].cache_key == first[0].cache_key
+        assert first[0].color == (0.0, 0.0, 0.0)
+        assert second[0].color == (1.0, 0.0, 0.0)
+        assert second[0].thickness == pytest.approx(0.02)
+        assert realize_calls == 1
+        assert runner.last_realized_t == pytest.approx(1.0)
+        assert runner.last_output_updated is False
+        assert runner.is_waiting_for_fresh_result is True
+    finally:
+        runner.close()
 
 
 def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> None:
@@ -1274,6 +1369,82 @@ def test_600_stable_frames_broadcast_snapshot_only_once() -> None:
             message="snapshot revision 8 ack timeout",
         )
         assert mp_draw.snapshot_broadcast_count == 2
+    finally:
+        mp_draw.close()
+
+
+def test_single_worker_uses_task_snapshot_without_duplicate_control_broadcast() -> None:
+    mp_draw = MpDraw(_empty_draw, n_worker=1)
+    try:
+        for frame in range(30):
+            mp_draw.submit(
+                t=float(frame),
+                snapshot_revision=7,
+                snapshot={},
+            )
+
+        result = _wait_for_result(mp_draw)
+        assert result.error is None
+        assert result.snapshot_revision == 7
+        assert mp_draw.snapshot_broadcast_count == 0
+        assert mp_draw.snapshot_payload_copy_count == 1
+        assert set(mp_draw.worker_snapshot_revisions.values()) == {7}
+
+        mp_draw.submit(t=31.0, snapshot_revision=8, snapshot={})
+        latest: DrawResult | None = None
+        deadline = time.monotonic() + _WAIT_TIMEOUT_S
+        while time.monotonic() < deadline:
+            candidate = mp_draw.poll_latest()
+            if candidate is not None and candidate.snapshot_revision == 8:
+                latest = candidate
+                break
+            time.sleep(0.005)
+        assert latest is not None
+        assert latest.snapshot_revision == 8
+        assert mp_draw.snapshot_broadcast_count == 0
+        assert mp_draw.snapshot_payload_copy_count == 2
+    finally:
+        mp_draw.close()
+
+
+def test_mp_draw_emits_revision_and_frame_causal_events() -> None:
+    events: list[tuple[str, int | None, int | None]] = []
+
+    def record_event(
+        name: str,
+        *,
+        frame_id: int | None = None,
+        revision: int | None = None,
+    ) -> None:
+        events.append((name, frame_id, revision))
+
+    mp_draw = MpDraw(
+        _empty_draw,
+        n_worker=1,
+        event_callback=record_event,
+    )
+    try:
+        mp_draw.submit(t=0.0, snapshot_revision=9, snapshot={})
+        submitted_frame_id = mp_draw.last_submitted_frame_id
+        result = _wait_for_result(mp_draw)
+
+        assert result.frame_id == submitted_frame_id
+        assert (
+            "parameter_snapshot_built",
+            None,
+            9,
+        ) in events
+        assert (
+            "mp_snapshot_sent",
+            submitted_frame_id,
+            9,
+        ) in events
+        assert ("mp_snapshot_applied", None, 9) in events
+        assert (
+            "mp_task_started",
+            submitted_frame_id,
+            9,
+        ) in events
     finally:
         mp_draw.close()
 

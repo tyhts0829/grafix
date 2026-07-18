@@ -39,6 +39,10 @@ def update_state_from_ui(
         meta,
     )
 
+    # History の patch transaction は変更対象が判明した時点で、この 1 key
+    # だけの変更前値を退避する。既存 key の slider 操作で store 全体を
+    # deepcopy しないため、代入より前に通知する必要がある。
+    store._observe_history_key_before(key)
     state = store._ensure_state(key, base_value=canonical)
     before = (state.ui_value, state.override, state.cc_key)
     state.ui_value = canonical
@@ -60,7 +64,7 @@ def update_state_from_ui(
             state.cc_key = None if cc_tuple == (None, None, None) else cc_tuple
 
     if (state.ui_value, state.override, state.cc_key) != before:
-        store._touch()
+        store._touch(structure=False, value_keys=(key,))
 
     return True, err
 

@@ -1534,18 +1534,32 @@ class ParameterGUI:
         imgui.text_disabled(f"{view.hidden_count} hidden")
         imgui.same_line()
         if imgui.button("Expand all##parameter_groups_expand_all"):
-            changed = set_all_parameter_groups_collapsed(
-                self._store,
-                view,
-                collapsed=False,
-            ) or changed
+            history = getattr(self, "_history", None)
+            transaction = (
+                history.transaction(source="expand_all_parameter_groups")
+                if history is not None
+                else nullcontext()
+            )
+            with transaction:
+                changed = set_all_parameter_groups_collapsed(
+                    self._store,
+                    view,
+                    collapsed=False,
+                ) or changed
         imgui.same_line()
         if imgui.button("Collapse all##parameter_groups_collapse_all"):
-            changed = set_all_parameter_groups_collapsed(
-                self._store,
-                view,
-                collapsed=True,
-            ) or changed
+            history = getattr(self, "_history", None)
+            transaction = (
+                history.transaction(source="collapse_all_parameter_groups")
+                if history is not None
+                else nullcontext()
+            )
+            with transaction:
+                changed = set_all_parameter_groups_collapsed(
+                    self._store,
+                    view,
+                    collapsed=True,
+                ) or changed
 
         imgui.same_line()
         self._render_shortcut_help()
@@ -1694,6 +1708,12 @@ class ParameterGUI:
 
     def _on_deactivate(self) -> None:
         self._cancel_range_edit()
+
+    @property
+    def parameter_edit_active(self) -> bool:
+        """直前の GUI frame で ImGui item が操作中なら True。"""
+
+        return bool(getattr(self, "_parameter_edit_active", False))
 
     def _cancel_range_edit(self) -> None:
         """未commit previewを破棄し、通常modeへ戻る。"""
@@ -2010,7 +2030,9 @@ class ParameterGUI:
         )
         history = self._history
         transaction = (
-            history.transaction(source="parameter_gui") if history is not None else nullcontext()
+            history.transaction(source="parameter_gui", patch=True)
+            if history is not None
+            else nullcontext()
         )
         with transaction:
             _section_separator(imgui)
@@ -2057,7 +2079,12 @@ class ParameterGUI:
             monitor_snapshot=monitor_snapshot,
             monitor=monitor,
         )
-        if history is not None and not imgui.is_any_item_active():
+        is_any_item_active = getattr(imgui, "is_any_item_active", None)
+        parameter_edit_active = (
+            bool(is_any_item_active()) if callable(is_any_item_active) else False
+        )
+        self._parameter_edit_active = parameter_edit_active
+        if history is not None and not parameter_edit_active:
             history.break_coalescing()
         imgui.end()
 

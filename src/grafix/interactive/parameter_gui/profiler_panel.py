@@ -19,8 +19,58 @@ def profiler_lines(snapshot: PerfSnapshot) -> tuple[str, ...]:
     """Inspector 向けに slowest operation/layer と pressure を整形する。"""
 
     lines: list[str] = [
-        f"Frame · {snapshot.frame_ms:.2f} ms · {snapshot.frame_count} sampled"
+        (
+            f"Full loop · avg {snapshot.frame_ms:.2f} ms"
+            f" · p50 {snapshot.frame_p50_ms:.2f}"
+            f" · p95 {snapshot.frame_p95_ms:.2f}"
+            f" · p99 {snapshot.frame_p99_ms:.2f}"
+            f" · max {snapshot.frame_max_ms:.2f}"
+            f" · {snapshot.frame_tail_samples}/{snapshot.frame_count} tail sampled"
+        )
     ]
+    if snapshot.frame_deadline_misses > 0:
+        lines.append(
+            "Deadline · "
+            f"{snapshot.frame_deadline_misses} misses"
+            " · "
+            f"{snapshot.frame_max_consecutive_deadline_misses} consecutive max"
+        )
+    if snapshot.duration_timing:
+        lines.append("Window tails")
+        lines.extend(
+            (
+                f"  {timing.name} · p50 {timing.p50_ms:.2f} ms"
+                f" · p95 {timing.p95_ms:.2f}"
+                f" · p99 {timing.p99_ms:.2f}"
+                f" · max {timing.max_ms:.2f}"
+            )
+            for timing in snapshot.duration_timing
+        )
+    if snapshot.input_to_present_samples > 0:
+        lines.append(
+            "Input to present · "
+            f"p50 {snapshot.input_to_present_p50_ms:.2f} ms"
+            f" · p95 {snapshot.input_to_present_p95_ms:.2f}"
+            f" · p99 {snapshot.input_to_present_p99_ms:.2f}"
+            f" · max {snapshot.input_to_present_max_ms:.2f}"
+            f" · {snapshot.input_to_present_samples} sampled"
+        )
+    if (
+        snapshot.trace_dropped_events > 0
+        or snapshot.trace_dropped_records > 0
+        or snapshot.trace_dropped_causal_inputs > 0
+        or snapshot.trace_dropped_latency_samples > 0
+    ):
+        lines.append(
+            "Trace pressure · "
+            f"{snapshot.trace_dropped_events} causal events dropped"
+            " · "
+            f"{snapshot.trace_dropped_causal_inputs} pending inputs dropped"
+            " · "
+            f"{snapshot.trace_dropped_latency_samples} latency samples dropped"
+            " · "
+            f"{snapshot.trace_dropped_records} writer records dropped"
+        )
     if snapshot.operations:
         lines.append("Slow operations")
         lines.extend(
@@ -93,7 +143,7 @@ def render_profiler_panel(imgui: Any, snapshot: PerfSnapshot | None) -> None:
         return
 
     for line in profiler_lines(snapshot):
-        if line in {"Slow operations", "Slow layers"}:
+        if line in {"Window tails", "Slow operations", "Slow layers"}:
             disabled = getattr(imgui, "text_disabled", None)
             if callable(disabled):
                 disabled(line)

@@ -381,13 +381,19 @@ def _fake_renderer() -> Any:
     renderer._scratch_topology = None
     renderer._mesh_cache = OrderedDict()
     renderer._mesh_candidates = OrderedDict()
+    renderer._dynamic_meshes = OrderedDict()
     renderer._mesh_cache_bytes = 0
-    renderer._mesh_cache_max_bytes = 256 * 1024 * 1024
+    renderer._dynamic_mesh_bytes = 0
+    renderer._mesh_upload_count = 0
+    renderer._mesh_cache_max_bytes = 192 * 1024 * 1024
+    renderer._mesh_cache_max_entries = 4_096
     # 最適化前 source も同じ schema v3 harness で測れるよう、旧candidate
     # accounting fieldもfake instanceにだけ用意する。
     renderer._mesh_candidates_bytes = 0
     renderer._mesh_candidates_max_bytes = 64 * 1024 * 1024
     renderer._mesh_candidates_max_entries = 4_096
+    renderer._dynamic_mesh_max_bytes = 64 * 1024 * 1024
+    renderer._dynamic_mesh_max_entries = 256
     return renderer
 
 
@@ -482,6 +488,108 @@ def _renderer_cache_workload(
     if include_semantic_frames:
         result["_semantic_frames"] = tuple(semantic_frames)
     return result
+
+
+def _renderer_multilayer_dynamic_workload(
+    *,
+    layers: int,
+    frames: int,
+    polylines: int,
+    stable_topology: bool,
+    include_semantic_frames: bool = False,
+) -> dict[str, Any]:
+    """複数 animated layer の slot 別 topology 再利用を fake GL で測る。"""
+
+    layer_count = max(1, int(layers))
+    frame_count = max(2, int(frames))
+    base = _renderer_geometry(polylines=max(1, int(polylines)))
+    stable_offsets = tuple(base.offsets.copy() for _ in range(layer_count))
+    _BenchmarkFakeMesh.instances.clear()
+    renderer = _fake_renderer()
+    original_build = renderer_module.build_line_indices_and_stats
+    index_builds = 0
+    semantic_frames: list[tuple[np.ndarray, np.ndarray]] = []
+
+    def counted_build(offsets: np.ndarray):
+        nonlocal index_builds
+        index_builds += 1
+        return original_build(offsets)
+
+    with (
+        patch.object(renderer_module, "LineMesh", _BenchmarkFakeMesh),
+        patch.object(
+            renderer_module,
+            "build_line_indices_and_stats",
+            counted_build,
+        ),
+    ):
+        for frame in range(frame_count):
+            for layer_index in range(layer_count):
+                coords = base.coords.copy()
+                coords[:, 1] = np.float32(
+                    frame * layer_count + layer_index
+                ) * np.float32(0.001)
+                offsets = (
+                    stable_offsets[layer_index]
+                    if stable_topology
+                    else base.offsets.copy()
+                )
+                geometry = RealizedGeometry(coords=coords, offsets=offsets)
+                mesh, _stats = renderer.prepare_layer_mesh(
+                    geometry,
+                    cache_key=(
+                        "renderer-multilayer",
+                        (frame * layer_count + layer_index, 1),
+                    ),
+                    scene_serial=frame + 1,
+                    snapshot_revision=frame + 1,
+                    dynamic_slot=layer_index,
+                )
+                if mesh is None:
+                    raise RuntimeError(
+                        "multi-layer renderer benchmark returned an empty mesh"
+                    )
+                if include_semantic_frames:
+                    if mesh.last_vertices is None or mesh.last_indices is None:
+                        raise RuntimeError(
+                            "multi-layer renderer upload state is missing"
+                        )
+                    semantic_frames.append(
+                        (mesh.last_vertices.copy(), mesh.last_indices.copy())
+                    )
+
+    meshes = _BenchmarkFakeMesh.instances
+    output: dict[str, Any] = {
+        "output": {
+            "layers": layer_count,
+            "frames": frame_count,
+            "polylines_per_layer": max(1, int(polylines)),
+            "stable_topology": bool(stable_topology),
+            "index_builds": index_builds,
+            "full_uploads": sum(mesh.upload_count for mesh in meshes),
+            "vertex_only_uploads": sum(
+                mesh.vertex_upload_count for mesh in meshes
+            ),
+            "dynamic_entries": len(renderer._dynamic_meshes),
+            "dynamic_bytes": int(renderer._dynamic_mesh_bytes),
+            "dynamic_entry_limit": int(renderer._dynamic_mesh_max_entries),
+            "dynamic_byte_limit": int(renderer._dynamic_mesh_max_bytes),
+            "candidate_entries": len(renderer._mesh_candidates),
+            "candidate_entry_limit": int(
+                renderer._mesh_candidates_max_entries
+            ),
+        },
+        "cache": {
+            "hits": max(0, layer_count * frame_count - index_builds),
+            "misses": index_builds,
+            "evictions": 0,
+            "entries": len(renderer._dynamic_meshes),
+            "bytes": int(renderer._dynamic_mesh_bytes),
+        },
+    }
+    if include_semantic_frames:
+        output["_semantic_frames"] = tuple(semantic_frames)
+    return output
 
 
 def _concat_inputs(*, parts: int, vertices_per_part: int) -> tuple[RealizedGeometry, ...]:

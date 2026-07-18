@@ -11,7 +11,9 @@ from grafix.devtools.benchmarks.schema import (
     BenchmarkSchemaError,
     CaseResult,
     CaseSpec,
+    Distribution,
     EnvironmentFingerprint,
+    Metric,
     RunMeta,
     Sample,
     SourceIdentity,
@@ -19,7 +21,9 @@ from grafix.devtools.benchmarks.schema import (
     benchmark_run_to_dict,
     case_compatibility_key,
     environment_compatibility_key,
+    evaluate_contract,
     read_benchmark_run,
+    summarize_distribution,
     summarize_samples,
     write_benchmark_run,
 )
@@ -81,6 +85,26 @@ def _run() -> BenchmarkRun:
                 baseline_rss_bytes=12,
                 peak_rss_bytes=20,
                 peak_rss_delta_bytes=8,
+                metrics=(
+                    Metric(
+                        name="input_to_present_ms",
+                        kind="gauge",
+                        unit="ms",
+                        phase="drag",
+                        scope="scenario",
+                        value=12.5,
+                    ),
+                ),
+                contracts=(
+                    evaluate_contract(
+                        contract_id="ux.input_to_present",
+                        severity="soft",
+                        actual=12.5,
+                        comparator="le",
+                        limit=50.0,
+                        reason="input-to-present p95 is within the target",
+                    ),
+                ),
             ),
         ),
     )
@@ -102,7 +126,7 @@ def test_stats_keep_raw_units_and_only_emit_tail_for_enough_samples() -> None:
     assert long.p99_ns is not None
 
 
-def test_schema_v3_round_trip_is_strict_and_run_is_no_clobber(tmp_path: Path) -> None:
+def test_schema_v4_round_trip_is_strict_and_run_is_no_clobber(tmp_path: Path) -> None:
     run = _run()
     path = tmp_path / "run.json"
     write_benchmark_run(path, run)
@@ -133,7 +157,19 @@ def test_schema_v3_round_trip_is_strict_and_run_is_no_clobber(tmp_path: Path) ->
             replace(run, meta=replace(run.meta, timeout_seconds=float("nan"))),
         )
 
-    bad_result = replace(run.cases[0], metrics={"bad": float("nan")})
+    bad_result = replace(
+        run.cases[0],
+        metrics=(
+            Metric(
+                name="bad",
+                kind="gauge",
+                unit="unitless",
+                phase="measure",
+                scope="case",
+                value=float("nan"),
+            ),
+        ),
+    )
     with pytest.raises(BenchmarkSchemaError, match="non-finite"):
         write_benchmark_run(
             tmp_path / "nan-metric.json",
@@ -157,7 +193,7 @@ def test_schema_v3_round_trip_is_strict_and_run_is_no_clobber(tmp_path: Path) ->
         benchmark_run_from_dict(payload)
 
     payload = benchmark_run_to_dict(run)
-    payload["schema_version"] = 2
+    payload["schema_version"] = 3
     with pytest.raises(BenchmarkSchemaError, match="unsupported schema"):
         benchmark_run_from_dict(payload)
 
@@ -177,6 +213,8 @@ def test_json_contains_raw_samples_and_separate_identities() -> None:
     assert payload["environment"]["compatibility_key"]
     assert payload["cases"][0]["spec"]["compatibility_key"]
     assert len(payload["cases"][0]["samples"]) == 20
+    assert payload["cases"][0]["metrics"][0]["kind"] == "gauge"
+    assert payload["cases"][0]["contracts"][0]["severity"] == "soft"
 
 
 @pytest.mark.parametrize(
@@ -228,4 +266,210 @@ def test_schema_rejects_duplicate_case_ids() -> None:
     payload["cases"].append(payload["cases"][0])
 
     with pytest.raises(BenchmarkSchemaError, match="duplicate"):
+        benchmark_run_from_dict(payload)
+
+
+def test_schema_rejects_invalid_typed_metric_and_contract_result() -> None:
+    run = _run()
+    metric = run.cases[0].metrics[0]
+    bad_metric = replace(metric, kind="timer")
+    with pytest.raises(BenchmarkSchemaError, match="unsupported value"):
+        benchmark_run_from_dict(
+            json.loads(
+                json.dumps(
+                    benchmark_run_to_dict(
+                        replace(
+                            run,
+                            cases=(
+                                replace(run.cases[0], metrics=(bad_metric,)),
+                            ),
+                        )
+                    )
+                )
+            )
+        )
+
+    contract = run.cases[0].contracts[0]
+    bad_contract = replace(contract, passed=False)
+    with pytest.raises(BenchmarkSchemaError, match="does not match"):
+        benchmark_run_from_dict(
+            json.loads(
+                json.dumps(
+                    benchmark_run_to_dict(
+                        replace(
+                            run,
+                            cases=(
+                                replace(
+                                    run.cases[0],
+                                    contracts=(bad_contract,),
+                                ),
+                            ),
+                        )
+                    )
+                )
+            )
+        )
+
+
+def test_failed_hard_contract_requires_contract_failure_status() -> None:
+    run = _run()
+    failed = evaluate_contract(
+        contract_id="hard.limit",
+        severity="hard",
+        actual=51.0,
+        comparator="le",
+        limit=50.0,
+        reason="latency must remain within the hard limit",
+    )
+    result = replace(run.cases[0], contracts=(failed,))
+    with pytest.raises(BenchmarkSchemaError, match="contract-failure status"):
+        benchmark_run_from_dict(
+            json.loads(
+                json.dumps(
+                    benchmark_run_to_dict(replace(run, cases=(result,)))
+                )
+            )
+        )
+
+    failed_result = replace(
+        result,
+        status="contract-failure",
+        error="failed hard contracts: hard.limit",
+    )
+    payload = json.loads(
+        json.dumps(
+            benchmark_run_to_dict(replace(run, cases=(failed_result,)))
+        )
+    )
+    assert benchmark_run_from_dict(payload).cases[0] == failed_result
+
+
+def test_distribution_metric_keeps_raw_samples_and_validates_summary() -> None:
+    run = _run()
+    distribution = summarize_distribution(
+        tuple(float(index) for index in range(20))
+    )
+    metric = Metric(
+        name="input_to_present_ms",
+        kind="distribution",
+        unit="ms",
+        phase="drag",
+        scope="scenario",
+        distribution=distribution,
+    )
+    payload = json.loads(
+        json.dumps(
+            benchmark_run_to_dict(
+                replace(
+                    run,
+                    cases=(replace(run.cases[0], metrics=(metric,)),),
+                )
+            )
+        )
+    )
+
+    decoded = benchmark_run_from_dict(payload)
+    assert decoded.cases[0].metrics[0].distribution == distribution
+    assert len(payload["cases"][0]["metrics"][0]["distribution"]["samples"]) == 20
+
+    payload["cases"][0]["metrics"][0]["distribution"]["median"] = 999.0
+    with pytest.raises(BenchmarkSchemaError, match="raw samples"):
+        benchmark_run_from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("distribution", "match"),
+    (
+        (
+            Distribution(
+                count=1,
+                min=1.0,
+                max=1.0,
+                median=1.0,
+                mad=0.0,
+                p95=1.0,
+                p99=None,
+                mean=1.0,
+            ),
+            "requires all statistics",
+        ),
+        (
+            Distribution(
+                count=1,
+                min=1.0,
+                max=2.0,
+                median=1.5,
+                mad=-0.1,
+                p95=1.8,
+                p99=1.9,
+                mean=1.5,
+            ),
+            "mad must be non-negative",
+        ),
+        (
+            Distribution(
+                count=1,
+                min=1.0,
+                max=5.0,
+                median=3.0,
+                mad=1.0,
+                p95=2.0,
+                p99=4.0,
+                mean=3.0,
+            ),
+            "min <= median <= p95 <= p99 <= max",
+        ),
+        (
+            Distribution(
+                count=1,
+                min=1.0,
+                max=5.0,
+                median=2.0,
+                mad=1.0,
+                p95=3.0,
+                p99=4.0,
+                mean=6.0,
+            ),
+            "mean must be between min and max",
+        ),
+        (
+            Distribution(
+                count=0,
+                min=0.0,
+                max=None,
+                median=None,
+                mad=None,
+                p95=None,
+                p99=None,
+                mean=None,
+            ),
+            "empty distribution",
+        ),
+    ),
+)
+def test_schema_rejects_inconsistent_distribution_summary(
+    distribution: Distribution,
+    match: str,
+) -> None:
+    run = _run()
+    metric = Metric(
+        name="latency",
+        kind="distribution",
+        unit="ms",
+        phase="measure",
+        scope="case",
+        distribution=distribution,
+    )
+    payload = json.loads(
+        json.dumps(
+            benchmark_run_to_dict(
+                replace(
+                    run,
+                    cases=(replace(run.cases[0], metrics=(metric,)),),
+                )
+            )
+        )
+    )
+
+    with pytest.raises(BenchmarkSchemaError, match=match):
         benchmark_run_from_dict(payload)

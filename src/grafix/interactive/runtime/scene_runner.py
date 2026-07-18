@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from grafix.core.layer import LayerStyleDefaults
+from grafix.core.layer import Layer, LayerStyleDefaults, resolve_layer_style
 from grafix.core.operation_diagnostics import (
     OperationDiagnostic,
     OperationDiagnosticBuffer,
@@ -19,6 +19,7 @@ from grafix.core.parameters import (
     current_param_snapshot,
     parameter_context,
 )
+from grafix.core.parameters.layer_style import observe_and_apply_layer_style
 from grafix.core.pipeline import RealizedLayer, realize_scene
 from grafix.core.realize import RealizeSession
 from grafix.core.preview_quality import PreviewQuality, preview_quality_context
@@ -83,6 +84,11 @@ class SceneRunner:
                 draw,
                 n_worker=worker_count,
                 evaluation_timeout=evaluation_timeout,
+                **(
+                    {"event_callback": perf.record_event}
+                    if perf.enabled
+                    else {}
+                ),
             )
             if worker_count >= 1
             else None
@@ -91,6 +97,7 @@ class SceneRunner:
         # run() の正常 return だけでは user draw の回復を判定できない。None は
         # 「この呼び出しでは新しい評価結果が無い」を表す。
         self._last_evaluation_succeeded: bool | None = None
+        self._last_output_updated = False
         self._last_evaluation_t: float | None = None
         # `last_evaluation_*` は worker から新しい終端結果を受け取ったかを
         # 表す。一方、後続 error と同時に drain された成功 frame は、
@@ -103,8 +110,12 @@ class SceneRunner:
         # transport discontinuity 後に fresh mp result を待つ間も、実際に
         # 画面へ出していた frame とその時刻を対で維持する。
         self._retained_realized_layers: list[RealizedLayer] = []
+        self._retained_source_layers: list[Layer] = []
+        self._retained_style_revision = -1
         self._retained_realized_t: float | None = None
         self._retained_realized_snapshot_revision: int | None = None
+        self._retained_realized_frame_id: int | None = None
+        self._last_realized_frame_id: int | None = None
         self._waiting_for_fresh_result = False
         self._mp_epoch = 0
         self._last_transport_epoch: int | None = None
@@ -129,6 +140,11 @@ class SceneRunner:
                 draw,
                 n_worker=self._worker_count,
                 evaluation_timeout=self._evaluation_timeout,
+                **(
+                    {"event_callback": self._perf.record_event}
+                    if self._perf.enabled
+                    else {}
+                ),
             )
             try:
                 replacement.begin_epoch(next_epoch)
@@ -143,11 +159,13 @@ class SceneRunner:
         self._last_merged_mp_success_frame_id = None
         self._last_merged_mp_success_epoch = None
         self._last_evaluation_succeeded = None
+        self._last_output_updated = False
         self._last_evaluation_t = None
         self._last_realized_t = self._retained_realized_t
         self._last_realized_snapshot_revision = (
             self._retained_realized_snapshot_revision
         )
+        self._last_realized_frame_id = self._retained_realized_frame_id
         self._waiting_for_fresh_result = replacement is not None
 
         if previous is None:
@@ -181,6 +199,12 @@ class SceneRunner:
         return self._last_evaluation_succeeded
 
     @property
+    def last_output_updated(self) -> bool:
+        """直近 `run()` で新しい realized geometry を表示へ採用したか。"""
+
+        return bool(self._last_output_updated)
+
+    @property
     def last_evaluation_t(self) -> float | None:
         """直近に新しく成功した scene が評価された `t` を返す。"""
 
@@ -208,6 +232,12 @@ class SceneRunner:
         """
 
         return self._last_realized_snapshot_revision
+
+    @property
+    def last_realized_frame_id(self) -> int | None:
+        """直近の表示候補を作った MP frame ID。同期評価では ``None``。"""
+
+        return self._last_realized_frame_id
 
     @property
     def is_waiting_for_fresh_result(self) -> bool:
@@ -293,9 +323,11 @@ class SceneRunner:
         if quality not in {"draft", "final"}:
             raise ValueError(f"unknown preview quality: {quality!r}")
         self._last_evaluation_succeeded = None
+        self._last_output_updated = False
         self._last_evaluation_t = None
         self._last_realized_t = None
         self._last_realized_snapshot_revision = None
+        self._last_realized_frame_id = None
         self._waiting_for_fresh_result = False
         operation_diagnostics: OperationDiagnosticBuffer | None = None
         effective_quality: PreviewQuality = "final" if recording else quality
@@ -317,6 +349,7 @@ class SceneRunner:
                             quality=effective_quality,
                         )
                         self._last_evaluation_succeeded = True
+                        self._last_output_updated = True
                         self._last_evaluation_t = float(t)
                         self._last_realized_t = float(t)
                         self._last_realized_snapshot_revision = input_snapshot_revision
@@ -324,6 +357,11 @@ class SceneRunner:
                             realized_layers,
                             t=float(t),
                             snapshot_revision=input_snapshot_revision,
+                            frame_id=None,
+                            source_layers=[
+                                item.layer for item in realized_layers
+                            ],
+                            style_revision=int(store.style_revision),
                         )
                         return realized_layers
                     return self._run_mp(
@@ -332,6 +370,7 @@ class SceneRunner:
                         cc_snapshot=cc_snapshot,
                         defaults=defaults,
                         quality=effective_quality,
+                        style_revision=int(store.style_revision),
                     )
         except Exception as exc:
             self._last_evaluation_succeeded = False
@@ -394,12 +433,20 @@ class SceneRunner:
         *,
         t: float,
         snapshot_revision: int,
+        frame_id: int | None,
+        source_layers: list[Layer],
+        style_revision: int,
     ) -> None:
         """実表示として採用できた layers/t/revision を同時に更新する。"""
 
         self._retained_realized_layers = list(layers)
+        self._retained_source_layers = list(source_layers)
+        self._retained_style_revision = int(style_revision)
         self._retained_realized_t = float(t)
         self._retained_realized_snapshot_revision = int(snapshot_revision)
+        self._retained_realized_frame_id = (
+            None if frame_id is None else int(frame_id)
+        )
 
     def _fresh_result_pending_output(self) -> list[RealizedLayer]:
         """fresh mp result 待ち中に直近の実表示 frame を返す。"""
@@ -409,7 +456,47 @@ class SceneRunner:
         self._last_realized_snapshot_revision = (
             self._retained_realized_snapshot_revision
         )
+        self._last_realized_frame_id = self._retained_realized_frame_id
         return list(self._retained_realized_layers)
+
+    def _restyle_retained_output(
+        self,
+        layers: list[Layer],
+        *,
+        defaults: LayerStyleDefaults,
+        style_revision: int,
+    ) -> list[RealizedLayer]:
+        """保持 geometry に現在の global/layer style だけを再適用する。"""
+
+        if int(style_revision) == self._retained_style_revision:
+            return self._fresh_result_pending_output()
+        retained = self._retained_realized_layers
+        if len(layers) != len(retained):
+            raise RuntimeError("retained scene layer count is inconsistent")
+        styled: list[RealizedLayer] = []
+        for layer, item in zip(layers, retained, strict=True):
+            resolved = resolve_layer_style(layer, defaults)
+            thickness, color = observe_and_apply_layer_style(
+                layer_site_id=layer.site_id,
+                layer_name=layer.name,
+                base_line_thickness=float(resolved.thickness),
+                base_line_color_rgb01=resolved.color,
+                explicit_line_thickness=(layer.thickness is not None),
+                explicit_line_color=(layer.color is not None),
+            )
+            styled.append(
+                RealizedLayer(
+                    layer=resolved.layer,
+                    realized=item.realized,
+                    cache_key=item.cache_key,
+                    color=color,
+                    thickness=thickness,
+                )
+            )
+        self._retained_realized_layers = styled
+        self._retained_source_layers = list(layers)
+        self._retained_style_revision = int(style_revision)
+        return self._fresh_result_pending_output()
 
     def _run_sync(
         self,
@@ -445,6 +532,7 @@ class SceneRunner:
         cc_snapshot: MidiFrameSnapshot | None,
         defaults: LayerStyleDefaults,
         quality: PreviewQuality,
+        style_revision: int,
     ) -> list[RealizedLayer]:
         perf = self._perf
         mp_draw = self._mp_draw
@@ -461,9 +549,19 @@ class SceneRunner:
             epoch=int(self._mp_epoch),
             quality=quality,
         )
+        perf.record_event(
+            "mp_task_submitted",
+            frame_id=getattr(mp_draw, "last_submitted_frame_id", None),
+            revision=int(snapshot_revision),
+        )
 
         new_result = mp_draw.poll_latest()
         if new_result is not None:
+            perf.record_event(
+                "mp_result_received",
+                frame_id=int(new_result.frame_id),
+                revision=int(new_result.snapshot_revision),
+            )
             if new_result.worker_lag_ms is not None:
                 perf.record_worker_lag(new_result.worker_lag_ms)
             if new_result.error is not None:
@@ -472,14 +570,35 @@ class SceneRunner:
 
         latest_successful = mp_draw.latest_successful_result()
         if latest_successful is None:
+            if self._retained_source_layers:
+                return self._restyle_retained_output(
+                    self._retained_source_layers,
+                    defaults=defaults,
+                    style_revision=style_revision,
+                )
             return self._fresh_result_pending_output()
+
+        latest_success_frame_id = int(latest_successful.frame_id)
+        latest_success_epoch = int(latest_successful.epoch)
+        if (
+            new_result is None
+            and self._last_merged_mp_success_frame_id == latest_success_frame_id
+            and self._last_merged_mp_success_epoch == latest_success_epoch
+        ):
+            # 同じ worker result の再表示では geometry/cache key を保持し、
+            # current global/layer style だけを main process で再適用する。
+            # CPU realize/aggregate/cache-lock の固定費を避けつつ、style slider を
+            # worker result 待ちにしない。
+            return self._restyle_retained_output(
+                latest_successful.layers,
+                defaults=defaults,
+                style_revision=style_revision,
+            )
 
         # worker は ParamStore を触れないので、実際に preview 候補となる
         # 最新成功 frame の観測を main 側で 1 回だけ反映する。
         # success と後続 error が同時に drain されると poll_latest() は
         # error だけを返すため、new_result ではなく latest_successful を基準にする。
-        latest_success_frame_id = int(latest_successful.frame_id)
-        latest_success_epoch = int(latest_successful.epoch)
         should_merge_success = (
             self._last_merged_mp_success_frame_id != latest_success_frame_id
             or self._last_merged_mp_success_epoch != latest_success_epoch
@@ -495,6 +614,11 @@ class SceneRunner:
         def draw_from_mp(_t_arg: float) -> SceneItem:
             return latest_successful.layers
 
+        perf.record_event(
+            "realize_started",
+            frame_id=latest_success_frame_id,
+            revision=int(latest_successful.snapshot_revision),
+        )
         with perf.section("scene"):
             realized_layers = realize_scene(
                 draw_from_mp,
@@ -502,6 +626,11 @@ class SceneRunner:
                 defaults,
                 session=self._realize_sessions[quality],
             )
+        perf.record_event(
+            "realize_finished",
+            frame_id=latest_success_frame_id,
+            revision=int(latest_successful.snapshot_revision),
+        )
         # worker 成功だけではなく、main 側の realize が成功した後にだけ
         # output time を更新する。error result や realize 失敗の t を manifest へ
         # 誤って記録しないための順序。
@@ -515,11 +644,16 @@ class SceneRunner:
         self._last_realized_snapshot_revision = int(
             latest_successful.snapshot_revision
         )
+        self._last_realized_frame_id = latest_success_frame_id
         self._retain_output(
             realized_layers,
             t=float(latest_successful.t),
             snapshot_revision=int(latest_successful.snapshot_revision),
+            frame_id=latest_success_frame_id,
+            source_layers=list(latest_successful.layers),
+            style_revision=style_revision,
         )
+        self._last_output_updated = bool(should_merge_success)
         if new_result is not None:
             # ここに到達する new_result は error=None。新しい成功結果が
             # 終端結果である場合のみ、既存 error 表示を解除する。

@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from grafix.interactive.parameter_gui import ParameterGUI, create_parameter_gui_window
 from grafix.core.parameters import ParamStore
+from grafix.core.parameters.layer_style import LAYER_STYLE_OP
+from grafix.core.parameters.style import STYLE_OP
 from grafix.core.runtime_config import runtime_config
 from grafix.interactive.midi import MidiSession
 
@@ -44,14 +47,19 @@ class ParameterGUIWindowSystem:
         variation_thumbnail_capture: VariationThumbnailCapture | None = None,
         variation_thumbnail_preview: VariationThumbnailPreview | None = None,
         ui_scale: float = 1.0,
+        on_parameter_revision_created: (
+            Callable[[int, int, str], None] | None
+        ) = None,
     ) -> None:
         """GUI 用の window と ParameterGUI を初期化する。"""
 
         cfg = runtime_config()
         w, h = cfg.parameter_gui_window_size
         self.window = create_parameter_gui_window(width=w, height=h, vsync=False)
+        self._store = store
         self._autosave = autosave
         self._monitor = monitor
+        self._on_parameter_revision_created = on_parameter_revision_created
         self._gui = ParameterGUI(
             self.window,
             store=store,
@@ -70,11 +78,51 @@ class ParameterGUIWindowSystem:
     def draw_frame(self) -> None:
         """1 フレーム分の GUI を描画する（`flip()` は呼ばない）。"""
 
+        store = getattr(self, "_store", None)
+        revision_before = None if store is None else int(store.revision)
+        value_revision_before = (
+            None if store is None else int(store.value_revision)
+        )
+        input_started_ns = time.monotonic_ns()
         self._gui.draw_frame()
+        if store is not None:
+            revision_after = int(store.revision)
+            value_revision_after = int(store.value_revision)
+            callback = getattr(
+                self,
+                "_on_parameter_revision_created",
+                None,
+            )
+            if (
+                callback is not None
+                and revision_before is not None
+                and value_revision_before is not None
+                and revision_after != revision_before
+                and value_revision_after != value_revision_before
+            ):
+                changed_keys = store.value_changes_since(
+                    value_revision_before
+                )
+                domains = (
+                    {"geometry"}
+                    if changed_keys is None
+                    else {
+                        (
+                            "style"
+                            if key.op in {STYLE_OP, LAYER_STYLE_OP}
+                            else "geometry"
+                        )
+                        for key in changed_keys
+                    }
+                )
+                for domain in sorted(domains):
+                    callback(revision_after, input_started_ns, domain)
         autosave = self._autosave
         if autosave is not None:
             try:
-                autosave.tick()
+                autosave.tick(
+                    suspended=bool(self._gui.parameter_edit_active),
+                )
             except Exception:
                 # preview は継続する。helper 側の debounce により毎 frame の再試行も避ける。
                 _logger.exception("Failed to autosave ParameterStore: %s", autosave.path)

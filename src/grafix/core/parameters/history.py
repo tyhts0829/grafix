@@ -8,18 +8,42 @@ import time
 from collections import deque
 from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Literal
 
 from .memento import (
+    ParamStorePatch,
+    ParamStorePatchCapture,
     ParamStoreMemento,
     capture_param_store_memento,
+    coalesce_param_store_patches,
     param_store_memento_matches,
     restore_param_store_memento,
+    restore_param_store_patch,
+    update_param_store_memento_from_patch,
 )
 from .store import ParamStore
 
 SnapshotSlot = Literal["A", "B"]
 _SNAPSHOT_SLOTS: tuple[SnapshotSlot, SnapshotSlot] = ("A", "B")
+
+
+@dataclass(frozen=True, slots=True)
+class _MementoTarget:
+    """Undo または Redo で復元する full memento。"""
+
+    memento: ParamStoreMemento
+
+
+@dataclass(frozen=True, slots=True)
+class _PatchTarget:
+    """Undo または Redo で適用する patch と方向。"""
+
+    patch: ParamStorePatch
+    after: bool
+
+
+_HistoryEntry = _MementoTarget | _PatchTarget
 
 
 class ParamStoreHistory:
@@ -47,8 +71,8 @@ class ParamStoreHistory:
         self._capacity = int(capacity)
         self._coalesce_seconds = float(coalesce_seconds)
         self._clock = clock
-        self._undo: deque[ParamStoreMemento] = deque(maxlen=self._capacity)
-        self._redo: deque[ParamStoreMemento] = deque(maxlen=self._capacity)
+        self._undo: deque[_HistoryEntry] = deque(maxlen=self._capacity)
+        self._redo: deque[_HistoryEntry] = deque(maxlen=self._capacity)
         self._current = capture_param_store_memento(store)
         self._seen_revision = store.revision
         self._last_source: Hashable | None = None
@@ -112,16 +136,54 @@ class ParamStoreHistory:
         *,
         source: Hashable,
         now: float | None = None,
+        patch: bool = False,
     ) -> Iterator[None]:
         """ブロック内の store 変更を 1 操作として記録する。
 
         ブロック開始時の未記録変更は基準に取り込む。そのため、
         初回 draw の parameter discovery を Undo で消してしまわない。
+
+        ``patch=True`` では、実際に変更した既存 parameter だけを遅延
+        capture する。slider のような単一 key 操作向けであり、variation
+        や reconcile などの bulk 操作は既定の full memento を使う。
         """
 
         if self._store.revision != self._seen_revision:
             self.synchronize()
         before_revision = self._store.revision
+        if patch:
+            capture = ParamStorePatchCapture(self._store)
+            self._store._begin_history_patch_capture(
+                observe_key=capture.observe_key,
+                observe_headers=capture.observe_headers,
+            )
+            try:
+                yield
+            finally:
+                self._store._end_history_patch_capture()
+                if self._store.revision != before_revision:
+                    operation = capture.finish()
+                    change_at = self._clock() if now is None else float(now)
+                    if operation is None:
+                        # favorite や code-owned metadata など、memento の対象外だけが
+                        # 変わった場合は Undo を増やさず基準 revision だけ進める。
+                        self._seen_revision = self._store.revision
+                    else:
+                        self._record_operation(
+                            operation=_PatchTarget(
+                                patch=operation,
+                                after=False,
+                            ),
+                            source=source,
+                            now=change_at,
+                        )
+                        update_param_store_memento_from_patch(
+                            self._current,
+                            operation,
+                            after=True,
+                        )
+            return
+
         before = self._current
         try:
             yield
@@ -142,8 +204,8 @@ class ParamStoreHistory:
         if not self._undo:
             return False
         target = self._undo.pop()
-        self._redo.append(self._current)
-        changed = restore_param_store_memento(self._store, target)
+        self._redo.append(self._inverse_target(target))
+        changed = self._restore_target(target)
         # merge restore 後の store には、target 作成後に発見された
         # parameter も残る。次の履歴基準は target そのものではなく、
         # 実際に復元された現在状態から再 capture する。
@@ -159,8 +221,8 @@ class ParamStoreHistory:
         if not self._redo:
             return False
         target = self._redo.pop()
-        self._undo.append(self._current)
-        changed = restore_param_store_memento(self._store, target)
+        self._undo.append(self._inverse_target(target))
+        changed = self._restore_target(target)
         self._current = capture_param_store_memento(self._store)
         self._seen_revision = self._store.revision
         self.break_coalescing()
@@ -192,6 +254,24 @@ class ParamStoreHistory:
             self._seen_revision = self._store.revision
             return False
 
+        operation = _MementoTarget(memento=before)
+        self._record_operation(
+            operation=operation,
+            source=source,
+            now=now,
+        )
+        self._current = after
+        return True
+
+    def _record_operation(
+        self,
+        *,
+        operation: _HistoryEntry,
+        source: Hashable,
+        now: float,
+    ) -> None:
+        """operation を追加し、同じ source の隣接操作を coalesce する。"""
+
         last_at = self._last_change_at
         should_coalesce = (
             bool(self._undo)
@@ -199,14 +279,50 @@ class ParamStoreHistory:
             and last_at is not None
             and 0.0 <= now - last_at <= self._coalesce_seconds
         )
-        if not should_coalesce:
-            self._undo.append(before)
+        did_coalesce = False
+        if should_coalesce:
+            previous = self._undo[-1]
+            if isinstance(previous, _PatchTarget) and isinstance(
+                operation, _PatchTarget
+            ):
+                coalesced = coalesce_param_store_patches(
+                    previous.patch,
+                    operation.patch,
+                )
+                if coalesced is not None:
+                    self._undo[-1] = _PatchTarget(
+                        patch=coalesced,
+                        after=False,
+                    )
+                    did_coalesce = True
+            elif isinstance(previous, _MementoTarget) and isinstance(
+                operation, _MementoTarget
+            ):
+                # 最初の変更前値を Undo target として維持する。
+                did_coalesce = True
+
+        if not did_coalesce:
+            self._undo.append(operation)
         self._redo.clear()
-        self._current = after
         self._seen_revision = self._store.revision
         self._last_source = source
         self._last_change_at = now
-        return True
+
+    def _inverse_target(self, target: _HistoryEntry) -> _HistoryEntry:
+        """現在状態へ戻すための反対向き target を返す。"""
+
+        if isinstance(target, _PatchTarget):
+            return _PatchTarget(patch=target.patch, after=not target.after)
+        return _MementoTarget(memento=self._current)
+
+    def _restore_target(self, target: _HistoryEntry) -> bool:
+        if isinstance(target, _PatchTarget):
+            return restore_param_store_patch(
+                self._store,
+                target.patch,
+                after=target.after,
+            )
+        return restore_param_store_memento(self._store, target.memento)
 
     def _adopt_untracked_state(self) -> None:
         if self._store.revision == self._seen_revision:

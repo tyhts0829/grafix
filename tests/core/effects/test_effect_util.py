@@ -286,6 +286,47 @@ def test_planar_frame_reports_spatial_residual() -> None:
     assert not frame.is_planar(1e-3)
 
 
+def test_planar_frame_clean_packed_many_short_lines_matches_cleaning_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import grafix.core.effects.util as module
+
+    line_count = 200
+    points = np.empty((line_count * 2, 3), dtype=np.float64)
+    starts = np.arange(line_count, dtype=np.float64)
+    points[0::2, 0] = starts
+    points[0::2, 1] = starts % 7.0
+    points[0::2, 2] = 0.0
+    points[1::2] = points[0::2] + np.asarray([0.25, 0.1, 0.0])
+    offsets = np.arange(0, points.shape[0] + 1, 2, dtype=np.int32)
+
+    with monkeypatch.context() as fallback_patch:
+        fallback_patch.setattr(
+            module,
+            "_packed_clean_frame_offsets",
+            lambda *_args, **_kwargs: None,
+        )
+        expected = module.PlanarFrame.from_points(points, offsets)
+
+    def fail_cleaning_fallback(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("clean packed input unexpectedly used the fallback")
+
+    with monkeypatch.context() as fast_patch:
+        fast_patch.setattr(
+            module,
+            "_clean_frame_lines",
+            fail_cleaning_fallback,
+        )
+        actual = module.PlanarFrame.from_points(points, offsets)
+
+    assert actual.status == expected.status
+    assert actual.rank == expected.rank
+    assert actual.residual == expected.residual
+    np.testing.assert_array_equal(actual.origin, expected.origin)
+    np.testing.assert_array_equal(actual.basis, expected.basis)
+    np.testing.assert_array_equal(actual.inverse, expected.inverse)
+
+
 def _pack_test_rings(
     rings: list[np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

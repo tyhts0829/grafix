@@ -9,7 +9,9 @@ import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.preview_quality import current_preview_quality
 from grafix.core.realized_geometry import GeomTuple
 from .util import (
     DEFAULT_MAX_GRID_CELLS,
@@ -24,6 +26,9 @@ _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
 _PLANAR_EPS_ABS = 1e-6
 _PLANAR_EPS_REL = 1e-5
 MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
+DRAFT_MAX_GRID_POINTS = 16_384
+DRAFT_MIN_RING_SEGMENTS = 8
+DRAFT_MAX_CELL_SEGMENTS = 12_000_000
 
 metaball_meta = {
     "radius": ParamMeta(
@@ -144,6 +149,168 @@ def _pack_rings(
         ring_maxs[i] = ring.maxs
 
     return ring_vertices, ring_offsets, ring_mins, ring_maxs
+
+
+def _draft_ring_segment_floor(ring: _Ring2D) -> int:
+    return min(
+        max(0, int(ring.vertices.shape[0]) - 1),
+        DRAFT_MIN_RING_SEGMENTS,
+    )
+
+
+def _ring_length_for_draft(vertices: np.ndarray) -> float:
+    delta = vertices[1:] - vertices[:-1]
+    return float(np.sum(np.sqrt(np.sum(delta * delta, axis=1))))
+
+
+def _draft_ring_segment_target(ring: _Ring2D, *, step: float) -> int:
+    original_segments = max(0, int(ring.vertices.shape[0]) - 1)
+    floor_segments = _draft_ring_segment_floor(ring)
+    if original_segments <= floor_segments:
+        return original_segments
+    total_length = _ring_length_for_draft(ring.vertices)
+    if not math.isfinite(total_length) or total_length <= 0.0:
+        return floor_segments
+    return min(
+        original_segments,
+        max(floor_segments, int(math.ceil(total_length / float(step)))),
+    )
+
+
+def _resample_ring_for_draft(
+    vertices: np.ndarray, *, target_segments: int
+) -> np.ndarray:
+    """リングを指定 segment 数以下の決定的な等弧長サンプルへまとめる。"""
+
+    points = vertices.astype(np.float64, copy=False)
+    original_segments = int(points.shape[0]) - 1
+    target = max(3, min(int(target_segments), original_segments))
+    if original_segments <= target:
+        return points
+
+    segment_delta = points[1:] - points[:-1]
+    segment_lengths = np.sqrt(np.sum(segment_delta * segment_delta, axis=1))
+    positive = segment_lengths > 0.0
+    if int(np.count_nonzero(positive)) < 3:
+        indices = (
+            np.arange(target, dtype=np.int64) * original_segments // target
+        )
+        sampled = points[:-1][indices]
+        return np.concatenate([sampled, sampled[:1]], axis=0)
+
+    starts = points[:-1][positive]
+    deltas = segment_delta[positive]
+    lengths = segment_lengths[positive]
+    total_length = float(np.sum(lengths))
+    if not math.isfinite(total_length) or total_length <= 0.0:
+        indices = (
+            np.arange(target, dtype=np.int64) * original_segments // target
+        )
+        sampled = points[:-1][indices]
+        return np.concatenate([sampled, sampled[:1]], axis=0)
+
+    cumulative = np.empty((int(lengths.size) + 1,), dtype=np.float64)
+    cumulative[0] = 0.0
+    np.cumsum(lengths, out=cumulative[1:])
+    targets = total_length * (
+        np.arange(target, dtype=np.float64) / float(target)
+    )
+    segment_indices = np.searchsorted(cumulative, targets, side="right") - 1
+    np.clip(segment_indices, 0, int(lengths.size) - 1, out=segment_indices)
+    fractions = (
+        targets - cumulative[segment_indices]
+    ) / lengths[segment_indices]
+    sampled = starts[segment_indices] + fractions[:, None] * deltas[segment_indices]
+    return np.concatenate([sampled, sampled[:1]], axis=0)
+
+
+def _simplify_rings_for_draft(
+    rings: list[_Ring2D],
+    *,
+    pitch: float,
+    max_segments: int,
+) -> tuple[list[_Ring2D], int, int, int, int]:
+    original_ring_count = len(rings)
+    original_segments = sum(
+        max(0, int(ring.vertices.shape[0]) - 1) for ring in rings
+    )
+    segment_limit = max(3, int(max_segments))
+    floor_total = sum(_draft_ring_segment_floor(ring) for ring in rings)
+    selected = rings
+    if floor_total > segment_limit:
+        max_ring_count = max(
+            1,
+            segment_limit // DRAFT_MIN_RING_SEGMENTS,
+        )
+        index_count = min(len(rings), max_ring_count)
+        indices = np.linspace(
+            0,
+            len(rings) - 1,
+            num=index_count,
+            dtype=np.int64,
+        )
+        selected = []
+        remaining = segment_limit
+        for index in indices:
+            ring = rings[int(index)]
+            floor_segments = _draft_ring_segment_floor(ring)
+            if floor_segments > remaining:
+                continue
+            selected.append(ring)
+            remaining -= floor_segments
+
+    target_step = float(pitch)
+    target_counts = [
+        _draft_ring_segment_target(ring, step=target_step) for ring in selected
+    ]
+    if sum(target_counts) > segment_limit:
+        low = target_step
+        high = target_step
+        while sum(
+            _draft_ring_segment_target(ring, step=high) for ring in selected
+        ) > segment_limit:
+            high *= 2.0
+        for _ in range(64):
+            middle = low + 0.5 * (high - low)
+            if middle == low or middle == high:
+                break
+            count = sum(
+                _draft_ring_segment_target(ring, step=middle)
+                for ring in selected
+            )
+            if count > segment_limit:
+                low = middle
+            else:
+                high = middle
+        target_counts = [
+            _draft_ring_segment_target(ring, step=high) for ring in selected
+        ]
+
+    simplified: list[_Ring2D] = []
+    effective_segments = 0
+    for ring, target_segments in zip(selected, target_counts, strict=True):
+        vertices = _resample_ring_for_draft(
+            ring.vertices,
+            target_segments=target_segments,
+        )
+        effective_segments += max(0, int(vertices.shape[0]) - 1)
+        if vertices is ring.vertices:
+            simplified.append(ring)
+        else:
+            simplified.append(
+                _Ring2D(
+                    vertices=vertices,
+                    mins=np.min(vertices, axis=0),
+                    maxs=np.max(vertices, axis=0),
+                )
+            )
+    return (
+        simplified,
+        original_segments,
+        effective_segments,
+        original_ring_count,
+        len(simplified),
+    )
 
 
 @njit(cache=True)
@@ -422,19 +589,91 @@ def metaball(
     maxs = np.max(np.stack([r0.maxs for r0 in rings], axis=0), axis=0)
 
     margin = 2.0 * r + 2.0 * pitch
+    quality = current_preview_quality()
+    if quality == "draft":
+        minimum_segments = sum(
+            _draft_ring_segment_floor(ring) for ring in rings
+        )
+        draft_grid_limit = min(
+            DRAFT_MAX_GRID_POINTS,
+            max(
+                4,
+                DRAFT_MAX_CELL_SEGMENTS // max(1, minimum_segments),
+            ),
+        )
+    else:
+        draft_grid_limit = DRAFT_MAX_GRID_POINTS
     grid = GridSpec.from_bbox(
         mins,
         maxs,
         pitch=pitch,
         padding=margin,
-        max_cells=MAX_GRID_POINTS,
-        overflow="reject",
+        max_cells=(draft_grid_limit if quality == "draft" else MAX_GRID_POINTS),
+        overflow=("coarsen" if quality == "draft" else "reject"),
     )
     if grid is None:
         return coords, offsets
     xs, ys = grid.coordinates()
     pitch = grid.pitch
+    if quality == "draft" and grid.coarsened:
+        emit_operation_diagnostic(
+            op="metaball.grid_pitch",
+            original_value=grid.requested_pitch,
+            effective_value=grid.pitch,
+            reason=(
+                "draft preview coarsened the field grid; final capture keeps the "
+                "requested pitch"
+            ),
+            severity="info",
+        )
 
+    if quality == "draft":
+        (
+            rings,
+            original_segments,
+            effective_segments,
+            original_ring_count,
+            effective_ring_count,
+        ) = _simplify_rings_for_draft(
+            rings,
+            pitch=pitch,
+            max_segments=DRAFT_MAX_CELL_SEGMENTS // grid.cell_count,
+        )
+        if effective_ring_count != original_ring_count:
+            emit_operation_diagnostic(
+                op="metaball.rings",
+                original_value=original_ring_count,
+                effective_value=effective_ring_count,
+                reason=(
+                    "draft preview sampled the ring set to keep field work bounded; "
+                    "final capture keeps every input ring"
+                ),
+                severity="info",
+            )
+        if effective_segments != original_segments:
+            emit_operation_diagnostic(
+                op="metaball.ring_segments",
+                original_value=original_segments,
+                effective_value=effective_segments,
+                reason=(
+                    "draft preview resampled sub-grid ring detail; final capture "
+                    "keeps every input segment"
+                ),
+                severity="info",
+            )
+        original_work = grid.cell_count * original_segments
+        effective_work = grid.cell_count * effective_segments
+        if effective_work != original_work:
+            emit_operation_diagnostic(
+                op="metaball.cell_segments",
+                original_value=original_work,
+                effective_value=effective_work,
+                reason=(
+                    "draft preview bounded cells × segments field work; final "
+                    "capture keeps full ring detail"
+                ),
+                severity="info",
+            )
     ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
     inside_mask = scanline_evenodd_mask(
         ys,

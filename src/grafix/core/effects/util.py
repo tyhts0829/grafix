@@ -297,12 +297,144 @@ def _clean_frame_lines(
     return lines
 
 
+def _packed_clean_frame_offsets(
+    points: np.ndarray,
+    offsets: np.ndarray | None,
+    *,
+    tolerance: float,
+) -> np.ndarray | None:
+    """clean な packed 入力なら、追加の line 配列を作らず使える offsets を返す。"""
+
+    point_count = int(points.shape[0])
+    if offsets is None:
+        packed_offsets = np.asarray([0, point_count], dtype=np.intp)
+    else:
+        source_offsets = np.asarray(offsets)
+        if (
+            source_offsets.ndim != 1
+            or source_offsets.size < 2
+            or not np.issubdtype(source_offsets.dtype, np.integer)
+        ):
+            return None
+        packed_offsets = source_offsets.astype(np.intp, copy=False)
+
+    if (
+        int(packed_offsets[0]) != 0
+        or int(packed_offsets[-1]) != point_count
+    ):
+        return None
+    counts = np.diff(packed_offsets)
+    if bool(np.any(counts <= 0)):
+        return None
+
+    tolerance_sq = float(tolerance) * float(tolerance)
+    multi_point = counts > 1
+    if bool(np.any(multi_point)):
+        starts = packed_offsets[:-1][multi_point]
+        stops = packed_offsets[1:][multi_point]
+        close_delta = points[stops - 1] - points[starts]
+        close_distance_sq = np.sum(close_delta * close_delta, axis=1)
+        if bool(np.any(close_distance_sq <= tolerance_sq)):
+            return None
+
+    if point_count > 1:
+        delta = points[1:] - points[:-1]
+        distance_sq = np.sum(delta * delta, axis=1)
+        boundaries = packed_offsets[1:-1] - 1
+        if boundaries.size:
+            distance_sq[boundaries] = np.inf
+        if bool(np.any(distance_sq <= tolerance_sq)):
+            return None
+    return packed_offsets
+
+
 def _newell_vector(points: np.ndarray, *, scale: float) -> np.ndarray:
     if points.shape[0] < 3:
         return np.zeros((3,), dtype=np.float64)
     local = (points - points[0]) / float(scale)
     following = np.roll(local, -1, axis=0)
     return np.sum(np.cross(local, following), axis=0).astype(np.float64, copy=False)
+
+
+def _packed_newell_statistics(
+    points: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    scale: float,
+) -> tuple[np.ndarray, int, np.ndarray]:
+    """packed line 群の Newell 合計・最大面積 line・そのベクトルを返す。"""
+
+    line_count = int(offsets.size) - 1
+    if line_count <= 64:
+        total = np.zeros((3,), dtype=np.float64)
+        reference_index = 0
+        reference = np.zeros((3,), dtype=np.float64)
+        reference_area = -1.0
+        for index in range(line_count):
+            start = int(offsets[index])
+            stop = int(offsets[index + 1])
+            newell = _newell_vector(points[start:stop], scale=scale)
+            area = float(np.linalg.norm(newell))
+            total += newell
+            if area > reference_area:
+                reference_index = index
+                reference = newell
+                reference_area = area
+        return total, reference_index, reference
+
+    counts = np.diff(offsets)
+    if not bool(np.any(counts >= 3)):
+        return (
+            np.zeros((3,), dtype=np.float64),
+            0,
+            np.zeros((3,), dtype=np.float64),
+        )
+
+    anchors = np.repeat(points[offsets[:-1]], counts, axis=0)
+    local = (points - anchors) / float(scale)
+    contributions = np.zeros_like(local)
+    contributions[:-1] = np.cross(local[:-1], local[1:])
+    contributions[offsets[1:] - 1] = 0.0
+    newells = np.add.reduceat(contributions, offsets[:-1], axis=0)
+    newells[counts < 3] = 0.0
+
+    areas = np.linalg.norm(newells, axis=1)
+    reference_index = int(np.argmax(areas))
+    return (
+        np.sum(newells, axis=0).astype(np.float64, copy=False),
+        reference_index,
+        newells[reference_index],
+    )
+
+
+def _first_projected_packed_edge(
+    points: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    normal: np.ndarray,
+    reference_index: int,
+    tolerance: float,
+) -> np.ndarray | None:
+    """reference line 優先のまま、packed buffer から最初の有効 edge を探す。"""
+
+    line_count = int(offsets.size) - 1
+    for order_index in range(line_count):
+        line_index = (
+            int(reference_index)
+            if order_index == 0
+            else order_index - 1
+            if order_index <= int(reference_index)
+            else order_index
+        )
+        start = int(offsets[line_index])
+        stop = int(offsets[line_index + 1])
+        for point_index in range(start, stop - 1):
+            edge = points[point_index + 1] - points[point_index]
+            projected = edge - float(np.dot(edge, normal)) * normal
+            length = float(np.linalg.norm(projected))
+            if length > float(tolerance):
+                return projected / length
+    return None
 
 
 def _canonicalize_direction(vector: np.ndarray) -> np.ndarray:
@@ -382,10 +514,19 @@ class PlanarFrame:
             return _invalid_planar_frame(status="nonfinite", rank=0)
 
         tolerance = _frame_close_tolerance(values)
-        lines = _clean_frame_lines(values, offsets, tolerance=tolerance)
-        if not lines:
-            return _invalid_planar_frame(status="empty", rank=0)
-        samples = np.concatenate(lines, axis=0)
+        packed_offsets = _packed_clean_frame_offsets(
+            values,
+            offsets,
+            tolerance=tolerance,
+        )
+        if packed_offsets is None:
+            lines = _clean_frame_lines(values, offsets, tolerance=tolerance)
+            if not lines:
+                return _invalid_planar_frame(status="empty", rank=0)
+            samples = np.concatenate(lines, axis=0)
+        else:
+            lines = None
+            samples = values
 
         anchor = samples[0]
         relative = samples - anchor
@@ -419,18 +560,32 @@ class PlanarFrame:
         normal = eigenvectors[:, 0].astype(np.float64, copy=True)
         normal /= float(np.linalg.norm(normal))
 
-        total_newell = np.zeros((3,), dtype=np.float64)
         reference_line: np.ndarray | None = None
-        reference_newell = np.zeros((3,), dtype=np.float64)
-        reference_area = -1.0
-        for line in lines:
-            newell = _newell_vector(line, scale=scale)
-            area = float(np.linalg.norm(newell))
-            total_newell += newell
-            if area > reference_area:
-                reference_area = area
-                reference_line = line
-                reference_newell = newell
+        reference_index = 0
+        if packed_offsets is not None:
+            total_newell, reference_index, reference_newell = (
+                _packed_newell_statistics(
+                    values,
+                    packed_offsets,
+                    scale=scale,
+                )
+            )
+        else:
+            total_newell = np.zeros((3,), dtype=np.float64)
+            reference_newell = np.zeros((3,), dtype=np.float64)
+            reference_area = -1.0
+            assert lines is not None
+            for line in lines:
+                if line.shape[0] < 3:
+                    newell = np.zeros((3,), dtype=np.float64)
+                else:
+                    newell = _newell_vector(line, scale=scale)
+                area = float(np.linalg.norm(newell))
+                total_newell += newell
+                if area > reference_area:
+                    reference_area = area
+                    reference_line = line
+                    reference_newell = newell
 
         orientation = total_newell
         if float(np.linalg.norm(orientation)) <= 1e-14:
@@ -442,24 +597,34 @@ class PlanarFrame:
         else:
             normal = _canonicalize_direction(normal)
 
-        ordered_lines = (
-            [reference_line, *(line for line in lines if line is not reference_line)]
-            if reference_line is not None
-            else lines
-        )
-        x_axis: np.ndarray | None = None
         edge_tolerance = max(tolerance, scale * 1e-12)
-        for line in ordered_lines:
-            if line is None or line.shape[0] < 2:
-                continue
-            for edge in np.diff(line, axis=0):
-                projected = edge - float(np.dot(edge, normal)) * normal
-                length = float(np.linalg.norm(projected))
-                if length > edge_tolerance:
-                    x_axis = projected / length
+        if packed_offsets is not None:
+            x_axis = _first_projected_packed_edge(
+                values,
+                packed_offsets,
+                normal=normal,
+                reference_index=reference_index,
+                tolerance=edge_tolerance,
+            )
+        else:
+            assert lines is not None
+            ordered_lines = (
+                [reference_line, *(line for line in lines if line is not reference_line)]
+                if reference_line is not None
+                else lines
+            )
+            x_axis = None
+            for line in ordered_lines:
+                if line is None or line.shape[0] < 2:
+                    continue
+                for edge in np.diff(line, axis=0):
+                    projected = edge - float(np.dot(edge, normal)) * normal
+                    length = float(np.linalg.norm(projected))
+                    if length > edge_tolerance:
+                        x_axis = projected / length
+                        break
+                if x_axis is not None:
                     break
-            if x_axis is not None:
-                break
 
         if x_axis is None:
             fallback = eigenvectors[:, -1].astype(np.float64, copy=True)

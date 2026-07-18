@@ -52,9 +52,16 @@ def _renderer() -> DrawRenderer:
     renderer._scratch_topology = None
     renderer._mesh_cache = OrderedDict()
     renderer._mesh_candidates = OrderedDict()
+    renderer._dynamic_meshes = OrderedDict()
     renderer._mesh_cache_bytes = 0
-    renderer._mesh_cache_max_bytes = 256 * 1024 * 1024
+    renderer._dynamic_mesh_bytes = 0
+    renderer._dynamic_slot_count = 0
+    renderer._mesh_upload_count = 0
+    renderer._mesh_cache_max_bytes = 192 * 1024 * 1024
+    renderer._mesh_cache_max_entries = 4_096
     renderer._mesh_candidates_max_entries = 4_096
+    renderer._dynamic_mesh_max_bytes = 64 * 1024 * 1024
+    renderer._dynamic_mesh_max_entries = 256
     return renderer
 
 
@@ -155,7 +162,12 @@ def test_renderer_applies_gpu_cache_runtime_limit() -> None:
 
     renderer.apply_runtime_limits(RuntimeLimits(gpu_cache_bytes=12_000))
 
-    assert renderer.mesh_cache_max_bytes == 12_000
+    assert renderer.mesh_cache_max_bytes == 9_000
+    assert renderer._dynamic_mesh_max_bytes == 3_000
+    assert (
+        renderer.mesh_cache_max_bytes + renderer._dynamic_mesh_max_bytes
+        == 12_000
+    )
     assert renderer.mesh_candidate_cache_max_entries == 11
 
 
@@ -234,6 +246,118 @@ def test_renderer_rebuilds_scratch_topology_for_new_offsets_object(
     assert renderer._scratch_mesh.index_upload_count == 2
 
 
+def test_renderer_reuses_topology_for_multiple_animated_layer_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    original_build = renderer_module.build_line_indices_and_stats
+    build_count = 0
+
+    def counted_build(offsets: np.ndarray):
+        nonlocal build_count
+        build_count += 1
+        return original_build(offsets)
+
+    monkeypatch.setattr(renderer_module, "build_line_indices_and_stats", counted_build)
+    renderer = _renderer()
+    offsets_by_layer = [
+        np.asarray([0, 3], dtype=np.int32)
+        for _ in range(8)
+    ]
+
+    for frame in range(120):
+        for layer_index, offsets in enumerate(offsets_by_layer):
+            mesh, _ = renderer.prepare_layer_mesh(
+                _geometry(offsets=offsets, shift=float(frame)),
+                cache_key=_cache_key(f"animated-{frame}-{layer_index}"),
+                dynamic_slot=layer_index,
+            )
+            assert mesh is renderer._dynamic_meshes[layer_index].mesh
+
+    assert build_count == 8
+    assert len(renderer._dynamic_meshes) == 8
+    assert sum(
+        entry.mesh.index_upload_count
+        for entry in renderer._dynamic_meshes.values()
+    ) == 8
+    assert sum(
+        entry.mesh.vertices_only_upload_count
+        for entry in renderer._dynamic_meshes.values()
+    ) == 8 * 119
+
+
+def test_renderer_dynamic_mesh_pool_is_entry_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    renderer = _renderer()
+    renderer._dynamic_mesh_max_entries = 2
+
+    for layer_index in range(4):
+        renderer.prepare_layer_mesh(
+            _geometry(),
+            cache_key=_cache_key(f"dynamic-{layer_index}"),
+            dynamic_slot=layer_index,
+        )
+
+    assert list(renderer._dynamic_meshes) == [2, 3]
+    assert all(mesh.released for mesh in _FakeMesh.instances[1:3])
+
+
+def test_renderer_empty_geometry_releases_its_dynamic_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    renderer = _renderer()
+    mesh, _ = renderer.prepare_layer_mesh(
+        _geometry(),
+        cache_key=_cache_key("non-empty"),
+        dynamic_slot=0,
+    )
+    assert 0 in renderer._dynamic_meshes
+
+    empty = RealizedGeometry(
+        coords=np.empty((0, 3), dtype=np.float32),
+        offsets=np.asarray([0], dtype=np.int32),
+    )
+    empty_mesh, _ = renderer.prepare_layer_mesh(
+        empty,
+        cache_key=_cache_key("empty"),
+        dynamic_slot=0,
+    )
+
+    assert empty_mesh is None
+    assert 0 not in renderer._dynamic_meshes
+    assert renderer._dynamic_mesh_bytes == 0
+    assert mesh is not None and mesh.released is True
+
+
+def test_renderer_prunes_trailing_dynamic_slots_when_layer_count_shrinks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    renderer = _renderer()
+    meshes = []
+    for slot in range(3):
+        mesh, _ = renderer.prepare_layer_mesh(
+            _geometry(shift=float(slot)),
+            cache_key=_cache_key(f"slot-{slot}"),
+            dynamic_slot=slot,
+        )
+        meshes.append(mesh)
+    renderer.finish_dynamic_frame(3)
+
+    renderer.finish_dynamic_frame(1)
+
+    assert list(renderer._dynamic_meshes) == [0]
+    assert meshes[1] is not None and meshes[1].released is True
+    assert meshes[2] is not None and meshes[2].released is True
+
+
 def test_renderer_candidate_cache_is_key_only_and_count_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -287,6 +411,150 @@ def test_renderer_stale_result_redisplay_does_not_promote_mesh(
     assert stable_mesh is not None
     assert stable_mesh is not renderer._scratch_mesh
     assert list(renderer._mesh_cache) == [cache_key]
+
+
+def test_renderer_stale_dynamic_result_skips_duplicate_vbo_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    renderer = _renderer()
+    geometry = _geometry()
+    cache_key = _cache_key("held-dynamic-result")
+
+    mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=1,
+        snapshot_revision=10,
+        dynamic_slot=0,
+    )
+    uploads_after_first = renderer.mesh_upload_count
+    stale_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=1,
+        snapshot_revision=10,
+        dynamic_slot=0,
+    )
+
+    assert stale_mesh is mesh
+    assert renderer.mesh_upload_count == uploads_after_first
+    assert mesh is not None and mesh.vertex_upload_count == 1
+
+
+def test_renderer_releases_dynamic_slot_after_static_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    renderer = _renderer()
+    geometry = _geometry()
+    cache_key = _cache_key("dynamic-to-static")
+
+    dynamic_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=1,
+        snapshot_revision=10,
+        dynamic_slot=0,
+    )
+    assert dynamic_mesh is not None
+    assert renderer._dynamic_mesh_bytes > 0
+
+    static_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=2,
+        snapshot_revision=10,
+        dynamic_slot=0,
+    )
+
+    assert static_mesh is renderer._mesh_cache[cache_key].mesh
+    assert 0 not in renderer._dynamic_meshes
+    assert renderer._dynamic_mesh_bytes == 0
+    assert dynamic_mesh.released is True
+    assert renderer.mesh_upload_count == 2
+
+
+def test_renderer_static_promotion_releases_every_duplicate_dynamic_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    renderer = _renderer()
+    geometry = _geometry()
+    cache_key = _cache_key("shared-dynamic-to-static")
+
+    first_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=1,
+        snapshot_revision=10,
+        dynamic_slot=0,
+    )
+    second_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=1,
+        snapshot_revision=10,
+        dynamic_slot=1,
+    )
+    assert set(renderer._dynamic_meshes) == {0, 1}
+
+    static_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=2,
+        snapshot_revision=10,
+        dynamic_slot=0,
+    )
+
+    assert static_mesh is renderer._mesh_cache[cache_key].mesh
+    assert renderer._dynamic_meshes == {}
+    assert renderer._dynamic_mesh_bytes == 0
+    assert first_mesh is not None and first_mesh.released is True
+    assert second_mesh is not None and second_mesh.released is True
+
+
+def test_renderer_same_arrays_update_dynamic_cache_key_before_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeMesh.instances.clear()
+    monkeypatch.setattr(renderer_module, "LineMesh", _FakeMesh)
+    renderer = _renderer()
+    geometry = _geometry()
+    first_key = _cache_key("same-arrays-a")
+    second_key = _cache_key("same-arrays-b")
+
+    dynamic_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=first_key,
+        scene_serial=1,
+        snapshot_revision=10,
+        dynamic_slot=0,
+    )
+    same_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=second_key,
+        scene_serial=1,
+        snapshot_revision=10,
+        dynamic_slot=0,
+    )
+    assert same_mesh is dynamic_mesh
+    assert renderer._dynamic_meshes[0].cache_key == second_key
+
+    static_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=second_key,
+        scene_serial=2,
+        snapshot_revision=10,
+        dynamic_slot=0,
+    )
+
+    assert static_mesh is renderer._mesh_cache[second_key].mesh
+    assert renderer._dynamic_meshes == {}
+    assert dynamic_mesh is not None and dynamic_mesh.released is True
 
 
 def test_renderer_revisited_transient_revision_waits_for_stability(
@@ -376,3 +644,4 @@ def test_renderer_release_drops_scratch_topology_reference() -> None:
     assert renderer._scratch_topology is None
     assert renderer._scratch_mesh.released is True
     assert not renderer._mesh_candidates
+    assert not renderer._dynamic_meshes

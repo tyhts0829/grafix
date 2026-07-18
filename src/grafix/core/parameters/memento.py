@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from .effects import EffectChainIndex
 from .key import ParameterKey
@@ -14,6 +14,132 @@ from .meta import ParamMeta
 from .ordinals import GroupOrdinals
 from .state import ParamState
 from .store import ParamStore
+
+
+@dataclass(frozen=True, slots=True)
+class _ParamGuiEntry:
+    """1 key の GUI-owned 状態。patch history の最小コピー単位。"""
+
+    state: ParamState | None
+    meta: ParamMeta | None
+
+
+def _capture_gui_entry(store: ParamStore, key: ParameterKey) -> _ParamGuiEntry:
+    state = store._states.get(key)
+    meta = store._meta.get(key)
+    return _ParamGuiEntry(
+        state=None if state is None else deepcopy(state),
+        meta=None if meta is None else deepcopy(meta),
+    )
+
+
+def _gui_entries_match(left: _ParamGuiEntry, right: _ParamGuiEntry) -> bool:
+    left_state = left.state
+    right_state = right.state
+    left_meta = left.meta
+    right_meta = right.meta
+    if left_state is None or right_state is None or left_meta is None or right_meta is None:
+        return left_state == right_state and left_meta == right_meta
+    return (
+        str(left_meta.kind) == str(right_meta.kind)
+        and left_state.override == right_state.override
+        and left_state.ui_value == right_state.ui_value
+        and left_state.cc_key == right_state.cc_key
+        and left_meta.ui_min == right_meta.ui_min
+        and left_meta.ui_max == right_meta.ui_max
+    )
+
+
+class ParamStorePatch:
+    """少数 key の GUI-owned 差分を保持する Undo/Redo entry。"""
+
+    __slots__ = (
+        "_before_by_key",
+        "_after_by_key",
+        "_collapsed_before",
+        "_collapsed_after",
+    )
+
+    def __init__(
+        self,
+        *,
+        before_by_key: dict[ParameterKey, _ParamGuiEntry],
+        after_by_key: dict[ParameterKey, _ParamGuiEntry],
+        collapsed_before: dict[str, bool],
+        collapsed_after: dict[str, bool],
+    ) -> None:
+        self._before_by_key = before_by_key
+        self._after_by_key = after_by_key
+        self._collapsed_before = collapsed_before
+        self._collapsed_after = collapsed_after
+
+    @property
+    def changed_keys(self) -> frozenset[ParameterKey]:
+        """この entry が変更する parameter key を返す。"""
+
+        return frozenset(self._before_by_key)
+
+    @property
+    def changed_headers(self) -> frozenset[str]:
+        """この entry が変更する collapse header を返す。"""
+
+        return frozenset(self._collapsed_before)
+
+
+class ParamStorePatchCapture:
+    """GUI transaction 中に、実際に触れた key の変更前値だけを遅延 capture する。"""
+
+    __slots__ = ("_store", "_before_by_key", "_collapsed_before")
+
+    def __init__(self, store: ParamStore) -> None:
+        self._store = store
+        self._before_by_key: dict[ParameterKey, _ParamGuiEntry] = {}
+        self._collapsed_before: frozenset[str] | None = None
+
+    def observe_key(self, key: ParameterKey) -> None:
+        """key を最初に変更する直前の値だけを保存する。"""
+
+        if key not in self._before_by_key:
+            self._before_by_key[key] = _capture_gui_entry(self._store, key)
+
+    def observe_headers(self, headers: frozenset[str] | None = None) -> None:
+        """collapse set を最初に変更する直前だけ保存する。"""
+
+        if self._collapsed_before is None:
+            self._collapsed_before = (
+                frozenset(self._store._collapsed_headers_ref())
+                if headers is None
+                else frozenset(headers)
+            )
+
+    def finish(self) -> ParamStorePatch | None:
+        """実差分だけを immutable history entry として返す。"""
+
+        before_by_key: dict[ParameterKey, _ParamGuiEntry] = {}
+        after_by_key: dict[ParameterKey, _ParamGuiEntry] = {}
+        for key, before in self._before_by_key.items():
+            after = _capture_gui_entry(self._store, key)
+            if _gui_entries_match(before, after):
+                continue
+            before_by_key[key] = before
+            after_by_key[key] = after
+
+        collapsed_before: dict[str, bool] = {}
+        collapsed_after: dict[str, bool] = {}
+        if self._collapsed_before is not None:
+            after_headers = frozenset(self._store._collapsed_headers_ref())
+            for header in self._collapsed_before ^ after_headers:
+                collapsed_before[header] = header in self._collapsed_before
+                collapsed_after[header] = header in after_headers
+
+        if not before_by_key and not collapsed_before:
+            return None
+        return ParamStorePatch(
+            before_by_key=before_by_key,
+            after_by_key=after_by_key,
+            collapsed_before=collapsed_before,
+            collapsed_after=collapsed_after,
+        )
 
 
 def _known_collapse_headers(
@@ -192,7 +318,8 @@ def restore_param_store_memento(
     if param_store_memento_matches(store, memento):
         return False
 
-    changed = False
+    changed_value_keys: list[ParameterKey] = []
+    structure_changed = False
     for _key, saved_state, saved_meta, current_state, current_meta in _applicable_entries(
         store, memento
     ):
@@ -204,7 +331,7 @@ def restore_param_store_memento(
             current_state.override = bool(saved_state.override)
             current_state.ui_value = deepcopy(saved_state.ui_value)
             current_state.cc_key = deepcopy(saved_state.cc_key)
-            changed = True
+            changed_value_keys.append(_key)
 
         if current_meta.ui_min != saved_meta.ui_min or current_meta.ui_max != saved_meta.ui_max:
             # kind/choices は現在の code-owned metadata を保持し、GUI が
@@ -214,7 +341,7 @@ def restore_param_store_memento(
                 ui_min=deepcopy(saved_meta.ui_min),
                 ui_max=deepcopy(saved_meta.ui_max),
             )
-            changed = True
+            structure_changed = True
 
     current_known_headers = _known_collapse_headers(store._states, store._effects_ref())
     collapsed = store._collapsed_headers_ref()
@@ -223,20 +350,155 @@ def restore_param_store_memento(
             continue
         if saved_collapsed and header not in collapsed:
             collapsed.add(header)
-            changed = True
+            structure_changed = True
         elif not saved_collapsed and header in collapsed:
             collapsed.discard(header)
-            changed = True
+            structure_changed = True
 
+    changed = structure_changed or bool(changed_value_keys)
     if changed:
         # revision は過去の値へ戻さず単調に進め、読み取り cache を無効化する。
-        store._touch()
+        store._touch(
+            structure=structure_changed,
+            value_keys=changed_value_keys,
+        )
     return changed
 
 
+def _apply_gui_entry(
+    store: ParamStore,
+    key: ParameterKey,
+    saved: _ParamGuiEntry,
+) -> tuple[bool, bool]:
+    """1 key を適用し、(state_changed, meta_changed) を返す。"""
+
+    saved_state = saved.state
+    saved_meta = saved.meta
+    current_state = store._states.get(key)
+    current_meta = store._meta.get(key)
+    if (
+        saved_state is None
+        or saved_meta is None
+        or current_state is None
+        or current_meta is None
+        or str(saved_meta.kind) != str(current_meta.kind)
+    ):
+        return False, False
+
+    state_changed = (
+        current_state.override != saved_state.override
+        or current_state.ui_value != saved_state.ui_value
+        or current_state.cc_key != saved_state.cc_key
+    )
+    if state_changed:
+        current_state.override = bool(saved_state.override)
+        current_state.ui_value = deepcopy(saved_state.ui_value)
+        current_state.cc_key = deepcopy(saved_state.cc_key)
+
+    meta_changed = (
+        current_meta.ui_min != saved_meta.ui_min
+        or current_meta.ui_max != saved_meta.ui_max
+    )
+    if meta_changed:
+        store._meta[key] = replace(
+            current_meta,
+            ui_min=deepcopy(saved_meta.ui_min),
+            ui_max=deepcopy(saved_meta.ui_max),
+        )
+    return state_changed, meta_changed
+
+
+def restore_param_store_patch(
+    store: ParamStore,
+    patch: ParamStorePatch,
+    *,
+    after: bool,
+) -> bool:
+    """patch の変更前、または変更後を現在の code-owned 構造へ merge する。"""
+
+    if not isinstance(patch, ParamStorePatch):
+        raise TypeError("patch must be a ParamStorePatch")
+    entries = patch._after_by_key if after else patch._before_by_key
+    header_states = patch._collapsed_after if after else patch._collapsed_before
+
+    changed_value_keys: list[ParameterKey] = []
+    meta_changed = False
+    for key, saved in entries.items():
+        state_changed, entry_meta_changed = _apply_gui_entry(store, key, saved)
+        if state_changed:
+            changed_value_keys.append(key)
+        meta_changed = meta_changed or entry_meta_changed
+
+    headers_changed = False
+    if header_states:
+        known_headers = _known_collapse_headers(store._states, store._effects_ref())
+        collapsed = store._collapsed_headers_ref()
+        for header, should_collapse in header_states.items():
+            if header not in known_headers:
+                continue
+            if should_collapse and header not in collapsed:
+                collapsed.add(header)
+                headers_changed = True
+            elif not should_collapse and header in collapsed:
+                collapsed.discard(header)
+                headers_changed = True
+
+    if not changed_value_keys and not meta_changed and not headers_changed:
+        return False
+    store._touch(
+        structure=bool(meta_changed or headers_changed),
+        value_keys=changed_value_keys,
+    )
+    return True
+
+
+def coalesce_param_store_patches(
+    first: ParamStorePatch,
+    second: ParamStorePatch,
+) -> ParamStorePatch | None:
+    """同じ対象を連続変更した patch を 1 Undo 単位へまとめる。"""
+
+    if (
+        first.changed_keys != second.changed_keys
+        or first.changed_headers != second.changed_headers
+    ):
+        return None
+    return ParamStorePatch(
+        before_by_key=dict(first._before_by_key),
+        after_by_key=dict(second._after_by_key),
+        collapsed_before=dict(first._collapsed_before),
+        collapsed_after=dict(second._collapsed_after),
+    )
+
+
+def update_param_store_memento_from_patch(
+    memento: ParamStoreMemento,
+    patch: ParamStorePatch,
+    *,
+    after: bool,
+) -> None:
+    """履歴基準 memento を patch と同じ側へ少数 key だけ更新する。"""
+
+    entries = patch._after_by_key if after else patch._before_by_key
+    for key, saved in entries.items():
+        if saved.state is None or saved.meta is None:
+            continue
+        memento._states[key] = deepcopy(saved.state)
+        memento._meta[key] = deepcopy(saved.meta)
+
+    header_states = patch._collapsed_after if after else patch._collapsed_before
+    for header, collapsed in header_states.items():
+        memento._collapsed_by_header[str(header)] = bool(collapsed)
+
+
 __all__ = [
+    "ParamStorePatch",
+    "ParamStorePatchCapture",
     "ParamStoreMemento",
     "capture_param_store_memento",
+    "coalesce_param_store_patches",
     "param_store_memento_matches",
     "restore_param_store_memento",
+    "restore_param_store_patch",
+    "update_param_store_memento_from_patch",
 ]

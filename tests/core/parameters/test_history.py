@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from grafix.core.parameters import history as history_module
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.history import ParamSnapshotSlots, ParamStoreHistory
 from grafix.core.parameters.key import ParameterKey
@@ -66,6 +67,86 @@ def test_history_coalesces_short_changes_from_same_source() -> None:
     assert _value(store, key) == 0.25
     assert history.redo() is True
     assert _value(store, key) == 0.6
+
+
+def test_patch_transaction_avoids_full_capture_and_coalesces_one_key(
+    monkeypatch,
+) -> None:
+    now = [0.0]
+    store = ParamStore()
+    key = _add_parameter(store)
+    history = ParamStoreHistory(store, coalesce_seconds=0.5, clock=lambda: now[0])
+
+    def fail_full_capture(_store):
+        raise AssertionError("single-key patch must not capture the full store")
+
+    monkeypatch.setattr(
+        history_module,
+        "capture_param_store_memento",
+        fail_full_capture,
+    )
+    with history.transaction(source="parameter_gui", patch=True):
+        _set_value(store, key, 0.4)
+    now[0] = 0.2
+    with history.transaction(source="parameter_gui", patch=True):
+        _set_value(store, key, 0.6)
+
+    assert history.undo_depth == 1
+    monkeypatch.undo()
+    assert history.undo() is True
+    assert _value(store, key) == 0.25
+    assert history.redo() is True
+    assert _value(store, key) == 0.6
+
+
+def test_patch_history_respects_kind_change_after_code_reload() -> None:
+    store = ParamStore()
+    key = _add_parameter(store)
+    history = ParamStoreHistory(store)
+
+    with history.transaction(source="parameter_gui", patch=True):
+        _set_value(store, key, 0.8)
+
+    store._set_meta(key, ParamMeta(kind="int", ui_min=0, ui_max=10))
+    assert history.undo() is False
+    assert _value(store, key) == 0.8
+
+
+def test_patch_after_bulk_does_not_mutate_bulk_redo_target() -> None:
+    store = ParamStore()
+    key = _add_parameter(store)
+    history = ParamStoreHistory(store)
+
+    with history.transaction(source="bulk"):
+        _set_value(store, key, 0.4)
+    with history.transaction(source="parameter_gui", patch=True):
+        _set_value(store, key, 0.8)
+
+    assert history.undo() is True
+    assert _value(store, key) == 0.4
+    assert history.undo() is True
+    assert _value(store, key) == 0.25
+    assert history.redo() is True
+    assert _value(store, key) == 0.4
+    assert history.redo() is True
+    assert _value(store, key) == 0.8
+
+
+def test_patch_transactions_for_different_keys_do_not_coalesce() -> None:
+    store = ParamStore()
+    first = _add_parameter(store, site_id="site-1", arg="a")
+    second = _add_parameter(store, site_id="site-2", arg="b")
+    history = ParamStoreHistory(store, coalesce_seconds=1.0, clock=lambda: 0.0)
+
+    with history.transaction(source="parameter_gui", patch=True):
+        _set_value(store, first, 0.4)
+    with history.transaction(source="parameter_gui", patch=True):
+        _set_value(store, second, 0.6)
+
+    assert history.undo_depth == 2
+    assert history.undo() is True
+    assert _value(store, first) == 0.4
+    assert _value(store, second) == 0.25
 
 
 def test_history_separates_sources_and_changes_outside_window() -> None:

@@ -29,12 +29,14 @@ class _Imgui:
         query: str = "",
         click_filter: bool = False,
         clicked_filter_ids: set[str] | None = None,
+        clicked_button_ids: set[str] | None = None,
     ) -> None:
         self.click_clear = bool(click_clear)
         self.click_undo = bool(click_undo)
         self.query = str(query)
         self.click_filter = bool(click_filter)
         self.clicked_filter_ids = set(clicked_filter_ids or set())
+        self.clicked_button_ids = set(clicked_button_ids or set())
         self.checkbox_labels: list[str] = []
         self.menu_enabled: list[bool] = []
         self.opened_popups: list[str] = []
@@ -74,7 +76,7 @@ class _Imgui:
             return self.click_filter
         if widget_id == "midi_clear_notice_undo":
             return self.click_undo
-        return False
+        return widget_id in self.clicked_button_ids
 
     def open_popup(self, label: str) -> None:
         self.opened_popups.append(label)
@@ -223,6 +225,23 @@ def test_clear_notice_disappears_instead_of_undoing_a_later_edit() -> None:
     state = store.get_state(key)
     assert state is not None and state.ui_value == 0.9
     assert gui._midi_clear_notice is None
+
+
+def test_collapse_all_is_an_independent_undoable_operation() -> None:
+    gui, store, _key = _setup_with_mapping()
+    history = ParamStoreHistory(store)
+    gui._history = history
+    gui._imgui = _Imgui(
+        click_clear=False,
+        clicked_button_ids={"parameter_groups_collapse_all"},
+    )
+
+    assert gui._render_parameter_table_toolbar() is True
+    assert history.undo_depth == 1
+    assert store._collapsed_headers_ref()
+
+    assert history.undo() is True
+    assert store._collapsed_headers_ref() == set()
 
 
 def test_vec3_menu_counts_each_assigned_component() -> None:

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TypeAlias
 from weakref import WeakKeyDictionary
 
+from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.view import ParameterRow
@@ -25,8 +26,10 @@ class ParameterTableModel:
     """
 
     cache_key: ParameterTableCacheKey
+    value_revision: int
     snapshot: ParamSnapshot
     rows: tuple[ParameterRow, ...]
+    row_index_by_key: Mapping[ParameterKey, int]
     raw_label_by_site: Mapping[tuple[str, str], str]
     primitive_header_by_group: Mapping[tuple[str, int], str]
     layer_style_name_by_site_id: Mapping[str, str]
@@ -37,6 +40,10 @@ class ParameterTableModel:
 
 ModelBuilder: TypeAlias = Callable[
     [ParamStore, ParamSnapshot, ParameterTableCacheKey], ParameterTableModel
+]
+ModelRefresher: TypeAlias = Callable[
+    [ParamStore, ParameterTableModel, frozenset[ParameterKey]],
+    ParameterTableModel,
 ]
 
 
@@ -61,8 +68,9 @@ class ParameterTableModelCache:
         *,
         registry_revision: RegistryRevision,
         builder: ModelBuilder,
+        refresher: ModelRefresher,
     ) -> ParameterTableModel:
-        """revision が同じなら既存モデルを返し、異なる場合だけ再構築する。"""
+        """構造 revision が同じなら、変更 key の動的値だけを更新する。"""
 
         primitive_revision, effect_revision, preset_revision = registry_revision
         normalized_registry_revision: RegistryRevision = (
@@ -71,12 +79,18 @@ class ParameterTableModelCache:
             int(preset_revision),
         )
         cache_key: ParameterTableCacheKey = (
-            int(store.revision),
+            int(store.table_revision),
             normalized_registry_revision,
         )
         cached = self._models.get(store)
         if cached is not None and cached.cache_key == cache_key:
-            return cached
+            changed_keys = store.value_changes_since(cached.value_revision)
+            if changed_keys is not None:
+                if not changed_keys:
+                    return cached
+                refreshed = refresher(store, cached, changed_keys)
+                self._models[store] = refreshed
+                return refreshed
 
         model = builder(store, store_snapshot(store), cache_key)
         self._models[store] = model

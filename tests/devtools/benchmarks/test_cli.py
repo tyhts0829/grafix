@@ -7,6 +7,13 @@ import pytest
 
 from grafix.__main__ import main as grafix_main
 from grafix.devtools.benchmarks import cli
+from grafix.devtools.benchmarks.runner import case_definitions
+from grafix.devtools.benchmarks.schema import (
+    CaseResult,
+    Sample,
+    evaluate_contract,
+    summarize_samples,
+)
 
 
 def test_list_outputs_registry_json(capsys) -> None:
@@ -23,7 +30,7 @@ def test_top_level_cli_dispatches_benchmark_actions(capsys) -> None:
     assert "core.concat_recipe.parts_10" in capsys.readouterr().out
 
 
-def test_run_and_report_cli_create_schema_v3_artifacts(tmp_path: Path) -> None:
+def test_run_and_report_cli_create_schema_v4_artifacts(tmp_path: Path) -> None:
     assert (
         cli.main(
             [
@@ -48,9 +55,11 @@ def test_run_and_report_cli_create_schema_v3_artifacts(tmp_path: Path) -> None:
     )
     run_path = tmp_path / "runs" / "test-run.json"
     payload = json.loads(run_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["cases"][0]["samples"]
     assert payload["cases"][0]["checksum"]
+    assert payload["cases"][0]["metrics"]
+    assert payload["cases"][0]["contracts"] == []
 
     assert cli.main(["report", "--out", str(tmp_path)]) == 0
     assert (tmp_path / "report.html").is_file()
@@ -86,6 +95,47 @@ def test_run_and_report_cli_create_schema_v3_artifacts(tmp_path: Path) -> None:
         )
         == 2
     )
+
+
+def test_cli_writes_self_sampling_scenario_with_effective_case_policy(
+    tmp_path: Path,
+) -> None:
+    assert (
+        cli.main(
+            [
+                "run",
+                "--case",
+                "interactive.slider.input_to_present.rows_32.workers_0",
+                "--samples",
+                "3",
+                "--warmup",
+                "2",
+                "--target-ms",
+                "1000",
+                "--run-id",
+                "self-sampling",
+                "--out",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(
+        (tmp_path / "runs" / "self-sampling.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["meta"]["samples"] == 3
+    assert payload["meta"]["warmup"] == 2
+    case = payload["cases"][0]
+    assert case["spec"]["self_sampling"] is True
+    assert len(case["samples"]) == 1
+    latency = next(
+        metric
+        for metric in case["metrics"]
+        if metric["name"] == "ux01.input_to_present"
+    )
+    assert latency["distribution"]["count"] == 12
 
 
 def test_cli_rejects_ignored_or_duplicate_selection_arguments(
@@ -145,3 +195,68 @@ def test_effective_child_environment_forces_deterministic_hash_seed(
     environment = cli._effective_child_environment(mode="warm")
     assert environment["PYTHONHASHSEED"] == "0"
     assert environment["PYTHONPYCACHEPREFIX"] == "<isolated-empty>"
+
+
+def test_run_cli_returns_nonzero_for_hard_contract_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    definition = next(
+        definition
+        for definition in case_definitions()
+        if definition.case_id == "core.concat_recipe.parts_10"
+    )
+    sample = Sample(elapsed_ns=100, iterations=1)
+    failed = evaluate_contract(
+        contract_id="synthetic.hard",
+        severity="hard",
+        actual=False,
+        comparator="eq",
+        limit=True,
+        reason="synthetic hard contract",
+    )
+    result = CaseResult(
+        spec=definition.spec(seed=0),
+        status="contract-failure",
+        samples=(sample,),
+        stats=summarize_samples((sample,)),
+        checksum="checksum",
+        checksum_kind="exact",
+        setup_rss_bytes=10,
+        baseline_rss_bytes=10,
+        peak_rss_bytes=10,
+        peak_rss_delta_bytes=0,
+        contracts=(failed,),
+        error="failed hard contracts: synthetic.hard",
+    )
+    monkeypatch.setattr(cli, "run_case_isolated", lambda *_args, **_kwargs: result)
+
+    assert (
+        cli.main(
+            [
+                "run",
+                "--case",
+                definition.case_id,
+                "--samples",
+                "1",
+                "--warmup",
+                "0",
+                "--target-ms",
+                "0",
+                "--run-id",
+                "contract-failure",
+                "--out",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+    payload = json.loads(
+        (tmp_path / "runs" / "contract-failure.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["cases"][0]["status"] == "contract-failure"
+    assert payload["cases"][0]["contracts"][0]["severity"] == "hard"
+    assert cli.main(["report", "--out", str(tmp_path)]) == 1
+    assert (tmp_path / "report.html").is_file()

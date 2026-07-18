@@ -11,6 +11,7 @@ from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.persistence import load_param_store
 from grafix.core.parameters.store import ParamStore
+from grafix.core.parameters.ui_ops import update_state_from_ui
 
 
 def _touch_with_parameter(store: ParamStore, value: float = 0.5) -> ParameterKey:
@@ -95,6 +96,41 @@ def test_autosave_flushes_at_max_interval_during_continuous_revisions(
     assert autosave.tick() is True
     assert calls == [store.revision]
     assert autosave.dirty is False
+
+
+def test_autosave_waits_for_release_debounce_while_edit_is_active(
+    tmp_path: Path,
+) -> None:
+    now = [0.0]
+    store = ParamStore()
+    key = _touch_with_parameter(store)
+    meta = store.get_meta(key)
+    assert meta is not None
+    calls: list[int] = []
+    autosave = ParamStoreAutosave(
+        store,
+        tmp_path / "store.json",
+        debounce_seconds=0.5,
+        max_interval_seconds=1.0,
+        clock=lambda: now[0],
+        save=lambda current, _path: calls.append(current.revision),
+    )
+
+    update_state_from_ui(store, key, 0.4, meta=meta)
+    assert autosave.tick(suspended=True) is False
+    now[0] = 5.0
+    update_state_from_ui(store, key, 0.5, meta=meta)
+    # max interval を越えても active edit 中は同期 save しない。
+    assert autosave.tick(suspended=True) is False
+    assert calls == []
+
+    # release frame から debounce を開始し直す。
+    assert autosave.tick(suspended=False) is False
+    now[0] = 5.49
+    assert autosave.tick() is False
+    now[0] = 5.5
+    assert autosave.tick() is True
+    assert calls == [store.revision]
 
 
 def test_autosave_flush_uses_existing_atomic_persistence(tmp_path: Path) -> None:

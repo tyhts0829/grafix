@@ -27,15 +27,28 @@ def _profiled_monitor() -> RuntimeMonitor:
     monitor = RuntimeMonitor()
     perf = PerfCollector(enabled=True, console_output=False)
     with perf.frame():
+        perf.record_event(
+            "parameter_revision_created",
+            revision=12,
+            timestamp_ns=1_000_000,
+        )
         perf.record_operation("slow-effect", 8_000_000)
         perf.record_operation("fast-effect", 1_000_000)
         perf.record_layer("Foreground", 12_000_000)
         perf.record_cache(hits=7, misses=3, evictions=1)
         perf.record_worker_lag(15.0)
+        perf.record_duration("preview_draw_flip", 5_000_000)
+        perf.record_duration("parameter_gui_draw_flip", 3_000_000)
+        perf.record_duration("full_loop", 9_000_000)
         perf.record_preview_result(
             requested_revision=12,
             presented_revision=10,
             fresh=False,
+        )
+        perf.record_event(
+            "preview_presented",
+            revision=12,
+            timestamp_ns=21_000_000,
         )
     monitor.set_profiler(perf.snapshot())
     return monitor
@@ -59,6 +72,14 @@ def test_profiler_lines_show_actionable_slowest_items_and_runtime_pressure() -> 
     assert any("Foreground" in line for line in lines)
     assert any("Cache" in line and "70% hit" in line and "1 eviction" in line for line in lines)
     assert any("Worker lag" in line and "15.0 ms" in line for line in lines)
+    assert any(
+        "Input to present" in line and "20.00 ms" in line
+        for line in lines
+    )
+    assert any(
+        "preview_draw_flip" in line and "p95 5.00" in line
+        for line in lines
+    )
     assert any(
         "Preview freshness" in line
         and "0% fresh" in line

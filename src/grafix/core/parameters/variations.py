@@ -349,7 +349,7 @@ def randomize_parameters(
             state.override = True
             changed.append(key)
         if changed:
-            store._touch()
+            store._touch(structure=False, value_keys=changed)
         return tuple(changed)
 
     if history is None:
@@ -456,7 +456,7 @@ def morph_variations(
             current_state.cc_key = selected_cc
             changed.append(key)
         if changed:
-            store._touch()
+            store._touch(structure=False, value_keys=changed)
         return tuple(changed)
 
     if history is None:

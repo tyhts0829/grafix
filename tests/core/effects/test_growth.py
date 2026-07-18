@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
+from grafix.core.operation_diagnostics import operation_diagnostic_context
+from grafix.core.preview_quality import preview_quality_context
 from grafix.core.realize import realize
 
 
@@ -60,3 +63,180 @@ def test_growth_seed_count_zero_returns_empty_or_mask() -> None:
     out_show = realize(E.growth(seed_count=0, iters=100, show_mask=True)(mask))
     np.testing.assert_allclose(out_show.coords, realized_mask.coords, rtol=0.0, atol=1e-6)
     assert out_show.offsets.tolist() == realized_mask.offsets.tolist()
+
+
+def test_growth_draft_caps_iterations_and_sets_total_point_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import grafix.core.effects.growth as module
+
+    seen_limits: list[tuple[int, int | None]] = []
+
+    def simulate(
+        rings_xy: list[np.ndarray],
+        *,
+        iters: int,
+        max_total_points: int | None,
+        **_kwargs: object,
+    ) -> object:
+        seen_limits.append((int(iters), max_total_points))
+        point_count = int(sum(int(ring.shape[0]) for ring in rings_xy))
+        grid_limit = _kwargs.get("max_force_grid_cells")
+        return module._GrowthSimulationResult(
+            rings_xy,
+            int(iters),
+            point_count,
+            False,
+            None,
+            (
+                int(grid_limit) + 1
+                if isinstance(grid_limit, int)
+                else 0
+            ),
+            int(grid_limit) if isinstance(grid_limit, int) else 0,
+        )
+
+    monkeypatch.setattr(module, "_simulate_growth_in_mask_xy", simulate)
+    realized_mask = realize(G.polygon(n_sides=4, scale=60.0))
+    mask = (realized_mask.coords, realized_mask.offsets)
+
+    with operation_diagnostic_context() as diagnostics:
+        with preview_quality_context("draft"):
+            module.growth(mask, seed_count=2, iters=250, seed=12)
+    with preview_quality_context("final"):
+        module.growth(mask, seed_count=2, iters=250, seed=12)
+
+    assert seen_limits == [
+        (module.DRAFT_MAX_ITERS, module.DRAFT_MAX_TOTAL_POINTS),
+        (250, None),
+    ]
+    assert any(
+        item.op == "growth.iters"
+        and item.original_value == 250
+        and item.effective_value == module.DRAFT_MAX_ITERS
+        for item in diagnostics.snapshot()
+    )
+    assert any(
+        item.op == "growth.force_grid_cells"
+        and item.effective_value == module.DRAFT_MAX_FORCE_GRID_CELLS
+        for item in diagnostics.snapshot()
+    )
+
+
+def test_growth_total_point_budget_rejects_expansion_at_iteration_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import grafix.core.effects.growth as module
+
+    ring = np.asarray(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        dtype=np.float64,
+    )
+    monkeypatch.setattr(
+        module,
+        "_insert_points_ring_xy",
+        lambda points, _spacing: np.repeat(points, 2, axis=0),
+    )
+    monkeypatch.setattr(
+        module,
+        "_compute_forces_numba",
+        lambda points, **_kwargs: np.zeros_like(points),
+    )
+    monkeypatch.setattr(
+        module,
+        "_sample_sdf_grid_numba",
+        lambda points, *_args: (
+            -np.ones((points.shape[0],), dtype=np.float64),
+            np.zeros((points.shape[0],), dtype=np.float64),
+            np.zeros((points.shape[0],), dtype=np.float64),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_apply_boundary_constraints_numba",
+        lambda points, displacement, *_args, **_kwargs: points + displacement,
+    )
+
+    result = module._simulate_growth_in_mask_xy(
+        [ring],
+        target_spacing=1.0,
+        boundary_avoid=0.0,
+        boundary_mode="slide",
+        iters=2,
+        sdf=np.zeros((2, 2), dtype=np.float64),
+        sdf_origin_x=0.0,
+        sdf_origin_y=0.0,
+        sdf_pitch=1.0,
+        max_total_points=5,
+    )
+
+    assert result.point_budget_hit
+    assert result.rejected_total_points == 8
+    assert result.max_total_points == 4
+    assert result.iterations == 2
+    np.testing.assert_array_equal(result.rings[0], ring)
+
+
+def test_growth_draft_bounds_repulsion_hash_before_force_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import grafix.core.effects.growth as module
+
+    first = np.asarray(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        dtype=np.float64,
+    )
+    second = first + 1.0e9
+    seen_grid_shapes: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_insert_points_ring_xy",
+        lambda points, _spacing: points,
+    )
+
+    def forces(
+        points: np.ndarray,
+        *,
+        bounded_grid_width: int,
+        bounded_grid_height: int,
+        **_kwargs: object,
+    ) -> np.ndarray:
+        seen_grid_shapes.append((bounded_grid_width, bounded_grid_height))
+        return np.zeros_like(points)
+
+    monkeypatch.setattr(module, "_compute_forces_numba", forces)
+    monkeypatch.setattr(
+        module,
+        "_sample_sdf_grid_numba",
+        lambda points, *_args: (
+            -np.ones((points.shape[0],), dtype=np.float64),
+            np.zeros((points.shape[0],), dtype=np.float64),
+            np.zeros((points.shape[0],), dtype=np.float64),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_apply_boundary_constraints_numba",
+        lambda points, displacement, *_args, **_kwargs: points + displacement,
+    )
+
+    result = module._simulate_growth_in_mask_xy(
+        [first, second],
+        target_spacing=1.0,
+        boundary_avoid=0.0,
+        boundary_mode="slide",
+        iters=1,
+        sdf=np.zeros((2, 2), dtype=np.float64),
+        sdf_origin_x=0.0,
+        sdf_origin_y=0.0,
+        sdf_pitch=1.0,
+        max_total_points=32,
+        max_force_grid_cells=128,
+    )
+
+    assert seen_grid_shapes
+    width, height = seen_grid_shapes[0]
+    assert width * height <= 128
+    assert result.force_grid_requested_cells > 128
+    assert result.force_grid_effective_cells == width * height

@@ -314,6 +314,8 @@ class DrawWindowSystem:
             self._last_frame_t = 0.0
             self._fresh_scene_serial = 0
             self._presented_snapshot_revision: int | None = None
+            self._presented_frame_id: int | None = None
+            self._last_perf_store_revision = int(store.revision)
             self._last_export_snapshot: FrameExportSnapshot | None = None
             self._last_export_provenance_token: _FrameProvenanceToken | None = None
             self._last_frame_error: str | None = None
@@ -334,6 +336,7 @@ class DrawWindowSystem:
                 snapshot_callback=(
                     None if monitor is None else monitor.set_profiler
                 ),
+                defer_frame_finalize=True,
             )
             scene_runner = SceneRunner(
                 draw,
@@ -1542,11 +1545,72 @@ class DrawWindowSystem:
         session = self._midi_session
         return None if session is None else session.frame_snapshot()
 
+    def record_window_present(self, name: str, elapsed_ns: int) -> None:
+        """pyglet ``Window.draw()`` 完了後の draw+flip 時間を記録する。"""
+
+        perf = self._perf
+        perf.record_duration(str(name), int(elapsed_ns))
+        if str(name) == "preview_draw_flip":
+            perf.record_event(
+                "preview_presented",
+                frame_id=getattr(self, "_presented_frame_id", None),
+                revision=getattr(self, "_presented_snapshot_revision", None),
+            )
+            perf.record_event(
+                "preview_style_presented",
+                frame_id=getattr(self, "_presented_frame_id", None),
+                revision=int(self._store.revision),
+            )
+
+    def record_parameter_revision_created(
+        self,
+        revision: int,
+        timestamp_ns: int,
+        domain: str,
+    ) -> None:
+        """Inspector edit の起点を次の preview frame より前に記録する。"""
+
+        normalized_revision = int(revision)
+        normalized_domain = str(domain)
+        if normalized_domain not in {"geometry", "style"}:
+            raise ValueError(f"unknown parameter revision domain: {domain!r}")
+        self._perf.record_event(
+            (
+                "parameter_style_revision_created"
+                if normalized_domain == "style"
+                else "parameter_revision_created"
+            ),
+            revision=normalized_revision,
+            timestamp_ns=int(timestamp_ns),
+        )
+        self._last_perf_store_revision = normalized_revision
+
+    def record_full_loop(self, elapsed_ns: int) -> None:
+        """preview/Inspector を含む 1 multi-window tick を記録する。"""
+
+        perf = self._perf
+        perf.record_duration("full_loop", int(elapsed_ns))
+        perf.finish_frame(deadline_elapsed_ns=int(elapsed_ns))
+
+    def record_scheduler_jitter(self, elapsed_ns: int) -> None:
+        """pyglet scheduler の目標 tick 間隔からの絶対ずれを記録する。"""
+
+        self._perf.record_duration("scheduler_jitter", int(elapsed_ns))
+
     def draw_frame(self) -> None:
         """1 フレーム分の描画を行う（`flip()` は呼ばない）。"""
 
         perf = self._perf
         with perf.frame():
+            current_store_revision = int(self._store.revision)
+            if current_store_revision != int(
+                getattr(self, "_last_perf_store_revision", current_store_revision)
+            ):
+                perf.record_event(
+                    "store_revision_changed",
+                    revision=current_store_revision,
+                )
+                self._last_perf_store_revision = current_store_revision
             # --- 0) フレーム冒頭での軽い housekeeping ---
             # source watchはstatだけを毎frame確認し、変更時だけtransactional loadする。
             # recording generation 内では code provenance を一つに保つため、停止後の
@@ -1622,7 +1686,29 @@ class DrawWindowSystem:
                 recording=recording,
                 quality=quality,
             )
-            fresh_frame = self._scene_runner.last_evaluation_succeeded is True
+            perf.record_event(
+                "scene_ready",
+                frame_id=getattr(
+                    self._scene_runner,
+                    "last_realized_frame_id",
+                    None,
+                ),
+                revision=getattr(
+                    self._scene_runner,
+                    "last_realized_snapshot_revision",
+                    None,
+                ),
+            )
+            output_updated = getattr(
+                self._scene_runner,
+                "last_output_updated",
+                None,
+            )
+            fresh_frame = (
+                self._scene_runner.last_evaluation_succeeded is True
+                if output_updated is None
+                else bool(output_updated)
+            )
             runner_revision = getattr(
                 self._scene_runner,
                 "last_realized_snapshot_revision",
@@ -1642,6 +1728,12 @@ class DrawWindowSystem:
                     # 公開しないため、同期成功と同じ current revision を使う。
                     presented_snapshot_revision = int(self._store.revision)
                     self._presented_snapshot_revision = presented_snapshot_revision
+            presented_frame_id = getattr(
+                self._scene_runner,
+                "last_realized_frame_id",
+                None,
+            )
+            self._presented_frame_id = presented_frame_id
 
             fresh_scene_serial = int(
                 getattr(self, "_fresh_scene_serial", 0)
@@ -1670,7 +1762,13 @@ class DrawWindowSystem:
                 )
             frame_vertices = 0
             frame_lines = 0
-            for item in realized_layers:
+            mesh_was_uploaded = False
+            for layer_index, item in enumerate(realized_layers):
+                uploads_before = getattr(
+                    self._renderer,
+                    "mesh_upload_count",
+                    None,
+                )
                 with perf.section("render_layer"):
                     stats = self._renderer.render_layer(
                         realized=item.realized,
@@ -1683,9 +1781,37 @@ class DrawWindowSystem:
                             else None
                         ),
                         snapshot_revision=presented_snapshot_revision,
+                        dynamic_slot=layer_index,
                     )
+                uploads_after = getattr(
+                    self._renderer,
+                    "mesh_upload_count",
+                    None,
+                )
+                mesh_was_uploaded = mesh_was_uploaded or (
+                    uploads_before is not None
+                    and uploads_after is not None
+                    and int(uploads_after) > int(uploads_before)
+                )
                 frame_vertices += int(stats.draw_vertices)
                 frame_lines += int(stats.draw_lines)
+            finish_dynamic_frame = getattr(
+                self._renderer,
+                "finish_dynamic_frame",
+                None,
+            )
+            if callable(finish_dynamic_frame):
+                finish_dynamic_frame(len(realized_layers))
+            perf.record_event(
+                "mesh_uploaded" if mesh_was_uploaded else "mesh_ready",
+                frame_id=presented_frame_id,
+                revision=presented_snapshot_revision,
+            )
+            perf.record_event(
+                "draw_submitted",
+                frame_id=presented_frame_id,
+                revision=presented_snapshot_revision,
+            )
 
             if monitor is not None:
                 monitor.set_draw_counts(vertices=int(frame_vertices), lines=int(frame_lines))
@@ -1907,6 +2033,9 @@ class DrawWindowSystem:
 
         # --- mp-draw worker / scene 実行器 ---
         attempt("close scene runner", self._scene_runner.close)
+        perf = getattr(self, "_perf", None)
+        if perf is not None:
+            attempt("close performance trace", perf.close)
 
         # renderer が保持している GPU リソースの所有 context を current にしてから解放する。
         switch_to = getattr(self.window, "switch_to", None)

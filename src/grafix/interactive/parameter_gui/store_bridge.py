@@ -74,12 +74,6 @@ class ParameterTableView:
         return max(0, int(self.total_count) - int(self.filtered_count))
 
 
-def _row_identity(row: ParameterRow) -> tuple[str, int, str]:
-    """store snapshot と突き合わせるための行識別子（op, ordinal, arg）を返す。"""
-
-    return row.op, int(row.ordinal), row.arg
-
-
 def _order_rows_for_display(
     rows: list[ParameterRow],
     *,
@@ -407,8 +401,19 @@ def _build_parameter_table_model(
 
     return ParameterTableModel(
         cache_key=cache_key,
+        value_revision=int(store.value_revision),
         snapshot=snapshot,
         rows=tuple(rows),
+        row_index_by_key=MappingProxyType(
+            {
+                ParameterKey(
+                    op=str(row.op),
+                    site_id=str(row.site_id),
+                    arg=str(row.arg),
+                ): index
+                for index, row in enumerate(rows)
+            }
+        ),
         raw_label_by_site=MappingProxyType(raw_label_by_site),
         primitive_header_by_group=MappingProxyType(primitive_header_by_group),
         layer_style_name_by_site_id=MappingProxyType(layer_style_name_by_site_id),
@@ -418,8 +423,41 @@ def _build_parameter_table_model(
     )
 
 
+def _refresh_parameter_table_model_values(
+    store: ParamStore,
+    model: ParameterTableModel,
+    changed_keys: frozenset[ParameterKey],
+) -> ParameterTableModel:
+    """既存モデルのうち、変更された行の value state だけを差し替える。"""
+
+    rows: list[ParameterRow] | None = None
+    for key in changed_keys:
+        index = model.row_index_by_key.get(key)
+        state = store._get_state_ref(key)
+        if index is None or state is None:
+            continue
+        current = model.rows[index] if rows is None else rows[index]
+        updated = replace(
+            current,
+            ui_value=state.ui_value,
+            override=bool(state.override),
+            cc_key=state.cc_key,
+            reset_to_code=False,
+        )
+        if updated == current:
+            continue
+        if rows is None:
+            rows = list(model.rows)
+        rows[index] = updated
+    return replace(
+        model,
+        value_revision=int(store.value_revision),
+        rows=model.rows if rows is None else tuple(rows),
+    )
+
+
 def _parameter_table_model_for_store(store: ParamStore) -> ParameterTableModel:
-    revision = int(store.revision)
+    revision = int(store.table_revision)
     if _ENSURED_OPS_BY_STORE_REVISION.get(store) != revision:
         # GUI に実際に現れた op だけを遅延登録する。全 built-in の eager import は
         # optional dependency を不要に読み、起動時間も増やすため行わない。
@@ -433,6 +471,7 @@ def _parameter_table_model_for_store(store: ParamStore) -> ParameterTableModel:
         store,
         registry_revision=_registry_revision(),
         builder=_build_parameter_table_model,
+        refresher=_refresh_parameter_table_model_values,
     )
 
 
@@ -609,10 +648,6 @@ def _apply_updated_rows_to_store(
     - ui_value/override/cc_key の変更は `update_state_from_ui` 経由で反映する
     """
 
-    entry_by_identity: dict[tuple[str, int, str], tuple[ParameterKey, ParamMeta]] = {}
-    for key, (meta, _state, ordinal, _label) in snapshot.items():
-        entry_by_identity[(key.op, int(ordinal), key.arg)] = (key, meta)
-
     def _cc_set(
         cc_key: int | tuple[int | None, int | None, int | None] | None,
     ) -> set[int]:
@@ -631,10 +666,22 @@ def _apply_updated_rows_to_store(
             return {int(cc_key)}
         return {int(v) for v in cc_key if v is not None}
 
-    reset_font_index_for: set[tuple[str, int]] = set()
+    reset_font_index_for: set[tuple[str, str]] = set()
 
     for before, after in zip(rows_before, rows_after, strict=True):
-        key, meta = entry_by_identity[_row_identity(before)]
+        # renderer は未変更 row の identity を維持する。changed frame でも
+        # ほぼ全行を読み直さず、実際に更新された row だけ store へ反映する。
+        if before is after or before == after:
+            continue
+        key = ParameterKey(
+            op=str(before.op),
+            site_id=str(before.site_id),
+            arg=str(before.arg),
+        )
+        entry = snapshot.get(key)
+        if entry is None:
+            continue
+        meta = entry[0]
         effective_meta = meta
 
         if after.ui_min != before.ui_min or after.ui_max != before.ui_max:
@@ -695,13 +742,18 @@ def _apply_updated_rows_to_store(
             and after.ui_value != before.ui_value
             and str(after.ui_value).strip().lower().endswith(".ttc")
         ):
-            reset_font_index_for.add((str(key.op), int(after.ordinal)))
+            reset_font_index_for.add((str(key.op), str(key.site_id)))
 
-    for op, ordinal in sorted(reset_font_index_for):
-        entry = entry_by_identity.get((str(op), int(ordinal), "font_index"))
+    for op, site_id in sorted(reset_font_index_for):
+        font_index_key = ParameterKey(
+            op=str(op),
+            site_id=str(site_id),
+            arg="font_index",
+        )
+        entry = snapshot.get(font_index_key)
         if entry is None:
             continue
-        font_index_key, font_index_meta = entry
+        font_index_meta = entry[0]
         update_state_from_ui(
             store,
             font_index_key,
@@ -733,13 +785,14 @@ def set_all_parameter_groups_collapsed(
     )
     headers = store._collapsed_headers_ref()
     before = frozenset(headers)
+    store._observe_history_headers_before()
     if collapsed:
         headers.update(collapse_keys)
     else:
         headers.difference_update(collapse_keys)
     if before == headers:
         return False
-    store._touch()
+    store._touch(structure=False)
     return True
 
 
@@ -776,7 +829,7 @@ def render_store_parameter_table(
     # 行・ヘッダ・順序は (store revision, registry revision) 内で不変。
     # effective/MIDI/active/loaded はモデル外に置き、描画直前にだけ合成する。
     model = _parameter_table_model_for_store(store)
-    if table_view is None or table_view.model.cache_key != model.cache_key:
+    if table_view is None or table_view.model is not model:
         table_view = parameter_table_view_for_store(
             store,
             show_inactive_params=bool(show_inactive_params),
@@ -811,7 +864,8 @@ def render_store_parameter_table(
     )
     collapsed_changed = collapsed_before != store._collapsed_headers_ref()
     if collapsed_changed:
-        store._touch()
+        store._observe_history_headers_before(collapsed_before)
+        store._touch(structure=False)
 
     if changed:
         view_iter = iter(view_rows_after)

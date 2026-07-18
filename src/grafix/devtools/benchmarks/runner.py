@@ -27,9 +27,14 @@ from grafix.devtools.benchmarks.environment import make_case_spec
 from grafix.devtools.benchmarks.schema import (
     CaseResult,
     CaseSpec,
+    ContractResult,
+    Distribution,
+    Metric,
     Sample,
     case_result_from_dict,
     case_result_to_dict,
+    evaluate_contract,
+    summarize_distribution,
     summarize_samples,
 )
 
@@ -38,6 +43,26 @@ _MAX_CALIBRATION_ITERATIONS = 1 << 20
 _CASES_SOURCE_FILE = Path(__file__).with_name("cases.py")
 _SYSTEM_SOURCE_FILE = Path(__file__).with_name("system_benchmark.py")
 _MP_SOURCE_FILE = Path(__file__).with_name("mp_draw_benchmark.py")
+_INTERACTIVE_SCENARIO_SOURCE_FILE = Path(__file__).with_name(
+    "interactive_scenario_benchmark.py"
+)
+_PARAMETER_EDIT_SOURCE_FILE = Path(__file__).with_name(
+    "parameter_edit_benchmark.py"
+)
+_HEAVY_EFFECT_FINAL_CHECKSUMS = {
+    "growth": "88db2188d515eb8320998e5613ca66f5ce773842ae0318ba834ff3c1f2d7db35",
+    "metaball": "1df0d8425ddd1f520de5a984eba822ee063fb080a4ae04f7b95a9317610177fd",
+    "reaction_diffusion": (
+        "b012b5cdb123b635ce475180ba7b12099f7c761c4d0833f4e499044c9d142d40"
+    ),
+}
+_HEAVY_EFFECT_DRAFT_CHECKSUMS = {
+    "growth": "74f2b9d7186860a848bc2df2eecb99049f805926b5760da6a2ff81275e77850f",
+    "metaball": "06ef8acbe6cc943a3d7e0dce65cc783ca3febecc7e83a805c7399711fdadf8ae",
+    "reaction_diffusion": (
+        "1d04f1417005b3409b8bc35a1e3fdcd689aa04b3433afa6d4c5ed0c85d509f3b"
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +83,7 @@ class CaseDefinition:
     support_source_files: tuple[Path, ...] = ()
     support_implementations: tuple[Callable[..., object], ...] = ()
     checksum_policy: str = "exact"
+    self_sampling: bool = False
 
     def spec(self, *, seed: int) -> CaseSpec:
         return make_case_spec(
@@ -77,13 +103,15 @@ class CaseDefinition:
             support_source_files=self.support_source_files,
             tags=self.tags,
             checksum_policy=self.checksum_policy,
+            self_sampling=self.self_sampling,
         )
 
 
 @dataclass(frozen=True, slots=True)
 class _CaseOutput:
     value: object
-    metrics: dict[str, Any] = field(default_factory=dict)
+    metrics: dict[str, Any] | tuple[Metric, ...] = field(default_factory=dict)
+    contracts: tuple[ContractResult, ...] = ()
 
 
 def case_definitions() -> tuple[CaseDefinition, ...]:
@@ -102,6 +130,10 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             setup=_setup_effect,
             workload=_workload_effect,
             support_source_files=(_CASES_SOURCE_FILE,),
+            support_implementations=(
+                _effect_metrics,
+                _diagnostic_effective_value,
+            ),
         ),
         _definition(
             "effect.rotate.polyline_long",
@@ -115,6 +147,10 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             setup=_setup_effect,
             workload=_workload_effect,
             support_source_files=(_CASES_SOURCE_FILE,),
+            support_implementations=(
+                _effect_metrics,
+                _diagnostic_effective_value,
+            ),
         ),
         *_effect_definitions(),
         *_scaled_definitions(
@@ -158,6 +194,7 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             suites=(("smoke", "gui"), ("gui",), ("soak",)),
             support_source_files=(_SYSTEM_SOURCE_FILE,),
         ),
+        *_parameter_edit_definitions(),
         *_scaled_definitions(
             prefix="core.concat_recipe",
             label="repeated Geometry +",
@@ -193,6 +230,103 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             selectable_suites=("pipeline",),
             setup=_setup_passthrough,
             workload=_workload_draw_realize_indices,
+        ),
+        _definition(
+            "interactive.slider.input_to_present.rows_32.workers_0",
+            "UX-01 hosted slider input-to-present / sync",
+            category="interactive",
+            suite="interactive",
+            fixture="parameter_store_light_scale_slider",
+            parameters={
+                "rows": 32,
+                "workers": 0,
+                "warmup_frames": 3,
+                "drag_frames": 12,
+                "settle_frames": 4,
+                "frame_interval_s": 0.0,
+                "settle_timeout_s": 1.0,
+                "latency_guardrail_ms": 16.667,
+            },
+            tags=(
+                "UX-01",
+                "input-to-present",
+                "fake-gui",
+                "fake-gl",
+                "sync",
+            ),
+            selectable_suites=("smoke", "interactive"),
+            setup=_setup_interactive_slider_scenario,
+            workload=_workload_interactive_slider_scenario,
+            support_source_files=(
+                _INTERACTIVE_SCENARIO_SOURCE_FILE,
+                _SYSTEM_SOURCE_FILE,
+            ),
+            self_sampling=True,
+        ),
+        _definition(
+            "interactive.slider.input_to_present.rows_1000.workers_0",
+            "UX-01 hosted slider input-to-present / 1,000 rows",
+            category="interactive",
+            suite="interactive",
+            fixture="parameter_store_light_scale_slider",
+            parameters={
+                "rows": 1_000,
+                "workers": 0,
+                "warmup_frames": 2,
+                "drag_frames": 8,
+                "settle_frames": 3,
+                "frame_interval_s": 0.0,
+                "settle_timeout_s": 1.0,
+                "latency_guardrail_ms": 16.667,
+            },
+            tags=(
+                "UX-01",
+                "input-to-present",
+                "fake-gui",
+                "fake-gl",
+                "large-parameter-table",
+                "sync",
+            ),
+            selectable_suites=("interactive",),
+            setup=_setup_interactive_slider_scenario,
+            workload=_workload_interactive_slider_scenario,
+            support_source_files=(
+                _INTERACTIVE_SCENARIO_SOURCE_FILE,
+                _SYSTEM_SOURCE_FILE,
+            ),
+            self_sampling=True,
+        ),
+        _definition(
+            "interactive.slider.input_to_present.rows_32.workers_1",
+            "UX-01 hosted slider input-to-present / 1 worker",
+            category="interactive",
+            suite="interactive",
+            fixture="parameter_store_light_scale_slider",
+            parameters={
+                "rows": 32,
+                "workers": 1,
+                "warmup_frames": 4,
+                "drag_frames": 12,
+                "settle_frames": 6,
+                "frame_interval_s": 1.0 / 60.0,
+                "settle_timeout_s": 2.0,
+                "latency_guardrail_ms": 50.0,
+            },
+            tags=(
+                "UX-01",
+                "input-to-present",
+                "fake-gui",
+                "fake-gl",
+                "multiprocessing",
+            ),
+            selectable_suites=("interactive",),
+            setup=_setup_interactive_slider_scenario,
+            workload=_workload_interactive_slider_scenario,
+            support_source_files=(
+                _INTERACTIVE_SCENARIO_SOURCE_FILE,
+                _SYSTEM_SOURCE_FILE,
+            ),
+            self_sampling=True,
         ),
         _definition(
             "interactive.renderer.static_100k",
@@ -278,6 +412,7 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             workload=_workload_animated_renderer,
             support_source_files=(_SYSTEM_SOURCE_FILE,),
         ),
+        *_multilayer_renderer_definitions(),
         _definition(
             "mp.draw.light",
             "MpDraw light sync / worker",
@@ -290,6 +425,7 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             setup=_setup_passthrough,
             workload=_workload_mp_draw,
             support_source_files=(_MP_SOURCE_FILE,),
+            self_sampling=True,
         ),
         _definition(
             "mp.draw.slider_churn",
@@ -308,6 +444,7 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             setup=_setup_passthrough,
             workload=_workload_mp_slider_churn,
             support_source_files=(_MP_SOURCE_FILE,),
+            self_sampling=True,
         ),
         *_legacy_system_definitions(),
     ]
@@ -371,7 +508,10 @@ def run_case_isolated(
 
     if mode not in {"warm", "process-cold", "compile-cold"}:
         raise ValueError(f"unknown benchmark mode: {mode}")
-    sample_count = max(1, int(samples))
+    # Scenario workload は内部 frame の raw distribution と全 contract を
+    # 1 output に集約する。外側で再実行して最後の output だけを採ると、
+    # 先行 run の tail/failure が失われるため常に 1 semantic sample とする。
+    sample_count = 1 if definition.self_sampling else max(1, int(samples))
     spec = definition.spec(seed=int(seed))
     if mode == "warm":
         return _run_child(
@@ -447,6 +587,235 @@ def canonical_checksum(value: object) -> tuple[str, str]:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest(), "canonical_json_sha256_v1"
+
+
+def normalize_metrics(
+    metrics: dict[str, Any] | tuple[Metric, ...],
+) -> tuple[Metric, ...]:
+    """旧 workload の mapping を schema v4 の typed metric へ正規化する。
+
+    workload は段階的に Metric を直接返せる。mapping を返す既存 case は runner
+    境界で再帰的に平坦化し、統計 summary は distribution として認識する。
+    """
+
+    if isinstance(metrics, tuple):
+        if not all(isinstance(metric, Metric) for metric in metrics):
+            raise TypeError("typed metrics tuple must contain Metric values")
+        return metrics
+    normalized = _json_value(metrics)
+    if not isinstance(normalized, dict):
+        raise TypeError("benchmark metrics must be a mapping or Metric tuple")
+    output: list[Metric] = []
+
+    def visit(name: str, value: object) -> None:
+        if isinstance(value, dict):
+            distribution = _distribution_from_summary(value)
+            if distribution is not None:
+                output.append(
+                    Metric(
+                        name=name,
+                        kind="distribution",
+                        unit=_infer_metric_unit(name, value=None),
+                        phase=_infer_metric_phase(name),
+                        scope=_infer_metric_scope(name),
+                        distribution=distribution,
+                    )
+                )
+                return
+            if not value:
+                output.append(_gauge_metric(name, value))
+                return
+            for child_name, child_value in sorted(value.items()):
+                visit(
+                    f"{name}.{child_name}" if name else str(child_name),
+                    child_value,
+                )
+            return
+        if isinstance(value, list) and value and all(
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+            for item in value
+        ):
+            output.append(
+                Metric(
+                    name=name,
+                    kind="distribution",
+                    unit=_infer_metric_unit(name, value=None),
+                    phase=_infer_metric_phase(name),
+                    scope=_infer_metric_scope(name),
+                    distribution=summarize_distribution(
+                        [float(item) for item in value]
+                    ),
+                )
+            )
+            return
+        if _is_counter(name, value):
+            output.append(
+                Metric(
+                    name=name,
+                    kind="counter",
+                    unit=_infer_metric_unit(name, value=value),
+                    phase=_infer_metric_phase(name),
+                    scope=_infer_metric_scope(name),
+                    value=value,
+                )
+            )
+            return
+        output.append(_gauge_metric(name, value))
+
+    for metric_name, metric_value in sorted(normalized.items()):
+        visit(str(metric_name), metric_value)
+    return tuple(output)
+
+
+def _distribution_from_summary(value: dict[str, Any]) -> Distribution | None:
+    count_value = value.get("count", value.get("n"))
+    has_summary = any(
+        key in value
+        for key in ("min", "max", "median", "mad", "p95", "p99", "mean")
+    )
+    if (
+        not isinstance(count_value, int)
+        or isinstance(count_value, bool)
+        or count_value < 0
+        or not has_summary
+    ):
+        return None
+    raw = value.get("raw_samples", value.get("samples", ()))
+    if isinstance(raw, list) and raw and all(
+        isinstance(item, (int, float)) and not isinstance(item, bool)
+        for item in raw
+    ):
+        return summarize_distribution([float(item) for item in raw])
+    if count_value == 0:
+        return Distribution(
+            count=0,
+            min=None,
+            max=None,
+            median=None,
+            mad=None,
+            p95=None,
+            p99=None,
+            mean=None,
+        )
+
+    def optional_stat(name: str) -> float | None:
+        candidate = value.get(name)
+        if (
+            candidate is None
+            or not isinstance(candidate, (int, float))
+            or isinstance(candidate, bool)
+        ):
+            return None
+        return float(candidate)
+
+    return Distribution(
+        count=count_value,
+        min=optional_stat("min"),
+        max=optional_stat("max"),
+        median=optional_stat("median"),
+        mad=optional_stat("mad"),
+        p95=optional_stat("p95"),
+        p99=optional_stat("p99"),
+        mean=optional_stat("mean"),
+    )
+
+
+def _gauge_metric(name: str, value: object) -> Metric:
+    scalar = (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if value is None or isinstance(value, (dict, list))
+        else value
+    )
+    return Metric(
+        name=name,
+        kind="gauge",
+        unit=_infer_metric_unit(name, value=scalar),
+        phase=_infer_metric_phase(name),
+        scope=_infer_metric_scope(name),
+        value=scalar,
+    )
+
+
+def _infer_metric_phase(name: str) -> str:
+    lowered = f".{name.lower()}."
+    if ".changing." in lowered or ".drag." in lowered:
+        return "drag"
+    if ".stable." in lowered or ".settle." in lowered:
+        return "settle"
+    if ".warmup." in lowered:
+        return "warmup"
+    return "measure"
+
+
+def _infer_metric_scope(name: str) -> str:
+    return "scenario" if name.startswith("cases.") else "case"
+
+
+def _infer_metric_unit(name: str, *, value: object) -> str:
+    lowered = name.lower()
+    leaf = lowered.rsplit(".", 1)[-1]
+    if leaf.endswith("_ns") or "_ns_" in leaf:
+        return "ns"
+    if leaf.endswith("_ms") or "_ms_" in leaf:
+        return "ms"
+    if "fps" in leaf:
+        return "frames_per_second"
+    if "byte" in leaf:
+        return "bytes"
+    if "ratio" in leaf:
+        return "ratio"
+    if "revision_lag" in leaf:
+        return "revisions"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "text"
+    if _is_counter(name, value):
+        return "count"
+    return "unitless"
+
+
+def _is_counter(name: str, value: object) -> bool:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not np.isfinite(float(value))
+        or float(value) < 0.0
+    ):
+        return False
+    leaf = name.lower().rsplit(".", 1)[-1]
+    return (
+        leaf == "n"
+        or leaf.startswith("n_")
+        or any(
+            token in leaf
+            for token in (
+                "bytes",
+                "count",
+                "entries",
+                "evictions",
+                "frames",
+                "hits",
+                "misses",
+                "results",
+                "tasks",
+                "uploads",
+                "vertices",
+                "lines",
+                "workers",
+                "builds",
+                "calls",
+                "iterations",
+                "parts",
+                "rows",
+            )
+        )
+    )
 
 
 def _run_child(
@@ -622,7 +991,10 @@ def _measure_in_process(
     try:
         state = definition.setup(dict(definition.parameters), int(seed))
         setup_rss = _peak_rss_bytes()
-        if mode == "warm":
+        if definition.self_sampling:
+            iterations = 1
+            samples = 1
+        elif mode == "warm":
             for _ in range(warmup):
                 definition.workload(state)
             iterations = _calibrate(
@@ -635,6 +1007,8 @@ def _measure_in_process(
 
         baseline_rss = _peak_rss_bytes()
         raw_samples: list[Sample] = []
+        measured_outputs: list[_CaseOutput] = []
+        semantic_checksum: tuple[str, str] | None = None
         output: _CaseOutput | None = None
         was_gc_enabled = gc.isenabled()
         if disable_gc and was_gc_enabled:
@@ -650,16 +1024,56 @@ def _measure_in_process(
                         iterations=iterations,
                     )
                 )
+                assert output is not None
+                measured_outputs.append(
+                    _CaseOutput(
+                        value=None,
+                        metrics=(
+                            output.metrics
+                            if isinstance(output.metrics, tuple)
+                            else {}
+                        ),
+                        contracts=output.contracts,
+                    )
+                )
+                current_checksum = canonical_checksum(output.value)
+                if semantic_checksum is None:
+                    semantic_checksum = current_checksum
+                elif current_checksum != semantic_checksum:
+                    raise RuntimeError(
+                        "warm samples produced different output checksums"
+                    )
         finally:
             if disable_gc and was_gc_enabled:
                 gc.enable()
         if output is None:
             raise RuntimeError("benchmark workload returned no output")
+        output = _aggregate_measured_outputs(
+            measured_outputs,
+            last=output,
+        )
         peak_rss = _peak_rss_bytes()
-        checksum, checksum_kind = canonical_checksum(output.value)
+        assert semantic_checksum is not None
+        checksum, checksum_kind = semantic_checksum
+        metrics = normalize_metrics(output.metrics)
+        failed_hard = tuple(
+            contract
+            for contract in output.contracts
+            if contract.severity == "hard" and not contract.passed
+        )
+        status = "contract-failure" if failed_hard else "ok"
+        contract_error = (
+            "failed hard contracts: "
+            + "; ".join(
+                f"{contract.contract_id}: {contract.reason}"
+                for contract in failed_hard
+            )
+            if failed_hard
+            else None
+        )
         return CaseResult(
             spec=spec,
-            status="ok",
+            status=status,
             samples=tuple(raw_samples),
             stats=summarize_samples(raw_samples),
             checksum=checksum,
@@ -668,7 +1082,9 @@ def _measure_in_process(
             baseline_rss_bytes=baseline_rss,
             peak_rss_bytes=peak_rss,
             peak_rss_delta_bytes=max(0, peak_rss - baseline_rss),
-            metrics=output.metrics,
+            metrics=metrics,
+            contracts=output.contracts,
+            error=contract_error,
         )
     except (ModuleNotFoundError, ImportError) as exc:
         return CaseResult(
@@ -688,6 +1104,75 @@ def _measure_in_process(
             status="error",
             error=f"{type(exc).__name__}: {exc}",
         )
+
+
+def _aggregate_measured_outputs(
+    outputs: list[_CaseOutput],
+    *,
+    last: _CaseOutput,
+) -> _CaseOutput:
+    """outer sample のtyped outputを検証し、失敗contractを保持する。"""
+
+    if not outputs:
+        raise RuntimeError("benchmark workload returned no measured output")
+    typed_metrics = isinstance(last.metrics, tuple)
+    if any(
+        isinstance(output.metrics, tuple) != typed_metrics
+        for output in outputs
+    ):
+        raise RuntimeError("benchmark metric representation changed across samples")
+    metrics = last.metrics
+    if typed_metrics:
+        baseline_metrics = outputs[0].metrics
+        assert isinstance(baseline_metrics, tuple)
+        if any(output.metrics != baseline_metrics for output in outputs[1:]):
+            raise RuntimeError("typed metrics changed across warm samples")
+        metrics = baseline_metrics
+
+    contract_ids = tuple(
+        contract.contract_id for contract in outputs[0].contracts
+    )
+    if any(
+        tuple(contract.contract_id for contract in output.contracts)
+        != contract_ids
+        for output in outputs[1:]
+    ):
+        raise RuntimeError("contract set changed across warm samples")
+
+    contracts: list[ContractResult] = []
+    for index, contract_id in enumerate(contract_ids):
+        samples = [output.contracts[index] for output in outputs]
+        reference = samples[0]
+        identity = (
+            reference.contract_id,
+            reference.severity,
+            reference.comparator,
+            reference.limit,
+            reference.reason,
+        )
+        if any(
+            (
+                sample.contract_id,
+                sample.severity,
+                sample.comparator,
+                sample.limit,
+                sample.reason,
+            )
+            != identity
+            for sample in samples[1:]
+        ):
+            raise RuntimeError(
+                f"contract definition changed across warm samples: {contract_id}"
+            )
+        contracts.append(
+            next((sample for sample in samples if not sample.passed), samples[-1])
+        )
+
+    return _CaseOutput(
+        value=last.value,
+        metrics=metrics,
+        contracts=tuple(contracts),
+    )
 
 
 def _calibrate(
@@ -718,7 +1203,11 @@ def _merge_cold_results(
     spec: CaseSpec,
     results: list[CaseResult],
 ) -> CaseResult:
-    failures = [result for result in results if result.status != "ok"]
+    failures = [
+        result
+        for result in results
+        if result.status not in {"ok", "contract-failure"}
+    ]
     if failures:
         first = failures[0]
         return CaseResult(spec=spec, status=first.status, error=first.error)
@@ -735,9 +1224,17 @@ def _merge_cold_results(
         results,
         key=lambda result: result.peak_rss_delta_bytes or 0,
     )
+    contract_result = next(
+        (
+            result
+            for result in results
+            if result.status == "contract-failure"
+        ),
+        results[-1],
+    )
     return CaseResult(
         spec=spec,
-        status="ok",
+        status=contract_result.status,
         samples=samples,
         stats=summarize_samples(samples),
         checksum=results[0].checksum,
@@ -746,7 +1243,9 @@ def _merge_cold_results(
         baseline_rss_bytes=rss_result.baseline_rss_bytes,
         peak_rss_bytes=rss_result.peak_rss_bytes,
         peak_rss_delta_bytes=rss_result.peak_rss_delta_bytes,
-        metrics=results[-1].metrics,
+        metrics=contract_result.metrics,
+        contracts=contract_result.contracts,
+        error=contract_result.error,
     )
 
 
@@ -764,6 +1263,7 @@ def _definition(
     workload: Callable[[object], _CaseOutput],
     support_source_files: tuple[Path, ...] = (),
     support_implementations: tuple[Callable[..., object], ...] = (),
+    self_sampling: bool = False,
 ) -> CaseDefinition:
     return CaseDefinition(
         case_id=case_id,
@@ -780,6 +1280,7 @@ def _definition(
         support_source_files=support_source_files,
         support_implementations=support_implementations,
         checksum_policy="exact",
+        self_sampling=bool(self_sampling),
     )
 
 
@@ -815,6 +1316,110 @@ def _scaled_definitions(
         )
         for value, selectable in zip(values, suites, strict=True)
     ]
+
+
+def _parameter_edit_definitions() -> list[CaseDefinition]:
+    """PARAM-01 の 100/1,000/10,000-row formal cases を返す。"""
+
+    return [
+        _definition(
+            f"gui.parameter_edit.rows_{rows}",
+            f"single-key parameter changed-frame ({rows:,} rows)",
+            category="gui",
+            suite="gui",
+            fixture="parameter_store_single_key_edit",
+            parameters={
+                "rows": rows,
+                "changed_frames": changed_frames,
+            },
+            tags=(
+                "PARAM-01",
+                "single-key",
+                "changed-frame",
+                "no-imgui",
+                "exact-checksum",
+            ),
+            selectable_suites=selectable_suites,
+            setup=_setup_parameter_edit_scenario,
+            workload=_workload_parameter_edit_scenario,
+            support_source_files=(
+                _PARAMETER_EDIT_SOURCE_FILE,
+                _SYSTEM_SOURCE_FILE,
+            ),
+            self_sampling=True,
+        )
+        for rows, changed_frames, selectable_suites in (
+            (100, 12, ("smoke", "gui")),
+            (1_000, 12, ("gui",)),
+            (10_000, 6, ("soak",)),
+        )
+    ]
+
+
+def _multilayer_renderer_definitions() -> list[CaseDefinition]:
+    """1/8/100 animated layer と changing-topology control を返す。"""
+
+    definitions = [
+        _definition(
+            f"interactive.renderer.multilayer.stable_offsets.layers_{layers}",
+            f"renderer multi-layer stable offsets / {layers} layers",
+            category="interactive",
+            suite="interactive",
+            fixture="animated_multilayer_lines",
+            parameters={
+                "layers": layers,
+                "frames": 12,
+                "polylines": 128,
+                "stable_topology": True,
+            },
+            tags=(
+                "renderer",
+                "multi-layer",
+                "animated-coordinates",
+                "static-topology",
+                "fake-gl",
+            ),
+            selectable_suites=suites,
+            setup=_setup_multilayer_renderer,
+            workload=_workload_multilayer_renderer,
+            support_source_files=(_SYSTEM_SOURCE_FILE,),
+            self_sampling=True,
+        )
+        for layers, suites in (
+            (1, ("interactive",)),
+            (8, ("interactive",)),
+            (100, ("soak",)),
+        )
+    ]
+    definitions.append(
+        _definition(
+            "interactive.renderer.multilayer.changing_topology.layers_8",
+            "renderer multi-layer changing topology / 8 layers",
+            category="interactive",
+            suite="interactive",
+            fixture="animated_multilayer_lines",
+            parameters={
+                "layers": 8,
+                "frames": 12,
+                "polylines": 128,
+                "stable_topology": False,
+            },
+            tags=(
+                "renderer",
+                "multi-layer",
+                "animated-coordinates",
+                "animated-topology",
+                "fake-gl",
+                "control",
+            ),
+            selectable_suites=("interactive",),
+            setup=_setup_multilayer_renderer,
+            workload=_workload_multilayer_renderer,
+            support_source_files=(_SYSTEM_SOURCE_FILE,),
+            self_sampling=True,
+        )
+    )
+    return definitions
 
 
 def _effect_definitions() -> list[CaseDefinition]:
@@ -854,6 +1459,44 @@ def _effect_definitions() -> list[CaseDefinition]:
     }
     definitions: list[CaseDefinition] = []
     for effect_name, (fixture, overrides) in fixtures.items():
+        if effect_name in _HEAVY_EFFECT_FINAL_CHECKSUMS:
+            for quality in ("draft", "final"):
+                parameters: dict[str, Any] = {
+                    "effect": effect_name,
+                    "fixture": fixture,
+                    "quality": quality,
+                    **overrides,
+                }
+                parameters["expected_checksum"] = (
+                    _HEAVY_EFFECT_FINAL_CHECKSUMS[effect_name]
+                    if quality == "final"
+                    else _HEAVY_EFFECT_DRAFT_CHECKSUMS[effect_name]
+                )
+                definitions.append(
+                    _definition(
+                        f"effect.{effect_name}.{quality}.{fixture}",
+                        f"{effect_name} / {fixture} / {quality}",
+                        category="effect",
+                        suite="effects",
+                        fixture=fixture,
+                        parameters=parameters,
+                        tags=(
+                            "explicit-fixture",
+                            "exact-checksum",
+                            f"quality-{quality}",
+                            "heavy-effect",
+                        ),
+                        selectable_suites=("effects",),
+                        setup=_setup_effect,
+                        workload=_workload_effect,
+                        support_source_files=(_CASES_SOURCE_FILE,),
+                        support_implementations=(
+                            _effect_metrics,
+                            _diagnostic_effective_value,
+                        ),
+                    )
+                )
+            continue
         definitions.append(
             _definition(
                 f"effect.{effect_name}.{fixture}",
@@ -871,13 +1514,17 @@ def _effect_definitions() -> list[CaseDefinition]:
                 setup=_setup_effect,
                 workload=_workload_effect,
                 support_source_files=(_CASES_SOURCE_FILE,),
+                support_implementations=(
+                    _effect_metrics,
+                    _diagnostic_effective_value,
+                ),
             )
         )
     return definitions
 
 
 def _legacy_system_definitions() -> list[CaseDefinition]:
-    """従来の system/micro 診断を schema v3 の個別 case として返す。"""
+    """従来の system/micro 診断を schema v4 の個別 case として返す。"""
 
     cases = (
         (
@@ -970,16 +1617,29 @@ def _setup_effect(parameters: dict[str, Any], seed: int) -> object:
     )
     ensure_builtin_effect_registered(effect_name)
     spec = effect_registry[effect_name]
+    quality = str(parameters.get("quality", "final"))
+    if quality not in {"draft", "final"}:
+        raise ValueError(f"unknown effect benchmark quality: {quality!r}")
+    expected_checksum = parameters.get("expected_checksum")
+    if expected_checksum is not None and not isinstance(expected_checksum, str):
+        raise TypeError("expected effect checksum must be a string")
     args = dict(spec.defaults)
     args.update(
         {
             key: value
             for key, value in parameters.items()
-            if key not in {"effect", "fixture"}
+            if key not in {"effect", "fixture", "quality", "expected_checksum"}
         }
     )
     args_tuple = tuple(sorted(args.items()))
-    return spec.evaluator, benchmark_case.inputs, args_tuple
+    return (
+        spec.evaluator,
+        benchmark_case.inputs,
+        args_tuple,
+        effect_name,
+        quality,
+        expected_checksum,
+    )
 
 
 def _setup_legacy_system(parameters: dict[str, Any], seed: int) -> object:
@@ -1106,21 +1766,240 @@ def _workload_legacy_system(state: object) -> _CaseOutput:
     raise ValueError(f"unknown legacy system workload: {workload}")
 
 
+def _diagnostic_effective_value(
+    diagnostics: tuple[Any, ...],
+    *,
+    op: str,
+    requested: int | float,
+) -> int | float:
+    effective: int | float = requested
+    for diagnostic in diagnostics:
+        if getattr(diagnostic, "op", None) != op:
+            continue
+        value = getattr(diagnostic, "effective_value", None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            effective = value
+    return effective
+
+
+def _effect_metrics(
+    *,
+    effect_name: str,
+    quality: str,
+    args: dict[str, Any],
+    inputs: tuple[RealizedGeometry, ...],
+    geometry: RealizedGeometry,
+    diagnostics: tuple[Any, ...],
+) -> tuple[Metric, ...]:
+    metrics = [
+        Metric(
+            name="quality",
+            kind="gauge",
+            unit="unitless",
+            phase="measure",
+            scope="effect",
+            value=quality,
+        ),
+        Metric(
+            name="n_vertices",
+            kind="counter",
+            unit="count",
+            phase="measure",
+            scope="effect",
+            value=int(geometry.coords.shape[0]),
+        ),
+        Metric(
+            name="n_lines",
+            kind="counter",
+            unit="count",
+            phase="measure",
+            scope="effect",
+            value=int(geometry.offsets.size - 1),
+        ),
+        Metric(
+            name="output_bytes",
+            kind="counter",
+            unit="bytes",
+            phase="measure",
+            scope="effect",
+            value=int(geometry.coords.nbytes + geometry.offsets.nbytes),
+        ),
+        Metric(
+            name="diagnostics",
+            kind="counter",
+            unit="count",
+            phase="measure",
+            scope="effect",
+            value=len(diagnostics),
+        ),
+    ]
+
+    def add_work_metric(name: str, value: int | float, *, unit: str) -> None:
+        metrics.append(
+            Metric(
+                name=name,
+                kind="gauge",
+                unit=unit,
+                phase="measure",
+                scope="effect",
+                value=value,
+            )
+        )
+
+    if effect_name == "reaction_diffusion":
+        requested_steps = int(args["steps"])
+        requested_pitch = float(args["grid_pitch"])
+        add_work_metric("work.steps.requested", requested_steps, unit="count")
+        add_work_metric(
+            "work.steps.effective",
+            _diagnostic_effective_value(
+                diagnostics,
+                op="reaction_diffusion.steps",
+                requested=requested_steps,
+            ),
+            unit="count",
+        )
+        add_work_metric(
+            "work.grid_pitch.requested",
+            requested_pitch,
+            unit="geometry_units",
+        )
+        add_work_metric(
+            "work.grid_pitch.effective",
+            _diagnostic_effective_value(
+                diagnostics,
+                op="reaction_diffusion.grid_pitch",
+                requested=requested_pitch,
+            ),
+            unit="geometry_units",
+        )
+    elif effect_name == "growth":
+        requested_iterations = int(args["iters"])
+        add_work_metric(
+            "work.iterations.requested",
+            requested_iterations,
+            unit="count",
+        )
+        add_work_metric(
+            "work.iterations.effective",
+            _diagnostic_effective_value(
+                diagnostics,
+                op="growth.iters",
+                requested=requested_iterations,
+            ),
+            unit="count",
+        )
+        point_budget = next(
+            (
+                diagnostic
+                for diagnostic in reversed(diagnostics)
+                if getattr(diagnostic, "op", None) == "growth.total_points"
+            ),
+            None,
+        )
+        if point_budget is not None:
+            original = getattr(point_budget, "original_value", None)
+            effective = getattr(point_budget, "effective_value", None)
+            if isinstance(original, int) and isinstance(effective, int):
+                add_work_metric(
+                    "work.total_points.requested",
+                    original,
+                    unit="count",
+                )
+                add_work_metric(
+                    "work.total_points.effective",
+                    effective,
+                    unit="count",
+                )
+    elif effect_name == "metaball":
+        requested_pitch = float(args["grid_pitch"])
+        requested_segments = sum(
+            max(0, int(stop) - int(start) - 1)
+            for geometry_input in inputs
+            for start, stop in zip(
+                geometry_input.offsets[:-1],
+                geometry_input.offsets[1:],
+                strict=True,
+            )
+        )
+        add_work_metric(
+            "work.grid_pitch.requested",
+            requested_pitch,
+            unit="geometry_units",
+        )
+        add_work_metric(
+            "work.grid_pitch.effective",
+            _diagnostic_effective_value(
+                diagnostics,
+                op="metaball.grid_pitch",
+                requested=requested_pitch,
+            ),
+            unit="geometry_units",
+        )
+        add_work_metric(
+            "work.segments.requested",
+            requested_segments,
+            unit="count",
+        )
+        add_work_metric(
+            "work.segments.effective",
+            _diagnostic_effective_value(
+                diagnostics,
+                op="metaball.ring_segments",
+                requested=requested_segments,
+            ),
+            unit="count",
+        )
+    return tuple(metrics)
+
+
 def _workload_effect(state: object) -> _CaseOutput:
-    evaluator, inputs, args_tuple = cast(tuple[Any, Any, Any], state)
-    output = evaluator(inputs, args_tuple)
+    from grafix.core.operation_diagnostics import operation_diagnostic_context
+    from grafix.core.preview_quality import preview_quality_context
+
+    (
+        evaluator,
+        inputs,
+        args_tuple,
+        effect_name,
+        quality,
+        expected_checksum,
+    ) = cast(tuple[Any, Any, Any, str, str, str | None], state)
+    with operation_diagnostic_context() as diagnostic_buffer:
+        with preview_quality_context(cast(Any, quality)):
+            output = evaluator(inputs, args_tuple)
     geometry = (
         output
         if isinstance(output, RealizedGeometry)
         else RealizedGeometry(coords=output[0], offsets=output[1])
     )
+    diagnostics = diagnostic_buffer.snapshot()
+    args = dict(args_tuple)
+    contracts = (
+        (
+            evaluate_contract(
+                contract_id=f"effect.{effect_name}.{quality}_checksum",
+                severity="hard",
+                actual=geometry_checksum(geometry),
+                comparator="eq",
+                limit=expected_checksum,
+                reason=f"{quality} quality geometry checksum remains exact",
+            ),
+        )
+        if expected_checksum is not None
+        else ()
+    )
     return _CaseOutput(
         value=geometry,
-        metrics={
-            "n_vertices": int(geometry.coords.shape[0]),
-            "n_lines": int(geometry.offsets.size - 1),
-            "output_bytes": int(geometry.coords.nbytes + geometry.offsets.nbytes),
-        },
+        metrics=_effect_metrics(
+            effect_name=effect_name,
+            quality=quality,
+            args=args,
+            inputs=inputs,
+            geometry=geometry,
+            diagnostics=diagnostics,
+        ),
+        contracts=contracts,
     )
 
 
@@ -1257,6 +2136,33 @@ def _workload_parameter_gui(state: object) -> _CaseOutput:
     )
 
 
+def _setup_parameter_edit_scenario(
+    parameters: dict[str, Any],
+    _seed: int,
+) -> object:
+    from grafix.devtools.benchmarks.parameter_edit_benchmark import (
+        make_parameter_edit_scenario,
+    )
+
+    return make_parameter_edit_scenario(parameters)
+
+
+def _workload_parameter_edit_scenario(state: object) -> _CaseOutput:
+    from grafix.devtools.benchmarks.parameter_edit_benchmark import (
+        ParameterEditScenario,
+        run_parameter_edit_scenario,
+    )
+
+    if not isinstance(state, ParameterEditScenario):
+        raise TypeError("parameter edit scenario state is invalid")
+    result = run_parameter_edit_scenario(state)
+    return _CaseOutput(
+        value=result.value,
+        metrics=result.metrics,
+        contracts=result.contracts,
+    )
+
+
 def _setup_concat_recipe(parameters: dict[str, Any], _seed: int) -> object:
     count = max(1, int(parameters["parts"]))
     return tuple(
@@ -1359,6 +2265,33 @@ def _workload_draw_realize_indices(state: object) -> _CaseOutput:
     )
 
 
+def _setup_interactive_slider_scenario(
+    parameters: dict[str, Any],
+    _seed: int,
+) -> object:
+    from grafix.devtools.benchmarks.interactive_scenario_benchmark import (
+        make_interactive_slider_scenario,
+    )
+
+    return make_interactive_slider_scenario(parameters)
+
+
+def _workload_interactive_slider_scenario(state: object) -> _CaseOutput:
+    from grafix.devtools.benchmarks.interactive_scenario_benchmark import (
+        InteractiveSliderScenario,
+        run_interactive_slider_scenario,
+    )
+
+    if not isinstance(state, InteractiveSliderScenario):
+        raise TypeError("interactive slider scenario state is invalid")
+    result = run_interactive_slider_scenario(state)
+    return _CaseOutput(
+        value=result.value,
+        metrics=result.metrics,
+        contracts=result.contracts,
+    )
+
+
 def _setup_renderer(parameters: dict[str, Any], _seed: int) -> object:
     from grafix.devtools.benchmarks.system_benchmark import _renderer_geometry
 
@@ -1457,6 +2390,74 @@ def _workload_animated_renderer(state: object) -> _CaseOutput:
     return _CaseOutput(value=tuple(semantic_frames), metrics=output)
 
 
+def _setup_multilayer_renderer(
+    parameters: dict[str, Any],
+    _seed: int,
+) -> object:
+    return dict(parameters)
+
+
+def _workload_multilayer_renderer(state: object) -> _CaseOutput:
+    from grafix.devtools.benchmarks.system_benchmark import (
+        _renderer_multilayer_dynamic_workload,
+    )
+
+    parameters = cast(dict[str, Any], state)
+    layers = int(parameters["layers"])
+    frames = int(parameters["frames"])
+    stable_topology = bool(parameters["stable_topology"])
+    payload = _renderer_multilayer_dynamic_workload(
+        layers=layers,
+        frames=frames,
+        polylines=int(parameters["polylines"]),
+        stable_topology=stable_topology,
+        include_semantic_frames=True,
+    )
+    semantic_frames = payload.pop("_semantic_frames")
+    output = cast(dict[str, Any], payload["output"])
+    expected_rebuilds = layers if stable_topology else layers * frames
+    expected_vertex_updates = layers * (frames - 1) if stable_topology else 0
+    contracts = (
+        evaluate_contract(
+            contract_id="renderer.multilayer.index_builds",
+            severity="hard",
+            actual=int(output["index_builds"]),
+            comparator="eq",
+            limit=expected_rebuilds,
+            reason="stable topology は layer ごとの warmup 後に再構築しない",
+        ),
+        evaluate_contract(
+            contract_id="renderer.multilayer.vertex_only_updates",
+            severity="hard",
+            actual=int(output["vertex_only_uploads"]),
+            comparator="eq",
+            limit=expected_vertex_updates,
+            reason="stable topology の後続 frame は VBO だけを更新する",
+        ),
+        evaluate_contract(
+            contract_id="renderer.multilayer.dynamic_entry_bound",
+            severity="hard",
+            actual=int(output["dynamic_entries"]),
+            comparator="le",
+            limit=int(output["dynamic_entry_limit"]),
+            reason="animated mesh pool の GL object 数を entry 上限内に保つ",
+        ),
+        evaluate_contract(
+            contract_id="renderer.multilayer.dynamic_byte_bound",
+            severity="hard",
+            actual=int(output["dynamic_bytes"]),
+            comparator="le",
+            limit=int(output["dynamic_byte_limit"]),
+            reason="animated mesh pool を byte 上限内に保つ",
+        ),
+    )
+    return _CaseOutput(
+        value=semantic_frames,
+        metrics=payload,
+        contracts=contracts,
+    )
+
+
 def _workload_mp_draw(state: object) -> _CaseOutput:
     from grafix.devtools.benchmarks.mp_draw_benchmark import run_mp_draw_benchmarks
 
@@ -1479,7 +2480,37 @@ def _workload_mp_slider_churn(state: object) -> _CaseOutput:
         frames=int(parameters["frames"]),
         frame_interval_s=float(parameters["frame_interval_s"]),
     )
-    return _CaseOutput(value=payload["output"], metrics=payload)
+    contracts: list[ContractResult] = []
+    for case_id, modes in cast(dict[str, Any], payload["cases"]).items():
+        for mode_name, mode in cast(dict[str, Any], modes).items():
+            prefix = f"{case_id}.{mode_name}"
+            contracts.append(
+                evaluate_contract(
+                    contract_id=f"mp.slider.{prefix}.progress",
+                    severity="hard",
+                    actual=bool(mode["progress_contract_met"]),
+                    comparator="eq",
+                    limit=True,
+                    reason=(
+                        "revision、checksum、queue progress の invariant を満たす"
+                    ),
+                )
+            )
+            contracts.append(
+                evaluate_contract(
+                    contract_id=f"mp.slider.{prefix}.interactive_target",
+                    severity="hard",
+                    actual=bool(mode["interactive_target_met"]),
+                    comparator="eq",
+                    limit=True,
+                    reason="slider の interactive latency target を満たす",
+                )
+            )
+    return _CaseOutput(
+        value=payload["output"],
+        metrics=payload,
+        contracts=tuple(contracts),
+    )
 
 
 def _hash_array(digest: Any, array: np.ndarray) -> None:
@@ -1539,6 +2570,7 @@ __all__ = [
     "canonical_checksum",
     "case_definitions",
     "geometry_checksum",
+    "normalize_metrics",
     "run_case_isolated",
     "select_case_definitions",
 ]

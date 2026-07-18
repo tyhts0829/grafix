@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, cast
 
 import pytest
@@ -164,10 +165,25 @@ def test_structured_json_trace_works_without_gui(tmp_path) -> None:
             presented_revision=6,
             fresh=False,
         )
+        perf.record_event(
+            "parameter_revision_created",
+            frame_id=4,
+            revision=8,
+        )
+    perf.close()
 
-    [payload] = [json.loads(line) for line in trace_path.read_text().splitlines()]
-    assert payload["schema"] == "grafix.performance.trace.v1"
+    records = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    header, payload, footer = records
+    assert header["record_type"] == "header"
+    assert header["config"]["sample_limit"] == 256
+    assert payload["schema"] == "grafix.performance.trace.v2"
     assert payload["frame_index"] == 1
+    assert payload["frame_timing"]["p95_ms"] >= 0.0
+    event = payload["events"][0]
+    assert event["name"] == "parameter_revision_created"
+    assert event["frame_id"] == 4
+    assert event["revision"] == 8
+    assert isinstance(event["timestamp_ns"], int)
     assert payload["operations"][0]["name"] == "relax"
     assert payload["layers"][0]["name"] == "Ink"
     assert payload["cache"] == {
@@ -186,6 +202,136 @@ def test_structured_json_trace_works_without_gui(tmp_path) -> None:
         "revision_lag_samples": 1,
         "samples": 1,
     }
+    assert footer["record_type"] == "footer"
+    assert footer["frame_index"] == 1
+    assert footer["records"] == 1
+    assert footer["dropped_records"] == 0
+
+
+def test_trace_close_flushes_partial_window(tmp_path) -> None:
+    trace_path = tmp_path / "partial.jsonl"
+    perf = PerfCollector(
+        enabled=True,
+        console_output=False,
+        print_every=60,
+        trace_path=trace_path,
+    )
+
+    with perf.frame():
+        perf.record_event("draw_submitted", frame_id=7, revision=3)
+    perf.close()
+
+    records = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    assert [record.get("record_type", "window") for record in records] == [
+        "header",
+        "window",
+        "footer",
+    ]
+    assert records[1]["frame_count"] == 1
+    assert records[1]["events"][0]["frame_id"] == 7
+    assert records[2]["records"] == 1
+
+
+def test_deferred_frame_boundary_keeps_present_and_full_loop_in_same_record(
+    tmp_path,
+) -> None:
+    trace_path = tmp_path / "present-boundary.jsonl"
+    perf = PerfCollector(
+        enabled=True,
+        console_output=False,
+        print_every=1,
+        trace_path=trace_path,
+        defer_frame_finalize=True,
+    )
+
+    with perf.frame():
+        perf.record_event(
+            "parameter_revision_created",
+            revision=3,
+            timestamp_ns=1_000_000,
+        )
+    perf.record_duration("preview_draw_flip", 4_000_000)
+    perf.record_event(
+        "preview_presented",
+        frame_id=9,
+        revision=3,
+        timestamp_ns=8_000_000,
+    )
+    perf.record_duration("full_loop", 9_000_000)
+    perf.finish_frame(deadline_elapsed_ns=9_000_000)
+    perf.close()
+
+    records = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    assert len(records) == 3
+    window = records[1]
+    assert window["frame_count"] == 1
+    assert {event["name"] for event in window["events"]} == {
+        "parameter_revision_created",
+        "preview_presented",
+    }
+    assert {
+        timing["name"] for timing in window["duration_timing"]
+    } == {"preview_core", "preview_draw_flip", "full_loop"}
+    assert window["input_to_present"]["samples"] == 1
+
+
+def test_profiler_counts_causal_events_dropped_from_bounded_window() -> None:
+    perf = PerfCollector(enabled=True, console_output=False)
+
+    with perf.frame():
+        for frame_id in range(4_100):
+            perf.record_event("event", frame_id=frame_id)
+
+    snapshot = perf.snapshot()
+    assert snapshot.trace_dropped_events == 4
+
+
+def test_profiler_counts_pending_input_and_latency_sample_eviction() -> None:
+    perf = PerfCollector(
+        enabled=True,
+        console_output=False,
+        print_every=10_000,
+    )
+
+    with perf.frame():
+        for revision in range(4_097):
+            perf.record_event(
+                "parameter_revision_created",
+                revision=revision,
+                timestamp_ns=revision,
+            )
+        perf.record_event(
+            "preview_presented",
+            revision=4_096,
+            timestamp_ns=5_000,
+        )
+
+    snapshot = perf.snapshot()
+    assert snapshot.trace_dropped_causal_inputs == 1
+    assert snapshot.trace_dropped_latency_samples == 3_840
+    assert snapshot.input_to_present_samples == 256
+
+
+def test_deferred_frame_tail_and_deadline_use_full_loop_duration() -> None:
+    perf = PerfCollector(
+        enabled=True,
+        console_output=False,
+        frame_deadline_ms=10.0,
+        defer_frame_finalize=True,
+    )
+
+    with perf.frame():
+        pass
+    perf.record_duration("full_loop", 20_000_000)
+    perf.finish_frame(deadline_elapsed_ns=20_000_000)
+
+    snapshot = perf.snapshot()
+    assert snapshot.frame_p50_ms == pytest.approx(20.0)
+    assert snapshot.frame_deadline_misses == 1
+    duration_by_name = {
+        item.name: item for item in snapshot.duration_timing
+    }
+    assert duration_by_name["preview_core"].p50_ms < 20.0
 
 
 def test_profiler_tracks_preview_freshness_revision_lag_and_stale_streaks() -> None:
@@ -259,6 +405,112 @@ def test_trace_path_enables_collection_from_environment(
     perf = PerfCollector.from_env()
     with perf.frame():
         perf.record_operation("circle", 1_000)
+    perf.close()
 
     assert perf.enabled is True
-    assert json.loads(trace_path.read_text())["operations"][0]["name"] == "circle"
+    records = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    assert records[1]["operations"][0]["name"] == "circle"
+
+
+def test_profiler_keeps_frame_tail_and_deadline_miss_distribution() -> None:
+    perf = PerfCollector(
+        enabled=True,
+        console_output=False,
+        frame_deadline_ms=0.1,
+    )
+
+    for _ in range(3):
+        with perf.frame():
+            time.sleep(0.001)
+
+    snapshot = perf.snapshot()
+    assert snapshot.frame_p50_ms > 0.1
+    assert snapshot.frame_p95_ms >= snapshot.frame_p50_ms
+    assert snapshot.frame_p99_ms >= snapshot.frame_p95_ms
+    assert snapshot.frame_max_ms >= snapshot.frame_p99_ms
+    assert snapshot.frame_deadline_misses == 3
+    assert snapshot.frame_max_consecutive_deadline_misses == 3
+
+
+def test_profiler_reports_bounded_tail_sample_count_separately() -> None:
+    perf = PerfCollector(
+        enabled=True,
+        console_output=False,
+        print_every=300,
+    )
+
+    for _ in range(300):
+        with perf.frame():
+            pass
+
+    snapshot = perf.snapshot()
+    assert snapshot.frame_count == 300
+    assert snapshot.frame_tail_samples == 256
+
+
+def test_profiler_tracks_window_tails_and_input_to_present() -> None:
+    perf = PerfCollector(enabled=True, console_output=False)
+
+    with perf.frame():
+        perf.record_event(
+            "parameter_revision_created",
+            revision=10,
+            timestamp_ns=1_000_000,
+        )
+        perf.record_event(
+            "parameter_revision_created",
+            revision=11,
+            timestamp_ns=2_000_000,
+        )
+        perf.record_duration("preview_draw_flip", 4_000_000)
+        perf.record_duration("preview_draw_flip", 8_000_000)
+        perf.record_duration("parameter_gui_draw_flip", 3_000_000)
+        perf.record_duration("full_loop", 12_000_000)
+        perf.record_event(
+            "preview_presented",
+            frame_id=7,
+            revision=11,
+            timestamp_ns=12_000_000,
+        )
+
+    snapshot = perf.snapshot()
+    duration_by_name = {
+        item.name: item for item in snapshot.duration_timing
+    }
+    assert duration_by_name["preview_draw_flip"].count == 2
+    assert duration_by_name["preview_draw_flip"].p50_ms == pytest.approx(6.0)
+    assert duration_by_name["preview_draw_flip"].max_ms == pytest.approx(8.0)
+    assert duration_by_name["parameter_gui_draw_flip"].p95_ms == pytest.approx(
+        3.0
+    )
+    assert duration_by_name["full_loop"].p99_ms == pytest.approx(12.0)
+    assert snapshot.input_to_present_samples == 2
+    assert snapshot.input_to_present_p50_ms == pytest.approx(10.5)
+    assert snapshot.input_to_present_p95_ms == pytest.approx(10.95)
+    assert snapshot.input_to_present_max_ms == pytest.approx(11.0)
+
+
+def test_profiler_matches_style_input_to_main_process_style_present() -> None:
+    perf = PerfCollector(enabled=True, console_output=False)
+
+    with perf.frame():
+        perf.record_event(
+            "parameter_style_revision_created",
+            revision=12,
+            timestamp_ns=1_000_000,
+        )
+        # geometry はまだ古くても、style overlay は同じ present で反映済み。
+        perf.record_event(
+            "preview_presented",
+            revision=11,
+            timestamp_ns=8_000_000,
+        )
+        perf.record_event(
+            "preview_style_presented",
+            revision=12,
+            timestamp_ns=3_000_000,
+        )
+
+    snapshot = perf.snapshot()
+    assert snapshot.input_to_present_samples == 1
+    assert snapshot.input_to_present_p50_ms == pytest.approx(2.0)

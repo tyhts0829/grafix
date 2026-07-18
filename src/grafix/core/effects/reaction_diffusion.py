@@ -21,11 +21,13 @@ from .util import (
     marching_squares_loops,
     pack_polylines,
     scanline_evenodd_mask,
+    squared_euclidean_distance_transform,
 )
 
 MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 DRAFT_MAX_GRID_POINTS = 262_144
 DRAFT_MAX_STEPS = 600
+DRAFT_MAX_CELL_STEPS = 14_000_000
 
 _PLANAR_EPS_ABS = 1e-6
 _PLANAR_EPS_REL = 1e-5
@@ -334,12 +336,25 @@ def reaction_diffusion(
 
     margin = 2.0 * pitch
     quality = current_preview_quality()
+    requested_steps = int(steps)
+    if quality == "draft":
+        draft_step_target = max(0, min(requested_steps, DRAFT_MAX_STEPS))
+        draft_cell_limit = (
+            DRAFT_MAX_GRID_POINTS
+            if draft_step_target == 0
+            else min(
+                DRAFT_MAX_GRID_POINTS,
+                max(4, DRAFT_MAX_CELL_STEPS // draft_step_target),
+            )
+        )
+    else:
+        draft_cell_limit = DRAFT_MAX_GRID_POINTS
     grid = GridSpec.from_bbox(
         mins,
         maxs,
         pitch=pitch,
         padding=margin,
-        max_cells=(DRAFT_MAX_GRID_POINTS if quality == "draft" else MAX_GRID_POINTS),
+        max_cells=(draft_cell_limit if quality == "draft" else MAX_GRID_POINTS),
         overflow=("coarsen" if quality == "draft" else "reject"),
     )
     if grid is None:
@@ -348,6 +363,17 @@ def reaction_diffusion(
     nx = grid.nx
     ny = grid.ny
     pitch = grid.pitch
+    if quality == "draft" and grid.coarsened:
+        emit_operation_diagnostic(
+            op="reaction_diffusion.grid_pitch",
+            original_value=grid.requested_pitch,
+            effective_value=grid.pitch,
+            reason=(
+                "draft preview coarsened the simulation grid to keep cells × steps "
+                "within budget; final capture keeps the requested pitch"
+            ),
+            severity="info",
+        )
 
     domain_mask = scanline_evenodd_mask(
         ys.astype(np.float64, copy=False),
@@ -377,6 +403,15 @@ def reaction_diffusion(
         jj, ii = np.nonzero(domain_mask)
         cy = int(np.rint(np.mean(jj)))
         cx = int(np.rint(np.mean(ii)))
+        if quality == "draft" and domain_mask[cy, cx] == 0:
+            outside = (domain_mask == 0).astype(np.uint8, copy=False)
+            clearance_sq = squared_euclidean_distance_transform(outside)
+            clearance_sq[domain_mask == 0] = -1.0
+            relocated = np.unravel_index(
+                int(np.argmax(clearance_sq)),
+                clearance_sq.shape,
+            )
+            cy, cx = int(relocated[0]), int(relocated[1])
         rr = int(np.ceil(r / pitch))
         y_min = max(0, cy - rr)
         y_max = min(ny - 1, cy + rr)
@@ -395,18 +430,24 @@ def reaction_diffusion(
 
     boundary_s = str(boundary)
     boundary_i = 0 if boundary_s == "noflux" else 1 if boundary_s == "dirichlet" else 0
-    requested_steps = int(steps)
-    effective_steps = (
-        min(requested_steps, DRAFT_MAX_STEPS)
-        if quality == "draft"
-        else requested_steps
-    )
+    if quality == "draft":
+        work_budget_steps = DRAFT_MAX_CELL_STEPS // max(1, grid.cell_count)
+        effective_steps = min(
+            requested_steps,
+            DRAFT_MAX_STEPS,
+            work_budget_steps,
+        )
+    else:
+        effective_steps = requested_steps
     if effective_steps != requested_steps:
         emit_operation_diagnostic(
             op="reaction_diffusion.steps",
             original_value=requested_steps,
             effective_value=effective_steps,
-            reason="draft preview capped simulation steps; final capture keeps the requested value",
+            reason=(
+                "draft preview capped cells × steps work; final capture keeps the "
+                "requested value"
+            ),
             severity="info",
         )
     v_final = _gray_scott_simulate_masked(
