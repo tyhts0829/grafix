@@ -31,6 +31,9 @@ rotate_ui_visible = {
     "pivot": lambda v: not bool(v.get("auto_center", True)),
 }
 
+_F_ORDER_MIN_VERTICES = 1024
+
+
 @effect(meta=rotate_meta, ui_visible=rotate_ui_visible)
 def rotate(
     g: GeomTuple,
@@ -67,7 +70,20 @@ def rotate(
 
     rx, ry, rz = np.deg2rad([rx_deg, ry_deg, rz_deg]).astype(np.float64)
 
+    large_canonical_coords = bool(
+        type(coords) is np.ndarray
+        and coords.dtype == np.float32
+        and coords.ndim == 2
+        and coords.shape[1] == 3
+        and coords.flags.c_contiguous
+        and coords.shape[0] >= _F_ORDER_MIN_VERTICES
+    )
+    coords_abs_max = (
+        float(np.max(np.abs(coords))) if large_canonical_coords else float("nan")
+    )
+    optimize_buffers = bool(large_canonical_coords and np.isfinite(coords_abs_max))
     if auto_center:
+        # ndarray subclass は従来の ufunc/matmul dispatch を維持する。
         center = coords.astype(np.float64, copy=False).mean(axis=0)
     else:
         center = np.array(
@@ -93,6 +109,28 @@ def rotate(
     )
     # 適用順序: x → y → z（row-vector のため転置で適用）
     rot = rz_mat @ ry_mat @ rx_mat
+
+    if optimize_buffers:
+        float32_limit = float(np.finfo(np.float32).max)
+        center_abs_max = float(np.max(np.abs(center)))
+        rot_abs_max = float(np.max(np.abs(rot)))
+        if (
+            np.isfinite(rot_abs_max)
+            and np.isfinite(center_abs_max)
+            and coords_abs_max <= float32_limit / 16.0
+            and center_abs_max <= float32_limit / 16.0
+            and rot_abs_max <= 2.0
+            and np.geterr()["under"] == "ignore"
+        ):
+            # K=3 の積順は従来の ``shifted @ rot.T`` のまま、BLAS が効率良く
+            # 列を読める Fortran-order の working buffer だけを使う。
+            shifted = coords.astype(np.float64, order="F", copy=True)
+            shifted -= center
+            rotated = shifted @ rot.T
+            # 安全に float32 へ丸められる通常範囲では、加算と cast も 1 pass にする。
+            coords_out = np.empty(coords.shape, dtype=np.float32)
+            np.add(rotated, center, out=coords_out)
+            return coords_out, offsets
 
     shifted = coords.astype(np.float64, copy=False) - center
     rotated = shifted @ rot.T + center

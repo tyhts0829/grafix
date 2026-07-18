@@ -9,6 +9,16 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
 _CLOSED_ATOL = 1e-6
+# 1 本では従来 loop が速く、8 本では bulk 経路が明確に速くなる実測結果に基づく。
+_BULK_LINE_THRESHOLD = 8
+# 閉判定・中心計算用の一時配列をこの line 数以下に抑える。
+_BULK_LINE_CHUNK = 8192
+# 可変長 line の gather 用一時配列をこの頂点数以下に抑える。
+_BULK_VERTEX_CHUNK = 8192
+# 大きな (N, 3) buffer は軸ごとに処理すると broadcast より cache 効率がよい。
+_AXIS_WISE_VERTEX_THRESHOLD = 512
+_SPLIT_UFUNC_SAFE_ABS_MAX = 1.0e100
+_SPLIT_UFUNC_SAFE_ABS_MIN = 1.0e-100
 
 scale_meta = {
     "mode": ParamMeta(
@@ -51,6 +61,191 @@ def _is_closed_polyline(vertices: np.ndarray) -> bool:
     if vertices.shape[0] < 2:
         return False
     return bool(np.allclose(vertices[0], vertices[-1], rtol=0.0, atol=_CLOSED_ATOL))
+
+
+def _scale_polylines_loop(
+    coords64: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    mode: str,
+    factors: np.ndarray,
+) -> None:
+    """少数 line と非 canonical な直接入力を従来どおり処理する。"""
+    for i in range(int(offsets.size) - 1):
+        s = int(offsets[i])
+        e = int(offsets[i + 1])
+        if e <= s:
+            continue
+
+        vertices = coords64[s:e]
+        is_closed = _is_closed_polyline(vertices)
+
+        if mode == "by_line":
+            if is_closed:
+                continue
+            center = vertices.mean(axis=0)
+        else:
+            if not is_closed:
+                continue
+            center = vertices[:-1].mean(axis=0)
+
+        coords64[s:e] = (vertices - center) * factors + center
+
+
+def _can_scale_polylines_in_bulk(
+    coords: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    line_count: int,
+    factors: np.ndarray,
+) -> bool:
+    """bulk 経路が前提とする canonical packed geometry かを返す。"""
+    return bool(
+        line_count >= _BULK_LINE_THRESHOLD
+        and type(coords) is np.ndarray
+        and coords.ndim == 2
+        and coords.shape[1] == 3
+        and coords.dtype == np.float32
+        and coords.flags.c_contiguous
+        and type(offsets) is np.ndarray
+        and offsets.ndim == 1
+        and offsets.dtype == np.int32
+        and offsets.size >= 1
+        and offsets[0] == 0
+        and offsets[-1] == coords.shape[0]
+        and np.all(offsets[1:] >= offsets[:-1])
+        and np.isfinite(coords).all()
+        and _split_ufunc_values_are_safe(factors)
+    )
+
+
+def _split_ufunc_values_are_safe(values: np.ndarray) -> bool:
+    """分割 ufunc でも warning/callback 回数が変わらない通常範囲かを返す。"""
+
+    values_abs = np.abs(values)
+    return bool(
+        np.isfinite(values).all()
+        and np.all(
+            (values_abs == 0.0)
+            | (
+                (values_abs >= _SPLIT_UFUNC_SAFE_ABS_MIN)
+                & (values_abs <= _SPLIT_UFUNC_SAFE_ABS_MAX)
+            )
+        )
+    )
+
+
+def _scale_vertex_block(
+    vertices: np.ndarray,
+    *,
+    mode: str,
+    factors: np.ndarray,
+) -> None:
+    """同じ頂点数の line 群を演算順を変えずに in-place 変換する。"""
+    center_source = vertices if mode == "by_line" else vertices[:, :-1]
+    centers = center_source.mean(axis=1)
+    vertices -= centers[:, None, :]
+    vertices *= factors
+    vertices += centers[:, None, :]
+
+
+def _scale_polylines_bulk(
+    coords64: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    mode: str,
+    factors: np.ndarray,
+) -> None:
+    """多数の canonical line の閉判定・中心計算・変換をまとめて行う。"""
+    line_count = int(offsets.size) - 1
+    for first_line in range(0, line_count, _BULK_LINE_CHUNK):
+        last_line = min(first_line + _BULK_LINE_CHUNK, line_count)
+        _scale_polyline_chunk(
+            coords64,
+            offsets,
+            first_line=first_line,
+            last_line=last_line,
+            mode=mode,
+            factors=factors,
+        )
+
+
+def _scale_polyline_chunk(
+    coords64: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    first_line: int,
+    last_line: int,
+    mode: str,
+    factors: np.ndarray,
+) -> None:
+    """line 範囲を bounded memory で bulk 変換する。"""
+
+    starts = offsets[first_line:last_line]
+    ends = offsets[first_line + 1 : last_line + 1]
+    lengths = ends - starts
+
+    is_closed = np.zeros(lengths.shape, dtype=np.bool_)
+    closable_lines = np.flatnonzero(lengths >= 2)
+    if closable_lines.size:
+        first_vertices = coords64[starts[closable_lines]]
+        last_vertices = coords64[ends[closable_lines] - 1]
+        is_closed[closable_lines] = np.all(
+            np.isclose(
+                first_vertices,
+                last_vertices,
+                rtol=0.0,
+                atol=_CLOSED_ATOL,
+                equal_nan=False,
+            ),
+            axis=1,
+        )
+
+    nonempty = lengths > 0
+    target_mask = nonempty & (~is_closed if mode == "by_line" else is_closed)
+    target_lines = np.flatnonzero(target_mask)
+    if target_lines.size == 0:
+        return
+
+    # 同じ長さの全 line が対象なら、packed buffer をそのまま 3-D view にする。
+    # gather が不要なため、代表的な many-short-lines case の一時メモリも増えない。
+    if target_lines.size == lengths.size and np.all(lengths == lengths[0]):
+        vertex_start = int(starts[0])
+        vertex_end = int(ends[-1])
+        vertices = coords64[vertex_start:vertex_end].reshape(
+            int(lengths.size),
+            int(lengths[0]),
+            3,
+        )
+        _scale_vertex_block(vertices, mode=mode, factors=factors)
+        return
+
+    target_lengths = lengths[target_lines]
+    for length_raw in np.unique(target_lengths):
+        length = int(length_raw)
+        same_length_lines = target_lines[target_lengths == length_raw]
+
+        # 巨大 line は index/gather 配列を作らず、従来の slice 演算を用いる。
+        if length > _BULK_VERTEX_CHUNK:
+            for line_index in same_length_lines:
+                s = int(starts[line_index])
+                e = int(ends[line_index])
+                vertices = coords64[s:e]
+                center_source = vertices if mode == "by_line" else vertices[:-1]
+                center = center_source.mean(axis=0)
+                coords64[s:e] = (vertices - center) * factors + center
+            continue
+
+        lines_per_chunk = max(1, _BULK_VERTEX_CHUNK // length)
+        relative_indices = np.arange(length, dtype=np.intp)
+        for chunk_start in range(0, int(same_length_lines.size), lines_per_chunk):
+            chunk_lines = same_length_lines[chunk_start : chunk_start + lines_per_chunk]
+            vertex_indices = (
+                starts[chunk_lines].astype(np.intp, copy=False)[:, None] + relative_indices
+            )
+            vertices = coords64[vertex_indices]
+            _scale_vertex_block(vertices, mode=mode, factors=factors)
+            coords64[vertex_indices] = vertices
 
 
 @effect(meta=scale_meta, ui_visible=scale_ui_visible)
@@ -99,40 +294,70 @@ def scale(
     factors = np.array([sx, sy, sz], dtype=np.float64)
 
     if mode_s == "all":
+        optimize_buffers = bool(
+            type(coords) is np.ndarray
+            and coords.dtype == np.float32
+            and coords.ndim == 2
+            and coords.shape[1] == 3
+            and coords.flags.c_contiguous
+            and np.isfinite(coords).all()
+        )
+        if not optimize_buffers:
+            # ndarray subclass は従来の ufunc dispatch と例外を維持する。
+            if auto_center:
+                center = coords.astype(np.float64, copy=False).mean(axis=0)
+            else:
+                center = np.array(
+                    [float(pivot[0]), float(pivot[1]), float(pivot[2])],
+                    dtype=np.float64,
+                )
+            shifted = coords.astype(np.float64, copy=False) - center
+            scaled = shifted * factors + center
+            coords_out = scaled.astype(np.float32, copy=False)
+            return coords_out, offsets
+
         # 中心を決定（auto_center 優先）
         if auto_center:
-            center = coords.astype(np.float64, copy=False).mean(axis=0)
+            coords64 = coords.astype(np.float64, copy=True)
+            center = coords64.mean(axis=0)
         else:
             center = np.array(
                 [float(pivot[0]), float(pivot[1]), float(pivot[2])],
                 dtype=np.float64,
             )
+            coords64 = coords.astype(np.float64, copy=True)
 
-        shifted = coords.astype(np.float64, copy=False) - center
-        scaled = shifted * factors + center
-        coords_out = scaled.astype(np.float32, copy=False)
+        if (
+            coords64.shape[0] >= _AXIS_WISE_VERTEX_THRESHOLD
+            and coords64.ndim == 2
+            and coords64.shape[1] == 3
+            and _split_ufunc_values_are_safe(factors)
+            and _split_ufunc_values_are_safe(center)
+        ):
+            for axis in range(3):
+                axis_coords = coords64[:, axis]
+                axis_coords -= center[axis]
+                axis_coords *= factors[axis]
+                axis_coords += center[axis]
+        else:
+            # 非 canonical shape は従来の broadcast 演算へ渡し、同じ例外を保つ。
+            coords64 -= center
+            coords64 *= factors
+            coords64 += center
+        coords_out = coords64.astype(np.float32, copy=False)
         return coords_out, offsets
 
     coords64 = coords.astype(np.float64, copy=True)
-    for i in range(int(offsets.size) - 1):
-        s = int(offsets[i])
-        e = int(offsets[i + 1])
-        if e <= s:
-            continue
-
-        v = coords64[s:e]
-        is_closed = _is_closed_polyline(v)
-
-        if mode_s == "by_line":
-            if is_closed:
-                continue
-            center = v.mean(axis=0)
-        else:  # mode_s == "by_face"
-            if not is_closed:
-                continue
-            center = v[:-1].mean(axis=0)
-
-        coords64[s:e] = (v - center) * factors + center
+    line_count = int(offsets.size) - 1
+    if _can_scale_polylines_in_bulk(
+        coords,
+        offsets,
+        line_count=line_count,
+        factors=factors,
+    ):
+        _scale_polylines_bulk(coords64, offsets, mode=mode_s, factors=factors)
+    else:
+        _scale_polylines_loop(coords64, offsets, mode=mode_s, factors=factors)
 
     coords_out = coords64.astype(np.float32, copy=False)
     return coords_out, offsets

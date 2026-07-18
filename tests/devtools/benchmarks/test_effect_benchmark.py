@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import numpy as np
+
+from grafix.devtools.benchmarks.cases import build_default_cases
 from grafix.devtools.benchmarks.runner import (
     case_definitions,
     run_case_isolated,
@@ -73,3 +76,47 @@ def test_growth_quality_cases_emit_typed_work_metrics_and_checksum_contracts() -
     assert final_output.contracts[0].contract_id == "effect.growth.final_checksum"
     assert final_output.contracts[0].severity == "hard"
     assert final_output.contracts[0].passed
+
+
+def test_target_effect_speedup_cases_cover_actual_work_and_geometry_shapes() -> None:
+    definitions = {definition.case_id: definition for definition in case_definitions()}
+
+    expected = {
+        "effect.translate.polyline_long": ("translate", "polyline_long"),
+        "effect.translate.many_lines": ("translate", "many_lines"),
+        "effect.rotate.pivot.polyline_long": ("rotate", "polyline_long"),
+        "effect.scale.by_line.many_lines": ("scale", "many_lines"),
+        "effect.scale.by_face.many_rings": ("scale", "many_rings"),
+        "effect.subdivide.actual.polyline_spaced_long": (
+            "subdivide",
+            "polyline_spaced_long",
+        ),
+        "effect.subdivide.actual.many_lines": ("subdivide", "many_lines"),
+        "effect.fill.dense.rings_2": ("fill", "rings_2"),
+        "effect.fill.many_rings": ("fill", "many_rings"),
+    }
+    for case_id, (effect_name, fixture) in expected.items():
+        definition = definitions[case_id]
+        assert definition.parameters["effect"] == effect_name
+        assert definition.parameters["fixture"] == fixture
+        assert "actual-work" in definition.tags
+        assert "exact-checksum" in definition.tags
+
+    fixtures = {case.case_id: case for case in build_default_cases(seed=0)}
+    spaced = fixtures["polyline_spaced_long"].inputs[0]
+    segment_lengths = np.linalg.norm(np.diff(spaced.coords, axis=0), axis=1)
+    assert float(np.min(segment_lengths)) > 0.01
+
+    many_rings = fixtures["many_rings"].inputs[0]
+    assert many_rings.offsets.size - 1 == 512
+    np.testing.assert_array_equal(
+        np.diff(many_rings.offsets),
+        np.full((512,), 5, dtype=np.int32),
+    )
+    for line_index in (0, 255, 511):
+        start = int(many_rings.offsets[line_index])
+        stop = int(many_rings.offsets[line_index + 1])
+        np.testing.assert_array_equal(
+            many_rings.coords[start],
+            many_rings.coords[stop - 1],
+        )

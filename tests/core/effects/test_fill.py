@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
 from grafix.core.effects.fill import (
@@ -10,6 +11,8 @@ from grafix.core.effects.fill import (
     _pack_planar_fill_chunks,
     _point_in_polygon_coords_njit,
     _polygon_area_abs,
+    _scanline_endpoints_njit,
+    fill as fill_effect,
 )
 from grafix.core.effects.util import PlanarFrame
 from grafix.core.primitive_registry import primitive
@@ -140,6 +143,221 @@ def _point_inside(point: np.ndarray, polygon: np.ndarray) -> bool:
             float(point[1]),
         )
     )
+
+
+def _scanline_endpoints_reference(
+    ex1: np.ndarray,
+    ey1: np.ndarray,
+    ex2: np.ndarray,
+    ey2: np.ndarray,
+    edx: np.ndarray,
+    edy: np.ndarray,
+    y_values: np.ndarray,
+) -> np.ndarray:
+    """高速化前と同じ NumPy 演算順で scanline endpoint を生成する。"""
+
+    scanlines: list[tuple[np.float32, np.ndarray]] = []
+    segment_count = 0
+    for y in y_values:
+        yy = float(y)
+        mask = ((ey1 <= yy) & (yy < ey2)) | ((ey2 <= yy) & (yy < ey1))
+        mask &= edy != 0.0
+        if not np.any(mask):
+            continue
+        xs = ex1[mask] + (yy - ey1[mask]) * edx[mask] / edy[mask]
+        if xs.size < 2:
+            continue
+        xs_sorted = np.sort(xs.astype(np.float32, copy=False))
+        valid_count = sum(
+            float(xs_sorted[index + 1] - xs_sorted[index]) > 1e-9
+            for index in range(0, int(xs_sorted.size) - 1, 2)
+        )
+        if valid_count:
+            scanlines.append((y, xs_sorted))
+            segment_count += valid_count
+
+    endpoints = np.empty((2 * segment_count, 2), dtype=np.float32)
+    cursor = 0
+    for y, xs_sorted in scanlines:
+        for index in range(0, int(xs_sorted.size) - 1, 2):
+            x_a = xs_sorted[index]
+            x_b = xs_sorted[index + 1]
+            if float(x_b - x_a) <= 1e-9:
+                continue
+            endpoints[cursor] = (x_a, y)
+            endpoints[cursor + 1] = (x_b, y)
+            cursor += 2
+    return endpoints
+
+
+def test_fill_scanline_kernel_is_bitwise_equal_to_numpy_reference() -> None:
+    outer = np.asarray(
+        [[0, 0], [10, 0], [10, 10], [0, 10]],
+        dtype=np.float32,
+    )
+    hole = np.asarray(
+        [[3, 3], [7, 3], [7, 7], [3, 7]],
+        dtype=np.float32,
+    )
+    edges = []
+    for ring in (outer, hole):
+        following = np.roll(ring, -1, axis=0)
+        edges.append(np.concatenate([ring, following], axis=1))
+    packed = np.concatenate(edges, axis=0).astype(np.float32, copy=False)
+    ex1 = packed[:, 0]
+    ey1 = packed[:, 1]
+    ex2 = packed[:, 2]
+    ey2 = packed[:, 3]
+    edx = ex2 - ex1
+    edy = ey2 - ey1
+    y_values = np.asarray(
+        [-1.0, 0.0, 0.5, 3.0, 3.5, 6.5, 7.0, 9.5, 10.0],
+        dtype=np.float32,
+    )
+
+    expected = _scanline_endpoints_reference(
+        ex1,
+        ey1,
+        ex2,
+        ey2,
+        edx,
+        edy,
+        y_values,
+    )
+    actual = _scanline_endpoints_njit(
+        ex1,
+        ey1,
+        ex2,
+        ey2,
+        edx,
+        edy,
+        y_values,
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+
+    rng = np.random.default_rng(20260719)
+    for _ in range(16):
+        starts = rng.normal(size=(37, 2)).astype(np.float32)
+        ends = rng.normal(size=(37, 2)).astype(np.float32)
+        ends[::7, 1] = starts[::7, 1]
+        ex1 = starts[:, 0]
+        ey1 = starts[:, 1]
+        ex2 = ends[:, 0]
+        ey2 = ends[:, 1]
+        edx = ex2 - ex1
+        edy = ey2 - ey1
+        y_values = np.sort(
+            rng.uniform(-2.0, 2.0, size=23).astype(np.float32)
+        )
+        expected = _scanline_endpoints_reference(
+            ex1,
+            ey1,
+            ex2,
+            ey2,
+            edx,
+            edy,
+            y_values,
+        )
+        actual = _scanline_endpoints_njit(
+            ex1,
+            ey1,
+            ex2,
+            ey2,
+            edx,
+            edy,
+            y_values,
+        )
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_fill_scanline_kernel_matches_numpy_signed_zero_sort_order() -> None:
+    tiny = np.asarray(0x00000001, dtype=np.uint32).view(np.float32)
+    small = np.asarray(0x00800000, dtype=np.uint32).view(np.float32)
+    ex1 = np.array([-1.0, -tiny, -small, -0.0], dtype=np.float32)
+    ex2 = np.array([2.0, -small, small, -tiny], dtype=np.float32)
+    ey1 = np.zeros((4,), dtype=np.float32)
+    ey2 = np.ones((4,), dtype=np.float32)
+    edx = ex2 - ex1
+    edy = ey2 - ey1
+    y_values = np.array([0.5], dtype=np.float32)
+
+    expected = _scanline_endpoints_reference(
+        ex1,
+        ey1,
+        ex2,
+        ey2,
+        edx,
+        edy,
+        y_values,
+    )
+    actual = _scanline_endpoints_njit(
+        ex1,
+        ey1,
+        ex2,
+        ey2,
+        edx,
+        edy,
+        y_values,
+    )
+
+    np.testing.assert_array_equal(
+        actual.view(np.uint32),
+        expected.view(np.uint32),
+    )
+
+
+def test_fill_scanline_kernel_does_not_overwrite_for_nan_pair_width() -> None:
+    ex1 = np.array([-np.inf, 0.0, 1.0, np.inf], dtype=np.float32)
+    ex2 = ex1.copy()
+    ey1 = np.zeros((4,), dtype=np.float32)
+    ey2 = np.ones((4,), dtype=np.float32)
+    with np.errstate(all="ignore"):
+        edx = ex2 - ex1
+    edy = ey2 - ey1
+    y_values = np.array([0.5], dtype=np.float32)
+
+    with np.errstate(all="ignore"):
+        actual = _scanline_endpoints_njit(
+            ex1,
+            ey1,
+            ex2,
+            ey2,
+            edx,
+            edy,
+            y_values,
+        )
+
+    assert actual.shape == (2, 2)
+    np.testing.assert_array_equal(
+        actual,
+        np.array([[0.0, 0.5], [1.0, 0.5]], dtype=np.float32),
+    )
+
+
+def test_fill_scanline_overflow_preserves_numpy_exception() -> None:
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0e20, 0.0, 0.0],
+            [0.0, 1.0e20, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    offsets = np.array([0, 4], dtype=np.int32)
+
+    with np.errstate(over="raise", invalid="ignore"), pytest.raises(
+        FloatingPointError,
+        match="overflow encountered in multiply",
+    ):
+        fill_effect(
+            (coords, offsets),
+            angle_sets=1,
+            angle=0.0,
+            density=2.0,
+            remove_boundary=True,
+        )
 
 
 def test_fill_square_generates_expected_line_count() -> None:

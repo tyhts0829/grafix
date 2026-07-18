@@ -22,6 +22,7 @@ from .util import PlanarFrame, empty_geom, pack_polylines
 MAX_FILL_LINES = 1000
 NONPLANAR_EPS_ABS = 1e-6
 NONPLANAR_EPS_REL = 1e-5
+_SCANLINE_SAFE_ABS_MIN = np.float32(2.0**-40)
 
 fill_meta = {
     "angle_sets": ParamMeta(
@@ -496,6 +497,226 @@ def _generate_y_values(
     return np.asarray(y_values, dtype=np.float32)
 
 
+@njit(cache=True)  # type: ignore[misc]
+def _sort_intersections_numpy_order(
+    values: np.ndarray,
+    count: int,
+) -> None:
+    """NumPy sort と同じく、同値の -0.0 を +0.0 より前へ並べる。"""
+
+    values[:count].sort()
+    zero_start = -1
+    zero_count = 0
+    negative_zero_count = 0
+    for index in range(count):
+        value = values[index]
+        if value == np.float32(0.0):
+            if zero_start < 0:
+                zero_start = index
+            zero_count += 1
+            if np.signbit(value):
+                negative_zero_count += 1
+
+    if zero_start < 0 or negative_zero_count == 0:
+        return
+    for index in range(negative_zero_count):
+        values[zero_start + index] = np.float32(-0.0)
+    for index in range(negative_zero_count, zero_count):
+        values[zero_start + index] = np.float32(0.0)
+
+
+@njit(cache=True)  # type: ignore[misc]
+def _scanline_endpoints_njit(
+    ex1: np.ndarray,
+    ey1: np.ndarray,
+    ex2: np.ndarray,
+    ey2: np.ndarray,
+    edx: np.ndarray,
+    edy: np.ndarray,
+    y_values: np.ndarray,
+) -> np.ndarray:
+    """全 scanline の even-odd 交点を packed endpoint 配列へ詰める。"""
+
+    edge_count = int(ex1.shape[0])
+    scratch = np.empty((edge_count,), dtype=np.float32)
+    segment_count = 0
+
+    # 出力を過剰確保しないため、現行と同じ交点式と sort で本数を先に数える。
+    for y_index in range(int(y_values.shape[0])):
+        y = y_values[y_index]
+        intersection_count = 0
+        for edge_index in range(edge_count):
+            y1 = ey1[edge_index]
+            y2 = ey2[edge_index]
+            dy = edy[edge_index]
+            if dy == np.float32(0.0):
+                continue
+            if not ((y1 <= y and y < y2) or (y2 <= y and y < y1)):
+                continue
+            scratch[intersection_count] = (
+                ex1[edge_index] + (y - y1) * edx[edge_index] / dy
+            )
+            intersection_count += 1
+
+        if intersection_count < 2:
+            continue
+        _sort_intersections_numpy_order(scratch, intersection_count)
+        for pair_index in range(0, intersection_count - 1, 2):
+            if (
+                scratch[pair_index + 1] - scratch[pair_index]
+                > np.float32(1e-9)
+            ):
+                segment_count += 1
+
+    endpoints = np.empty((2 * segment_count, 2), dtype=np.float32)
+    cursor = 0
+    for y_index in range(int(y_values.shape[0])):
+        y = y_values[y_index]
+        intersection_count = 0
+        for edge_index in range(edge_count):
+            y1 = ey1[edge_index]
+            y2 = ey2[edge_index]
+            dy = edy[edge_index]
+            if dy == np.float32(0.0):
+                continue
+            if not ((y1 <= y and y < y2) or (y2 <= y and y < y1)):
+                continue
+            scratch[intersection_count] = (
+                ex1[edge_index] + (y - y1) * edx[edge_index] / dy
+            )
+            intersection_count += 1
+
+        if intersection_count < 2:
+            continue
+        _sort_intersections_numpy_order(scratch, intersection_count)
+        for pair_index in range(0, intersection_count - 1, 2):
+            x_a = scratch[pair_index]
+            x_b = scratch[pair_index + 1]
+            if not (x_b - x_a > np.float32(1e-9)):
+                continue
+            endpoints[cursor, 0] = x_a
+            endpoints[cursor, 1] = y
+            endpoints[cursor + 1, 0] = x_b
+            endpoints[cursor + 1, 1] = y
+            cursor += 2
+
+    return endpoints
+
+
+@njit(cache=True)  # type: ignore[misc]
+def _scanline_array_bounds(values: np.ndarray) -> tuple[bool, float, float]:
+    """finite/通常値判定と、非ゼロ最小絶対値・最大絶対値を返す。"""
+
+    min_nonzero = np.inf
+    max_abs = 0.0
+    for index in range(int(values.shape[0])):
+        value = np.float64(values[index])
+        if not np.isfinite(value):
+            return False, 0.0, 0.0
+        value_abs = abs(value)
+        if value_abs > max_abs:
+            max_abs = value_abs
+        if value_abs != 0.0:
+            if value_abs < float(_SCANLINE_SAFE_ABS_MIN):
+                return False, 0.0, 0.0
+            if value_abs < min_nonzero:
+                min_nonzero = value_abs
+    return True, min_nonzero, max_abs
+
+
+@njit(cache=True)  # type: ignore[misc]
+def _scanline_arithmetic_is_safe(
+    ex1: np.ndarray,
+    ey1: np.ndarray,
+    ex2: np.ndarray,
+    ey2: np.ndarray,
+    edx: np.ndarray,
+    edy: np.ndarray,
+    y_values: np.ndarray,
+) -> bool:
+    """Numba 経路で NumPy の浮動小数点通知を省略しない通常範囲かを返す。"""
+
+    ex1_safe, _, ex1_max = _scanline_array_bounds(ex1)
+    ey1_safe, _, ey1_max = _scanline_array_bounds(ey1)
+    ex2_safe, _, _ = _scanline_array_bounds(ex2)
+    ey2_safe, _, _ = _scanline_array_bounds(ey2)
+    edx_safe, _, edx_max = _scanline_array_bounds(edx)
+    edy_safe, edy_min, _ = _scanline_array_bounds(edy)
+    y_safe, _, y_max = _scanline_array_bounds(y_values)
+    if not (
+        ex1_safe
+        and ey1_safe
+        and ex2_safe
+        and ey2_safe
+        and edx_safe
+        and edy_safe
+        and y_safe
+    ):
+        return False
+    if edy_min == np.inf or y_values.size == 0:
+        return True
+
+    float32_limit = float(np.finfo(np.float32).max) / 4.0
+    y_delta_bound = y_max + ey1_max
+    product_bound = y_delta_bound * edx_max
+    quotient_bound = product_bound / edy_min
+    intersection_bound = ex1_max + quotient_bound
+    return bool(
+        y_delta_bound <= float32_limit
+        and product_bound <= float32_limit
+        and quotient_bound <= float32_limit
+        and intersection_bound <= float32_limit
+    )
+
+
+def _scanline_endpoints_numpy(
+    ex1: np.ndarray,
+    ey1: np.ndarray,
+    ex2: np.ndarray,
+    ey2: np.ndarray,
+    edx: np.ndarray,
+    edy: np.ndarray,
+    y_values: np.ndarray,
+) -> np.ndarray:
+    """浮動小数点境界用に従来の NumPy scanline 演算を実行する。"""
+
+    scanlines: list[tuple[np.float32, np.ndarray]] = []
+    segment_count = 0
+    for y in y_values:
+        yy = float(y)
+        mask = ((ey1 <= yy) & (yy < ey2)) | ((ey2 <= yy) & (yy < ey1))
+        mask &= edy != 0.0
+        if not np.any(mask):
+            continue
+
+        xs = ex1[mask] + (yy - ey1[mask]) * edx[mask] / edy[mask]
+        if xs.size < 2:
+            continue
+        xs_sorted = np.sort(xs.astype(np.float32, copy=False))
+        valid_count = 0
+        for pair_index in range(0, int(xs_sorted.size) - 1, 2):
+            if float(xs_sorted[pair_index + 1] - xs_sorted[pair_index]) > 1e-9:
+                valid_count += 1
+        if valid_count > 0:
+            scanlines.append((y, xs_sorted))
+            segment_count += valid_count
+
+    endpoints = np.empty((2 * segment_count, 2), dtype=np.float32)
+    cursor = 0
+    for y, xs_sorted in scanlines:
+        for pair_index in range(0, int(xs_sorted.size) - 1, 2):
+            x_a = xs_sorted[pair_index]
+            x_b = xs_sorted[pair_index + 1]
+            if float(x_b - x_a) <= 1e-9:
+                continue
+            endpoints[cursor, 0] = x_a
+            endpoints[cursor, 1] = y
+            endpoints[cursor + 1, 0] = x_b
+            endpoints[cursor + 1, 1] = y
+            cursor += 2
+    return endpoints
+
+
 def _generate_line_fill_evenodd_multi(
     coords_2d: np.ndarray,
     offsets: np.ndarray,
@@ -570,44 +791,34 @@ def _generate_line_fill_evenodd_multi(
     edy = ey2 - ey1
     edx = ex2 - ex1
 
-    scanlines: list[tuple[np.float32, np.ndarray]] = []
-    segment_count = 0
-    for y in y_values:
-        yy = float(y)
-        # 半開区間で交差判定し、頂点での二重カウントを抑える。
-        mask = ((ey1 <= yy) & (yy < ey2)) | ((ey2 <= yy) & (yy < ey1))
-        mask &= edy != 0.0
-        if not np.any(mask):
-            continue
-
-        # 交点の x 座標（線形補間）。水平辺は除外済み。
-        xs = ex1[mask] + (yy - ey1[mask]) * edx[mask] / edy[mask]
-        if xs.size < 2:
-            continue
-
-        # even-odd: ソートした交点を 2 個ずつペアにして内側区間を得る。
-        xs_sorted = np.sort(xs.astype(np.float32, copy=False))
-        valid_count = 0
-        for pair_index in range(0, int(xs_sorted.size) - 1, 2):
-            if float(xs_sorted[pair_index + 1] - xs_sorted[pair_index]) > 1e-9:
-                valid_count += 1
-        if valid_count > 0:
-            scanlines.append((y, xs_sorted))
-            segment_count += valid_count
-
-    endpoints = np.empty((2 * segment_count, 2), dtype=np.float32)
-    cursor = 0
-    for y, xs_sorted in scanlines:
-        for pair_index in range(0, int(xs_sorted.size) - 1, 2):
-            x_a = xs_sorted[pair_index]
-            x_b = xs_sorted[pair_index + 1]
-            if float(x_b - x_a) <= 1e-9:
-                continue
-            endpoints[cursor, 0] = x_a
-            endpoints[cursor, 1] = y
-            endpoints[cursor + 1, 0] = x_b
-            endpoints[cursor + 1, 1] = y
-            cursor += 2
+    if _scanline_arithmetic_is_safe(
+        ex1,
+        ey1,
+        ex2,
+        ey2,
+        edx,
+        edy,
+        y_values,
+    ):
+        endpoints = _scanline_endpoints_njit(
+            ex1,
+            ey1,
+            ex2,
+            ey2,
+            edx,
+            edy,
+            y_values,
+        )
+    else:
+        endpoints = _scanline_endpoints_numpy(
+            ex1,
+            ey1,
+            ex2,
+            ey2,
+            edx,
+            edy,
+            y_values,
+        )
     if rot_fwd is not None and endpoints.size > 0:
         endpoints[:] = (endpoints - center) @ rot_fwd.T + center
     return endpoints

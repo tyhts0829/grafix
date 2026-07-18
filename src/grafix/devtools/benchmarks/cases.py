@@ -97,6 +97,15 @@ def build_default_cases(*, seed: int) -> list[BenchmarkCase]:
     )
     cases.append(
         BenchmarkCase(
+            case_id="polyline_spaced_long",
+            label="spaced polyline (50k verts)",
+            description="subdivide の最短線分ガードを確実に超える長い折れ線",
+            inputs=(_polyline_spaced(n_vertices=50_000, spacing=0.125),),
+            tags=("unary", "huge-single-line", "subdivide-actual-work"),
+        )
+    )
+    cases.append(
+        BenchmarkCase(
             case_id="many_lines",
             label="many lines (5k)",
             description="短い線分を多数（ポリライン本数が多い）",
@@ -120,6 +129,15 @@ def build_default_cases(*, seed: int) -> list[BenchmarkCase]:
             description="外周 + 穴の 2 リング（平面領域系 effect 向け）",
             inputs=(_two_rings(outer_sides=2_000, inner_sides=1_200),),
             tags=("unary", "mask-grid", "rings"),
+        )
+    )
+    cases.append(
+        BenchmarkCase(
+            case_id="many_rings",
+            label="many rings (512)",
+            description="離して並べた正方形リング 512 個",
+            inputs=(_many_square_rings(n_rings=512),),
+            tags=("unary", "many-short-lines", "rings"),
         )
     )
     cases.append(
@@ -152,6 +170,19 @@ def _polyline_sine(*, n_vertices: int) -> RealizedGeometry:
     t = np.linspace(0.0, 60.0, num=n, dtype=np.float32)
     x = t
     y = (30.0 * np.sin(t * 0.4)).astype(np.float32, copy=False)
+    z = np.zeros_like(x)
+    coords = np.stack([x, y, z], axis=1).astype(np.float32, copy=False)
+    offsets = np.asarray([0, n], dtype=np.int32)
+    return RealizedGeometry(coords=coords, offsets=offsets)
+
+
+def _polyline_spaced(*, n_vertices: int, spacing: float) -> RealizedGeometry:
+    """隣接距離が ``subdivide`` の停止閾値を十分上回る折れ線を返す。"""
+
+    n = max(2, int(n_vertices))
+    step = np.float32(spacing)
+    x = np.arange(n, dtype=np.float32) * step
+    y = (5.0 * np.sin(x * np.float32(0.02))).astype(np.float32, copy=False)
     z = np.zeros_like(x)
     coords = np.stack([x, y, z], axis=1).astype(np.float32, copy=False)
     offsets = np.asarray([0, n], dtype=np.int32)
@@ -223,3 +254,35 @@ def _two_rings(*, outer_sides: int, inner_sides: int) -> RealizedGeometry:
         dtype=np.int32,
     )
     return RealizedGeometry(coords=coords, offsets=offsets)
+
+
+def _many_square_rings(*, n_rings: int) -> RealizedGeometry:
+    """互いに接触しない正方形リングを規則格子へ並べて返す。"""
+
+    count = max(1, int(n_rings))
+    columns = int(np.ceil(np.sqrt(float(count))))
+    indices = np.arange(count, dtype=np.int32)
+    center_x = (
+        indices % columns - np.float32(0.5 * float(columns - 1))
+    ).astype(np.float32) * np.float32(4.0)
+    rows = int(np.ceil(float(count) / float(columns)))
+    center_y = (
+        indices // columns - np.float32(0.5 * float(rows - 1))
+    ).astype(np.float32) * np.float32(4.0)
+
+    corners = np.asarray(
+        [
+            [-1.0, -1.0],
+            [1.0, -1.0],
+            [1.0, 1.0],
+            [-1.0, 1.0],
+            [-1.0, -1.0],
+        ],
+        dtype=np.float32,
+    )
+    coords = np.zeros((count, 5, 3), dtype=np.float32)
+    coords[:, :, 0] = center_x[:, None] + corners[None, :, 0]
+    coords[:, :, 1] = center_y[:, None] + corners[None, :, 1]
+    packed = coords.reshape(count * 5, 3)
+    offsets = np.arange(0, packed.shape[0] + 1, 5, dtype=np.int32)
+    return RealizedGeometry(coords=packed, offsets=offsets)

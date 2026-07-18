@@ -18,6 +18,9 @@ MAX_SUBDIVISIONS = 10
 MIN_SEG_LEN = 0.01
 MIN_SEG_LEN_SQ = float(MIN_SEG_LEN * MIN_SEG_LEN)
 MAX_TOTAL_VERTICES = 10_000_000
+_BATCH_SAFE_COORD_ABS_MAX = np.float32(
+    np.sqrt(np.finfo(np.float32).max / 16.0)
+)
 
 subdivide_meta = {
     "subdivisions": ParamMeta(
@@ -95,20 +98,33 @@ def subdivide(
         )
         return coords, offsets
 
-    # 全ポリラインを残せる共通の細分回数を、配列確保前に決める。
-    selected_divisions = divisions
-    counts: list[int] = []
-    while selected_divisions > 0:
-        counts = [
-            _subdivided_vertex_count(
-                coords[int(offsets[i]) : int(offsets[i + 1])],
-                selected_divisions,
-            )
-            for i in range(n_lines)
-        ]
-        if sum(counts) <= MAX_TOTAL_VERTICES:
-            break
-        selected_divisions -= 1
+    use_batch = _can_use_subdivide_batch(coords, offsets)
+    if use_batch:
+        # canonical finite geometry は全 polyline を一括解析する。
+        selected_divisions, counts, total_vertices = _analyze_subdivision_plan(
+            coords,
+            offsets,
+            divisions,
+            MAX_TOTAL_VERTICES,
+        )
+    if not use_batch:
+        # 非 canonical dtype/layout と非有限値は、入力 dtype で中点と
+        # fastmath の停止判定を行う従来経路へ戻して演算結果を維持する。
+        selected_divisions = divisions
+        count_list: list[int] = []
+        while selected_divisions > 0:
+            count_list = [
+                _subdivided_vertex_count(
+                    coords[int(offsets[i]) : int(offsets[i + 1])],
+                    selected_divisions,
+                )
+                for i in range(n_lines)
+            ]
+            if sum(count_list) <= MAX_TOTAL_VERTICES:
+                break
+            selected_divisions -= 1
+        counts = np.asarray(count_list, dtype=np.int64)
+        total_vertices = int(sum(count_list))
 
     if selected_divisions <= 0:
         _emit_subdivide_diagnostic(
@@ -123,16 +139,7 @@ def subdivide(
             "subdivisions was reduced to satisfy MAX_TOTAL_VERTICES"
         )
 
-    if not counts:
-        counts = [
-            _subdivided_vertex_count(
-                coords[int(offsets[i]) : int(offsets[i + 1])],
-                selected_divisions,
-            )
-            for i in range(n_lines)
-        ]
-
-    total_vertices = sum(counts)
+    total_vertices = int(total_vertices)
     if total_vertices == base_total:
         _emit_subdivide_diagnostic(
             requested=requested_divisions,
@@ -146,28 +153,42 @@ def subdivide(
 
     coords_out = np.empty((total_vertices, coords.shape[1]), dtype=np.float32)
     offsets_out = np.empty((n_lines + 1,), dtype=np.int32)
-    offsets_out[0] = 0
-    applied_levels_list: list[int] = []
-    write_at = 0
-    # 解析的な count は確保容量にだけ使い、実出力数は core の結果に従う。
-    for li, capacity in enumerate(counts):
-        start = int(offsets[li])
-        end = int(offsets[li + 1])
-        line, applied_level = _subdivide_core(
-            coords[start:end],
+    if use_batch:
+        write_at, applied_levels_mask = _subdivide_batch(
+            coords,
+            offsets,
             selected_divisions,
-            capacity,
+            counts,
+            coords_out,
+            offsets_out,
         )
-        applied_levels_list.append(applied_level)
-        next_at = write_at + int(line.shape[0])
-        coords_out[write_at:next_at] = line
-        offsets_out[li + 1] = next_at
-        write_at = next_at
+        applied_levels = tuple(
+            level
+            for level in range(selected_divisions + 1)
+            if applied_levels_mask & (1 << level)
+        )
+    else:
+        offsets_out[0] = 0
+        applied_levels_list: list[int] = []
+        write_at = 0
+        for line_index, capacity in enumerate(counts):
+            start = int(offsets[line_index])
+            end = int(offsets[line_index + 1])
+            line, applied_level = _subdivide_core(
+                coords[start:end],
+                selected_divisions,
+                int(capacity),
+            )
+            applied_levels_list.append(applied_level)
+            next_at = write_at + int(line.shape[0])
+            coords_out[write_at:next_at] = line
+            offsets_out[line_index + 1] = next_at
+            write_at = next_at
+        applied_levels = tuple(sorted(set(applied_levels_list)))
 
     if write_at < total_vertices:
         coords_out = coords_out[:write_at].copy()
 
-    applied_levels = tuple(sorted(set(applied_levels_list)))
     if any(level < selected_divisions for level in applied_levels):
         degradation_reasons.append(
             "minimum segment length stopped one or more polylines early"
@@ -201,8 +222,38 @@ def _emit_subdivide_diagnostic(
     )
 
 
+def _can_use_subdivide_batch(
+    coords: np.ndarray,
+    offsets: np.ndarray,
+) -> bool:
+    """一括 kernel で旧演算を保てる canonical finite geometry かを返す。"""
+
+    if not (
+        type(coords) is np.ndarray
+        and coords.dtype == np.float32
+        and coords.ndim == 2
+        and coords.shape[1] == 3
+        and coords.flags.c_contiguous
+        and type(offsets) is np.ndarray
+        and offsets.dtype == np.int32
+        and offsets.ndim == 1
+        and offsets.flags.c_contiguous
+        and offsets.size >= 1
+        and offsets[0] == 0
+        and offsets[-1] == coords.shape[0]
+        and np.all(offsets[1:] >= offsets[:-1])
+        and np.geterr()["under"] == "ignore"
+    ):
+        return False
+    coords_abs_max = np.max(np.abs(coords))
+    return bool(
+        np.isfinite(coords_abs_max)
+        and coords_abs_max <= _BATCH_SAFE_COORD_ABS_MAX
+    )
+
+
 def _subdivided_vertex_count(vertices: np.ndarray, subdivisions: int) -> int:
-    """配列を増やさず、``_subdivide_core`` の出力頂点数を返す。"""
+    """非 canonical fallback の出力頂点数を配列確保なしで返す。"""
 
     n = int(vertices.shape[0])
     if n < 2 or subdivisions <= 0:
@@ -214,7 +265,7 @@ def _subdivided_vertex_count(vertices: np.ndarray, subdivisions: int) -> int:
 
 
 def _effective_subdivision_count(vertices: np.ndarray, subdivisions: int) -> int:
-    """最短segment制約を含め、実際に適用される反復数を返す。"""
+    """入力 dtype の最短 segment 制約を含む反復数を返す。"""
 
     if int(vertices.shape[0]) < 2 or subdivisions <= 0:
         return 0
@@ -233,13 +284,91 @@ def _effective_subdivision_count(vertices: np.ndarray, subdivisions: int) -> int
     return applied
 
 
+@njit(cache=True)
+def _analyze_subdivision_plan(
+    coords: np.ndarray,
+    offsets: np.ndarray,
+    subdivisions: int,
+    max_total_vertices: int,
+) -> tuple[int, np.ndarray, int]:
+    """全 polyline の解析上の反復数と capacity を一括で求める。"""
+
+    n_lines = offsets.size - 1
+    counts = np.empty((n_lines,), dtype=np.int64)
+
+    # ここは従来の NumPy count 経路と同じ strict な浮動小数点演算にする。
+    for line_index in range(n_lines):
+        start = int(offsets[line_index])
+        end = int(offsets[line_index + 1])
+        n_vertices = end - start
+        if n_vertices < 2:
+            counts[line_index] = 0
+            continue
+
+        dx = coords[start + 1, 0] - coords[start, 0]
+        dy = coords[start + 1, 1] - coords[start, 1]
+        dz = coords[start + 1, 2] - coords[start, 2]
+        min_distance_sq = dx * dx + dy * dy + dz * dz
+        for vertex_index in range(start + 1, end - 1):
+            dx = coords[vertex_index + 1, 0] - coords[vertex_index, 0]
+            dy = coords[vertex_index + 1, 1] - coords[vertex_index, 1]
+            dz = coords[vertex_index + 1, 2] - coords[vertex_index, 2]
+            distance_sq = dx * dx + dy * dy + dz * dz
+            if distance_sq < min_distance_sq:
+                min_distance_sq = distance_sq
+
+        scaled_min_distance_sq = np.float64(min_distance_sq)
+        if scaled_min_distance_sq < MIN_SEG_LEN_SQ:
+            counts[line_index] = 0
+            continue
+
+        applied_levels = 0
+        for _ in range(subdivisions):
+            applied_levels += 1
+            scaled_min_distance_sq *= 0.25
+            if scaled_min_distance_sq < MIN_SEG_LEN_SQ:
+                break
+        counts[line_index] = applied_levels
+
+    selected_divisions = subdivisions
+    total_vertices = 0
+    while selected_divisions > 0:
+        total_vertices = 0
+        for line_index in range(n_lines):
+            n_vertices = int(offsets[line_index + 1]) - int(offsets[line_index])
+            levels = int(counts[line_index])
+            if levels > selected_divisions:
+                levels = selected_divisions
+            count = n_vertices
+            for _ in range(levels):
+                count = 2 * count - 1
+            total_vertices += count
+        if total_vertices <= max_total_vertices:
+            break
+        selected_divisions -= 1
+
+    if selected_divisions > 0:
+        for line_index in range(n_lines):
+            n_vertices = int(offsets[line_index + 1]) - int(offsets[line_index])
+            levels = int(counts[line_index])
+            if levels > selected_divisions:
+                levels = selected_divisions
+            count = n_vertices
+            for _ in range(levels):
+                count = 2 * count - 1
+            counts[line_index] = count
+
+    return selected_divisions, counts, total_vertices
+
+
 @njit(fastmath=True, cache=True)
 def _subdivide_core(
     vertices: np.ndarray,
     subdivisions: int,
     max_vertices: int,
 ) -> tuple[np.ndarray, int]:
-    """単一頂点配列の細分化処理（旧仕様踏襲の Numba 経路）。"""
+    """非 canonical/non-finite 入力を従来の演算順で細分化する。"""
+
     n0 = vertices.shape[0]
     if n0 < 2 or subdivisions <= 0:
         return vertices, 0
@@ -276,3 +405,112 @@ def _subdivide_core(
                 break
 
     return result, applied_levels
+
+
+@njit(fastmath=True, cache=True)
+def _subdivide_batch(
+    coords: np.ndarray,
+    offsets: np.ndarray,
+    subdivisions: int,
+    capacities: np.ndarray,
+    coords_out: np.ndarray,
+    offsets_out: np.ndarray,
+) -> tuple[int, int]:
+    """確保済み capacity 内で全 polyline を一括細分化する。"""
+
+    n_lines = offsets.size - 1
+    n_dims = coords.shape[1]
+    write_at = 0
+    reserved_at = 0
+    applied_levels_mask = 0
+    offsets_out[0] = 0
+
+    for line_index in range(n_lines):
+        start = int(offsets[line_index])
+        end = int(offsets[line_index + 1])
+        n_vertices = end - start
+        capacity = int(capacities[line_index])
+
+        for vertex_index in range(n_vertices):
+            for axis in range(n_dims):
+                coords_out[reserved_at + vertex_index, axis] = coords[
+                    start + vertex_index, axis
+                ]
+
+        current_count = n_vertices
+        applied_levels = 0
+        can_subdivide = n_vertices >= 2
+        if can_subdivide:
+            dx = coords[start + 1, 0] - coords[start, 0]
+            dy = coords[start + 1, 1] - coords[start, 1]
+            dz = coords[start + 1, 2] - coords[start, 2]
+            min_distance_sq = dx * dx + dy * dy + dz * dz
+            for vertex_index in range(start + 1, end - 1):
+                dx = coords[vertex_index + 1, 0] - coords[vertex_index, 0]
+                dy = coords[vertex_index + 1, 1] - coords[vertex_index, 1]
+                dz = coords[vertex_index + 1, 2] - coords[vertex_index, 2]
+                distance_sq = dx * dx + dy * dy + dz * dz
+                if distance_sq < min_distance_sq:
+                    min_distance_sq = distance_sq
+            can_subdivide = not min_distance_sq < MIN_SEG_LEN_SQ
+
+        if can_subdivide:
+            for _ in range(subdivisions):
+                new_count = 2 * current_count - 1
+                if capacity > 0 and new_count > capacity:
+                    break
+
+                # 元頂点を壊さないよう、末尾から同じ capacity 内へ展開する。
+                for axis in range(n_dims):
+                    coords_out[
+                        reserved_at + 2 * (current_count - 1), axis
+                    ] = coords_out[reserved_at + current_count - 1, axis]
+                for vertex_index in range(current_count - 2, -1, -1):
+                    for axis in range(n_dims):
+                        left = coords_out[reserved_at + vertex_index, axis]
+                        right = coords_out[reserved_at + vertex_index + 1, axis]
+                        coords_out[reserved_at + 2 * vertex_index + 1, axis] = (
+                            left + right
+                        ) / 2
+                        coords_out[reserved_at + 2 * vertex_index, axis] = left
+
+                current_count = new_count
+                applied_levels += 1
+
+                dx = coords_out[reserved_at + 1, 0] - coords_out[reserved_at, 0]
+                dy = coords_out[reserved_at + 1, 1] - coords_out[reserved_at, 1]
+                dz = coords_out[reserved_at + 1, 2] - coords_out[reserved_at, 2]
+                min_distance_sq = dx * dx + dy * dy + dz * dz
+                for vertex_index in range(1, current_count - 1):
+                    dx = (
+                        coords_out[reserved_at + vertex_index + 1, 0]
+                        - coords_out[reserved_at + vertex_index, 0]
+                    )
+                    dy = (
+                        coords_out[reserved_at + vertex_index + 1, 1]
+                        - coords_out[reserved_at + vertex_index, 1]
+                    )
+                    dz = (
+                        coords_out[reserved_at + vertex_index + 1, 2]
+                        - coords_out[reserved_at + vertex_index, 2]
+                    )
+                    distance_sq = dx * dx + dy * dy + dz * dz
+                    if distance_sq < min_distance_sq:
+                        min_distance_sq = distance_sq
+                if min_distance_sq < MIN_SEG_LEN_SQ:
+                    break
+
+        applied_levels_mask |= 1 << applied_levels
+
+        # 解析 capacity と float32 実停止がずれた分を前方へ詰める。
+        if write_at != reserved_at:
+            for vertex_index in range(current_count):
+                for axis in range(n_dims):
+                    coords_out[write_at + vertex_index, axis] = coords_out[
+                        reserved_at + vertex_index, axis
+                    ]
+        write_at += current_count
+        offsets_out[line_index + 1] = write_at
+        reserved_at += capacity
+
+    return write_at, applied_levels_mask

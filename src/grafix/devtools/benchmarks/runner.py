@@ -159,6 +159,7 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             ),
         ),
         *_effect_definitions(),
+        *_target_effect_speedup_definitions(),
         *_scaled_definitions(
             prefix="runtime.provenance",
             label="stable parameter provenance",
@@ -1717,6 +1718,121 @@ def _effect_definitions() -> list[CaseDefinition]:
             )
         )
     return definitions
+
+
+def _target_effect_speedup_definitions() -> list[CaseDefinition]:
+    """高速化対象 effect の actual-work と shape 別 case を返す。"""
+
+    cases: tuple[
+        tuple[str, str, str, str, dict[str, Any], tuple[str, ...]], ...
+    ] = (
+        (
+            "effect.translate.polyline_long",
+            "translate / 50k vertices",
+            "polyline_long",
+            "translate",
+            {"delta": [12.0, 5.0, 3.5]},
+            ("large", "coordinate-only"),
+        ),
+        (
+            "effect.translate.many_lines",
+            "translate / 5k lines",
+            "many_lines",
+            "translate",
+            {"delta": [12.0, 5.0, 0.0]},
+            ("many-short-lines", "coordinate-only"),
+        ),
+        (
+            "effect.rotate.pivot.polyline_long",
+            "rotate fixed pivot / 50k vertices",
+            "polyline_long",
+            "rotate",
+            {
+                "auto_center": False,
+                "pivot": [12.0, -5.0, 3.0],
+                "rotation": [10.0, 20.0, 5.0],
+            },
+            ("large", "coordinate-only", "fixed-pivot"),
+        ),
+        (
+            "effect.scale.by_line.many_lines",
+            "scale by line / 5k lines",
+            "many_lines",
+            "scale",
+            {"mode": "by_line", "scale": [1.15, 0.9, 1.0]},
+            ("many-short-lines", "coordinate-only"),
+        ),
+        (
+            "effect.scale.by_face.many_rings",
+            "scale by face / 512 rings",
+            "many_rings",
+            "scale",
+            {"mode": "by_face", "scale": [1.15, 0.9, 1.0]},
+            ("many-short-lines", "rings", "coordinate-only"),
+        ),
+        (
+            "effect.subdivide.actual.polyline_spaced_long",
+            "subdivide actual work / 50k vertices",
+            "polyline_spaced_long",
+            "subdivide",
+            {"subdivisions": 2},
+            ("large", "topology-changing"),
+        ),
+        (
+            "effect.subdivide.actual.many_lines",
+            "subdivide actual work / 5k lines",
+            "many_lines",
+            "subdivide",
+            {"subdivisions": 2},
+            ("many-short-lines", "topology-changing"),
+        ),
+        (
+            "effect.fill.dense.rings_2",
+            "fill dense cross hatch / outer and hole",
+            "rings_2",
+            "fill",
+            {
+                "angle_sets": 3,
+                "angle": 17.0,
+                "density": 1000.0,
+                "remove_boundary": True,
+            },
+            ("rings", "dense", "topology-changing"),
+        ),
+        (
+            "effect.fill.many_rings",
+            "fill / 512 disjoint rings",
+            "many_rings",
+            "fill",
+            {
+                "angle_sets": 1,
+                "angle": 0.0,
+                "density": 20.0,
+                "remove_boundary": True,
+            },
+            ("many-short-lines", "rings", "topology-changing"),
+        ),
+    )
+    return [
+        _definition(
+            case_id,
+            label,
+            category="effect",
+            suite="effects",
+            fixture=fixture,
+            parameters={"effect": effect_name, "fixture": fixture, **parameters},
+            tags=("explicit-fixture", "exact-checksum", "actual-work", *tags),
+            selectable_suites=("effects",),
+            setup=_setup_effect,
+            workload=_workload_effect,
+            support_source_files=(_CASES_SOURCE_FILE,),
+            support_implementations=(
+                _effect_metrics,
+                _diagnostic_effective_value,
+            ),
+        )
+        for case_id, label, fixture, effect_name, parameters, tags in cases
+    ]
 
 
 def _legacy_system_definitions() -> list[CaseDefinition]:
