@@ -38,7 +38,7 @@ from grafix.interactive.midi import MidiSession
 from grafix.interactive.runtime.frame_clock import TransportClock
 
 from .midi_learn import MidiLearnState
-from .monitor_bar import render_monitor_alerts, render_monitor_status
+from .monitor_bar import monitor_alert_lines, render_monitor_alerts, render_monitor_status
 from .diagnostics_panel import render_diagnostics_panel
 from .help_pane import render_parameter_help_pane
 from .profiler_panel import render_profiler_panel
@@ -81,6 +81,17 @@ from .variation_panel import (
 
 
 _VARIATION_DELETE_POPUP_ID = "Delete variation##variation_delete_confirmation"
+_TOOLBAR_LABEL_WIDTH_PX = 64.0
+_BOTTOM_DRAWER_HEIGHT_PX = 176.0
+_BOTTOM_DRAWER_GAP_PX = 10.0
+_BOTTOM_DRAWER_HELP_RATIO = 0.58
+
+
+def _positive_coordinate_scale(value: float) -> float:
+    """正の coordinate scale を返し、不正値だけを 1.0 へ戻す。"""
+
+    scale = float(value)
+    return scale if scale > 0.0 else 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +123,36 @@ class TransportToolbarGeometry:
         return self.required_width <= self.available_width + 0.01
 
 
+@dataclass(frozen=True, slots=True)
+class BottomDrawerGeometry:
+    """固定 bottom drawer の高さと左右 pane 幅。"""
+
+    height: float
+    gap: float
+    help_width: float
+    runtime_width: float
+
+
+def compute_bottom_drawer_geometry(
+    content_width: float,
+    *,
+    coordinate_scale: float = 1.0,
+) -> BottomDrawerGeometry:
+    """幅変更から独立した drawer 高さと、Help / Runtime の幅を返す。"""
+
+    width = max(0.0, float(content_width))
+    scale = _positive_coordinate_scale(coordinate_scale)
+    gap = min(width, _BOTTOM_DRAWER_GAP_PX * scale)
+    panes_width = max(0.0, width - gap)
+    help_width = panes_width * _BOTTOM_DRAWER_HELP_RATIO
+    return BottomDrawerGeometry(
+        height=_BOTTOM_DRAWER_HEIGHT_PX * scale,
+        gap=gap,
+        help_width=help_width,
+        runtime_width=max(0.0, panes_width - help_width),
+    )
+
+
 def compute_transport_toolbar_geometry(
     controls_width: float,
     *,
@@ -120,7 +161,7 @@ def compute_transport_toolbar_geometry(
     """標準Inspectorでtimelineを160px以上確保する純粋なgeometry計算。"""
 
     width = max(0.0, float(controls_width))
-    scale = max(1.0, float(coordinate_scale))
+    scale = _positive_coordinate_scale(coordinate_scale)
     # TIME caption、明示幅button 6個、speed label、item spacing 8個。
     reserved_width = 358.0 * scale
     timeline_width = max(160.0 * scale, min(220.0 * scale, width - reserved_width))
@@ -139,7 +180,7 @@ def compute_toolbar_layout(
     """通常幅は約 65:35、760px 未満は compact status を下へ積む。"""
 
     width = max(0.0, float(content_width))
-    scale = max(1.0, float(coordinate_scale))
+    scale = _positive_coordinate_scale(coordinate_scale)
     if width >= 760.0 * scale:
         gap = 12.0 * scale
         # 固定 50:50 にせず、制作操作と160px以上のtimelineを優先する。
@@ -151,7 +192,7 @@ def compute_toolbar_layout(
             controls_width=controls_width,
             status_width=status_width,
             gap=gap,
-            surface_height=72.0 * scale,
+            surface_height=66.0 * scale,
             coordinate_scale=scale,
         )
     return ToolbarLayout(
@@ -161,25 +202,17 @@ def compute_toolbar_layout(
         gap=6.0 * scale,
         # Compact status is rendered separately below, so two control rows do
         # not need the extra height reserved for the three-line desktop status.
-        surface_height=60.0 * scale,
+        surface_height=56.0 * scale,
         coordinate_scale=scale,
     )
 
 
-def _window_content_coordinate_scale(window: Any) -> float:
-    """ImGui座標がrequested logical sizeの何倍かを返す。"""
+def _window_ui_coordinate_scale(window: Any, *, ui_scale: float = 1.0) -> float:
+    """ウィンドウ幅と独立した ImGui 寸法倍率を返す。"""
 
-    requested_size = getattr(window, "get_requested_size", None)
-    if not callable(requested_size):
-        return 1.0
-    try:
-        requested_width = float(requested_size()[0])
-        public_width = float(window.width)
-    except (AttributeError, TypeError, ValueError):
-        return 1.0
-    if requested_width <= 0.0 or public_width <= 0.0:
-        return 1.0
-    return max(1.0, public_width / requested_width)
+    return _compute_window_backing_scale(window) * _positive_coordinate_scale(
+        ui_scale
+    )
 
 
 def _available_content_width(imgui: Any) -> float | None:
@@ -202,6 +235,33 @@ def _same_line_with_spacing(imgui: Any, spacing: float) -> None:
         imgui.same_line(spacing=float(spacing))
     except TypeError:
         imgui.same_line()
+
+
+def _same_line_at(imgui: Any, position: float) -> None:
+    """同一 surface 内の固定 x へ次 item を揃える。"""
+
+    try:
+        imgui.same_line(position=float(position))
+    except TypeError:
+        try:
+            imgui.same_line(float(position))
+        except TypeError:
+            imgui.same_line()
+
+
+def _vertical_item_spacing(imgui: Any, *, ui_scale: float = 1.0) -> float:
+    """現在の style が child 間へ自動挿入する縦 spacing を返す。"""
+
+    get_style = getattr(imgui, "get_style", None)
+    if callable(get_style):
+        try:
+            spacing = float(get_style().item_spacing[1])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            pass
+        else:
+            if spacing >= 0.0:
+                return spacing
+    return 4.0 * _positive_coordinate_scale(ui_scale)
 
 
 def _button_with_width(imgui: Any, label: str, width: float) -> bool:
@@ -310,6 +370,15 @@ def _gui_fallback_font_path_for_japanese() -> Path | None:
     return None
 
 
+def _favorite_glyph_font_path() -> Path | None:
+    """favorite の星 glyph を必ず持つ同梱フォントを返す。"""
+
+    try:
+        return resolve_font_path("NotoSansJP-Regular.ttf")
+    except Exception:
+        return None
+
+
 def _compute_window_backing_scale(gui_window: Any) -> float:
     """ウィンドウの backing scale（DPI 倍率）を返す。"""
 
@@ -346,7 +415,6 @@ class ParameterGUI:
         variation_thumbnail_preview: VariationThumbnailPreview | None = None,
         ui_scale: float = 1.0,
         title: str = "Parameters",
-        column_weights: tuple[float, float, float, float] | None = None,
     ) -> None:
         """GUIをtransactionalに初期化し、途中失敗時も取得済みresourceを解放する。"""
 
@@ -370,7 +438,6 @@ class ParameterGUI:
                 variation_thumbnail_preview=variation_thumbnail_preview,
                 ui_scale=ui_scale,
                 title=title,
-                column_weights=column_weights,
             )
         except BaseException:
             try:
@@ -396,7 +463,6 @@ class ParameterGUI:
         variation_thumbnail_preview: VariationThumbnailPreview | None = None,
         ui_scale: float = 1.0,
         title: str = "Parameters",
-        column_weights: tuple[float, float, float, float] | None = None,
     ) -> None:
         """GUI の初期化本体（ImGui コンテキスト / renderer 作成）。"""
 
@@ -461,9 +527,6 @@ class ParameterGUI:
             float(cfg.parameter_gui_font_size_base_px) * self._ui_scale
         )
         self._shortcut_bindings = cfg.parameter_gui_shortcuts
-        self._column_weights = (
-            cfg.parameter_gui_table_column_weights if column_weights is None else column_weights
-        )
 
         # ImGui は「グローバルな current context」を前提にするため、自前コンテキストを作って切り替えながら使う。
         self._imgui = imgui
@@ -1105,9 +1168,13 @@ class ParameterGUI:
 
         imgui = self._imgui
         changed = False
+        label_width = _TOOLBAR_LABEL_WIDTH_PX * float(coordinate_scale)
+        align_text = getattr(imgui, "align_text_to_frame_padding", None)
         if self._transport is not None:
+            if callable(align_text):
+                align_text()
             imgui.text_disabled("TIME")
-            imgui.same_line()
+            _same_line_at(imgui, label_width)
             geometry = compute_transport_toolbar_geometry(
                 float(controls_width),
                 coordinate_scale=float(coordinate_scale),
@@ -1117,8 +1184,10 @@ class ParameterGUI:
                 coordinate_scale=float(coordinate_scale),
             )
         if self._history is not None:
+            if callable(align_text):
+                align_text()
             imgui.text_disabled("HISTORY")
-            imgui.same_line()
+            _same_line_at(imgui, label_width)
             changed = self._render_history_toolbar() or changed
         return changed
 
@@ -1126,9 +1195,10 @@ class ParameterGUI:
         """通常幅は Controls / Status 2列、狭幅は compact status を下へ積む。"""
 
         imgui = self._imgui
-        coordinate_scale = _window_content_coordinate_scale(
-            getattr(self, "_window", None)
-        ) * float(getattr(self, "_ui_scale", 1.0))
+        coordinate_scale = _window_ui_coordinate_scale(
+            getattr(self, "_window", None),
+            ui_scale=float(getattr(self, "_ui_scale", 1.0)),
+        )
         layout = compute_toolbar_layout(
             float(content_width),
             coordinate_scale=coordinate_scale,
@@ -1156,7 +1226,7 @@ class ParameterGUI:
             _same_line_with_spacing(imgui, layout.gap)
 
         status_height = (
-            32.0 * layout.coordinate_scale if layout.stacked else layout.surface_height
+            30.0 * layout.coordinate_scale if layout.stacked else layout.surface_height
         )
         status_color = _begin_toolbar_surface(
             imgui,
@@ -1244,6 +1314,86 @@ class ParameterGUI:
         self._midi_clear_notice_token = None
         return bool(changed)
 
+    def _render_midi_mapping_menu(self) -> bool:
+        """主操作行の右端に MIDI assignment menu を描画する。"""
+
+        imgui = self._imgui
+        imgui.same_line()
+        available_width = _available_content_width(imgui)
+        get_cursor_x = getattr(imgui, "get_cursor_pos_x", None)
+        set_cursor_x = getattr(imgui, "set_cursor_pos_x", None)
+        if (
+            available_width is not None
+            and callable(get_cursor_x)
+            and callable(set_cursor_x)
+        ):
+            coordinate_scale = _window_ui_coordinate_scale(
+                getattr(self, "_window", None),
+                ui_scale=float(getattr(self, "_ui_scale", 1.0)),
+            )
+            set_cursor_x(
+                float(get_cursor_x())
+                + max(0.0, available_width - 56.0 * coordinate_scale)
+            )
+
+        if imgui.button("MIDI##midi_menu"):
+            open_popup = getattr(imgui, "open_popup", None)
+            if callable(open_popup):
+                open_popup("MIDI mappings##midi_menu_popup")
+
+        begin_popup = getattr(imgui, "begin_popup", None)
+        menu_item = getattr(imgui, "menu_item", None)
+        if not callable(begin_popup) or not callable(menu_item):
+            return False
+
+        changed = False
+        with begin_popup("MIDI mappings##midi_menu_popup") as popup:
+            if not bool(getattr(popup, "opened", popup)):
+                return False
+
+            assignment_count = _midi_assignment_count(self._store)
+            session = getattr(self, "_midi_session", None)
+            status = "MIDI OFF" if session is None else session.status_label
+            imgui.text_disabled(f"{status}  ·  {assignment_count} mappings")
+            separator = getattr(imgui, "separator", None)
+            if callable(separator):
+                separator()
+            reconnect_clicked, _selected = menu_item(
+                "Reconnect##midi_reconnect",
+                enabled=session is not None and session.state != "live",
+            )
+            if reconnect_clicked and session is not None:
+                session.reconnect()
+            clear_frozen_clicked, _selected = menu_item(
+                "Clear frozen snapshot##midi_clear_frozen",
+                enabled=session is not None and session.state == "frozen",
+            )
+            if clear_frozen_clicked and session is not None:
+                session.clear_frozen_snapshot()
+            clear_clicked, _selected = menu_item(
+                "Clear all mappings##clear_midi_assigns",
+                enabled=assignment_count > 0,
+            )
+            if clear_clicked and assignment_count > 0:
+                self._midi_learn_state.active_target = None
+                self._midi_learn_state.active_component = None
+                history = getattr(self, "_history", None)
+                transaction = (
+                    history.transaction(source="clear_all_midi")
+                    if history is not None
+                    else nullcontext()
+                )
+                with transaction:
+                    changed = bool(clear_all_midi_assignments(self._store))
+                if changed:
+                    self._midi_clear_notice = "MIDI mappings cleared"
+                    self._midi_clear_notice_token = (
+                        None
+                        if history is None
+                        else (int(history.undo_depth), int(self._store.revision))
+                    )
+        return changed
+
     def _render_parameter_table_toolbar(self) -> bool:
         """Table固有のfilterとMIDI global commandをtable直上へ配置する。"""
 
@@ -1252,9 +1402,10 @@ class ParameterGUI:
             favorite_parameter_keys(self._store)
         )
         state = getattr(self, "_parameter_filter_state", ParameterFilterState())
+        align_text = getattr(imgui, "align_text_to_frame_padding", None)
+        if callable(align_text):
+            align_text()
         imgui.text_disabled("PARAMETERS")
-        imgui.same_line()
-        self._render_shortcut_help()
 
         input_text = getattr(imgui, "input_text", None)
         input_text_with_hint = getattr(imgui, "input_text_with_hint", None)
@@ -1262,10 +1413,11 @@ class ParameterGUI:
             imgui.same_line()
             set_next_item_width = getattr(imgui, "set_next_item_width", None)
             if callable(set_next_item_width):
-                coordinate_scale = _window_content_coordinate_scale(
-                    getattr(self, "_window", None)
-                ) * float(getattr(self, "_ui_scale", 1.0))
-                set_next_item_width(190.0 * coordinate_scale)
+                coordinate_scale = _window_ui_coordinate_scale(
+                    getattr(self, "_window", None),
+                    ui_scale=float(getattr(self, "_ui_scale", 1.0)),
+                )
+                set_next_item_width(260.0 * coordinate_scale)
             if callable(input_text_with_hint):
                 query_changed, query = input_text_with_hint(
                     "##parameter_search",
@@ -1366,6 +1518,8 @@ class ParameterGUI:
                             state = replace(state, **{field: not selected})
 
         self._parameter_filter_state = state
+        # MIDI は status へ混ぜず、主操作行の右端へ assignment menu として置く。
+        changed = self._render_midi_mapping_menu()
 
         view = parameter_table_view_for_store(
             self._store,
@@ -1375,8 +1529,6 @@ class ParameterGUI:
             favorite_keys=getattr(self, "_favorite_parameter_keys", frozenset()),
         )
         self._parameter_table_view = view
-        changed = False
-        imgui.same_line()
         imgui.text_disabled(f"{view.filtered_count} / {view.total_count} parameters")
         imgui.same_line()
         imgui.text_disabled(f"{view.hidden_count} hidden")
@@ -1395,83 +1547,8 @@ class ParameterGUI:
                 collapsed=True,
             ) or changed
 
-        # MIDI は status へ混ぜず、assignment文脈の popup に閉じ込める。
         imgui.same_line()
-        available_width = _available_content_width(imgui)
-        get_cursor_x = getattr(imgui, "get_cursor_pos_x", None)
-        set_cursor_x = getattr(imgui, "set_cursor_pos_x", None)
-        if (
-            available_width is not None
-            and callable(get_cursor_x)
-            and callable(set_cursor_x)
-        ):
-            coordinate_scale = _window_content_coordinate_scale(
-                getattr(self, "_window", None)
-            ) * float(getattr(self, "_ui_scale", 1.0))
-            set_cursor_x(
-                float(get_cursor_x())
-                + max(0.0, available_width - 56.0 * coordinate_scale)
-            )
-
-        if imgui.button("MIDI##midi_menu"):
-            open_popup = getattr(imgui, "open_popup", None)
-            if callable(open_popup):
-                open_popup("MIDI mappings##midi_menu_popup")
-
-        if callable(begin_popup) and callable(menu_item):
-            with begin_popup("MIDI mappings##midi_menu_popup") as popup:
-                if bool(getattr(popup, "opened", popup)):
-                    assignment_count = _midi_assignment_count(self._store)
-                    session = getattr(self, "_midi_session", None)
-                    status = "MIDI OFF" if session is None else session.status_label
-                    imgui.text_disabled(f"{status}  ·  {assignment_count} mappings")
-                    separator = getattr(imgui, "separator", None)
-                    if callable(separator):
-                        separator()
-                    reconnect_clicked, _selected = menu_item(
-                        "Reconnect##midi_reconnect",
-                        enabled=session is not None and session.state != "live",
-                    )
-                    if reconnect_clicked and session is not None:
-                        session.reconnect()
-                    clear_frozen_clicked, _selected = menu_item(
-                        "Clear frozen snapshot##midi_clear_frozen",
-                        enabled=session is not None and session.state == "frozen",
-                    )
-                    if clear_frozen_clicked and session is not None:
-                        session.clear_frozen_snapshot()
-                    clear_clicked, _selected = menu_item(
-                        "Clear all mappings##clear_midi_assigns",
-                        enabled=assignment_count > 0,
-                    )
-                    if clear_clicked and assignment_count > 0:
-                        self._midi_learn_state.active_target = None
-                        self._midi_learn_state.active_component = None
-                        history = getattr(self, "_history", None)
-                        transaction = (
-                            history.transaction(source="clear_all_midi")
-                            if history is not None
-                            else nullcontext()
-                        )
-                        with transaction:
-                            changed = bool(clear_all_midi_assignments(self._store))
-                        if changed:
-                            self._midi_clear_notice = "MIDI mappings cleared"
-                            self._midi_clear_notice_token = (
-                                None
-                                if history is None
-                                else (int(history.undo_depth), int(self._store.revision))
-                            )
-
-        if changed:
-            # MIDI mapped filter を同じ frame の table へ反映する。
-            self._parameter_table_view = parameter_table_view_for_store(
-                self._store,
-                show_inactive_params=bool(self._show_inactive_params),
-                filter_state=state,
-                error_keys=getattr(self, "_parameter_error_keys", frozenset()),
-                favorite_keys=getattr(self, "_favorite_parameter_keys", frozenset()),
-            )
+        self._render_shortcut_help()
         return changed
 
     def _remember_parameter_help_row(
@@ -1490,12 +1567,11 @@ class ParameterGUI:
         model = reconcile_orphan_panel_model(list_reconcile_orphans(self._store))
         self._reconcile_orphan_model = model
 
-        imgui.text_disabled("RELINK")
-        imgui.same_line()
         if model.orphan_count == 0:
-            imgui.text_disabled(model.empty_message)
             return False
 
+        imgui.text_disabled("RELINK")
+        imgui.same_line()
         imgui.text_disabled(
             f"{model.orphan_count} ambiguous groups  ·  "
             f"{model.candidate_count} saved candidates"
@@ -1716,6 +1792,60 @@ class ParameterGUI:
         _section_separator(imgui)
         return applied
 
+    def _render_bottom_drawer(
+        self,
+        *,
+        geometry: BottomDrawerGeometry,
+        monitor_snapshot: Any | None,
+        monitor: Any | None,
+    ) -> None:
+        """Help と可変長 runtime details を固定高 pane 内に描画する。"""
+
+        imgui = self._imgui
+        help_color = _begin_toolbar_surface(
+            imgui,
+            "##parameter_help_drawer",
+            geometry.help_width,
+            geometry.height,
+        )
+        try:
+            render_parameter_help_pane(
+                imgui,
+                getattr(self, "_parameter_help_row", None),
+            )
+        finally:
+            _end_toolbar_surface(imgui, color_pushed=help_color)
+
+        _same_line_with_spacing(imgui, geometry.gap)
+        runtime_color = _begin_toolbar_surface(
+            imgui,
+            "##runtime_details_drawer",
+            geometry.runtime_width,
+            geometry.height,
+        )
+        try:
+            imgui.text_disabled("RUNTIME")
+            if monitor_snapshot is None:
+                imgui.text_disabled("No runtime details")
+                return
+
+            alert_lines = monitor_alert_lines(monitor_snapshot)
+            render_monitor_alerts(imgui, monitor_snapshot)
+            render_profiler_panel(imgui, monitor_snapshot.profiler)
+            render_diagnostics_panel(
+                imgui,
+                monitor_snapshot.diagnostics,
+                center=None if monitor is None else monitor.diagnostic_center,
+            )
+            if (
+                not alert_lines
+                and monitor_snapshot.profiler is None
+                and not monitor_snapshot.diagnostics
+            ):
+                imgui.text_disabled("No alerts or diagnostics")
+        finally:
+            _end_toolbar_surface(imgui, color_pushed=runtime_color)
+
     def _sync_font_for_window(self) -> None:
         """ウィンドウの backing scale に合わせてフォントを同期する。"""
 
@@ -1744,6 +1874,7 @@ class ParameterGUI:
         if getattr(self, "_font_sync_key", None) == sync_key:
             return
         fallback = _gui_fallback_font_path_for_japanese()
+        favorite_font = _favorite_glyph_font_path()
 
         io = self._imgui.get_io()
         io.fonts.clear()
@@ -1767,12 +1898,35 @@ class ParameterGUI:
             except Exception:
                 pass
 
+        glyph_ranges_type = getattr(
+            getattr(self._imgui, "core", None),
+            "GlyphRanges",
+            None,
+        )
+        if (
+            favorite_font is not None
+            and favorite_font.is_file()
+            and callable(glyph_ranges_type)
+        ):
+            # Japanese range には U+2605/U+2606 が含まれないため、同梱 Noto から
+            # favorite icon の2 glyphだけを明示的に追加する。
+            favorite_ranges = glyph_ranges_type((0x2605, 0x2606, 0))
+            favorite_cfg = self._imgui.core.FontConfig(merge_mode=True)
+            io.fonts.add_font_from_file_ttf(
+                str(favorite_font),
+                float(font_px),
+                font_config=favorite_cfg,
+                glyph_ranges=favorite_ranges,
+            )
+            self._favorite_glyph_ranges = favorite_ranges
+
         refresh_font = getattr(self._renderer, "refresh_font_texture", None)
         if callable(refresh_font):
             refresh_font()
 
         self._font_backing_scale = backing_scale
         self._font_fallback_path_for_japanese = fallback
+        self._favorite_glyph_font_path = favorite_font
         self._font_sync_key = sync_key
 
     def draw_frame(self) -> bool:
@@ -1839,14 +1993,6 @@ class ParameterGUI:
             monitor_snapshot=monitor_snapshot,
         )
         changed_any = self._render_midi_clear_notice() or changed_any
-        if monitor_snapshot is not None:
-            render_monitor_alerts(imgui, monitor_snapshot)
-            render_profiler_panel(imgui, monitor_snapshot.profiler)
-            render_diagnostics_panel(
-                imgui,
-                monitor_snapshot.diagnostics,
-                center=None if monitor is None else monitor.diagnostic_center,
-            )
 
         # MIDI global command は独立した履歴単位にし、通常のparameter editと
         # coalesceさせない。filter自体はstoreを変更しない。
@@ -1854,9 +2000,13 @@ class ParameterGUI:
         changed_any = self._render_reconcile_orphan_control() or changed_any
         self._maybe_preview_range_edit_by_midi()
         changed_any = self._render_range_edit_mode() or changed_any
-        render_parameter_help_pane(
-            imgui,
-            getattr(self, "_parameter_help_row", None),
+        coordinate_scale = _window_ui_coordinate_scale(
+            getattr(self, "_window", None),
+            ui_scale=float(getattr(self, "_ui_scale", 1.0)),
+        )
+        drawer_geometry = compute_bottom_drawer_geometry(
+            float(content_width),
+            coordinate_scale=coordinate_scale,
         )
         history = self._history
         transaction = (
@@ -1865,15 +2015,25 @@ class ParameterGUI:
         with transaction:
             _section_separator(imgui)
 
-            # ParamStore の表だけをスクロール領域に閉じ込め、監視バーは常に見えるようにする。
-            imgui.begin_child("##parameter_table_scroll", 0, 0, border=False)
+            # 下端の固定 drawer を常に予約する。可変長の Help / diagnostics /
+            # profiler は drawer 内だけをスクロールし、parameter 行を上下させない。
+            drawer_spacing = _vertical_item_spacing(
+                imgui,
+                ui_scale=float(getattr(self, "_ui_scale", 1.0)),
+            )
+            imgui.begin_child(
+                "##parameter_table_scroll",
+                0,
+                -(drawer_geometry.height + drawer_spacing),
+                border=False,
+            )
             try:
                 # ParamStore をテーブルとして描画し、編集結果を store に反映する。
                 changed_any = (
                     bool(
                         render_store_parameter_table(
                             self._store,
-                            column_weights=self._column_weights,
+                            metric_scale=coordinate_scale,
                             show_inactive_params=bool(self._show_inactive_params),
                             filter_state=self._parameter_filter_state,
                             error_keys=self._parameter_error_keys,
@@ -1892,6 +2052,11 @@ class ParameterGUI:
                 )
             finally:
                 imgui.end_child()
+        self._render_bottom_drawer(
+            geometry=drawer_geometry,
+            monitor_snapshot=monitor_snapshot,
+            monitor=monitor,
+        )
         if history is not None and not imgui.is_any_item_active():
             history.break_coalescing()
         imgui.end()

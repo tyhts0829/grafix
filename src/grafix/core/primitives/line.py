@@ -15,10 +15,29 @@ from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
 
 line_meta = {
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "anchor": ParamMeta(kind="choice", choices=("center", "left", "right")),
-    "length": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "angle": ParamMeta(kind="float", ui_min=0.0, ui_max=360.0),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="選択した基準点を配置する XYZ 座標を指定します。",
+    ),
+    "anchor": ParamMeta(
+        kind="choice",
+        choices=("center", "left", "right"),
+        description="指定座標を線分の中心・始点・終点のどこに合わせるか選択します。",
+    ),
+    "length": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="線分の始点から終点までの長さを指定します。",
+    ),
+    "angle": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=360.0,
+        description="+X 軸を基準とする線分の向きを度単位で指定します。",
+    ),
 }
 
 

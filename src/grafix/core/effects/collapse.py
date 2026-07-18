@@ -15,12 +15,40 @@ from grafix.core.resource_budget import ensure_geometry_output
 EPS = 1e-12
 
 collapse_meta = {
-    "intensity": ParamMeta(kind="float", ui_min=0.0, ui_max=10.0),
-    "subdivisions": ParamMeta(kind="int", ui_min=0, ui_max=10),
-    "intensity_mask_base": ParamMeta(kind="vec3", ui_min=0.0, ui_max=1.0),
-    "intensity_mask_slope": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0),
-    "auto_center": ParamMeta(kind="bool"),
-    "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
+    "intensity": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=10.0,
+        description="細分した線分に垂直なランダム変位の基本量。",
+    ),
+    "subdivisions": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=10,
+        description="変形前に各線分へ適用する細分回数。",
+    ),
+    "intensity_mask_base": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="勾配の基準点における変位倍率を軸ごとに指定する。",
+    ),
+    "intensity_mask_slope": ParamMeta(
+        kind="vec3",
+        ui_min=-1.0,
+        ui_max=1.0,
+        description="正規化した各軸位置に対する変位倍率の勾配。",
+    ),
+    "auto_center": ParamMeta(
+        kind="bool",
+        description="入力のバウンディングボックス中心を変位強度勾配の基準点にする。",
+    ),
+    "pivot": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="自動中心が無効な場合に変位強度勾配の基準とする点。",
+    ),
 }
 
 collapse_ui_visible = {

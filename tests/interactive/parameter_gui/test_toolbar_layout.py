@@ -7,6 +7,8 @@ import pytest
 from grafix.core.parameters import ParamStore
 from grafix.interactive.parameter_gui.gui import (
     ParameterGUI,
+    _window_ui_coordinate_scale,
+    compute_bottom_drawer_geometry,
     compute_toolbar_layout,
     compute_transport_toolbar_geometry,
 )
@@ -62,7 +64,7 @@ def test_narrow_toolbar_stacks_full_width_compact_status(width: float) -> None:
     assert layout.controls_width == max(0.0, width)
     assert layout.status_width == max(0.0, width)
     assert layout.gap == 6.0
-    assert layout.surface_height == 60.0
+    assert layout.surface_height == 56.0
 
 
 def test_breakpoint_switches_to_two_columns_at_760() -> None:
@@ -72,6 +74,38 @@ def test_breakpoint_switches_to_two_columns_at_760() -> None:
     assert layout.stacked is False
     assert geometry.timeline_width >= 160.0
     assert geometry.fits is True
+
+
+def test_horizontal_resize_does_not_change_ui_coordinate_scale() -> None:
+    window = SimpleNamespace(width=1_600, scale=2.0)
+
+    before = _window_ui_coordinate_scale(window)
+    window.width = 2_400
+    after = _window_ui_coordinate_scale(window)
+
+    assert before == 2.0
+    assert after == 2.0
+    assert compute_toolbar_layout(1_536.0, coordinate_scale=before).surface_height == 132.0
+    assert compute_toolbar_layout(2_336.0, coordinate_scale=after).surface_height == 132.0
+
+
+def test_bottom_drawer_height_is_fixed_while_only_pane_widths_grow() -> None:
+    narrow = compute_bottom_drawer_geometry(768.0, coordinate_scale=2.0)
+    wide = compute_bottom_drawer_geometry(1_200.0, coordinate_scale=2.0)
+
+    assert narrow.height == wide.height == 352.0
+    assert narrow.gap == wide.gap == 20.0
+    assert wide.help_width > narrow.help_width
+    assert wide.runtime_width > narrow.runtime_width
+
+
+def test_toolbar_and_drawer_allow_workspace_ui_scale_below_one() -> None:
+    toolbar = compute_toolbar_layout(900.0, coordinate_scale=0.75)
+    drawer = compute_bottom_drawer_geometry(900.0, coordinate_scale=0.75)
+
+    assert toolbar.surface_height == 49.5
+    assert drawer.height == 132.0
+    assert drawer.gap == 7.5
 
 
 def test_real_pyimgui_can_render_toolbar_children_and_closed_midi_popup() -> None:

@@ -13,8 +13,17 @@ from .util import empty_geom
 MAX_TOTAL_VERTICES = 10_000_000
 
 pixelate_meta = {
-    "step": ParamMeta(kind="vec3", ui_min=0.0, ui_max=10.0),
-    "corner": ParamMeta(kind="choice", choices=("auto", "xy", "yx")),
+    "step": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=10.0,
+        description="頂点を吸着させる格子の間隔を軸ごとに指定する。",
+    ),
+    "corner": ParamMeta(
+        kind="choice",
+        choices=("auto", "xy", "yx"),
+        description="X と Y が同時に変わる格子移動を直角の二線分へ分解する順序。",
+    ),
 }
 
 

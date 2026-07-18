@@ -38,9 +38,19 @@ LAYER_STYLE_LINE_COLOR = "line_color"
 
 # GUI 表示/保存に使うメタ情報。
 # thickness はスライダ等で扱いやすい「十分に小さい」レンジを既定として持たせる。
-LAYER_STYLE_THICKNESS_META = ParamMeta(kind="float", ui_min=1e-4, ui_max=1e-2)
+LAYER_STYLE_THICKNESS_META = ParamMeta(
+    kind="float",
+    ui_min=1e-4,
+    ui_max=1e-2,
+    description="このレイヤーだけに適用する線幅を指定する。",
+)
 # color は 0..255 の RGB を想定する（UI 側の表現に合わせる）。
-LAYER_STYLE_COLOR_META = ParamMeta(kind="rgb", ui_min=0, ui_max=255)
+LAYER_STYLE_COLOR_META = ParamMeta(
+    kind="rgb",
+    ui_min=0,
+    ui_max=255,
+    description="このレイヤーだけに適用する線色を RGB で指定する。",
+)
 
 
 def layer_style_key(layer_site_id: str, arg: str) -> ParameterKey:

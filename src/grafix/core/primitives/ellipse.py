@@ -13,11 +13,36 @@ from grafix.core.realized_geometry import GeomTuple
 from ._shape_utils import segment_count, xy_polyline
 
 ellipse_meta = {
-    "radius_x": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "radius_y": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "angle": ParamMeta(kind="float", ui_min=-180.0, ui_max=180.0),
-    "segments": ParamMeta(kind="int", ui_min=3, ui_max=512),
-    "center": ParamMeta(kind="vec3", ui_min=-300.0, ui_max=300.0),
+    "radius_x": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="回転前の X 軸方向における楕円の半径を指定します。",
+    ),
+    "radius_y": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="回転前の Y 軸方向における楕円の半径を指定します。",
+    ),
+    "angle": ParamMeta(
+        kind="float",
+        ui_min=-180.0,
+        ui_max=180.0,
+        description="楕円を中心まわりに回転させる角度を度単位で指定します。",
+    ),
+    "segments": ParamMeta(
+        kind="int",
+        ui_min=3,
+        ui_max=512,
+        description="楕円周を近似する直線セグメントの数を指定します。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=-300.0,
+        ui_max=300.0,
+        description="楕円の中心となる XYZ 座標を指定します。",
+    ),
 }
 
 

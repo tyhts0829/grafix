@@ -12,8 +12,18 @@ from grafix.core.realized_geometry import GeomTuple
 from .util import pack_polylines
 
 trim_meta = {
-    "start_param": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
-    "end_param": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+    "start_param": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="各ポリラインの全長を 0 から 1 としたときに残す区間の開始位置。",
+    ),
+    "end_param": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="各ポリラインの全長を 0 から 1 としたときに残す区間の終了位置。",
+    ),
 }
 
 

@@ -24,10 +24,30 @@ from .common import (
 
 meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
-    "ratio": {"kind": "float", "ui_min": 1.01, "ui_max": 10.0},
-    "levels": {"kind": "int", "ui_min": 1, "ui_max": 8},
-    "min_spacing": {"kind": "float", "ui_min": 0.0, "ui_max": 20.0},
-    "max_lines": {"kind": "int", "ui_min": 0, "ui_max": 20000},
+    "ratio": {
+        "kind": "float",
+        "ui_min": 1.01,
+        "ui_max": 10.0,
+        "description": "各区間を二分するときの長辺と短辺の比率を指定する。",
+    },
+    "levels": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 8,
+        "description": "生成した区間へ比率分割を再帰的に適用する深さを指定する。",
+    },
+    "min_spacing": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 20.0,
+        "description": "近接する分割線を統合するための最小間隔を指定する。",
+    },
+    "max_lines": {
+        "kind": "int",
+        "ui_min": 0,
+        "ui_max": 20000,
+        "description": "生成する分割線数の上限を指定し、0 なら上限を設けない。",
+    },
 }
 
 

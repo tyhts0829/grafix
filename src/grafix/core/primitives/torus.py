@@ -16,12 +16,42 @@ from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
 torus_meta = {
-    "major_radius": ParamMeta(kind="float", ui_min=-100.0, ui_max=100.0),
-    "minor_radius": ParamMeta(kind="float", ui_min=-100.0, ui_max=100.0),
-    "major_segments": ParamMeta(kind="int", ui_min=3, ui_max=256),
-    "minor_segments": ParamMeta(kind="int", ui_min=3, ui_max=256),
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
+    "major_radius": ParamMeta(
+        kind="float",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="トーラス中心から管の中心線までの大半径を指定します。",
+    ),
+    "minor_radius": ParamMeta(
+        kind="float",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="管の中心線から表面までの小半径を指定します。",
+    ),
+    "major_segments": ParamMeta(
+        kind="int",
+        ui_min=3,
+        ui_max=256,
+        description="大円方向の分割数と子午線の本数を指定します。",
+    ),
+    "minor_segments": ParamMeta(
+        kind="int",
+        ui_min=3,
+        ui_max=256,
+        description="管断面方向の分割数と緯線の本数を指定します。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="トーラス全体を平行移動する XYZ 座標を指定します。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="指定した二つの半径で生成した形状に適用する等方スケールを指定します。",
+    ),
 }
 
 

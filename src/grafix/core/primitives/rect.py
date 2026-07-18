@@ -12,10 +12,30 @@ from grafix.core.resource_budget import ensure_geometry_output
 from ._shape_utils import xy_polyline
 
 rect_meta = {
-    "width": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "height": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "angle": ParamMeta(kind="float", ui_min=-180.0, ui_max=180.0),
-    "center": ParamMeta(kind="vec3", ui_min=-300.0, ui_max=300.0),
+    "width": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="回転前の X 軸方向における長方形の幅を指定します。",
+    ),
+    "height": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="回転前の Y 軸方向における長方形の高さを指定します。",
+    ),
+    "angle": ParamMeta(
+        kind="float",
+        ui_min=-180.0,
+        ui_max=180.0,
+        description="長方形を中心まわりに回転させる角度を度単位で指定します。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=-300.0,
+        ui_max=300.0,
+        description="長方形の中心となる XYZ 座標を指定します。",
+    ),
 }
 
 

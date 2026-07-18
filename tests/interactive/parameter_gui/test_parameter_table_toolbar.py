@@ -39,6 +39,7 @@ class _Imgui:
         self.menu_enabled: list[bool] = []
         self.opened_popups: list[str] = []
         self.disabled_text: list[str] = []
+        self.button_labels: list[str] = []
 
     def text_disabled(self, text: str) -> None:
         self.disabled_text.append(str(text))
@@ -65,6 +66,7 @@ class _Imgui:
         return True, True
 
     def button(self, label: str) -> bool:
+        self.button_labels.append(str(label))
         widget_id = label.rpartition("##")[2]
         if widget_id == "midi_menu":
             return True
@@ -139,6 +141,9 @@ def test_table_toolbar_names_filter_and_moves_clear_into_midi_menu() -> None:
     assert gui._midi_learn_state.active_target is None
     assert gui._midi_learn_state.active_component is None
     assert gui._midi_clear_notice == "MIDI mappings cleared"
+    assert imgui.button_labels.index("MIDI##midi_menu") < imgui.button_labels.index(
+        "Expand all##parameter_groups_expand_all"
+    )
     state = store.get_state(key)
     assert state is not None and state.cc_key is None
 

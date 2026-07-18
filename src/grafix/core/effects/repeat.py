@@ -15,21 +15,87 @@ from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
 repeat_meta = {
-    "layout": ParamMeta(kind="choice", choices=("grid", "radial")),
-    "count": ParamMeta(kind="int", ui_min=0, ui_max=100),
-    "radius": ParamMeta(kind="float", ui_min=0.0, ui_max=300.0),
-    "theta": ParamMeta(kind="float", ui_min=-180.0, ui_max=180.0),
-    "n_theta": ParamMeta(kind="int", ui_min=1, ui_max=64),
-    "n_radius": ParamMeta(kind="int", ui_min=1, ui_max=64),
-    "cumulative_scale": ParamMeta(kind="bool"),
-    "cumulative_offset": ParamMeta(kind="bool"),
-    "cumulative_rotate": ParamMeta(kind="bool"),
-    "offset": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
-    "rotation_step": ParamMeta(kind="vec3", ui_min=-180.0, ui_max=180.0),
-    "scale": ParamMeta(kind="vec3", ui_min=0.25, ui_max=4.0),
-    "curve": ParamMeta(kind="float", ui_min=0.1, ui_max=5.0),
-    "auto_center": ParamMeta(kind="bool"),
-    "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
+    "layout": ParamMeta(
+        kind="choice",
+        choices=("grid", "radial"),
+        description="複製を直線状に並べるか、同心円状に並べるか選ぶ。",
+    ),
+    "count": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=100,
+        description="直線配置で元の入力に追加する複製の数。",
+    ),
+    "radius": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="放射配置で複製を並べる最外周の半径。",
+    ),
+    "theta": ParamMeta(
+        kind="float",
+        ui_min=-180.0,
+        ui_max=180.0,
+        description="放射配置を開始する角度を度単位で指定する。",
+    ),
+    "n_theta": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=64,
+        description="放射配置の各リングに並べる周方向の複製数。",
+    ),
+    "n_radius": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=64,
+        description="放射配置で中心から外周までに作る半径方向の配置数。",
+    ),
+    "cumulative_scale": ParamMeta(
+        kind="bool",
+        description="複製ごとのスケール補間に指定したカーブを適用する。",
+    ),
+    "cumulative_offset": ParamMeta(
+        kind="bool",
+        description="直線配置のオフセット補間に指定したカーブを適用する。",
+    ),
+    "cumulative_rotate": ParamMeta(
+        kind="bool",
+        description="複製ごとの回転補間に指定したカーブを適用する。",
+    ),
+    "offset": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="直線配置で最後の複製に到達する各軸の移動量。",
+    ),
+    "rotation_step": ParamMeta(
+        kind="vec3",
+        ui_min=-180.0,
+        ui_max=180.0,
+        description="最後の複製へ到達するまでに補間する各軸の回転角。",
+    ),
+    "scale": ParamMeta(
+        kind="vec3",
+        ui_min=0.25,
+        ui_max=4.0,
+        description="最後の複製へ到達するまでに補間する各軸の倍率。",
+    ),
+    "curve": ParamMeta(
+        kind="float",
+        ui_min=0.1,
+        ui_max=5.0,
+        description="有効にした累積変換の補間速度を決める指数。",
+    ),
+    "auto_center": ParamMeta(
+        kind="bool",
+        description="入力頂点の平均座標を複製変換の中心として使用する。",
+    ),
+    "pivot": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="自動中心が無効な場合に複製変換の中心とする点。",
+    ),
 }
 
 def _layout_is(name: str):

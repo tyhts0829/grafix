@@ -14,10 +14,30 @@ from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
 grid_meta = {
-    "nx": ParamMeta(kind="int", ui_min=1, ui_max=500),
-    "ny": ParamMeta(kind="int", ui_min=1, ui_max=500),
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
+    "nx": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=500,
+        description="正方形領域に等間隔で配置する縦線の本数を指定します。",
+    ),
+    "ny": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=500,
+        description="正方形領域に等間隔で配置する横線の本数を指定します。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="グリッド全体を平行移動する XYZ 座標を指定します。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="一辺 1 のグリッド全体に適用する等方スケールを指定します。",
+    ),
 }
 
 

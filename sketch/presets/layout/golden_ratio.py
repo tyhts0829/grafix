@@ -24,7 +24,12 @@ from .common import (
 
 meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
-    "levels": {"kind": "int", "ui_min": 1, "ui_max": 3},
+    "levels": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 3,
+        "description": "黄金比分割を新しい区間へ再帰的に適用する深さを指定する。",
+    },
 }
 
 

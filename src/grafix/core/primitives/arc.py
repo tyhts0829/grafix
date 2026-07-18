@@ -13,11 +13,36 @@ from grafix.core.realized_geometry import GeomTuple
 from ._shape_utils import segment_count, xy_polyline
 
 arc_meta = {
-    "radius": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "start": ParamMeta(kind="float", ui_min=-360.0, ui_max=360.0),
-    "sweep": ParamMeta(kind="float", ui_min=-360.0, ui_max=360.0),
-    "segments": ParamMeta(kind="int", ui_min=1, ui_max=512),
-    "center": ParamMeta(kind="vec3", ui_min=-300.0, ui_max=300.0),
+    "radius": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="円弧の中心から輪郭までの半径を指定します。",
+    ),
+    "start": ParamMeta(
+        kind="float",
+        ui_min=-360.0,
+        ui_max=360.0,
+        description="+X 軸を基準とする円弧の開始角を度単位で指定します。",
+    ),
+    "sweep": ParamMeta(
+        kind="float",
+        ui_min=-360.0,
+        ui_max=360.0,
+        description="開始角から終点までの符号付き回転量を度単位で指定します。",
+    ),
+    "segments": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=512,
+        description="円弧を近似する直線セグメントの数を指定します。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=-300.0,
+        ui_max=300.0,
+        description="円弧の中心となる XYZ 座標を指定します。",
+    ),
 }
 
 

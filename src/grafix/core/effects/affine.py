@@ -12,11 +12,34 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
 affine_meta = {
-    "auto_center": ParamMeta(kind="bool"),
-    "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
-    "rotation": ParamMeta(kind="vec3", ui_min=-180.0, ui_max=180.0),
-    "scale": ParamMeta(kind="vec3", ui_min=0.25, ui_max=4.0),
-    "delta": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
+    "auto_center": ParamMeta(
+        kind="bool",
+        description="入力頂点の平均座標を変換中心として使用する。",
+    ),
+    "pivot": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="自動中心が無効な場合に使用する変換中心。",
+    ),
+    "rotation": ParamMeta(
+        kind="vec3",
+        ui_min=-180.0,
+        ui_max=180.0,
+        description="各軸まわりに適用する回転角を度単位で指定する。",
+    ),
+    "scale": ParamMeta(
+        kind="vec3",
+        ui_min=0.25,
+        ui_max=4.0,
+        description="変換中心を基準に適用する各軸の倍率。",
+    ),
+    "delta": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="スケールと回転の後に適用する各軸の平行移動量。",
+    ),
 }
 
 affine_ui_visible = {

@@ -40,13 +40,45 @@ _BOUNDARY_PUSH_GAIN = 0.1
 _MAX_SDF_GRID_CELLS = 1_000_000
 
 growth_meta = {
-    "seed_count": ParamMeta(kind="int", ui_min=0, ui_max=64),
-    "target_spacing": ParamMeta(kind="float", ui_min=0.25, ui_max=10.0),
-    "boundary_avoid": ParamMeta(kind="float", ui_min=0.0, ui_max=4.0),
-    "boundary_mode": ParamMeta(kind="choice", choices=("slide", "bounce")),
-    "iters": ParamMeta(kind="int", ui_min=0, ui_max=2000),
-    "seed": ParamMeta(kind="int", ui_min=0, ui_max=9999),
-    "show_mask": ParamMeta(kind="bool"),
+    "seed_count": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=64,
+        description="マスク内に初期配置して成長させるループの数。",
+    ),
+    "target_spacing": ParamMeta(
+        kind="float",
+        ui_min=0.25,
+        ui_max=10.0,
+        description="成長中の再分割と反発力の基準にする目標点間隔。",
+    ),
+    "boundary_avoid": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=4.0,
+        description="マスク境界に近づいた点を内側へ押し戻す強さ。",
+    ),
+    "boundary_mode": ParamMeta(
+        kind="choice",
+        choices=("slide", "bounce"),
+        description="境界へ達した点を境界沿いに流すか、内側へ反射させるか選ぶ。",
+    ),
+    "iters": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=2000,
+        description="ループの成長シミュレーションを更新する反復回数。",
+    ),
+    "seed": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=9999,
+        description="初期ループの配置を再現可能にする乱数シード。",
+    ),
+    "show_mask": ParamMeta(
+        kind="bool",
+        description="成長結果に入力マスクを加えて出力する。",
+    ),
 }
 
 

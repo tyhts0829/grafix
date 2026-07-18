@@ -10,15 +10,58 @@ from grafix.core.realized_geometry import GeomTuple
 from .util import empty_geom
 
 drop_meta = {
-    "interval": ParamMeta(kind="int", ui_min=0, ui_max=100),
-    "index_offset": ParamMeta(kind="int", ui_min=0, ui_max=100),
-    "min_length": ParamMeta(kind="float", ui_min=-1.0, ui_max=200.0),
-    "max_length": ParamMeta(kind="float", ui_min=-1.0, ui_max=200.0),
-    "probability_base": ParamMeta(kind="vec3", ui_min=0.0, ui_max=1.0),
-    "probability_slope": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0),
-    "by": ParamMeta(kind="choice", choices=("line", "face")),
-    "keep_mode": ParamMeta(kind="choice", choices=("drop", "keep")),
-    "seed": ParamMeta(kind="int", ui_min=0, ui_max=2**31 - 1),
+    "interval": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=100,
+        description="線または面のインデックスを対象にする一定間隔を指定する。",
+    ),
+    "index_offset": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=100,
+        description="インデックスによる間引き判定の開始位置をずらす。",
+    ),
+    "min_length": ParamMeta(
+        kind="float",
+        ui_min=-1.0,
+        ui_max=200.0,
+        description="この長さ以下の線または面を選択対象にする。",
+    ),
+    "max_length": ParamMeta(
+        kind="float",
+        ui_min=-1.0,
+        ui_max=200.0,
+        description="この長さ以上の線または面を選択対象にする。",
+    ),
+    "probability_base": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="バウンディングボックス中心での選択確率を軸ごとに指定する。",
+    ),
+    "probability_slope": ParamMeta(
+        kind="vec3",
+        ui_min=-1.0,
+        ui_max=1.0,
+        description="正規化した各軸位置に対する選択確率の勾配。",
+    ),
+    "by": ParamMeta(
+        kind="choice",
+        choices=("line", "face"),
+        description="選択と除去をポリライン単位または閉じた面単位で行う。",
+    ),
+    "keep_mode": ParamMeta(
+        kind="choice",
+        choices=("drop", "keep"),
+        description="条件に一致した要素を除去するか、一致した要素だけ残すか選ぶ。",
+    ),
+    "seed": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=2**31 - 1,
+        description="確率による選択結果を再現可能にする乱数シード。",
+    ),
 }
 
 

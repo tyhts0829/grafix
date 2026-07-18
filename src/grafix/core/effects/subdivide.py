@@ -20,7 +20,12 @@ MIN_SEG_LEN_SQ = float(MIN_SEG_LEN * MIN_SEG_LEN)
 MAX_TOTAL_VERTICES = 10_000_000
 
 subdivide_meta = {
-    "subdivisions": ParamMeta(kind="int", ui_min=0, ui_max=MAX_SUBDIVISIONS),
+    "subdivisions": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=MAX_SUBDIVISIONS,
+        description="各線分へ中点を挿入して細分する反復回数。",
+    ),
 }
 
 

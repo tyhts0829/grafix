@@ -26,12 +26,39 @@ _PLANAR_EPS_REL = 1e-5
 MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 
 metaball_meta = {
-    "radius": ParamMeta(kind="float", ui_min=0.0, ui_max=50.0),
-    "threshold": ParamMeta(kind="float", ui_min=0.0, ui_max=5.0),
-    "grid_pitch": ParamMeta(kind="float", ui_min=0.1, ui_max=10.0),
-    "auto_close_threshold": ParamMeta(kind="float", ui_min=0.0, ui_max=5.0),
-    "output": ParamMeta(kind="choice", choices=("exterior", "both")),
-    "keep_original": ParamMeta(kind="bool"),
+    "radius": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=50.0,
+        description="離れた入力輪郭どうしを滑らかにつなぐ影響半径。",
+    ),
+    "threshold": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=5.0,
+        description="合成した距離場から出力輪郭を取り出す等値レベル。",
+    ),
+    "grid_pitch": ParamMeta(
+        kind="float",
+        ui_min=0.1,
+        ui_max=10.0,
+        description="距離場を評価する二次元グリッドの間隔。",
+    ),
+    "auto_close_threshold": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=5.0,
+        description="入力線の端点を自動的に閉じるとみなす最大距離。",
+    ),
+    "output": ParamMeta(
+        kind="choice",
+        choices=("exterior", "both"),
+        description="生成した形状の外周だけ、または外周と穴の両方を出力する。",
+    ),
+    "keep_original": ParamMeta(
+        kind="bool",
+        description="生成した輪郭に元の入力線を加えて出力する。",
+    ),
 }
 
 

@@ -5,12 +5,42 @@ from grafix import E, G, preset, run
 CANVAS_SIZE = (100, 100)
 
 meta: dict[str, Mapping[str, object]] = {
-    "center": {"kind": "vec3", "ui_min": 0.0, "ui_max": 100.0},
-    "matrix_size": {"kind": "vec3", "ui_min": 0.0, "ui_max": 5.0},
-    "dot_size": {"kind": "float", "ui_min": 0.1, "ui_max": 20.0},
-    "fill_density_coef": {"kind": "float", "ui_min": 0.0, "ui_max": 1.0},
-    "repeat_count_x": {"kind": "int", "ui_min": 1, "ui_max": 50},
-    "repeat_count_y": {"kind": "int", "ui_min": 1, "ui_max": 50},
+    "center": {
+        "kind": "vec3",
+        "ui_min": 0.0,
+        "ui_max": 100.0,
+        "description": "行列の基準となる最初のドットの中心位置を指定する。",
+    },
+    "matrix_size": {
+        "kind": "vec3",
+        "ui_min": 0.0,
+        "ui_max": 5.0,
+        "description": "隣接するドット間隔を X・Y 軸ごとに拡大縮小する。",
+    },
+    "dot_size": {
+        "kind": "float",
+        "ui_min": 0.1,
+        "ui_max": 20.0,
+        "description": "各ドットを構成する円形ポリゴンの大きさを指定する。",
+    },
+    "fill_density_coef": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 1.0,
+        "description": "各ドット内部のハッチング密度を基準値に対する比率で指定する。",
+    },
+    "repeat_count_x": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 50,
+        "description": "X 方向へ並べるドットの個数を指定する。",
+    },
+    "repeat_count_y": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 50,
+        "description": "Y 方向へ並べるドットの個数を指定する。",
+    },
 }
 
 

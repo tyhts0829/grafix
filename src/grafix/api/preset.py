@@ -23,6 +23,10 @@ from grafix.core.preset_registry import preset_func_registry, preset_registry
 from grafix.core.scene import SceneItem
 
 _PSpec = ParamSpec("_PSpec")
+_PRESET_ACTIVATE_META = ParamMeta(
+    kind="bool",
+    description="このプリセットによるシーン要素の生成を有効にする。",
+)
 
 # --- 役割メモ ---
 #
@@ -133,7 +137,7 @@ def preset(
         _defaults_from_signature(func, meta_norm)
         meta_keys = set(meta_norm.keys())
         # activate はデコレータ側で自動的に公開する（meta には書かせない）。
-        meta_with_activate = {"activate": ParamMeta(kind="bool"), **meta_norm}
+        meta_with_activate = {"activate": _PRESET_ACTIVATE_META, **meta_norm}
         # GUI の行順は「定義したシグネチャ順」を優先する（dict の順序に依存しない）。
         sig_order = [arg_name for arg_name in sig.parameters if arg_name in meta_keys]
         # preset_registry には「GUI 用の静的仕様」を登録する（実関数は preset_func_registry）。

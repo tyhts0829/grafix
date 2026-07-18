@@ -9,9 +9,22 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
 rotate_meta = {
-    "auto_center": ParamMeta(kind="bool"),
-    "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
-    "rotation": ParamMeta(kind="vec3", ui_min=-180.0, ui_max=180.0),
+    "auto_center": ParamMeta(
+        kind="bool",
+        description="入力頂点の平均座標を回転中心として使用する。",
+    ),
+    "pivot": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="自動中心が無効な場合に使用する回転中心。",
+    ),
+    "rotation": ParamMeta(
+        kind="vec3",
+        ui_min=-180.0,
+        ui_max=180.0,
+        description="各軸まわりに適用する回転角を度単位で指定する。",
+    ),
 }
 
 rotate_ui_visible = {

@@ -34,10 +34,9 @@ def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pyt
     assert cfg.font_dirs == (Path("data") / "input" / "font",)
     assert cfg.window_pos_draw == (25, 25)
     assert cfg.window_pos_parameter_gui == (950, 25)
-    assert cfg.parameter_gui_window_size == (800, 1000)
+    assert cfg.parameter_gui_window_size == (1100, 1000)
     assert cfg.parameter_gui_fallback_font_japanese is None
     assert cfg.parameter_gui_font_size_base_px == 14.0
-    assert cfg.parameter_gui_table_column_weights == (0.36, 0.35, 0.18, 0.23)
     assert dict(cfg.parameter_gui_shortcuts)["play_pause"] == "SPACE"
     assert cfg.png_scale == 8.0
     assert cfg.gcode.travel_feed == 3000.0
@@ -123,7 +122,6 @@ def test_parameter_gui_config_values_are_loaded(tmp_path: Path, monkeypatch: pyt
                 "    window_size: [123, 456]",
                 "    fallback_font_japanese: null",
                 "    font_size_base_px: 15.0",
-                "    table_column_weights: [0.10, 0.20, 0.30, 0.40]",
                 "    shortcuts:",
                 "      play_pause: P",
                 "",
@@ -134,8 +132,23 @@ def test_parameter_gui_config_values_are_loaded(tmp_path: Path, monkeypatch: pyt
 
     cfg = runtime_config()
     assert cfg.parameter_gui_font_size_base_px == 15.0
-    assert cfg.parameter_gui_table_column_weights == (0.10, 0.20, 0.30, 0.40)
     assert dict(cfg.parameter_gui_shortcuts)["play_pause"] == "P"
+
+
+def test_removed_parameter_table_column_weights_key_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "ui:\n  parameter_gui:\n    table_column_weights: [0.1, 0.2, 0.3, 0.4]\n",
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+
+    with pytest.raises(RuntimeError, match="ui\\.parameter_gui\\.table_column_weights"):
+        runtime_config()
 
 
 def test_explicit_config_overrides_discovered_config(

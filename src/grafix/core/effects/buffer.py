@@ -13,11 +13,31 @@ from grafix.core.parameters.meta import ParamMeta
 from .util import empty_geom
 
 buffer_meta = {
-    "join": ParamMeta(kind="choice", choices=("mitre", "round", "bevel")),
-    "distance": ParamMeta(kind="float", ui_min=-25.0, ui_max=25.0),
-    "quad_segs": ParamMeta(kind="int", ui_min=1, ui_max=100),
-    "union": ParamMeta(kind="bool"),
-    "keep_original": ParamMeta(kind="bool"),
+    "join": ParamMeta(
+        kind="choice",
+        choices=("mitre", "round", "bevel"),
+        description="輪郭をオフセットしたときの角の接続形状を選ぶ。",
+    ),
+    "distance": ParamMeta(
+        kind="float",
+        ui_min=-25.0,
+        ui_max=25.0,
+        description="輪郭を膨張または収縮させる距離で、正なら外側、負なら内側へ動かす。",
+    ),
+    "quad_segs": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=100,
+        description="丸い角や端を近似する四分円あたりの分割数。",
+    ),
+    "union": ParamMeta(
+        kind="bool",
+        description="複数の入力ポリラインを統合してから一度に輪郭を生成する。",
+    ),
+    "keep_original": ParamMeta(
+        kind="bool",
+        description="生成した輪郭に元のポリラインを加えて出力する。",
+    ),
 }
 
 _JOIN_STYLE_SET = {"mitre", "round", "bevel"}

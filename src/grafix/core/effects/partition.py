@@ -14,15 +14,47 @@ NONPLANAR_EPS_ABS = 1e-6
 NONPLANAR_EPS_REL = 1e-5
 
 partition_meta = {
-    "mode": ParamMeta(kind="choice", choices=("merge", "group", "ring")),
-    "site_count": ParamMeta(kind="int", ui_min=1, ui_max=500),
+    "mode": ParamMeta(
+        kind="choice",
+        choices=("merge", "group", "ring"),
+        description="入力リングを統合、穴を含む領域単位、または個別リングとして分割する。",
+    ),
+    "site_count": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=500,
+        description="領域をボロノイ分割するために配置するサイトの数。",
+    ),
     # imgui.slider_int は内部で「min/max が int32 の半分レンジ以内」を要求するため、
     # GUI 用レンジは控えめにし、必要ならコード側で任意の seed を指定する。
-    "seed": ParamMeta(kind="int", ui_min=0, ui_max=1_073_741_823),
-    "site_density_base": ParamMeta(kind="vec3", ui_min=0.0, ui_max=1.0),
-    "site_density_slope": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0),
-    "auto_center": ParamMeta(kind="bool"),
-    "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
+    "seed": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=1_073_741_823,
+        description="ボロノイサイトの配置を再現可能にする乱数シード。",
+    ),
+    "site_density_base": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="基準点におけるサイトの採用確率を軸ごとに指定する。",
+    ),
+    "site_density_slope": ParamMeta(
+        kind="vec3",
+        ui_min=-1.0,
+        ui_max=1.0,
+        description="正規化した各軸位置に対するサイト採用確率の勾配。",
+    ),
+    "auto_center": ParamMeta(
+        kind="bool",
+        description="入力のバウンディングボックス中心を密度勾配の基準点にする。",
+    ),
+    "pivot": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="自動中心が無効な場合に密度勾配の基準とする点。",
+    ),
 }
 
 partition_ui_visible = {

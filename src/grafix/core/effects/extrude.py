@@ -26,10 +26,29 @@ MAX_SCALE = 3.0
 MAX_SUBDIVISIONS = 8
 
 extrude_meta = {
-    "delta": ParamMeta(kind="vec3", ui_min=-MAX_DISTANCE, ui_max=MAX_DISTANCE),
-    "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=MAX_SCALE),
-    "subdivisions": ParamMeta(kind="int", ui_min=0, ui_max=MAX_SUBDIVISIONS),
-    "center_mode": ParamMeta(kind="choice", choices=("origin", "auto")),
+    "delta": ParamMeta(
+        kind="vec3",
+        ui_min=-MAX_DISTANCE,
+        ui_max=MAX_DISTANCE,
+        description="複製線を押し出す各軸の移動量。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=MAX_SCALE,
+        description="押し出して生成する複製線へ適用する倍率。",
+    ),
+    "subdivisions": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=MAX_SUBDIVISIONS,
+        description="押し出し前に各線分へ適用する中点細分の回数。",
+    ),
+    "center_mode": ParamMeta(
+        kind="choice",
+        choices=("origin", "auto"),
+        description="複製線を原点または各線の重心のどちらを中心に拡縮するか選ぶ。",
+    ),
 }
 
 _CONNECT_ATOL = 1e-8

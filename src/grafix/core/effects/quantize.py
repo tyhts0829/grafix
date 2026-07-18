@@ -9,7 +9,12 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
 quantize_meta = {
-    "step": ParamMeta(kind="vec3", ui_min=0.0, ui_max=10.0),
+    "step": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=10.0,
+        description="各頂点を丸めて吸着させる格子の間隔を軸ごとに指定する。",
+    ),
 }
 
 

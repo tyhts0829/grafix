@@ -46,15 +46,57 @@ _PLANAR_EPS_ABS = 1e-6
 _PLANAR_EPS_REL = 1e-5
 
 isocontour_meta = {
-    "spacing": ParamMeta(kind="float", ui_min=0.2, ui_max=10.0),
-    "phase": ParamMeta(kind="float", ui_min=-10.0, ui_max=10.0),
-    "max_dist": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "mode": ParamMeta(kind="choice", choices=("inside", "outside", "both")),
-    "grid_pitch": ParamMeta(kind="float", ui_min=0.1, ui_max=5.0),
-    "gamma": ParamMeta(kind="float", ui_min=0.3, ui_max=3.0),
-    "level_step": ParamMeta(kind="int", ui_min=1, ui_max=20),
-    "auto_close_threshold": ParamMeta(kind="float", ui_min=0.0, ui_max=5.0),
-    "keep_original": ParamMeta(kind="bool"),
+    "spacing": ParamMeta(
+        kind="float",
+        ui_min=0.2,
+        ui_max=10.0,
+        description="隣り合う符号付き距離の等値線どうしの間隔。",
+    ),
+    "phase": ParamMeta(
+        kind="float",
+        ui_min=-10.0,
+        ui_max=10.0,
+        description="等値線レベル全体を距離方向へずらす位相。",
+    ),
+    "max_dist": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="入力境界から等値線を抽出する最大距離。",
+    ),
+    "mode": ParamMeta(
+        kind="choice",
+        choices=("inside", "outside", "both"),
+        description="入力境界の内側、外側、または両側のどこから等値線を抽出するか選ぶ。",
+    ),
+    "grid_pitch": ParamMeta(
+        kind="float",
+        ui_min=0.1,
+        ui_max=5.0,
+        description="符号付き距離場を評価する二次元グリッドの間隔。",
+    ),
+    "gamma": ParamMeta(
+        kind="float",
+        ui_min=0.3,
+        ui_max=3.0,
+        description="抽出範囲を保ったまま等値線の距離分布を非線形に変形する指数。",
+    ),
+    "level_step": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=20,
+        description="生成した等値線を何本ごとに一つ残すか指定する。",
+    ),
+    "auto_close_threshold": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=5.0,
+        description="入力線の端点を自動的に閉じるとみなす最大距離。",
+    ),
+    "keep_original": ParamMeta(
+        kind="bool",
+        description="生成した等値線に元の入力線を加えて出力する。",
+    ),
 }
 
 

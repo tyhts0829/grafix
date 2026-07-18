@@ -16,12 +16,36 @@ EPS = 1e-6
 INCLUDE_BOUNDARY = True
 
 mirror_meta = {
-    "n_mirror": ParamMeta(kind="int", ui_min=1, ui_max=12),
-    "cx": ParamMeta(kind="float", ui_min=-100.0, ui_max=100.0),
-    "cy": ParamMeta(kind="float", ui_min=-100.0, ui_max=100.0),
-    "source_positive_x": ParamMeta(kind="bool"),
-    "source_positive_y": ParamMeta(kind="bool"),
-    "show_planes": ParamMeta(kind="bool"),
+    "n_mirror": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=12,
+        description="軸対称、象限対称、または放射対称を決めるミラー分割数。",
+    ),
+    "cx": ParamMeta(
+        kind="float",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="対称軸または放射対称中心の X 座標。",
+    ),
+    "cy": ParamMeta(
+        kind="float",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="対称軸または放射対称中心の Y 座標。",
+    ),
+    "source_positive_x": ParamMeta(
+        kind="bool",
+        description="軸対称または象限対称で中心より X 座標が大きい側を複製元にする。",
+    ),
+    "source_positive_y": ParamMeta(
+        kind="bool",
+        description="象限対称で中心より Y 座標が大きい側を複製元にする。",
+    ),
+    "show_planes": ParamMeta(
+        kind="bool",
+        description="対称軸または放射状の境界を確認用ラインとして出力する。",
+    ),
 }
 
 mirror_ui_visible = {

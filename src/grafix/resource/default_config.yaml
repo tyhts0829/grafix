@@ -28,15 +28,12 @@ ui:
 
   # Parameter GUI ウィンドウサイズ（ピクセル）。
   parameter_gui:
-    window_size: [800, 1000]
+    window_size: [1100, 1000]
     # GUI の基準フォントサイズ（px）。Retina 等では backing scale に応じて自動で倍率される。
     font_size_base_px: 14.0
     # GUI の日本語表示用フォールバックフォント（ファイル名 / パス / 部分一致）。
     # 未指定（null/空）なら自動選択（例: Hiragino Sans GB → NotoSansJP）。
     fallback_font_japanese: null
-    # Parameter テーブルの列幅（stretch 比率）。
-    # (source / parameter, value, range, MIDI)
-    table_column_weights: [0.36, 0.35, 0.18, 0.23]
     # Parameter GUI内だけで使うkeyboard shortcut。pyglet key名で指定する。
     shortcuts:
       play_pause: SPACE

@@ -13,7 +13,12 @@ from grafix.core.realized_geometry import GeomTuple
 from ._shape_utils import point3, segment_count
 
 bezier_meta = {
-    "segments": ParamMeta(kind="int", ui_min=1, ui_max=512),
+    "segments": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=512,
+        description="4 制御点で定まる曲線を近似する直線セグメントの数を指定します。",
+    ),
 }
 
 

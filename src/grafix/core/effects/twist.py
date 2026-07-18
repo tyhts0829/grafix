@@ -9,10 +9,28 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
 twist_meta = {
-    "auto_center": ParamMeta(kind="bool"),
-    "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
-    "angle": ParamMeta(kind="float", ui_min=0.0, ui_max=360.0),
-    "axis_dir": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0),
+    "auto_center": ParamMeta(
+        kind="bool",
+        description="入力頂点の平均座標をねじり軸の通過点として使用する。",
+    ),
+    "pivot": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="自動中心が無効な場合にねじり軸を通す点。",
+    ),
+    "angle": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=360.0,
+        description="ねじり軸に沿った位置に応じて到達する最大回転角。",
+    ),
+    "axis_dir": ParamMeta(
+        kind="vec3",
+        ui_min=-1.0,
+        ui_max=1.0,
+        description="ねじりの基準となる軸の方向ベクトル。",
+    ),
 }
 
 twist_ui_visible = {

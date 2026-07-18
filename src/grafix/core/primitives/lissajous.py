@@ -16,13 +16,48 @@ from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
 lissajous_meta = {
-    "a": ParamMeta(kind="int", ui_min=0, ui_max=20),
-    "b": ParamMeta(kind="int", ui_min=0, ui_max=20),
-    "phase": ParamMeta(kind="float", ui_min=0.0, ui_max=360.0),
-    "samples": ParamMeta(kind="int", ui_min=2, ui_max=8000),
-    "turns": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
+    "a": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=20,
+        description="X 方向の振動回数を決める角周波数係数を指定します。",
+    ),
+    "b": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=20,
+        description="Y 方向の振動回数を決める角周波数係数を指定します。",
+    ),
+    "phase": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=360.0,
+        description="Y 振動に対する X 振動の位相差を度単位で指定します。",
+    ),
+    "samples": ParamMeta(
+        kind="int",
+        ui_min=2,
+        ui_max=8000,
+        description="曲線全体を構成するサンプリング点の数を指定します。",
+    ),
+    "turns": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=20.0,
+        description="パラメータ t が 2π を周回する回数を指定します。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="生成した曲線全体を平行移動する XYZ 座標を指定します。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="幅と高さが 1 の曲線全体に適用する等方スケールを指定します。",
+    ),
 }
 
 

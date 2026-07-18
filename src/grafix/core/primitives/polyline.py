@@ -14,7 +14,10 @@ from grafix.core.resource_budget import ensure_geometry_output
 from ._shape_utils import point3
 
 polyline_meta = {
-    "closed": ParamMeta(kind="bool"),
+    "closed": ParamMeta(
+        kind="bool",
+        description="終点が始点と異なる場合に始点を末尾へ追加して線を閉じます。",
+    ),
 }
 
 

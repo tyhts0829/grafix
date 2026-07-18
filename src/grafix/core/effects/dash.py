@@ -12,10 +12,30 @@ from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
 
 dash_meta = {
-    "dash_length": ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
-    "gap_length": ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
-    "offset": ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
-    "offset_jitter": ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
+    "dash_length": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=100.0,
+        description="破線パターンで描画する区間の長さ。",
+    ),
+    "gap_length": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=100.0,
+        description="破線パターンで描画しない区間の長さ。",
+    ),
+    "offset": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=100.0,
+        description="各ポリライン上で破線パターンの開始位相をずらす距離。",
+    ),
+    "offset_jitter": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=100.0,
+        description="ポリラインごとに開始位相へ加える一様乱数の最大振幅。",
+    ),
 }
 
 

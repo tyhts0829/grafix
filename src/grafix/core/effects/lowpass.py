@@ -21,9 +21,23 @@ MAX_TOTAL_VERTICES = 10_000_000
 MAX_KERNEL_RADIUS = 2048
 
 lowpass_meta = {
-    "step": ParamMeta(kind="float", ui_min=0.1, ui_max=20.0),
-    "sigma": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
-    "closed": ParamMeta(kind="choice", choices=("auto", "open", "closed")),
+    "step": ParamMeta(
+        kind="float",
+        ui_min=0.1,
+        ui_max=20.0,
+        description="平滑化の前に線を再サンプルする弧長間隔。",
+    ),
+    "sigma": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=20.0,
+        description="線の細かな変化をならすガウス平滑の半径。",
+    ),
+    "closed": ParamMeta(
+        kind="choice",
+        choices=("auto", "open", "closed"),
+        description="端点の平滑境界条件を開曲線、閉曲線、端点距離による自動判定から選ぶ。",
+    ),
 }
 
 

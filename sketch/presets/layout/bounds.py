@@ -23,10 +23,24 @@ from .common import (
 
 meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
-    "border": {"kind": "bool"},
-    "show_margin": {"kind": "bool"},
-    "trim": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
-    "show_trim": {"kind": "bool"},
+    "border": {
+        "kind": "bool",
+        "description": "キャンバス外周を示す境界線を描く。",
+    },
+    "show_margin": {
+        "kind": "bool",
+        "description": "各 margin を差し引いた安全領域の外周線を描く。",
+    },
+    "trim": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 100.0,
+        "description": "キャンバス外周からトリム線までの均等な内側距離を指定する。",
+    },
+    "show_trim": {
+        "kind": "bool",
+        "description": "指定した trim 距離にトリム外周線を描く。",
+    },
 }
 
 LAYOUT_BOUNDS_UI_VISIBLE = {

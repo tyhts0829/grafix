@@ -19,9 +19,24 @@ from grafix.core.realized_geometry import GeomTuple
 from .util import PlanarFrame, pack_polylines
 
 weave_meta = {
-    "num_candidate_lines": ParamMeta(kind="int", ui_min=0, ui_max=500),
-    "relaxation_iterations": ParamMeta(kind="int", ui_min=0, ui_max=50),
-    "step": ParamMeta(kind="float", ui_min=0.0, ui_max=0.5),
+    "num_candidate_lines": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=500,
+        description="閉じた入力線の境界上にある二点を結ぶ候補線の本数。",
+    ),
+    "relaxation_iterations": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=50,
+        description="候補線の交差とばらつきをならす弾性緩和の反復回数。",
+    ),
+    "step": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=0.5,
+        description="各緩和ステップで候補線の頂点を移動させる係数。",
+    ),
 }
 
 MAX_NUM_CANDIDATE_LINES = 500

@@ -11,10 +11,27 @@ from grafix.core.realized_geometry import GeomTuple
 _CLOSED_ATOL = 1e-6
 
 scale_meta = {
-    "mode": ParamMeta(kind="choice", choices=("all", "by_line", "by_face")),
-    "auto_center": ParamMeta(kind="bool"),
-    "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
-    "scale": ParamMeta(kind="vec3", ui_min=0.0, ui_max=10.0),
+    "mode": ParamMeta(
+        kind="choice",
+        choices=("all", "by_line", "by_face"),
+        description="入力全体、開いた線ごと、または閉じた面ごとのどの単位で拡縮するか選ぶ。",
+    ),
+    "auto_center": ParamMeta(
+        kind="bool",
+        description="入力全体を拡縮するときに頂点の平均座標を中心として使用する。",
+    ),
+    "pivot": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="入力全体を拡縮するとき、自動中心が無効な場合に使用する中心点。",
+    ),
+    "scale": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=10.0,
+        description="選択した中心を基準に適用する各軸の倍率。",
+    ),
 }
 
 def _mode_is(name: str):

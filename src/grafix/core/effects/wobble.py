@@ -9,9 +9,24 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
 wobble_meta = {
-    "amplitude": ParamMeta(kind="vec3", ui_min=0.0, ui_max=20.0),
-    "frequency": ParamMeta(kind="vec3", ui_min=0.0, ui_max=0.2),
-    "phase": ParamMeta(kind="float", ui_min=0.0, ui_max=360.0),
+    "amplitude": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=20.0,
+        description="正弦波による変位の最大量を軸ごとに指定する。",
+    ),
+    "frequency": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=0.2,
+        description="位置に対する正弦波の空間周波数を軸ごとに指定する。",
+    ),
+    "phase": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=360.0,
+        description="すべての変位波形へ加える位相を度単位で指定する。",
+    ),
 }
 
 

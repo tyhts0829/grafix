@@ -45,9 +45,23 @@ _DATA_DIR = resources.files("grafix").joinpath("resource", "regular_polyhedron")
 _POLYHEDRON_CACHE: dict[str, tuple[np.ndarray, ...]] = {}
 
 polyhedron_meta = {
-    "kind": ParamMeta(kind="choice", choices=_TYPE_ORDER),
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
+    "kind": ParamMeta(
+        kind="choice",
+        choices=_TYPE_ORDER,
+        description="ワイヤーフレームとして生成する正多面体または半正多面体を選択します。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="多面体全体を平行移動する XYZ 座標を指定します。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="同梱頂点データから生成した多面体に適用する等方スケールを指定します。",
+    ),
 }
 
 

@@ -38,16 +38,61 @@ _DEFAULT_CUSTOM_AXIOM = "X"
 _DEFAULT_CUSTOM_RULES = "X=F-[[X]+X]+F[+FX]-X\nF=FF"
 
 lsystem_meta = {
-    "kind": ParamMeta(kind="choice", choices=("plant", "circuit", "custom")),
-    "iters": ParamMeta(kind="int", ui_min=0, ui_max=8),
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "heading": ParamMeta(kind="float", ui_min=0.0, ui_max=360.0),
-    "angle": ParamMeta(kind="float", ui_min=0.0, ui_max=180.0),
-    "step": ParamMeta(kind="float", ui_min=0.1, ui_max=50.0),
-    "jitter": ParamMeta(kind="float", ui_min=0.0, ui_max=0.25),
-    "seed": ParamMeta(kind="int", ui_min=0, ui_max=9999),
-    "axiom": ParamMeta(kind="str"),
-    "rules": ParamMeta(kind="str"),
+    "kind": ParamMeta(
+        kind="choice",
+        choices=("plant", "circuit", "custom"),
+        description="使用する植物・回路プリセット、または独自の書き換え規則を選択します。",
+    ),
+    "iters": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=8,
+        description="公理へ書き換え規則を繰り返し適用する世代数を指定します。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="タートルが描画を開始する XYZ 座標を指定します。",
+    ),
+    "heading": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=360.0,
+        description="+X 軸を基準とするタートルの初期方向を度単位で指定します。",
+    ),
+    "angle": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=180.0,
+        description="プログラム中の + と - がタートルを回転させる角度を指定します。",
+    ),
+    "step": ParamMeta(
+        kind="float",
+        ui_min=0.1,
+        ui_max=50.0,
+        description="プログラム中の F と f が一回で前進する距離を指定します。",
+    ),
+    "jitter": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=0.25,
+        description="各前進距離と回転角へ加える再現可能な相対ゆらぎの幅を指定します。",
+    ),
+    "seed": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=9999,
+        description="ゆらぎの乱数列を決定し、同じ形を再現できるようにします。",
+    ),
+    "axiom": ParamMeta(
+        kind="str",
+        description="独自規則を展開するときの出発点となる初期文字列を指定します。",
+    ),
+    "rules": ParamMeta(
+        kind="str",
+        description="独自 L-system の一文字ごとの置換を A=... 形式で指定します。",
+    ),
 }
 
 LSYSTEM_UI_VISIBLE = {

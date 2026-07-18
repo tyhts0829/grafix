@@ -22,8 +22,15 @@ from grafix.core.realized_geometry import GeomTuple
 from .util import PlanarFrame, empty_geom, pack_polylines
 
 clip_meta = {
-    "mode": ParamMeta(kind="choice", choices=("inside", "outside")),
-    "draw_outline": ParamMeta(kind="bool"),
+    "mode": ParamMeta(
+        kind="choice",
+        choices=("inside", "outside"),
+        description="マスクの内側と外側のどちらを残すか選ぶ。",
+    ),
+    "draw_outline": ParamMeta(
+        kind="bool",
+        description="クリップ結果にマスク輪郭を加えて出力する。",
+    ),
 }
 
 _PLANAR_EPS_ABS = 1e-6

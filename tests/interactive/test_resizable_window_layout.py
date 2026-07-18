@@ -139,7 +139,6 @@ def test_parameter_gui_draw_keeps_requested_logical_width_on_retina(
         ),
     )
     gui._show_inactive_params = False
-    gui._column_weights = (0.2, 0.6, 0.15, 0.2)
     gui._title = "Parameters"
 
     monkeypatch.setattr(gui_module, "_sync_imgui_io_for_window", lambda *_a, **_k: None)
@@ -198,7 +197,7 @@ def test_parameter_gui_window_is_resizable_and_keeps_requested_size(
         "vsync": False,
         "config": "gl-config",
     }
-    assert captured["minimum_size"] == (560, 480)
+    assert captured["minimum_size"] == (760, 480)
 
 
 def test_draw_window_is_resizable(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -24,12 +24,33 @@ _LINE_MODE_ORDER = ("horizontal", "vertical", "both")
 
 sphere_meta = {
     "subdivisions": ParamMeta(
-        kind="int", ui_min=_MIN_SUBDIVISIONS, ui_max=_MAX_SUBDIVISIONS
+        kind="int",
+        ui_min=_MIN_SUBDIVISIONS,
+        ui_max=_MAX_SUBDIVISIONS,
+        description="球面を構成する線や面の細分化レベルを指定します。",
     ),
-    "style": ParamMeta(kind="choice", choices=_STYLE_ORDER),
-    "line_mode": ParamMeta(kind="choice", choices=_LINE_MODE_ORDER),
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
+    "style": ParamMeta(
+        kind="choice",
+        choices=_STYLE_ORDER,
+        description="緯経線・螺旋・三角面・リングからワイヤーフレームの生成方式を選択します。",
+    ),
+    "line_mode": ParamMeta(
+        kind="choice",
+        choices=_LINE_MODE_ORDER,
+        description="緯経線またはリング方式で横線・縦線のどちらを描くか選択します。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="球全体を平行移動する XYZ 座標を指定します。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="直径 1 の球全体に適用する等方スケールを指定します。",
+    ),
 }
 
 SPHERE_UI_VISIBLE = {

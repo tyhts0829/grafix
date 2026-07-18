@@ -31,19 +31,83 @@ _PLANAR_EPS_ABS = 1e-6
 _PLANAR_EPS_REL = 1e-5
 
 reaction_diffusion_meta = {
-    "grid_pitch": ParamMeta(kind="float", ui_min=0.2, ui_max=2.0),
-    "steps": ParamMeta(kind="int", ui_min=0, ui_max=10_000),
-    "du": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
-    "dv": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
-    "feed": ParamMeta(kind="float", ui_min=0.0, ui_max=0.1),
-    "kill": ParamMeta(kind="float", ui_min=0.0, ui_max=0.1),
-    "dt": ParamMeta(kind="float", ui_min=0.1, ui_max=2.0),
-    "seed": ParamMeta(kind="int", ui_min=0, ui_max=9999),
-    "seed_radius": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "noise": ParamMeta(kind="float", ui_min=0.0, ui_max=0.1),
-    "level": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
-    "min_points": ParamMeta(kind="int", ui_min=4, ui_max=200),
-    "boundary": ParamMeta(kind="choice", choices=("noflux", "dirichlet")),
+    "grid_pitch": ParamMeta(
+        kind="float",
+        ui_min=0.2,
+        ui_max=2.0,
+        description="反応拡散を計算する二次元グリッドの間隔。",
+    ),
+    "steps": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=10_000,
+        description="Gray-Scott 反応拡散モデルを更新する反復回数。",
+    ),
+    "du": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="Gray-Scott モデルの U 成分に適用する拡散係数。",
+    ),
+    "dv": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="Gray-Scott モデルの V 成分に適用する拡散係数。",
+    ),
+    "feed": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=0.1,
+        description="Gray-Scott モデルへ U 成分を供給する反応係数。",
+    ),
+    "kill": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=0.1,
+        description="Gray-Scott モデルから V 成分を除去する反応係数。",
+    ),
+    "dt": ParamMeta(
+        kind="float",
+        ui_min=0.1,
+        ui_max=2.0,
+        description="反応と拡散を数値積分するときの時間刻み。",
+    ),
+    "seed": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=9999,
+        description="初期濃度分布を再現可能にする乱数シード。",
+    ),
+    "seed_radius": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="初期状態で中心に配置する V 成分ブロブの半径。",
+    ),
+    "noise": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=0.1,
+        description="初期状態の V 成分へ加える一様ノイズの最大量。",
+    ),
+    "level": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="計算後の V 成分から輪郭を抽出する等値レベル。",
+    ),
+    "min_points": ParamMeta(
+        kind="int",
+        ui_min=4,
+        ui_max=200,
+        description="抽出した輪郭を出力対象とする最小頂点数。",
+    ),
+    "boundary": ParamMeta(
+        kind="choice",
+        choices=("noflux", "dirichlet"),
+        description="マスク境界を濃度勾配なし、または外側濃度固定として扱う。",
+    ),
 }
 
 

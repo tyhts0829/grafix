@@ -373,19 +373,75 @@ def _polylines_to_realized(
 
 
 text_meta = {
-    "text": ParamMeta(kind="str"),
-    "font": ParamMeta(kind="font"),
-    "font_index": ParamMeta(kind="int", ui_min=0, ui_max=32),
-    "text_align": ParamMeta(kind="choice", choices=("left", "center", "right")),
-    "letter_spacing_em": ParamMeta(kind="float", ui_min=0.0, ui_max=2.0),
-    "line_height": ParamMeta(kind="float", ui_min=0.8, ui_max=3.0),
-    "use_bounding_box": ParamMeta(kind="bool"),
-    "box_width": ParamMeta(kind="float", ui_min=0.0, ui_max=300.0),
-    "box_height": ParamMeta(kind="float", ui_min=0.0, ui_max=300.0),
-    "show_bounding_box": ParamMeta(kind="bool"),
-    "quality": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=50.0),
+    "text": ParamMeta(
+        kind="str",
+        description="フォントの輪郭線で描画する文字列を指定し、改行で複数行に分けます。",
+    ),
+    "font": ParamMeta(
+        kind="font",
+        description="輪郭の取得に使うフォントファイルまたは登録済みフォント名を指定します。",
+    ),
+    "font_index": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=32,
+        description="TTC コレクション内で使用するサブフォントの番号を指定します。",
+    ),
+    "text_align": ParamMeta(
+        kind="choice",
+        choices=("left", "center", "right"),
+        description="各行の輪郭を左揃え・中央揃え・右揃えのいずれで配置するか選択します。",
+    ),
+    "letter_spacing_em": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=2.0,
+        description="フォント固有の文字送りへ追加する文字間隔を em 単位で指定します。",
+    ),
+    "line_height": ParamMeta(
+        kind="float",
+        ui_min=0.8,
+        ui_max=3.0,
+        description="複数行のベースライン間隔を em 単位で指定します。",
+    ),
+    "use_bounding_box": ParamMeta(
+        kind="bool",
+        description="指定幅での自動改行と任意のボックス枠描画を有効にします。",
+    ),
+    "box_width": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="自動改行と枠描画に使うボックス幅を出力座標単位で指定します。",
+    ),
+    "box_height": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="枠描画に使うボックス高さを出力座標単位で指定します。",
+    ),
+    "show_bounding_box": ParamMeta(
+        kind="bool",
+        description="指定した幅と高さのボックス枠を文字輪郭へ追加します。",
+    ),
+    "quality": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="曲線輪郭の平坦化精度を指定し、大きいほど頂点数を増やします。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="生成した文字輪郭全体を平行移動する XYZ 座標を指定します。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=50.0,
+        description="1 em を基準に生成した文字輪郭へ適用する等方スケールを指定します。",
+    ),
 }
 
 TEXT_UI_VISIBLE = {

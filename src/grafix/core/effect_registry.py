@@ -30,6 +30,11 @@ EffectFunc = Callable[
 effect_registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
 """グローバルな effect レジストリインスタンス。"""
 
+_EFFECT_ACTIVATE_META = ParamMeta(
+    kind="bool",
+    description="このエフェクトによる形状変換を有効にする。",
+)
+
 
 def effect(
     func: Callable[..., GeomTuple] | None = None,
@@ -86,7 +91,9 @@ def effect(
             raise ValueError(f"組み込み effect は meta 必須: {f.__module__}.{f.__name__}")
 
         meta_with_activate = (
-            {"activate": ParamMeta(kind="bool"), **meta_norm} if meta_norm is not None else None
+            {"activate": _EFFECT_ACTIVATE_META, **meta_norm}
+            if meta_norm is not None
+            else None
         )
 
         def wrapper(

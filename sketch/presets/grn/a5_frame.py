@@ -19,12 +19,36 @@ def _rgb255_to_rgb01(rgb255: tuple[int, int, int]) -> tuple[float, float, float]
 
 
 meta: dict[str, Mapping[str, object]] = {
-    "show_layout": {"kind": "bool"},
-    "layout_color_rgb255": {"kind": "rgb", "ui_min": 0, "ui_max": 255},
-    "number_text": {"kind": "str"},
-    "explanation_text": {"kind": "str"},
-    "explanation_density": {"kind": "float", "ui_min": 0.0, "ui_max": 1000.0},
-    "template_color_rgb255": {"kind": "rgb", "ui_min": 0, "ui_max": 255},
+    "show_layout": {
+        "kind": "bool",
+        "description": "A5 テンプレートのカラム・行グリッドを表示する。",
+    },
+    "layout_color_rgb255": {
+        "kind": "rgb",
+        "ui_min": 0,
+        "ui_max": 255,
+        "description": "レイアウトグリッドの線色を RGB で指定する。",
+    },
+    "number_text": {
+        "kind": "str",
+        "description": "ヘッダーへ配置する作品番号の文字列を指定する。",
+    },
+    "explanation_text": {
+        "kind": "str",
+        "description": "ヘッダー右側へ配置するコード説明文を指定する。",
+    },
+    "explanation_density": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 1000.0,
+        "description": "コード説明文を塗るハッチング線の密度を指定する。",
+    },
+    "template_color_rgb255": {
+        "kind": "rgb",
+        "ui_min": 0,
+        "ui_max": 255,
+        "description": "ヘッダー内の罫線・文字・バーの線色を RGB で指定する。",
+    },
 }
 
 GRN_A5_FRAME_UI_VISIBLE = {

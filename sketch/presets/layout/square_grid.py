@@ -24,7 +24,12 @@ from .common import (
 
 meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
-    "cell_size": {"kind": "float", "ui_min": 1.0, "ui_max": 50.0},
+    "cell_size": {
+        "kind": "float",
+        "ui_min": 1.0,
+        "ui_max": 50.0,
+        "description": "正方形グリッドの一辺と隣接線間隔を指定する。",
+    },
 }
 
 

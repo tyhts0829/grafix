@@ -23,14 +23,50 @@ from .common import (
 
 meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
-    "cols": {"kind": "int", "ui_min": 1, "ui_max": 24},
-    "rows": {"kind": "int", "ui_min": 1, "ui_max": 24},
-    "gutter_x": {"kind": "float", "ui_min": 0.0, "ui_max": 50.0},
-    "gutter_y": {"kind": "float", "ui_min": 0.0, "ui_max": 50.0},
-    "show_column_centers": {"kind": "bool"},
-    "show_baseline": {"kind": "bool"},
-    "baseline_step": {"kind": "float", "ui_min": 0.1, "ui_max": 50.0},
-    "baseline_offset": {"kind": "float", "ui_min": -50.0, "ui_max": 50.0},
+    "cols": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 24,
+        "description": "対象矩形を分割するカラム数を指定する。",
+    },
+    "rows": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 24,
+        "description": "対象矩形を分割する行数を指定する。",
+    },
+    "gutter_x": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 50.0,
+        "description": "隣接するカラム間に確保する横方向の空きを指定する。",
+    },
+    "gutter_y": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 50.0,
+        "description": "隣接する行間に確保する縦方向の空きを指定する。",
+    },
+    "show_column_centers": {
+        "kind": "bool",
+        "description": "各カラムの中央を通る補助線を追加する。",
+    },
+    "show_baseline": {
+        "kind": "bool",
+        "description": "タイポグラフィ用の水平ベースライングリッドを重ねる。",
+    },
+    "baseline_step": {
+        "kind": "float",
+        "ui_min": 0.1,
+        "ui_max": 50.0,
+        "description": "隣接するベースライン間の距離を指定する。",
+    },
+    "baseline_offset": {
+        "kind": "float",
+        "ui_min": -50.0,
+        "ui_max": 50.0,
+        "description": "ベースライン列の開始位置を Y 方向へずらす。",
+    },
 }
 
 LAYOUT_GRID_SYSTEM_UI_VISIBLE = {

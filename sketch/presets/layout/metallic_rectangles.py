@@ -24,10 +24,27 @@ from .common import (
 
 meta: dict[str, Mapping[str, object]] = {
     **META_COMMON,
-    "metallic_n": {"kind": "int", "ui_min": 1, "ui_max": 12},
-    "levels": {"kind": "int", "ui_min": 1, "ui_max": 8},
-    "corner": {"kind": "choice", "choices": ["tl", "tr", "br", "bl"]},
-    "clockwise": {"kind": "bool"},
+    "metallic_n": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 12,
+        "description": "矩形分割に用いる第 n 貴金属比を指定する。",
+    },
+    "levels": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 8,
+        "description": "正方形を切り出して残りの矩形を分割する反復回数を指定する。",
+    },
+    "corner": {
+        "kind": "choice",
+        "choices": ["tl", "tr", "br", "bl"],
+        "description": "最初の正方形を切り出し始める矩形の角を選ぶ。",
+    },
+    "clockwise": {
+        "kind": "bool",
+        "description": "切り出す辺を反復ごとに時計回りへ進める。",
+    },
 }
 
 

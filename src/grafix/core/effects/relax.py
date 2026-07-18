@@ -11,8 +11,18 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
 relax_meta = {
-    "relaxation_iterations": ParamMeta(kind="int", ui_min=0, ui_max=50),
-    "step": ParamMeta(kind="float", ui_min=0.0, ui_max=0.5),
+    "relaxation_iterations": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=50,
+        description="点列のばらつきをならす弾性緩和の反復回数。",
+    ),
+    "step": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=0.5,
+        description="各緩和ステップで頂点を移動させる係数。",
+    ),
 }
 
 MAX_RELAXATION_ITERATIONS = 50

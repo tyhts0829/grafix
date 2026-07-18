@@ -10,16 +10,65 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
 displace_meta = {
-    "amplitude": ParamMeta(kind="vec3", ui_min=0.0, ui_max=50.0),
-    "spatial_freq": ParamMeta(kind="vec3", ui_min=0.0, ui_max=0.1),
-    "amplitude_gradient": ParamMeta(kind="vec3", ui_min=-4.0, ui_max=4.0),
-    "frequency_gradient": ParamMeta(kind="vec3", ui_min=-4.0, ui_max=4.0),
-    "gradient_center_offset": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0),
-    "gradient_profile": ParamMeta(kind="choice", choices=("linear", "radial")),
-    "gradient_radius": ParamMeta(kind="vec3", ui_min=0.05, ui_max=1.0),
-    "min_gradient_factor": ParamMeta(kind="float", ui_min=0.0, ui_max=0.5),
-    "max_gradient_factor": ParamMeta(kind="float", ui_min=1.0, ui_max=4.0),
-    "t": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+    "amplitude": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=50.0,
+        description="ノイズによる変位の最大量を軸ごとに指定する。",
+    ),
+    "spatial_freq": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=0.1,
+        description="変位ノイズの空間周波数を軸ごとに指定する。",
+    ),
+    "amplitude_gradient": ParamMeta(
+        kind="vec3",
+        ui_min=-4.0,
+        ui_max=4.0,
+        description="位置に応じて変位振幅を変化させる勾配を軸ごとに指定する。",
+    ),
+    "frequency_gradient": ParamMeta(
+        kind="vec3",
+        ui_min=-4.0,
+        ui_max=4.0,
+        description="位置に応じて空間周波数を変化させる勾配を軸ごとに指定する。",
+    ),
+    "gradient_center_offset": ParamMeta(
+        kind="vec3",
+        ui_min=-1.0,
+        ui_max=1.0,
+        description="勾配の中心をバウンディングボックス正規化座標でずらす。",
+    ),
+    "gradient_profile": ParamMeta(
+        kind="choice",
+        choices=("linear", "radial"),
+        description="勾配を軸方向の線形変化と中心からの放射変化から選ぶ。",
+    ),
+    "gradient_radius": ParamMeta(
+        kind="vec3",
+        ui_min=0.05,
+        ui_max=1.0,
+        description="放射勾配の正規化距離を定める半径を軸ごとに指定する。",
+    ),
+    "min_gradient_factor": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=0.5,
+        description="勾配から得る振幅と周波数の倍率を下限で制限する。",
+    ),
+    "max_gradient_factor": ParamMeta(
+        kind="float",
+        ui_min=1.0,
+        ui_max=4.0,
+        description="勾配から得る振幅と周波数の倍率を上限で制限する。",
+    ),
+    "t": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="ノイズの位相を時間方向へ進めて変位を流動させる。",
+    ),
 }
 
 displace_ui_visible = {

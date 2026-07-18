@@ -761,7 +761,7 @@ def clear_all_midi_assignments(store: ParamStore) -> bool:
 def render_store_parameter_table(
     store: ParamStore,
     *,
-    column_weights: tuple[float, float, float, float] | None = None,
+    metric_scale: float | None = None,
     show_inactive_params: bool = True,
     filter_state: ParameterFilterState | None = None,
     error_keys: AbstractSet[ParameterKey] = frozenset(),
@@ -795,7 +795,7 @@ def render_store_parameter_table(
     collapsed_before = frozenset(store._collapsed_headers_ref())
     changed, view_rows_after = render_parameter_table(
         view_rows,
-        column_weights=column_weights,
+        metric_scale=metric_scale,
         primitive_header_by_group=model.primitive_header_by_group,
         layer_style_name_by_site_id=model.layer_style_name_by_site_id,
         effect_chain_header_by_id=model.effect_chain_header_by_id,

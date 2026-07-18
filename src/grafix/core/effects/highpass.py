@@ -21,10 +21,29 @@ MAX_TOTAL_VERTICES = 10_000_000
 MAX_KERNEL_RADIUS = 2048
 
 highpass_meta = {
-    "step": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
-    "sigma": ParamMeta(kind="float", ui_min=0.0, ui_max=20.0),
-    "gain": ParamMeta(kind="float", ui_min=0.0, ui_max=5.0),
-    "closed": ParamMeta(kind="choice", choices=("auto", "open", "closed")),
+    "step": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=20.0,
+        description="高周波成分を計算する前に線を再サンプルする弧長間隔。",
+    ),
+    "sigma": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=20.0,
+        description="差し引く低周波成分を作るガウス平滑の半径。",
+    ),
+    "gain": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=5.0,
+        description="抽出した高周波成分を元の線へ加える強調係数。",
+    ),
+    "closed": ParamMeta(
+        kind="choice",
+        choices=("auto", "open", "closed"),
+        description="端点の平滑境界条件を開曲線、閉曲線、端点距離による自動判定から選ぶ。",
+    ),
 }
 
 

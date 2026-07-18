@@ -12,7 +12,6 @@ from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.source import ValueSource
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
-from grafix.core.runtime_config import runtime_config
 
 from .group_blocks import GroupBlock, group_blocks_from_rows
 from .labeling import format_contextual_row_label, humanize_identifier
@@ -48,6 +47,10 @@ SOURCE_SELECTOR_SHORT_TOTAL_WIDTH_PX = (
     + SOURCE_ACTIONS_SHORT_WIDTH_PX
     + SOURCE_SEGMENT_GAP_PX * 2.0
 )
+
+PARAMETER_TABLE_SOURCE_COLUMN_WIDTH_PX = 250.0
+PARAMETER_TABLE_RANGE_COLUMN_WIDTH_PX = 130.0
+PARAMETER_TABLE_MIDI_COLUMN_WIDTH_PX = 165.0
 
 GROUP_HEADER_BASE_COLORS_RGBA: dict[str, tuple[int, int, int, int]] = {
     "style": (104, 164, 255, 94),
@@ -278,6 +281,42 @@ def _imgui_metric_scale(imgui) -> float:
     return min(3.0, max(1.0, text_height / 14.0))
 
 
+def _setup_parameter_table_columns(
+    imgui,
+    *,
+    metric_scale: float | None = None,
+) -> None:
+    """固定 3 列と、残り幅を受け取る Value 列を設定する。"""
+
+    if metric_scale is None:
+        scale = _imgui_metric_scale(imgui)
+    else:
+        scale = float(metric_scale)
+        if not math.isfinite(scale) or scale <= 0.0:
+            raise ValueError("metric_scale は finite な正の値である必要がある")
+    fixed_flags = imgui.TABLE_COLUMN_WIDTH_FIXED | imgui.TABLE_COLUMN_NO_RESIZE
+    imgui.table_setup_column(
+        "  Source / Parameter",
+        fixed_flags,
+        PARAMETER_TABLE_SOURCE_COLUMN_WIDTH_PX * scale,
+    )
+    imgui.table_setup_column(
+        "  Value",
+        imgui.TABLE_COLUMN_WIDTH_STRETCH,
+        1.0,
+    )
+    imgui.table_setup_column(
+        "  Range",
+        fixed_flags,
+        PARAMETER_TABLE_RANGE_COLUMN_WIDTH_PX * scale,
+    )
+    imgui.table_setup_column(
+        "  MIDI",
+        fixed_flags,
+        PARAMETER_TABLE_MIDI_COLUMN_WIDTH_PX * scale,
+    )
+
+
 def _midi_mapping_summary(
     *,
     kind: str,
@@ -459,60 +498,6 @@ def _render_midi_button(
     finally:
         if pushed_colors and callable(pop_style_color):
             pop_style_color(pushed_colors)
-
-
-def _render_midi_source_indicator(
-    imgui,
-    *,
-    source: ValueSource,
-    compact: bool,
-    width: float,
-) -> None:
-    """vec3 行全体の MIDI LIVE/FROZEN 状態を amber chip で示す。"""
-
-    frozen = source == "midi_frozen"
-    source_label = "FROZEN" if frozen else "LIVE"
-    visible_label = ("F" if frozen else "*") if compact else source_label
-
-    warning = PARAMETER_GUI_PALETTE["source_midi"]
-    red, green, blue, _alpha = warning
-    selectable = getattr(imgui, "selectable", None)
-    if callable(selectable):
-        push_style_color = getattr(imgui, "push_style_color", None)
-        pop_style_color = getattr(imgui, "pop_style_color", None)
-        color_indices = (
-            getattr(imgui, "COLOR_HEADER", None),
-            getattr(imgui, "COLOR_TEXT", None),
-        )
-        pushed_colors = 0
-        if (
-            callable(push_style_color)
-            and callable(pop_style_color)
-            and all(index is not None for index in color_indices)
-        ):
-            push_style_color(color_indices[0], red, green, blue, 0.28)
-            push_style_color(color_indices[1], *warning)
-            pushed_colors = 2
-        try:
-            selectable(
-                visible_label + "##midi_source",
-                True,
-                getattr(imgui, "SELECTABLE_DISABLED", 0),
-                float(width),
-                0.0,
-            )
-        finally:
-            if pushed_colors and callable(pop_style_color):
-                pop_style_color(pushed_colors)
-    else:
-        # test double / 古い backend でも状態文字は失わない。
-        imgui.button(visible_label + "##midi_source", float(width))
-
-    _set_item_tooltip(
-        imgui,
-        f"{source_label} — one or more mapped components are driven by "
-        + ("a frozen saved MIDI snapshot." if frozen else "the connected MIDI input."),
-    )
 
 
 def _render_source_actions_menu(
@@ -820,61 +805,6 @@ def _content_region_available_width(imgui) -> float | None:
     return None
 
 
-def _visible_widget_text(label: str) -> str:
-    """ImGui の ``##id`` より前にある可視ラベルだけを返す。"""
-
-    return str(label).split("##", 1)[0]
-
-
-def _button_width_for_cell(
-    imgui,
-    label: str,
-    *,
-    minimum: float,
-    cell_width: float | None,
-) -> float:
-    """ラベルが読める button 幅を求め、狭い cell の外へはみ出させない。"""
-
-    width = max(1.0, float(minimum))
-    calc_text_size = getattr(imgui, "calc_text_size", None)
-    if callable(calc_text_size):
-        try:
-            text_width = float(calc_text_size(_visible_widget_text(label))[0])
-        except (IndexError, TypeError, ValueError):
-            pass
-        else:
-            # ImGui 既定 frame padding（左右各 8px）相当。font scale は
-            # calc_text_size 側で追従する。
-            if math.isfinite(text_width):
-                width = max(width, text_width + 16.0)
-    if cell_width is not None:
-        width = min(width, max(1.0, float(cell_width)))
-    return width
-
-
-def _place_responsive_item(
-    imgui,
-    *,
-    cell_width: float | None,
-    used_width: float,
-    item_width: float,
-    spacing: float,
-) -> float:
-    """item を収まる場合だけ同行へ置き、現在行の使用幅を返す。"""
-
-    item_width = max(1.0, float(item_width))
-    if used_width <= 0.0:
-        return item_width
-
-    next_width = float(used_width) + float(spacing) + item_width
-    if cell_width is None or next_width <= float(cell_width):
-        imgui.same_line(0.0, float(spacing))
-        return next_width
-
-    # same_line を呼ばなければ、次の item は次行の先頭に置かれる。
-    return item_width
-
-
 def _snippet_popup_geometry(
     imgui,
     *,
@@ -956,7 +886,6 @@ def _render_cc_cell(
 
     changed_any = False
     cell_width = _content_region_available_width(imgui)
-    used_width = 0.0
     metric_scale = _imgui_metric_scale(imgui)
     midi_spacing = float(width_spacer) * metric_scale
     midi_key_width = float(cc_key_width) * metric_scale
@@ -1018,37 +947,15 @@ def _render_cc_cell(
     if rules.cc_key == "int3":
         component_names = ("R", "G", "B") if row.kind == "rgb" else ("X", "Y", "Z")
         current_tuple = cc_key if isinstance(cc_key, tuple) else (None, None, None)
-        show_live = bool(midi_is_driving and any(cc is not None for cc in current_tuple))
-        live_compact = bool(cell_width is not None and cell_width < 145.0 * metric_scale)
-        live_width = (
-            14.0
-            if live_compact
-            else (58.0 if last_source == "midi_frozen" else 38.0)
-        ) * metric_scale
-        gap_count = 3 if show_live else 2
-        reserved_live_width = live_width if show_live else 0.0
         component_width = (
             max(
                 1.0,
-                (
-                    float(cell_width)
-                    - reserved_live_width
-                    - midi_spacing * float(gap_count)
-                )
-                / 3.0,
+                (float(cell_width) - midi_spacing * 2.0) / 3.0,
             )
             if cell_width is not None
             else midi_key_width * 1.6
         )
-        compact_components = component_width < 52.0 * metric_scale
-        if show_live:
-            assert last_source is not None
-            _render_midi_source_indicator(
-                imgui,
-                source=last_source,
-                compact=live_compact,
-                width=live_width,
-            )
+        compact_components = component_width < 44.0 * metric_scale
         for i in range(3):
             component_cc = current_tuple[i]
             active = _is_active(key=key, component=int(i))
@@ -1065,9 +972,9 @@ def _render_cc_cell(
                     active = False
 
             if active:
-                label_text = f"{component_names[i]}?"
+                label_text = f"{component_names[i]}..."
             elif component_cc is None:
-                label_text = f"{component_names[i]}+"
+                label_text = component_names[i]
             elif compact_components:
                 # 3桁 CC でも 1 行を維持し、完全な番号は tooltip に置く。
                 label_text = f"{component_names[i]}="
@@ -1075,19 +982,30 @@ def _render_cc_cell(
                 label_text = f"{component_names[i]}{int(component_cc)}"
 
             button_label = f"{label_text}##cc_learn_{i}"
-            if show_live or i > 0:
+            if i > 0:
                 imgui.same_line(0.0, midi_spacing)
-            used_width = component_width * float(i + 1) + midi_spacing * float(i)
             clicked = _render_midi_button(
                 imgui,
                 label=button_label,
                 width=component_width,
-                driving=False,
+                driving=bool(midi_is_driving and component_cc is not None),
             )
             if active:
                 _set_item_tooltip(imgui, f"Waiting for {component_names[i]} MIDI CC; click to cancel")
             elif component_cc is None:
                 _set_item_tooltip(imgui, f"Learn a MIDI CC for {component_names[i]}")
+            elif midi_is_driving:
+                status = "FROZEN" if last_source == "midi_frozen" else "LIVE"
+                source_explanation = (
+                    "a saved snapshot"
+                    if last_source == "midi_frozen"
+                    else "the connected MIDI input"
+                )
+                _set_item_tooltip(
+                    imgui,
+                    f"{status} — {component_names[i]} MIDI CC {int(component_cc)} from "
+                    f"{source_explanation} is driving this component; click to remove",
+                )
             else:
                 _set_item_tooltip(
                     imgui,
@@ -1125,29 +1043,19 @@ def _render_cc_cell(
                 active = False
 
         if active:
-            label_text = "MIDI..."
+            label_text = "V..."
         elif current_cc is None:
-            label_text = "MIDI +"
+            label_text = "V"
         elif midi_is_driving:
             status = "FROZEN" if last_source == "midi_frozen" else "LIVE"
-            label_text = f"{status} {int(current_cc)}"
+            label_text = f"V{int(current_cc)} {status}"
         else:
-            label_text = f"MIDI {int(current_cc)} ×"
+            label_text = f"V{int(current_cc)}"
 
         button_label = f"{label_text}##cc_learn"
-        button_width = _button_width_for_cell(
-            imgui,
-            button_label,
-            minimum=midi_key_width * 1.8 * 0.88,
-            cell_width=cell_width,
-        )
-        used_width = _place_responsive_item(
-            imgui,
-            cell_width=cell_width,
-            used_width=used_width,
-            item_width=button_width,
-            spacing=midi_spacing,
-        )
+        # scalar は vec3 と同じ learn control の 1 成分版。MIDI cell 全幅を使い、
+        # 短い V 系列の表示を左右に孤立させない。
+        button_width = -1.0 if cell_width is None else max(1.0, float(cell_width))
         clicked = _render_midi_button(
             imgui,
             label=button_label,
@@ -1341,7 +1249,7 @@ def render_parameter_row_4cols(
 def render_parameter_table(
     rows: list[ParameterRow],
     *,
-    column_weights: tuple[float, float, float, float] | None = None,
+    metric_scale: float | None = None,
     primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
     layer_style_name_by_site_id: Mapping[str, str] | None = None,
     effect_chain_header_by_id: Mapping[str, str] | None = None,
@@ -1358,14 +1266,6 @@ def render_parameter_table(
     """ParameterRow の列を 4 列テーブルとして描画し、更新後の rows を返す。"""
 
     import imgui  # type: ignore[import-untyped]
-
-    if column_weights is None:
-        column_weights = runtime_config().parameter_gui_table_column_weights
-
-    # 列幅は stretch 比率として使う（負/ゼロは imgui 的にも意味が無いのでエラーにする）。
-    label_weight, control_weight, range_weight, meta_weight = column_weights
-    if label_weight <= 0.0 or control_weight <= 0.0 or range_weight <= 0.0 or meta_weight <= 0.0:
-        raise ValueError(f"column_weights must be > 0: {column_weights}")
 
     # このテーブル（rows 全体）で変更があったかの集計。
     changed_any = False
@@ -1491,10 +1391,9 @@ def render_parameter_table(
             # `begin_table` は pyimgui のバージョン/バックエンドで返り値が揺れるため、
             # `.opened` 属性があればそれを使い、無ければ返り値自体を bool として扱う。
             table_flags = (
-                imgui.TABLE_SIZING_STRETCH_PROP
+                imgui.TABLE_SIZING_FIXED_FIT
                 | getattr(imgui, "TABLE_ROW_BACKGROUND", 0)
                 | getattr(imgui, "TABLE_BORDERS_INNER_VERTICAL", 0)
-                | getattr(imgui, "TABLE_RESIZABLE", 0)
             )
             table = imgui.begin_table("##parameters", 4, table_flags)
             opened = getattr(table, "opened", table)
@@ -1504,27 +1403,10 @@ def render_parameter_table(
                 continue
 
             try:
-                # 4 列: label / control / min-max / cc
-                # それぞれ「残り幅に対する比率」で伸縮させる。
-                imgui.table_setup_column(
-                    "  Source / Parameter",
-                    imgui.TABLE_COLUMN_WIDTH_STRETCH,
-                    float(label_weight),
-                )
-                imgui.table_setup_column(
-                    "  Value",
-                    imgui.TABLE_COLUMN_WIDTH_STRETCH,
-                    float(control_weight),
-                )
-                imgui.table_setup_column(
-                    "  Range",
-                    imgui.TABLE_COLUMN_WIDTH_STRETCH,
-                    float(range_weight),
-                )
-                imgui.table_setup_column(
-                    "  MIDI",
-                    imgui.TABLE_COLUMN_WIDTH_STRETCH,
-                    float(meta_weight),
+                # Source / Range / MIDI は logical px 固定、Value だけが残り幅を受け取る。
+                _setup_parameter_table_columns(
+                    imgui,
+                    metric_scale=metric_scale,
                 )
                 if not drew_column_headers:
                     # カラム名（label/control/min-max/cc）をヘッダ行として描画する（1回だけ）。

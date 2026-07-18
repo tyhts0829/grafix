@@ -3,9 +3,24 @@ from collections.abc import Mapping
 from grafix import E, G, preset, run
 
 meta: dict[str, Mapping[str, object]] = {
-    "center": {"kind": "vec3", "ui_min": 0.0, "ui_max": 100.0},
-    "scale": {"kind": "float", "ui_min": 0.0, "ui_max": 4.0},
-    "fill_density_coef": {"kind": "float", "ui_min": 0.0, "ui_max": 1.0},
+    "center": {
+        "kind": "vec3",
+        "ui_min": 0.0,
+        "ui_max": 100.0,
+        "description": "ロゴ全体を基準位置から移動する量を指定する。",
+    },
+    "scale": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 4.0,
+        "description": "ロゴ全体を縦横同率で拡大縮小する。",
+    },
+    "fill_density_coef": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 1.0,
+        "description": "ロゴ内の各ハッチング密度を基準値に対する比率で指定する。",
+    },
 }
 
 

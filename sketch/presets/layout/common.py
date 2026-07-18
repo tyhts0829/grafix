@@ -18,15 +18,57 @@ _GOLDEN_F = (math.sqrt(5.0) - 1.0) / 2.0  # 0.618...
 _GOLDEN_T = 1.0 - _GOLDEN_F  # 0.382...
 
 META_COMMON: dict[str, Mapping[str, object]] = {
-    "canvas_w": {"kind": "float", "ui_min": 10.0, "ui_max": 1000.0},
-    "canvas_h": {"kind": "float", "ui_min": 10.0, "ui_max": 1000.0},
-    "axes": {"kind": "choice", "choices": ["both", "vertical", "horizontal"]},
-    "margin_l": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
-    "margin_r": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
-    "margin_t": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
-    "margin_b": {"kind": "float", "ui_min": 0.0, "ui_max": 100.0},
-    "show_center": {"kind": "bool"},
-    "offset": {"kind": "vec3", "ui_min": -50.0, "ui_max": 50.0},
+    "canvas_w": {
+        "kind": "float",
+        "ui_min": 10.0,
+        "ui_max": 1000.0,
+        "description": "ガイドを構成するキャンバス矩形の横幅を指定する。",
+    },
+    "canvas_h": {
+        "kind": "float",
+        "ui_min": 10.0,
+        "ui_max": 1000.0,
+        "description": "ガイドを構成するキャンバス矩形の高さを指定する。",
+    },
+    "axes": {
+        "kind": "choice",
+        "choices": ["both", "vertical", "horizontal"],
+        "description": "縦線と横線の両方、またはいずれか一方向だけを描く。",
+    },
+    "margin_l": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 100.0,
+        "description": "ガイド対象矩形をキャンバス左端から内側へずらす距離を指定する。",
+    },
+    "margin_r": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 100.0,
+        "description": "ガイド対象矩形をキャンバス右端から内側へずらす距離を指定する。",
+    },
+    "margin_t": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 100.0,
+        "description": "ガイド対象矩形をキャンバス上端から内側へずらす距離を指定する。",
+    },
+    "margin_b": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 100.0,
+        "description": "ガイド対象矩形をキャンバス下端から内側へずらす距離を指定する。",
+    },
+    "show_center": {
+        "kind": "bool",
+        "description": "ガイド対象矩形の中心を通る縦横線を追加する。",
+    },
+    "offset": {
+        "kind": "vec3",
+        "ui_min": -50.0,
+        "ui_max": 50.0,
+        "description": "ガイド全体をキャンバス原点から移動する量を指定する。",
+    },
 }
 
 

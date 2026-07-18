@@ -22,10 +22,15 @@ def test_theme_uses_logical_spacing_and_neutral_buttons() -> None:
     try:
         apply_parameter_gui_theme(imgui)
         style = imgui.get_style()
-        assert style.window_padding == (16.0, 12.0)
-        assert style.frame_padding == (8.0, 6.0)
-        assert style.cell_padding == (8.0, 5.0)
-        assert style.frame_rounding == 4.0
+        assert style.window_padding == (14.0, 10.0)
+        assert style.frame_padding == (7.0, 4.0)
+        assert style.cell_padding == (7.0, 3.0)
+        assert style.child_rounding == 3.0
+        assert style.frame_rounding == 2.0
+        assert style.popup_rounding == 4.0
+        assert style.scrollbar_rounding == 3.0
+        assert style.grab_rounding == 2.0
+        assert style.tab_rounding == 2.0
         assert tuple(style.colors[imgui.COLOR_BUTTON]) == pytest.approx(
             PARAMETER_GUI_PALETTE["surface_raised"]
         )
@@ -42,10 +47,10 @@ def test_theme_scales_spacing_and_minimum_targets_with_ui_scale() -> None:
     try:
         apply_parameter_gui_theme(imgui, ui_scale=1.5)
         style = imgui.get_style()
-        assert style.window_padding == (24.0, 18.0)
-        assert style.frame_padding == (12.0, 9.0)
-        assert style.cell_padding == (12.0, 7.5)
-        assert style.scrollbar_size == 18.0
-        assert style.grab_min_size == 18.0
+        assert style.window_padding == (21.0, 15.0)
+        assert style.frame_padding == (10.5, 6.0)
+        assert style.cell_padding == (10.5, 4.5)
+        assert style.scrollbar_size == 16.5
+        assert style.grab_min_size == 16.5
     finally:
         imgui.destroy_context(context)

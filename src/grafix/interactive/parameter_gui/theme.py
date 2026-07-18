@@ -78,23 +78,23 @@ def apply_parameter_gui_theme(imgui: Any, *, ui_scale: float = 1.0) -> None:
         raise ValueError("ui_scale は finite な正の値である必要がある")
 
     style = imgui.get_style()
-    style.window_padding = (16.0 * scale, 12.0 * scale)
-    style.frame_padding = (8.0 * scale, 6.0 * scale)
-    style.item_spacing = (8.0 * scale, 6.0 * scale)
-    style.item_inner_spacing = (6.0 * scale, 4.0 * scale)
-    style.cell_padding = (8.0 * scale, 5.0 * scale)
-    style.indent_spacing = 18.0 * scale
-    style.scrollbar_size = 12.0 * scale
-    style.grab_min_size = 12.0 * scale
+    style.window_padding = (14.0 * scale, 10.0 * scale)
+    style.frame_padding = (7.0 * scale, 4.0 * scale)
+    style.item_spacing = (7.0 * scale, 4.0 * scale)
+    style.item_inner_spacing = (5.0 * scale, 3.0 * scale)
+    style.cell_padding = (7.0 * scale, 3.0 * scale)
+    style.indent_spacing = 17.0 * scale
+    style.scrollbar_size = 11.0 * scale
+    style.grab_min_size = 11.0 * scale
 
-    # 全面ウィンドウは角丸にせず、内側の surface と操作だけを柔らかくする。
+    # 全面ウィンドウは角丸にせず、内側の surface と操作も小さい半径に留める。
     style.window_rounding = 0.0
-    style.child_rounding = 6.0 * scale
-    style.frame_rounding = 4.0 * scale
-    style.popup_rounding = 8.0 * scale
-    style.scrollbar_rounding = 6.0 * scale
-    style.grab_rounding = 4.0 * scale
-    style.tab_rounding = 4.0 * scale
+    style.child_rounding = 3.0 * scale
+    style.frame_rounding = 2.0 * scale
+    style.popup_rounding = 4.0 * scale
+    style.scrollbar_rounding = 3.0 * scale
+    style.grab_rounding = 2.0 * scale
+    style.tab_rounding = 2.0 * scale
 
     style.window_border_size = 0.0
     style.child_border_size = 0.0

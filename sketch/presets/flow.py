@@ -3,13 +3,48 @@ from collections.abc import Mapping
 from grafix import E, G, preset, run
 
 meta: dict[str, Mapping[str, object]] = {
-    "center": {"kind": "vec3", "ui_min": 0.0, "ui_max": 100.0},
-    "scale": {"kind": "vec3", "ui_min": 0.0, "ui_max": 5.0},
-    "fill_density_coef": {"kind": "float", "ui_min": 0.0, "ui_max": 1.0},
-    "fill_angle": {"kind": "float", "ui_min": 0.0, "ui_max": 360.0},
-    "subdivide_levels": {"kind": "int", "ui_min": 0, "ui_max": 10},
-    "displace_amplitude": {"kind": "vec3", "ui_min": 0.0, "ui_max": 5.0},
-    "displace_frequency": {"kind": "vec3", "ui_min": 0.0, "ui_max": 0.5},
+    "center": {
+        "kind": "vec3",
+        "ui_min": 0.0,
+        "ui_max": 100.0,
+        "description": "完成した流線パターン全体を移動する量を指定する。",
+    },
+    "scale": {
+        "kind": "vec3",
+        "ui_min": 0.0,
+        "ui_max": 5.0,
+        "description": "完成した流線パターン全体を軸ごとに拡大縮小する。",
+    },
+    "fill_density_coef": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 1.0,
+        "description": "変形前に生成する平行線の密度を基準値に対する比率で指定する。",
+    },
+    "fill_angle": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 360.0,
+        "description": "流線の元になる平行線の角度を度で指定する。",
+    },
+    "subdivide_levels": {
+        "kind": "int",
+        "ui_min": 0,
+        "ui_max": 10,
+        "description": "変位前に各線分を細分化する反復回数を指定する。",
+    },
+    "displace_amplitude": {
+        "kind": "vec3",
+        "ui_min": 0.0,
+        "ui_max": 5.0,
+        "description": "ノイズ変位の最大振幅を軸ごとに指定する。",
+    },
+    "displace_frequency": {
+        "kind": "vec3",
+        "ui_min": 0.0,
+        "ui_max": 0.5,
+        "description": "ノイズ場の空間周波数を軸ごとに指定する。",
+    },
 }
 
 

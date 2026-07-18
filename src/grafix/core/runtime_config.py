@@ -39,8 +39,6 @@ from typing import Any
 
 # parameter_gui の設定が省略された場合のフォールバック値。
 _PARAMETER_GUI_FONT_SIZE_BASE_PX_DEFAULT = 14.0
-# 重みは合計 1.0 を要求しない（ここでは正の値であることだけを検証する）。
-_PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT = (0.36, 0.35, 0.18, 0.23)
 _PARAMETER_GUI_SHORTCUT_ACTIONS = (
     "play_pause",
     "reset_time",
@@ -119,9 +117,6 @@ class RuntimeConfig:
         日本語表示時のフォールバックフォント名（任意）。
     parameter_gui_font_size_base_px:
         パラメータ GUI の基準フォントサイズ（px）。
-    parameter_gui_table_column_weights:
-        パラメータ GUI テーブル列の重み (name, value, min, max)。
-        各要素は正の値である必要がある。
     png_scale:
         `python -m grafix export` における PNG の拡大率。
     gcode:
@@ -140,7 +135,6 @@ class RuntimeConfig:
     parameter_gui_window_size: tuple[int, int]
     parameter_gui_fallback_font_japanese: str | None
     parameter_gui_font_size_base_px: float
-    parameter_gui_table_column_weights: tuple[float, float, float, float]
     parameter_gui_shortcuts: tuple[tuple[str, str], ...]
     png_scale: float
     gcode: GCodeExportConfig
@@ -191,7 +185,6 @@ class _UiSection:
     parameter_gui_window_size: tuple[int, int]
     parameter_gui_fallback_font_japanese: str | None
     parameter_gui_font_size_base_px: float
-    parameter_gui_table_column_weights: tuple[float, float, float, float]
     parameter_gui_shortcuts: tuple[tuple[str, str], ...]
 
 
@@ -465,30 +458,6 @@ def _as_midi_inputs(value: Any) -> list[tuple[str, str]]:
             )
         out.append((port_s, mode_s))
     return out
-
-
-def _as_float_quad(
-    value: Any,
-    *,
-    key: str,
-) -> tuple[float, float, float, float] | None:
-    """任意値を 4 要素の float タプルとして解釈して返す。"""
-
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        raise RuntimeError(f"{key} は [a, b, c, d] の配列である必要があります: got={value!r}")
-    seq = value
-    if len(seq) != 4:
-        raise RuntimeError(f"{key} は [a, b, c, d] の配列である必要があります: got={value!r}")
-    numbers = tuple(_as_float(item, key=f"{key}[{index}]") for index, item in enumerate(seq))
-    if any(number is None for number in numbers):
-        raise RuntimeError(
-            f"{key} は [a, b, c, d] の数値配列である必要があります: got={value!r}"
-        )
-    a, b, c, d = numbers
-    assert a is not None and b is not None and c is not None and d is not None
-    return (a, b, c, d)
 
 
 def _load_yaml_text(text: str, *, source: str) -> dict[str, Any]:
@@ -830,18 +799,6 @@ def _parse_ui_section(payload: dict[str, Any]) -> _UiSection:
             f": got={font_size}"
         )
 
-    column_weights = _as_float_quad(
-        parameter_gui.get("table_column_weights"),
-        key="ui.parameter_gui.table_column_weights",
-    )
-    if column_weights is None:
-        column_weights = _PARAMETER_GUI_TABLE_COLUMN_WEIGHTS_DEFAULT
-    if any(float(weight) <= 0.0 for weight in column_weights):
-        raise ValueError(
-            "ui.parameter_gui.table_column_weights は全要素が正である必要があります"
-            f": got={column_weights}"
-        )
-
     shortcut_values = _as_mapping(
         parameter_gui.get("shortcuts"),
         key="ui.parameter_gui.shortcuts",
@@ -863,7 +820,6 @@ def _parse_ui_section(payload: dict[str, Any]) -> _UiSection:
             parameter_gui.get("fallback_font_japanese")
         ),
         parameter_gui_font_size_base_px=float(font_size),
-        parameter_gui_table_column_weights=column_weights,
         parameter_gui_shortcuts=tuple(shortcuts),
     )
 
@@ -1167,7 +1123,6 @@ def runtime_config() -> RuntimeConfig:
         parameter_gui_window_size=ui.parameter_gui_window_size,
         parameter_gui_fallback_font_japanese=ui.parameter_gui_fallback_font_japanese,
         parameter_gui_font_size_base_px=ui.parameter_gui_font_size_base_px,
-        parameter_gui_table_column_weights=ui.parameter_gui_table_column_weights,
         parameter_gui_shortcuts=ui.parameter_gui_shortcuts,
         png_scale=export.png_scale,
         gcode=export.gcode,
@@ -1232,7 +1187,6 @@ def _packaged_runtime_config_report() -> RuntimeConfigReport:
         parameter_gui_window_size=ui.parameter_gui_window_size,
         parameter_gui_fallback_font_japanese=ui.parameter_gui_fallback_font_japanese,
         parameter_gui_font_size_base_px=ui.parameter_gui_font_size_base_px,
-        parameter_gui_table_column_weights=ui.parameter_gui_table_column_weights,
         parameter_gui_shortcuts=ui.parameter_gui_shortcuts,
         png_scale=export.png_scale,
         gcode=export.gcode,

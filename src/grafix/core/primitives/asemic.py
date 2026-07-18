@@ -19,31 +19,133 @@ from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
 
 asemic_meta = {
-    "text": ParamMeta(kind="str"),
-    "seed": ParamMeta(kind="int", ui_min=0, ui_max=999999),
+    "text": ParamMeta(
+        kind="str",
+        description="擬似字形で描画する文字列を指定し、改行で複数行に分けます。",
+    ),
+    "seed": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=999999,
+        description="文字ごとの字形を決定し、同じ文字を同じ形で再現できるようにします。",
+    ),
     # --- glyph params（全文共通）---
-    "n_nodes": ParamMeta(kind="int", ui_min=3, ui_max=200),
-    "candidates": ParamMeta(kind="int", ui_min=1, ui_max=50),
-    "stroke_min": ParamMeta(kind="int", ui_min=0, ui_max=20),
-    "stroke_max": ParamMeta(kind="int", ui_min=0, ui_max=20),
-    "walk_min_steps": ParamMeta(kind="int", ui_min=1, ui_max=20),
-    "walk_max_steps": ParamMeta(kind="int", ui_min=1, ui_max=20),
-    "stroke_style": ParamMeta(kind="choice", choices=("line", "bezier")),
-    "bezier_samples": ParamMeta(kind="int", ui_min=2, ui_max=64),
-    "bezier_tension": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+    "n_nodes": ParamMeta(
+        kind="int",
+        ui_min=3,
+        ui_max=200,
+        description="各字形の骨格グラフに配置するノード数を指定します。",
+    ),
+    "candidates": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=50,
+        description="ノード配置時に比較する候補点を増やし、分布の均一さを調整します。",
+    ),
+    "stroke_min": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=20,
+        description="一つの字形を構成するストローク本数の下限を指定します。",
+    ),
+    "stroke_max": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=20,
+        description="一つの字形を構成するストローク本数の上限を指定します。",
+    ),
+    "walk_min_steps": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=20,
+        description="骨格グラフ上で一つのストロークが進む最小ステップ数を指定します。",
+    ),
+    "walk_max_steps": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=20,
+        description="骨格グラフ上で一つのストロークが進む最大ステップ数を指定します。",
+    ),
+    "stroke_style": ParamMeta(
+        kind="choice",
+        choices=("line", "bezier"),
+        description="骨格を折れ線のまま描くか、Bézier 曲線で滑らかに描くか選択します。",
+    ),
+    "bezier_samples": ParamMeta(
+        kind="int",
+        ui_min=2,
+        ui_max=64,
+        description="Bézier 化した各セグメントを構成するサンプリング点数を指定します。",
+    ),
+    "bezier_tension": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="Bézier ストロークの張りを調整し、大きいほど直線に近づけます。",
+    ),
     # --- layout params ---
-    "text_align": ParamMeta(kind="choice", choices=("left", "center", "right")),
-    "glyph_advance_em": ParamMeta(kind="float", ui_min=0.0, ui_max=3.0),
-    "space_advance_em": ParamMeta(kind="float", ui_min=0.0, ui_max=3.0),
-    "letter_spacing_em": ParamMeta(kind="float", ui_min=0.0, ui_max=2.0),
-    "line_height": ParamMeta(kind="float", ui_min=0.8, ui_max=3.0),
-    "use_bounding_box": ParamMeta(kind="bool"),
-    "box_width": ParamMeta(kind="float", ui_min=0.0, ui_max=300.0),
-    "box_height": ParamMeta(kind="float", ui_min=0.0, ui_max=300.0),
-    "show_bounding_box": ParamMeta(kind="bool"),
+    "text_align": ParamMeta(
+        kind="choice",
+        choices=("left", "center", "right"),
+        description="各行の擬似字形を左揃え・中央揃え・右揃えのいずれで配置するか選択します。",
+    ),
+    "glyph_advance_em": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=3.0,
+        description="空白以外の文字を一文字進める距離を em 単位で指定します。",
+    ),
+    "space_advance_em": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=3.0,
+        description="空白文字で進める距離を em 単位で指定します。",
+    ),
+    "letter_spacing_em": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=2.0,
+        description="各文字送りへ追加する間隔を em 単位で指定します。",
+    ),
+    "line_height": ParamMeta(
+        kind="float",
+        ui_min=0.8,
+        ui_max=3.0,
+        description="複数行のベースライン間隔を em 単位で指定します。",
+    ),
+    "use_bounding_box": ParamMeta(
+        kind="bool",
+        description="指定幅での自動改行と任意のボックス枠描画を有効にします。",
+    ),
+    "box_width": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="自動改行と枠描画に使うボックス幅を出力座標単位で指定します。",
+    ),
+    "box_height": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="枠描画に使うボックス高さを出力座標単位で指定します。",
+    ),
+    "show_bounding_box": ParamMeta(
+        kind="bool",
+        description="指定した幅と高さのボックス枠を擬似字形へ追加します。",
+    ),
     # --- placement ---
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="生成した擬似文字列全体を平行移動する XYZ 座標を指定します。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="1 em を基準に生成した擬似字形へ適用する等方スケールを指定します。",
+    ),
 }
 
 ASEMIC_UI_VISIBLE = {

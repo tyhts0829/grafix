@@ -9,7 +9,12 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
 translate_meta = {
-    "delta": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
+    "delta": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="入力全体へ加える各軸の平行移動量。",
+    ),
 }
 
 

@@ -15,16 +15,56 @@ EPS = 1e-6
 INCLUDE_BOUNDARY = True
 
 mirror3d_meta = {
-    "mode": ParamMeta(kind="choice", choices=("azimuth", "polyhedral")),
-    "n_azimuth": ParamMeta(kind="int", ui_min=1, ui_max=64),
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "axis": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0),
-    "phi0": ParamMeta(kind="float", ui_min=-180.0, ui_max=180.0),
-    "mirror_equator": ParamMeta(kind="bool"),
-    "source_side": ParamMeta(kind="bool"),
-    "group": ParamMeta(kind="choice", choices=("T", "O", "I")),
-    "use_reflection": ParamMeta(kind="bool"),
-    "show_planes": ParamMeta(kind="bool"),
+    "mode": ParamMeta(
+        kind="choice",
+        choices=("azimuth", "polyhedral"),
+        description="任意軸まわりの放射対称と正多面体の回転対称から複製方式を選ぶ。",
+    ),
+    "n_azimuth": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=64,
+        description="放射対称で回転軸まわりを等分する数。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="三次元の回転および反射に使用する中心点。",
+    ),
+    "axis": ParamMeta(
+        kind="vec3",
+        ui_min=-1.0,
+        ui_max=1.0,
+        description="放射対称で使用する回転軸の方向ベクトル。",
+    ),
+    "phi0": ParamMeta(
+        kind="float",
+        ui_min=-180.0,
+        ui_max=180.0,
+        description="放射対称の複製元となるくさびの開始角。",
+    ),
+    "mirror_equator": ParamMeta(
+        kind="bool",
+        description="放射対称の結果を回転軸に直交する赤道面でも反射する。",
+    ),
+    "source_side": ParamMeta(
+        kind="bool",
+        description="赤道面反射で回転軸方向の正側を複製元にする。",
+    ),
+    "group": ParamMeta(
+        kind="choice",
+        choices=("T", "O", "I"),
+        description="正多面体対称に使う四面体、八面体、二十面体の回転群を選ぶ。",
+    ),
+    "use_reflection": ParamMeta(
+        kind="bool",
+        description="正多面体の回転対称へ代表反射を追加して複製数を倍にする。",
+    ),
+    "show_planes": ParamMeta(
+        kind="bool",
+        description="対称面を確認用の十字ラインとして出力する。",
+    ),
 }
 
 def _mode_is(name: str):

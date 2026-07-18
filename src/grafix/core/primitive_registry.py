@@ -27,6 +27,11 @@ PrimitiveFunc = Callable[[tuple[tuple[str, Any], ...]], RealizedGeometry]
 primitive_registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
 """グローバルな primitive レジストリインスタンス。"""
 
+_PRIMITIVE_ACTIVATE_META = ParamMeta(
+    kind="bool",
+    description="このプリミティブによる形状生成を有効にする。",
+)
+
 
 def primitive(
     func: Callable[..., GeomTuple] | None = None,
@@ -91,7 +96,7 @@ def primitive(
         param_order: tuple[str, ...] = ()
         meta_with_activate: dict[str, ParamMeta] = {}
         if meta_norm is not None:
-            meta_with_activate = {"activate": ParamMeta(kind="bool"), **meta_norm}
+            meta_with_activate = {"activate": _PRIMITIVE_ACTIVATE_META, **meta_norm}
             user_defaults, user_order = op_defaults_and_order(
                 kind="primitive",
                 func=f,

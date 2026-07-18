@@ -10,11 +10,13 @@ from grafix.interactive.parameter_gui.table import _render_cc_cell
 class DummyImGui:
     def __init__(self, *, clicked_ids: set[str] | None = None) -> None:
         self._clicked_ids = set(clicked_ids or set())
+        self.buttons: list[str] = []
 
     def table_set_column_index(self, _index: int) -> None:
         return None
 
     def button(self, label: str, *_size: float) -> bool:
+        self.buttons.append(str(label))
         if "##" not in label:
             return False
         widget_id = label.split("##", 1)[1]
@@ -67,6 +69,21 @@ def test_scalar_learn_assign_and_clear() -> None:
     assert state.active_component is None
     assert state.last_seen_cc_seq == 10
 
+    waiting_imgui = DummyImGui()
+    changed, cc_key, _override = _render_cc_cell(
+        waiting_imgui,
+        row=row,
+        rules=rules,
+        cc_key=cc_key,
+        override=row.override,
+        cc_key_width=30,
+        width_spacer=4,
+        midi_learn_state=state,
+        midi_last_cc_change=(10, 7),
+    )
+    assert changed is False
+    assert waiting_imgui.buttons == ["V...##cc_learn"]
+
     changed, cc_key, _override = _render_cc_cell(
         DummyImGui(),
         row=row,
@@ -102,8 +119,9 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     state = MidiLearnState()
     rules = ui_rules_for_row(row)
 
+    waiting_imgui = DummyImGui(clicked_ids={"cc_learn_1"})
     changed, cc_key, _override = _render_cc_cell(
-        DummyImGui(clicked_ids={"cc_learn_1"}),
+        waiting_imgui,
         row=row,
         rules=rules,
         cc_key=row.cc_key,
@@ -119,8 +137,9 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     assert state.last_seen_cc_seq == 5
 
     # learn 中の同ボタン押下でキャンセル
+    waiting_imgui = DummyImGui(clicked_ids={"cc_learn_1"})
     changed, cc_key, _override = _render_cc_cell(
-        DummyImGui(clicked_ids={"cc_learn_1"}),
+        waiting_imgui,
         row=row,
         rules=rules,
         cc_key=cc_key,
@@ -133,6 +152,11 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     assert changed is False
     assert cc_key is None
     assert state.active_target is None
+    assert [label.split("##", 1)[0] for label in waiting_imgui.buttons] == [
+        "X",
+        "Y...",
+        "Z",
+    ]
 
     # もう一度 learn してから CC を受信して割当
     changed, cc_key, _override = _render_cc_cell(
@@ -177,4 +201,3 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     )
     assert changed is True
     assert cc_key is None
-

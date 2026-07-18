@@ -24,11 +24,34 @@ NONPLANAR_EPS_ABS = 1e-6
 NONPLANAR_EPS_REL = 1e-5
 
 fill_meta = {
-    "angle_sets": ParamMeta(kind="int", ui_min=1, ui_max=6),
-    "angle": ParamMeta(kind="float", ui_min=0.0, ui_max=180.0),
-    "density": ParamMeta(kind="float", ui_min=0.0, ui_max=float(MAX_FILL_LINES)),
-    "spacing_gradient": ParamMeta(kind="float", ui_min=-5.0, ui_max=5.0),
-    "remove_boundary": ParamMeta(kind="bool"),
+    "angle_sets": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=6,
+        description="180 度を等分して重ねるハッチング方向の数。",
+    ),
+    "angle": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=180.0,
+        description="ハッチング方向群の基準角を度単位で指定する。",
+    ),
+    "density": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=float(MAX_FILL_LINES),
+        description="領域を埋めるハッチング線の密度を指定する。",
+    ),
+    "spacing_gradient": ParamMeta(
+        kind="float",
+        ui_min=-5.0,
+        ui_max=5.0,
+        description="スキャン方向に沿ってハッチング線の間隔を変化させる。",
+    ),
+    "remove_boundary": ParamMeta(
+        kind="bool",
+        description="塗り線だけを残し、入力された境界線を出力から除く。",
+    ),
 }
 
 

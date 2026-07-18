@@ -24,12 +24,12 @@ class _G(Protocol):
         開始角とsigned sweepから開いた円弧を生成する。
 
         引数:
-            activate: bool
-            radius: float, range [0.0, 200.0]
-            start: float, range [-360.0, 360.0]
-            sweep: float, range [-360.0, 360.0]
-            segments: int, range [1, 512]
-            center: vec3, range [-300.0, 300.0]
+            activate: このプリミティブによる形状生成を有効にする。, bool
+            radius: 円弧の中心から輪郭までの半径を指定します。, float, range [0.0, 200.0]
+            start: +X 軸を基準とする円弧の開始角を度単位で指定します。, float, range [-360.0, 360.0]
+            sweep: 開始角から終点までの符号付き回転量を度単位で指定します。, float, range [-360.0, 360.0]
+            segments: 円弧を近似する直線セグメントの数を指定します。, int, range [1, 512]
+            center: 円弧の中心となる XYZ 座標を指定します。, vec3, range [-300.0, 300.0]
         """
         ...
     def asemic(self, *, activate: bool = ..., text: str = ..., seed: int = ..., n_nodes: int = ..., candidates: int = ..., stroke_min: int = ..., stroke_max: int = ..., walk_min_steps: int = ..., walk_max_steps: int = ..., stroke_style: Literal['line', 'bezier'] = ..., bezier_samples: int = ..., bezier_tension: float = ..., text_align: Literal['left', 'center', 'right'] = ..., glyph_advance_em: float = ..., space_advance_em: float = ..., letter_spacing_em: float = ..., line_height: float = ..., use_bounding_box: bool = ..., box_width: float = ..., box_height: float = ..., show_bounding_box: bool = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -37,7 +37,7 @@ class _G(Protocol):
         擬似文字（asemic）の文章をポリライン列として生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             text: 描画する文字列
             seed: 全体 seed
             n_nodes: ノード数（少なすぎるとストロークが生成できないことがある）
@@ -67,8 +67,8 @@ class _G(Protocol):
         4制御点からcubic Bezier curveを生成する。
 
         引数:
-            activate: bool
-            segments: int, range [1, 512]
+            activate: このプリミティブによる形状生成を有効にする。, bool
+            segments: 4 制御点で定まる曲線を近似する直線セグメントの数を指定します。, int, range [1, 512]
         """
         ...
     def circle(self, *, activate: bool = ..., radius: float = ..., segments: int = ..., center: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -76,7 +76,7 @@ class _G(Protocol):
         円を閉じたpolylineとして生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             radius: 半径
             segments: 周上の線分数
             center: 円の中心
@@ -87,12 +87,12 @@ class _G(Protocol):
         楕円を閉じたpolylineとして生成する。
 
         引数:
-            activate: bool
-            radius_x: float, range [0.0, 200.0]
-            radius_y: float, range [0.0, 200.0]
-            angle: float, range [-180.0, 180.0]
-            segments: int, range [3, 512]
-            center: vec3, range [-300.0, 300.0]
+            activate: このプリミティブによる形状生成を有効にする。, bool
+            radius_x: 回転前の X 軸方向における楕円の半径を指定します。, float, range [0.0, 200.0]
+            radius_y: 回転前の Y 軸方向における楕円の半径を指定します。, float, range [0.0, 200.0]
+            angle: 楕円を中心まわりに回転させる角度を度単位で指定します。, float, range [-180.0, 180.0]
+            segments: 楕円周を近似する直線セグメントの数を指定します。, int, range [3, 512]
+            center: 楕円の中心となる XYZ 座標を指定します。, vec3, range [-300.0, 300.0]
         """
         ...
     def grid(self, *, activate: bool = ..., nx: int = ..., ny: int = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -100,7 +100,7 @@ class _G(Protocol):
         グリッド（縦線 nx 本 + 横線 ny 本）を生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             nx: 縦線の本数
             ny: 横線の本数
             center: 平行移動ベクトル (cx, cy, cz)
@@ -112,38 +112,38 @@ class _G(Protocol):
         共形写像ベースの直交格子（等ポテンシャル線/流線風）を生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             preset: `"cylinder_uniform" | "mobius" | "exp"`
-            u_min: float, range [-10.0, 10.0]
-            u_max: float, range [-10.0, 10.0]
-            v_min: float, range [-10.0, 10.0]
-            v_max: float, range [-10.0, 10.0]
-            n_u: int, range [0, 200]
-            n_v: int, range [0, 200]
+            u_min: 写像元 W=u+iv 平面で描画する u 座標の下限を指定します。, float, range [-10.0, 10.0]
+            u_max: 写像元 W=u+iv 平面で描画する u 座標の上限を指定します。, float, range [-10.0, 10.0]
+            v_min: 写像元 W=u+iv 平面で描画する v 座標の下限を指定します。, float, range [-10.0, 10.0]
+            v_max: 写像元 W=u+iv 平面で描画する v 座標の上限を指定します。, float, range [-10.0, 10.0]
+            n_u: u を固定して v 方向へたどる格子線の本数を指定します。, int, range [0, 200]
+            n_v: v を固定して u 方向へたどる格子線の本数を指定します。, int, range [0, 200]
             samples: 1 本あたりのサンプル点数（2 以上）
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率
             rotate: 回転角 [deg]（XY 平面、origin 回り）
             clip: True のとき矩形クリップ（AABB）で線を分割する
-            clip_xmin: float, range [-200.0, 200.0]
-            clip_xmax: float, range [-200.0, 200.0]
-            clip_ymin: float, range [-200.0, 200.0]
-            clip_ymax: float, range [-200.0, 200.0]
-            a: float, range [0.0, 50.0]
-            U: float, range [0.0, 5.0]
-            gap: float, range [0.0, 0.05]
+            clip_xmin: 変換後の座標でクリップ矩形の X 下限を指定します。, float, range [-200.0, 200.0]
+            clip_xmax: 変換後の座標でクリップ矩形の X 上限を指定します。, float, range [-200.0, 200.0]
+            clip_ymin: 変換後の座標でクリップ矩形の Y 下限を指定します。, float, range [-200.0, 200.0]
+            clip_ymax: 変換後の座標でクリップ矩形の Y 上限を指定します。, float, range [-200.0, 200.0]
+            a: 円柱一様流写像で障害物となる境界円の半径を指定します。, float, range [0.0, 50.0]
+            U: 円柱一様流写像で W 座標を除算する流速スケールを指定します。, float, range [0.0, 5.0]
+            gap: 格子線を境界円から離すため、半径に加える相対的な隙間を指定します。, float, range [0.0, 0.05]
             draw_boundary: `preset="cylinder_uniform"` で境界円を追加する
             boundary_samples: 境界円のサンプル数（3 以上）
-            alpha_re: float, range [-5.0, 5.0]
-            alpha_im: float, range [-5.0, 5.0]
-            beta_re: float, range [-5.0, 5.0]
-            beta_im: float, range [-5.0, 5.0]
-            gamma_re: float, range [-5.0, 5.0]
-            gamma_im: float, range [-5.0, 5.0]
-            delta_re: float, range [-5.0, 5.0]
-            delta_im: float, range [-5.0, 5.0]
-            k_re: float, range [-5.0, 5.0]
-            k_im: float, range [-5.0, 5.0]
+            alpha_re: Möbius 写像 (αW+β)/(γW+δ) における α の実部を指定します。, float, range [-5.0, 5.0]
+            alpha_im: Möbius 写像 (αW+β)/(γW+δ) における α の虚部を指定します。, float, range [-5.0, 5.0]
+            beta_re: Möbius 写像 (αW+β)/(γW+δ) における β の実部を指定します。, float, range [-5.0, 5.0]
+            beta_im: Möbius 写像 (αW+β)/(γW+δ) における β の虚部を指定します。, float, range [-5.0, 5.0]
+            gamma_re: Möbius 写像 (αW+β)/(γW+δ) における γ の実部を指定します。, float, range [-5.0, 5.0]
+            gamma_im: Möbius 写像 (αW+β)/(γW+δ) における γ の虚部を指定します。, float, range [-5.0, 5.0]
+            delta_re: Möbius 写像 (αW+β)/(γW+δ) における δ の実部を指定します。, float, range [-5.0, 5.0]
+            delta_im: Möbius 写像 (αW+β)/(γW+δ) における δ の虚部を指定します。, float, range [-5.0, 5.0]
+            k_re: 指数写像 exp(kW) で W に掛ける複素係数 k の実部を指定します。, float, range [-5.0, 5.0]
+            k_im: 指数写像 exp(kW) で W に掛ける複素係数 k の虚部を指定します。, float, range [-5.0, 5.0]
         """
         ...
     def line(self, *, activate: bool = ..., center: Vec3 = ..., anchor: Literal['center', 'left', 'right'] = ..., length: float = ..., angle: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -151,7 +151,7 @@ class _G(Protocol):
         正規化済み引数から線分を生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             center: `anchor` で指定した基準点の座標 (cx, cy, cz)
             anchor: `center` の基準点
             length: 線分の長さ
@@ -163,7 +163,7 @@ class _G(Protocol):
         リサージュ曲線を 1 本の開ポリラインとして生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             a: X 方向の角周波数係数
             b: Y 方向の角周波数係数
             phase: X 方向の位相 [deg]
@@ -178,7 +178,7 @@ class _G(Protocol):
         L-system を展開し、枝分かれした線（開ポリライン列）を生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             kind: プリセット種別
             iters: 展開回数（0 で axiom をそのまま解釈する）
             center: 開始点の座標 (cx, cy, cz)
@@ -196,7 +196,7 @@ class _G(Protocol):
         正多角形の閉ポリラインを生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             n_sides: 辺の数
             phase: 頂点開始角 [deg]
             sweep: 描画する周回角 [deg]
@@ -209,7 +209,7 @@ class _G(Protocol):
         多面体を面ポリライン列として生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             kind: 多面体の名前
             center: 平行移動ベクトル (cx, cy, cz)
             scale: 等方スケール倍率 s
@@ -220,8 +220,8 @@ class _G(Protocol):
         2D/3D point列から単一polylineを生成する。
 
         引数:
-            activate: bool
-            closed: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
+            closed: 終点が始点と異なる場合に始点を末尾へ追加して線を閉じます。, bool
         """
         ...
     def rect(self, *, activate: bool = ..., width: float = ..., height: float = ..., angle: float = ..., center: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -229,11 +229,11 @@ class _G(Protocol):
         中心・幅・高さから閉じた長方形を生成する。
 
         引数:
-            activate: bool
-            width: float, range [0.0, 200.0]
-            height: float, range [0.0, 200.0]
-            angle: float, range [-180.0, 180.0]
-            center: vec3, range [-300.0, 300.0]
+            activate: このプリミティブによる形状生成を有効にする。, bool
+            width: 回転前の X 軸方向における長方形の幅を指定します。, float, range [0.0, 200.0]
+            height: 回転前の Y 軸方向における長方形の高さを指定します。, float, range [0.0, 200.0]
+            angle: 長方形を中心まわりに回転させる角度を度単位で指定します。, float, range [-180.0, 180.0]
+            center: 長方形の中心となる XYZ 座標を指定します。, vec3, range [-300.0, 300.0]
         """
         ...
     def sphere(self, *, activate: bool = ..., subdivisions: int = ..., style: Literal['latlon', 'zigzag', 'icosphere', 'rings'] = ..., line_mode: Literal['horizontal', 'vertical', 'both'] = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -241,7 +241,7 @@ class _G(Protocol):
         球のワイヤーフレームをポリライン列として生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             subdivisions: 細分化レベル（0..5 にクランプ）
             style: 生成方式
             line_mode: ``latlon`` / ``rings`` の線種
@@ -254,7 +254,7 @@ class _G(Protocol):
         フォントアウトラインからテキストのポリライン列を生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             text: 描画する文字列
             font: フォント指定（実在パス / ファイル名 / ステム / 部分一致）
             font_index: `.ttc` の subfont 番号（0 以上）
@@ -275,7 +275,7 @@ class _G(Protocol):
         トーラスのワイヤーフレーム（子午線+緯線）を生成する。
 
         引数:
-            activate: bool
+            activate: このプリミティブによる形状生成を有効にする。, bool
             major_radius: 大半径
             minor_radius: 小半径
             major_segments: major 方向の分割数
@@ -294,7 +294,7 @@ class _EffectBuilder(Protocol):
         スケール→回転→平行移動を適用する（合成アフィン変換）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             auto_center: True なら頂点の平均座標を中心に使用する
             pivot: `auto_center=False` のときの変換中心
             rotation: 各軸の回転角 [deg]（rx, ry, rz）
@@ -307,7 +307,7 @@ class _EffectBuilder(Protocol):
         入力を複製して太線風にする。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             count: 出力ストローク数（元の線を 1 本含む）
             radius: ずらし量の最大半径 [mm] 相当（XY のみ）
             seed: ずらし量生成の乱数シード（決定性のため）
@@ -318,7 +318,7 @@ class _EffectBuilder(Protocol):
         Shapely の buffer を用いて輪郭を生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             join: 角の処理
             quad_segs: 円弧近似分割数（Shapely の `quad_segs` 相当）
             distance: buffer 距離 [mm]
@@ -331,7 +331,7 @@ class _EffectBuilder(Protocol):
         XY 平面へ整列した上で、閉曲線マスクで線分列をクリップする。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: `"inside"` はマスク内側だけ残す
             draw_outline: True のとき、マスク輪郭を追加で出力に含める
         """
@@ -341,7 +341,7 @@ class _EffectBuilder(Protocol):
         線分を細分化してノイズで崩す（非接続）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             intensity: 変位量（長さ単位は座標系に従う）
             subdivisions: 細分回数
             intensity_mask_base: ジオメトリ bbox の中心（正規化座標 t=0）における intensity 乗算係数（軸別）
@@ -355,7 +355,7 @@ class _EffectBuilder(Protocol):
         連続線を破線に変換する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             dash_length: ダッシュ（描画区間）の長さ [mm]
             gap_length: ギャップ（非描画区間）の長さ [mm]
             offset: パターン位相オフセット [mm]
@@ -367,7 +367,7 @@ class _EffectBuilder(Protocol):
         3D Perlin ノイズで頂点を変位する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             amplitude: 変位量 [mm]（各軸別）
             spatial_freq: 空間周波数（各軸別）
             amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
@@ -385,7 +385,7 @@ class _EffectBuilder(Protocol):
         線や面を条件で間引く。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             interval: 線インデックスに対する間引きステップ
             index_offset: interval 判定の開始オフセット
             min_length: この長さ以下の線を対象とする
@@ -402,7 +402,7 @@ class _EffectBuilder(Protocol):
         指定方向に押し出し、複製線と側面エッジを生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             delta: 押し出し量（dx, dy, dz）[mm]（長さは 0–200 にクランプ）
             scale: 複製線に適用するスケール係数（0–3 にクランプ）
             subdivisions: 中点挿入の細分回数（0–8 にクランプ）
@@ -414,7 +414,7 @@ class _EffectBuilder(Protocol):
         閉領域をハッチングで塗りつぶす。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             angle_sets: 方向本数（シーケンス指定時はグループごとにサイクル適用）
             angle: 基準角 [deg]（シーケンス指定時はグループごとにサイクル適用）
             density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
@@ -427,7 +427,7 @@ class _EffectBuilder(Protocol):
         マスク内で差分成長を行い、襞のような閉曲線群を生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             seed_count: マスク内へ配置する seed（初期ループ）数
             target_spacing: 目標点間隔 [mm]
             boundary_avoid: 境界近傍で内側へ押し戻す強さ（0 で無効）
@@ -442,7 +442,7 @@ class _EffectBuilder(Protocol):
         ポリライン列を highpass（高周波強調）する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             step: 再サンプル間隔（弧長）
             sigma: 低域成分を作るガウス平滑半径（`sigma/step` が実効的なスケール）
             gain: 高周波強調係数
@@ -454,7 +454,7 @@ class _EffectBuilder(Protocol):
         閉曲線群から等高線（等値線）を複数レベル抽出して出力する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             spacing: レベル間隔
             phase: レベルの位相（`0` だと境界 `SDF=0` が含まれる）
             max_dist: 抽出範囲（`|SDF| <= max_dist`）
@@ -471,7 +471,7 @@ class _EffectBuilder(Protocol):
         ポリライン列を低域通過（ローパス）して滑らかにする。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             step: 再サンプル間隔（弧長）
             sigma: ガウス平滑半径
             closed: 境界条件
@@ -482,7 +482,7 @@ class _EffectBuilder(Protocol):
         閉曲線群をメタボール的に接続し、輪郭（外周＋穴）を生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             radius: 接続の届く距離（falloff 半径）[mm]
             threshold: 等値線レベル
             grid_pitch: 距離場を評価する 2D グリッドのピッチ [mm]
@@ -496,10 +496,10 @@ class _EffectBuilder(Protocol):
         XY 平面でのミラー複製を行う。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             n_mirror: 1: x=cx による半空間ミラー
-            cx: float, range [-100.0, 100.0]
-            cy: float, range [-100.0, 100.0]
+            cx: 対称軸または放射対称中心の X 座標。, float, range [-100.0, 100.0]
+            cy: 対称軸または放射対称中心の Y 座標。, float, range [-100.0, 100.0]
             source_positive_x: n_mirror=1/2 のときの x 側ソース選択
             source_positive_y: n_mirror=2 のときの y 側ソース選択
             show_planes: 対称面（または放射状境界）を可視化用ラインとして出力へ追加する
@@ -510,7 +510,7 @@ class _EffectBuilder(Protocol):
         3D 放射状ミラー（azimuth / polyhedral）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: "azimuth" は回転軸を含む 2 平面でくさびを作り、回転と反射で複製する
             n_azimuth: "azimuth" の等分数
             center: 回転/反射の中心
@@ -528,7 +528,7 @@ class _EffectBuilder(Protocol):
         偶奇規則の平面領域を Voronoi 分割し、閉ループ群を返す。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: 入力リングの扱い
             site_count: Voronoi のサイト数
             seed: 乱数シード（再現性）
@@ -543,7 +543,7 @@ class _EffectBuilder(Protocol):
         ポリラインをグリッド上の階段線へ変換する（XY）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             step: 各軸の格子間隔 (sx, sy, sz)
             corner: 対角（x と y が同時に動く）を 2 手へ分解するときの順序
         """
@@ -553,7 +553,7 @@ class _EffectBuilder(Protocol):
         頂点座標を各軸のステップ幅で量子化する（XYZ）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             step: 各軸の格子間隔 (sx, sy, sz)
         """
         ...
@@ -562,13 +562,13 @@ class _EffectBuilder(Protocol):
         閉曲線マスク内で反応拡散を走らせ、線として出力する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             grid_pitch: 計算グリッドのピッチ（出力座標系の長さ単位）
             steps: Gray-Scott の反復回数
-            du: float, range [0.0, 1.0]
-            dv: float, range [0.0, 1.0]
-            feed: float, range [0.0, 0.1]
-            kill: float, range [0.0, 0.1]
+            du: Gray-Scott モデルの U 成分に適用する拡散係数。, float, range [0.0, 1.0]
+            dv: Gray-Scott モデルの V 成分に適用する拡散係数。, float, range [0.0, 1.0]
+            feed: Gray-Scott モデルへ U 成分を供給する反応係数。, float, range [0.0, 0.1]
+            kill: Gray-Scott モデルから V 成分を除去する反応係数。, float, range [0.0, 0.1]
             dt: 時間刻み
             seed: 乱数シード（初期条件用）
             seed_radius: 中心ブロブの半径（0 ならブロブ無し）
@@ -583,7 +583,7 @@ class _EffectBuilder(Protocol):
         線分ネットワークをグラフとして弾性緩和する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             relaxation_iterations: 反復回数（0–50 にクランプ）
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
         """
@@ -593,7 +593,7 @@ class _EffectBuilder(Protocol):
         入力ジオメトリを複製して、規則的な配列を作る。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             layout: `"grid"` は `count/offset` による直交配置（現状維持）
             count: 複製回数
             radius: `layout="radial"` の外周半径 [mm]
@@ -616,7 +616,7 @@ class _EffectBuilder(Protocol):
         回転（auto_center / pivot 対応、degree 入力）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             auto_center: True なら頂点の平均座標を中心に使用
             pivot: 回転の中心（`auto_center=False` のとき有効）
             rotation: 各軸の回転角 [deg]（rx, ry, rz）
@@ -627,7 +627,7 @@ class _EffectBuilder(Protocol):
         スケール変換を適用（auto_center 対応）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: `"all"` は入力全体を 1 つの中心でスケールする
             auto_center: True なら平均座標を中心に使用
             pivot: 変換の中心（`mode="all"` かつ `auto_center=False` のとき有効）
@@ -639,7 +639,7 @@ class _EffectBuilder(Protocol):
         中点挿入で線を細分化する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             subdivisions: 細分回数
         """
         ...
@@ -648,7 +648,7 @@ class _EffectBuilder(Protocol):
         平行移動（XYZ のオフセット加算）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             delta: 平行移動量（dx, dy, dz）
         """
         ...
@@ -657,7 +657,7 @@ class _EffectBuilder(Protocol):
         ポリライン列を正規化弧長の区間でトリムする。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             start_param: 開始位置（0.0–1.0）
             end_param: 終了位置（0.0–1.0）
         """
@@ -667,7 +667,7 @@ class _EffectBuilder(Protocol):
         位置に応じて軸回りにねじる（中心付近は 0）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             auto_center: True なら平均座標を回転中心に使用
             pivot: ねじり軸（`axis_dir` に平行な直線）の通過点（`auto_center=False` のとき有効）
             angle: 最大ねじれ角 [deg]
@@ -679,7 +679,7 @@ class _EffectBuilder(Protocol):
         マスク距離場で、入力線を lens/attract 変形する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: `"lens"` は座標変換をブレンドして歪ませる
             strength: 変形の強さ（0..2 を想定）
             kind: `mode="lens"` のときの座標変換種別
@@ -704,7 +704,7 @@ class _EffectBuilder(Protocol):
         入力閉曲線からウェブ状の線分ネットワークを生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             num_candidate_lines: 候補線本数（0–500 にクランプ）
             relaxation_iterations: 弾性緩和の反復回数（0–50 にクランプ）
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
@@ -715,7 +715,7 @@ class _EffectBuilder(Protocol):
         各頂点へサイン波由来の変位を加える。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             amplitude: 変位量 [mm] 相当（各軸別）
             frequency: 空間周波数（各軸別）
             phase: 位相 [deg]
@@ -731,7 +731,7 @@ class _E(Protocol):
         スケール→回転→平行移動を適用する（合成アフィン変換）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             auto_center: True なら頂点の平均座標を中心に使用する
             pivot: `auto_center=False` のときの変換中心
             rotation: 各軸の回転角 [deg]（rx, ry, rz）
@@ -744,7 +744,7 @@ class _E(Protocol):
         入力を複製して太線風にする。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             count: 出力ストローク数（元の線を 1 本含む）
             radius: ずらし量の最大半径 [mm] 相当（XY のみ）
             seed: ずらし量生成の乱数シード（決定性のため）
@@ -755,7 +755,7 @@ class _E(Protocol):
         Shapely の buffer を用いて輪郭を生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             join: 角の処理
             quad_segs: 円弧近似分割数（Shapely の `quad_segs` 相当）
             distance: buffer 距離 [mm]
@@ -768,7 +768,7 @@ class _E(Protocol):
         XY 平面へ整列した上で、閉曲線マスクで線分列をクリップする。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: `"inside"` はマスク内側だけ残す
             draw_outline: True のとき、マスク輪郭を追加で出力に含める
         """
@@ -778,7 +778,7 @@ class _E(Protocol):
         線分を細分化してノイズで崩す（非接続）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             intensity: 変位量（長さ単位は座標系に従う）
             subdivisions: 細分回数
             intensity_mask_base: ジオメトリ bbox の中心（正規化座標 t=0）における intensity 乗算係数（軸別）
@@ -792,7 +792,7 @@ class _E(Protocol):
         連続線を破線に変換する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             dash_length: ダッシュ（描画区間）の長さ [mm]
             gap_length: ギャップ（非描画区間）の長さ [mm]
             offset: パターン位相オフセット [mm]
@@ -804,7 +804,7 @@ class _E(Protocol):
         3D Perlin ノイズで頂点を変位する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             amplitude: 変位量 [mm]（各軸別）
             spatial_freq: 空間周波数（各軸別）
             amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
@@ -822,7 +822,7 @@ class _E(Protocol):
         線や面を条件で間引く。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             interval: 線インデックスに対する間引きステップ
             index_offset: interval 判定の開始オフセット
             min_length: この長さ以下の線を対象とする
@@ -839,7 +839,7 @@ class _E(Protocol):
         指定方向に押し出し、複製線と側面エッジを生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             delta: 押し出し量（dx, dy, dz）[mm]（長さは 0–200 にクランプ）
             scale: 複製線に適用するスケール係数（0–3 にクランプ）
             subdivisions: 中点挿入の細分回数（0–8 にクランプ）
@@ -851,7 +851,7 @@ class _E(Protocol):
         閉領域をハッチングで塗りつぶす。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             angle_sets: 方向本数（シーケンス指定時はグループごとにサイクル適用）
             angle: 基準角 [deg]（シーケンス指定時はグループごとにサイクル適用）
             density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
@@ -864,7 +864,7 @@ class _E(Protocol):
         マスク内で差分成長を行い、襞のような閉曲線群を生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             seed_count: マスク内へ配置する seed（初期ループ）数
             target_spacing: 目標点間隔 [mm]
             boundary_avoid: 境界近傍で内側へ押し戻す強さ（0 で無効）
@@ -879,7 +879,7 @@ class _E(Protocol):
         ポリライン列を highpass（高周波強調）する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             step: 再サンプル間隔（弧長）
             sigma: 低域成分を作るガウス平滑半径（`sigma/step` が実効的なスケール）
             gain: 高周波強調係数
@@ -891,7 +891,7 @@ class _E(Protocol):
         閉曲線群から等高線（等値線）を複数レベル抽出して出力する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             spacing: レベル間隔
             phase: レベルの位相（`0` だと境界 `SDF=0` が含まれる）
             max_dist: 抽出範囲（`|SDF| <= max_dist`）
@@ -908,7 +908,7 @@ class _E(Protocol):
         ポリライン列を低域通過（ローパス）して滑らかにする。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             step: 再サンプル間隔（弧長）
             sigma: ガウス平滑半径
             closed: 境界条件
@@ -919,7 +919,7 @@ class _E(Protocol):
         閉曲線群をメタボール的に接続し、輪郭（外周＋穴）を生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             radius: 接続の届く距離（falloff 半径）[mm]
             threshold: 等値線レベル
             grid_pitch: 距離場を評価する 2D グリッドのピッチ [mm]
@@ -933,10 +933,10 @@ class _E(Protocol):
         XY 平面でのミラー複製を行う。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             n_mirror: 1: x=cx による半空間ミラー
-            cx: float, range [-100.0, 100.0]
-            cy: float, range [-100.0, 100.0]
+            cx: 対称軸または放射対称中心の X 座標。, float, range [-100.0, 100.0]
+            cy: 対称軸または放射対称中心の Y 座標。, float, range [-100.0, 100.0]
             source_positive_x: n_mirror=1/2 のときの x 側ソース選択
             source_positive_y: n_mirror=2 のときの y 側ソース選択
             show_planes: 対称面（または放射状境界）を可視化用ラインとして出力へ追加する
@@ -947,7 +947,7 @@ class _E(Protocol):
         3D 放射状ミラー（azimuth / polyhedral）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: "azimuth" は回転軸を含む 2 平面でくさびを作り、回転と反射で複製する
             n_azimuth: "azimuth" の等分数
             center: 回転/反射の中心
@@ -965,7 +965,7 @@ class _E(Protocol):
         偶奇規則の平面領域を Voronoi 分割し、閉ループ群を返す。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: 入力リングの扱い
             site_count: Voronoi のサイト数
             seed: 乱数シード（再現性）
@@ -980,7 +980,7 @@ class _E(Protocol):
         ポリラインをグリッド上の階段線へ変換する（XY）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             step: 各軸の格子間隔 (sx, sy, sz)
             corner: 対角（x と y が同時に動く）を 2 手へ分解するときの順序
         """
@@ -990,7 +990,7 @@ class _E(Protocol):
         頂点座標を各軸のステップ幅で量子化する（XYZ）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             step: 各軸の格子間隔 (sx, sy, sz)
         """
         ...
@@ -999,13 +999,13 @@ class _E(Protocol):
         閉曲線マスク内で反応拡散を走らせ、線として出力する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             grid_pitch: 計算グリッドのピッチ（出力座標系の長さ単位）
             steps: Gray-Scott の反復回数
-            du: float, range [0.0, 1.0]
-            dv: float, range [0.0, 1.0]
-            feed: float, range [0.0, 0.1]
-            kill: float, range [0.0, 0.1]
+            du: Gray-Scott モデルの U 成分に適用する拡散係数。, float, range [0.0, 1.0]
+            dv: Gray-Scott モデルの V 成分に適用する拡散係数。, float, range [0.0, 1.0]
+            feed: Gray-Scott モデルへ U 成分を供給する反応係数。, float, range [0.0, 0.1]
+            kill: Gray-Scott モデルから V 成分を除去する反応係数。, float, range [0.0, 0.1]
             dt: 時間刻み
             seed: 乱数シード（初期条件用）
             seed_radius: 中心ブロブの半径（0 ならブロブ無し）
@@ -1020,7 +1020,7 @@ class _E(Protocol):
         線分ネットワークをグラフとして弾性緩和する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             relaxation_iterations: 反復回数（0–50 にクランプ）
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
         """
@@ -1030,7 +1030,7 @@ class _E(Protocol):
         入力ジオメトリを複製して、規則的な配列を作る。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             layout: `"grid"` は `count/offset` による直交配置（現状維持）
             count: 複製回数
             radius: `layout="radial"` の外周半径 [mm]
@@ -1053,7 +1053,7 @@ class _E(Protocol):
         回転（auto_center / pivot 対応、degree 入力）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             auto_center: True なら頂点の平均座標を中心に使用
             pivot: 回転の中心（`auto_center=False` のとき有効）
             rotation: 各軸の回転角 [deg]（rx, ry, rz）
@@ -1064,7 +1064,7 @@ class _E(Protocol):
         スケール変換を適用（auto_center 対応）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: `"all"` は入力全体を 1 つの中心でスケールする
             auto_center: True なら平均座標を中心に使用
             pivot: 変換の中心（`mode="all"` かつ `auto_center=False` のとき有効）
@@ -1076,7 +1076,7 @@ class _E(Protocol):
         中点挿入で線を細分化する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             subdivisions: 細分回数
         """
         ...
@@ -1085,7 +1085,7 @@ class _E(Protocol):
         平行移動（XYZ のオフセット加算）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             delta: 平行移動量（dx, dy, dz）
         """
         ...
@@ -1094,7 +1094,7 @@ class _E(Protocol):
         ポリライン列を正規化弧長の区間でトリムする。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             start_param: 開始位置（0.0–1.0）
             end_param: 終了位置（0.0–1.0）
         """
@@ -1104,7 +1104,7 @@ class _E(Protocol):
         位置に応じて軸回りにねじる（中心付近は 0）。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             auto_center: True なら平均座標を回転中心に使用
             pivot: ねじり軸（`axis_dir` に平行な直線）の通過点（`auto_center=False` のとき有効）
             angle: 最大ねじれ角 [deg]
@@ -1116,7 +1116,7 @@ class _E(Protocol):
         マスク距離場で、入力線を lens/attract 変形する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             mode: `"lens"` は座標変換をブレンドして歪ませる
             strength: 変形の強さ（0..2 を想定）
             kind: `mode="lens"` のときの座標変換種別
@@ -1141,7 +1141,7 @@ class _E(Protocol):
         入力閉曲線からウェブ状の線分ネットワークを生成する。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             num_candidate_lines: 候補線本数（0–500 にクランプ）
             relaxation_iterations: 弾性緩和の反復回数（0–50 にクランプ）
             step: 1 ステップの移動係数（0.0–0.5 にクランプ）
@@ -1152,7 +1152,7 @@ class _E(Protocol):
         各頂点へサイン波由来の変位を加える。
 
         引数:
-            activate: bool
+            activate: このエフェクトによる形状変換を有効にする。, bool
             amplitude: 変位量 [mm] 相当（各軸別）
             frequency: 空間周波数（各軸別）
             phase: 位相 [deg]

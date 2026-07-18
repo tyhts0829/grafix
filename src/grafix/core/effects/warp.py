@@ -23,25 +23,98 @@ _PLANAR_EPS_ABS = 1e-6
 _PLANAR_EPS_REL = 1e-5
 
 warp_meta = {
-    "mode": ParamMeta(kind="choice", choices=("lens", "attract")),
-    "strength": ParamMeta(kind="float", ui_min=0.0, ui_max=2.0),
-    "show_mask": ParamMeta(kind="bool"),
-    "keep_original": ParamMeta(kind="bool"),
+    "mode": ParamMeta(
+        kind="choice",
+        choices=("lens", "attract"),
+        description="マスク近傍で座標変換をブレンドするか、境界へ吸着または反発させるか選ぶ。",
+    ),
+    "strength": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=2.0,
+        description="選択したワープ変形を元の座標へブレンドする強さ。",
+    ),
+    "show_mask": ParamMeta(
+        kind="bool",
+        description="変形結果に位置確認用のマスク輪郭を加えて出力する。",
+    ),
+    "keep_original": ParamMeta(
+        kind="bool",
+        description="変形結果に比較用の元の入力線を加えて出力する。",
+    ),
     # lens
-    "kind": ParamMeta(kind="choice", choices=("scale", "rotate", "shear", "swirl")),
-    "profile": ParamMeta(kind="choice", choices=("band", "ramp")),
-    "band": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "inside_only": ParamMeta(kind="bool"),
-    "auto_center": ParamMeta(kind="bool"),
-    "pivot": ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
-    "scale": ParamMeta(kind="float", ui_min=0.5, ui_max=3.0),
-    "angle": ParamMeta(kind="float", ui_min=-180.0, ui_max=180.0),
-    "shear": ParamMeta(kind="vec3", ui_min=-1.0, ui_max=1.0),
+    "kind": ParamMeta(
+        kind="choice",
+        choices=("scale", "rotate", "shear", "swirl"),
+        description="レンズモードでマスク領域へブレンドする座標変換の種類。",
+    ),
+    "profile": ParamMeta(
+        kind="choice",
+        choices=("band", "ramp"),
+        description="レンズ変形の強さを境界距離に応じて変化させる形状。",
+    ),
+    "band": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="レンズ変形がマスク境界の周囲へ遷移する距離幅。",
+    ),
+    "inside_only": ParamMeta(
+        kind="bool",
+        description="レンズ変形をマスクの内側にある頂点だけへ適用する。",
+    ),
+    "auto_center": ParamMeta(
+        kind="bool",
+        description="マスクのバウンディングボックス中心をレンズ変換の中心にする。",
+    ),
+    "pivot": ParamMeta(
+        kind="vec3",
+        ui_min=-100.0,
+        ui_max=100.0,
+        description="自動中心が無効な場合にレンズ変換の中心とする点。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.5,
+        ui_max=3.0,
+        description="レンズのスケール変換で中心からの距離へ適用する倍率。",
+    ),
+    "angle": ParamMeta(
+        kind="float",
+        ui_min=-180.0,
+        ui_max=180.0,
+        description="レンズの回転または渦巻き変換で適用する角度。",
+    ),
+    "shear": ParamMeta(
+        kind="vec3",
+        ui_min=-1.0,
+        ui_max=1.0,
+        description="レンズのシアー変換で X と Y 方向へ適用する係数。",
+    ),
     # attract
-    "direction": ParamMeta(kind="choice", choices=("attract", "repel")),
-    "bias": ParamMeta(kind="float", ui_min=-50.0, ui_max=50.0),
-    "snap_band": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
-    "falloff": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
+    "direction": ParamMeta(
+        kind="choice",
+        choices=("attract", "repel"),
+        description="頂点をマスク境界へ引き寄せるか、境界から遠ざけるか選ぶ。",
+    ),
+    "bias": ParamMeta(
+        kind="float",
+        ui_min=-50.0,
+        ui_max=50.0,
+        description="吸着または反発の目標位置をマスク境界からずらす符号付き距離。",
+    ),
+    "snap_band": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="吸着または反発の対象とする目標距離からの最大差。",
+    ),
+    "falloff": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="吸着または反発の強さを目標位置からの距離で減衰させる尺度。",
+    ),
 }
 
 warp_ui_visible = {

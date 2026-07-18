@@ -15,11 +15,36 @@ from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
 
 polygon_meta = {
-    "n_sides": ParamMeta(kind="int", ui_min=3, ui_max=128),
-    "phase": ParamMeta(kind="float", ui_min=0.0, ui_max=360.0),
-    "sweep": ParamMeta(kind="float", ui_min=0.0, ui_max=360.0),
-    "center": ParamMeta(kind="vec3", ui_min=0.0, ui_max=300.0),
-    "scale": ParamMeta(kind="float", ui_min=0.0, ui_max=200.0),
+    "n_sides": ParamMeta(
+        kind="int",
+        ui_min=3,
+        ui_max=128,
+        description="正多角形の頂点と辺の数を指定します。",
+    ),
+    "phase": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=360.0,
+        description="+X 軸を基準とする最初の頂点の角度を度単位で指定します。",
+    ),
+    "sweep": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=360.0,
+        description="外周のうち描画する角度を指定し、欠けた区間は弦で閉じます。",
+    ),
+    "center": ParamMeta(
+        kind="vec3",
+        ui_min=0.0,
+        ui_max=300.0,
+        description="正多角形全体を平行移動する XYZ 座標を指定します。",
+    ),
+    "scale": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=200.0,
+        description="直径 1 の正多角形全体に適用する等方スケールを指定します。",
+    ),
 }
 
 

@@ -12,9 +12,24 @@ from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
 bold_meta = {
-    "count": ParamMeta(kind="int", ui_min=1, ui_max=10),
-    "radius": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
-    "seed": ParamMeta(kind="int", ui_min=0, ui_max=2**31 - 1),
+    "count": ParamMeta(
+        kind="int",
+        ui_min=1,
+        ui_max=10,
+        description="元の線を含めて出力するストロークの本数。",
+    ),
+    "radius": ParamMeta(
+        kind="float",
+        ui_min=0.0,
+        ui_max=1.0,
+        description="複製ストロークを XY 平面でずらす最大半径。",
+    ),
+    "seed": ParamMeta(
+        kind="int",
+        ui_min=0,
+        ui_max=2**31 - 1,
+        description="ストロークのずれを再現可能にする乱数シード。",
+    ),
 }
 
 

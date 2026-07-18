@@ -31,13 +31,37 @@ def ensure_style_entries(
     thickness = float(global_thickness)
 
     # RGB は 0..255 int を正とする（GUI は COLOR_EDIT_UINT8 前提）。
-    rgb_meta = ParamMeta(kind="rgb", ui_min=0, ui_max=255)
-    thickness_meta = ParamMeta(kind="float", ui_min=1e-6, ui_max=0.01)
-
     items: list[tuple[str, Any, ParamMeta]] = [
-        (STYLE_BACKGROUND_COLOR, bg255, rgb_meta),
-        (STYLE_GLOBAL_THICKNESS, thickness, thickness_meta),
-        (STYLE_GLOBAL_LINE_COLOR, line255, rgb_meta),
+        (
+            STYLE_BACKGROUND_COLOR,
+            bg255,
+            ParamMeta(
+                kind="rgb",
+                ui_min=0,
+                ui_max=255,
+                description="キャンバス全体の背景色を RGB で指定する。",
+            ),
+        ),
+        (
+            STYLE_GLOBAL_THICKNESS,
+            thickness,
+            ParamMeta(
+                kind="float",
+                ui_min=1e-6,
+                ui_max=0.01,
+                description="個別指定がない線に適用する既定の線幅を指定する。",
+            ),
+        ),
+        (
+            STYLE_GLOBAL_LINE_COLOR,
+            line255,
+            ParamMeta(
+                kind="rgb",
+                ui_min=0,
+                ui_max=255,
+                description="個別指定がない線に適用する既定色を RGB で指定する。",
+            ),
+        ),
     ]
 
     ordinals = store._ordinals_ref()
@@ -49,4 +73,3 @@ def ensure_style_entries(
 
 
 __all__ = ["ensure_style_entries"]
-
