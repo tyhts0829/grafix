@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 
 from grafix.core.parameters.key import ParameterKey
@@ -13,7 +13,12 @@ from grafix.core.parameters.source import ValueSource
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
 
-from .group_blocks import GroupBlock, group_blocks_from_rows
+from .group_blocks import (
+    GroupBlock,
+    GroupBlockItem,
+    GroupBlockLayout,
+    group_layout_from_rows,
+)
 from .labeling import format_contextual_row_label, humanize_identifier
 from .midi_learn import MidiLearnState
 from .rules import ui_rules_for_row
@@ -130,28 +135,37 @@ def _header_kind_for_group_id(group_id: tuple[str, object]) -> str | None:
 def _collapse_key_for_block(block: GroupBlock) -> str | None:
     """ブロックの折りたたみ永続キーを返す。"""
 
-    group_type = str(block.group_id[0])
+    first_row = None if not block.items else block.items[0].row
+    return _collapse_key_for_group(block.group_id, first_row)
+
+
+def _collapse_key_for_group(
+    group_id: tuple[str, object],
+    first_row: ParameterRow | None,
+) -> str | None:
+    """group id と先頭行から折りたたみ永続キーを返す。"""
+
+    group_type = str(group_id[0])
     if group_type == "style":
         return "style:global"
     if group_type == "effect_chain":
-        chain_id = str(block.group_id[1])
+        chain_id = str(group_id[1])
         return f"effect_chain:{chain_id}"
     if group_type == "preset":
-        if not block.items:
+        if first_row is None:
             return None
-        row0 = block.items[0].row
-        return f"preset:{row0.op}:{row0.site_id}"
+        return f"preset:{first_row.op}:{first_row.site_id}"
     if group_type == "primitive":
-        if not block.items:
+        if first_row is None:
             return None
-        row0 = block.items[0].row
-        return f"primitive:{row0.op}:{row0.site_id}"
+        return f"primitive:{first_row.op}:{first_row.site_id}"
     return None
 
 
 def parameter_group_collapse_keys(
     rows: list[ParameterRow],
     *,
+    group_layout: Sequence[GroupBlockLayout] | None = None,
     primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
     layer_style_name_by_site_id: Mapping[str, str] | None = None,
     effect_chain_header_by_id: Mapping[str, str] | None = None,
@@ -160,20 +174,25 @@ def parameter_group_collapse_keys(
 ) -> tuple[str, ...]:
     """現在の行モデルから Expand/Collapse all 対象の header key を返す。"""
 
-    blocks = group_blocks_from_rows(
-        rows,
-        primitive_header_by_group=primitive_header_by_group,
-        layer_style_name_by_site_id=layer_style_name_by_site_id,
-        effect_chain_header_by_id=effect_chain_header_by_id,
-        step_info_by_site=step_info_by_site,
-        effect_step_ordinal_by_site=effect_step_ordinal_by_site,
+    layout = (
+        group_layout_from_rows(
+            rows,
+            primitive_header_by_group=primitive_header_by_group,
+            layer_style_name_by_site_id=layer_style_name_by_site_id,
+            effect_chain_header_by_id=effect_chain_header_by_id,
+            step_info_by_site=step_info_by_site,
+            effect_step_ordinal_by_site=effect_step_ordinal_by_site,
+        )
+        if group_layout is None
+        else group_layout
     )
     keys: list[str] = []
     seen: set[str] = set()
-    for block in blocks:
+    for block in layout:
         if not block.header:
             continue
-        key = _collapse_key_for_block(block)
+        first_row = None if not block.items else rows[block.items[0].row_index]
+        key = _collapse_key_for_group(block.group_id, first_row)
         if key is None or key in seen:
             continue
         seen.add(key)
@@ -683,10 +702,18 @@ def _render_effect_step_heading(imgui, label: str) -> None:
 def _effect_step_heading_by_site(block: GroupBlock) -> dict[str, str]:
     """Effect block の各 site_id に、短く一意な小見出しを割り当てる。"""
 
+    return _effect_step_heading_by_rows([item.row for item in block.items])
+
+
+def _effect_step_heading_by_rows(
+    rows: Sequence[ParameterRow],
+) -> dict[str, str]:
+    """Effect rows の各 site_id に、短く一意な小見出しを割り当てる。"""
+
     sites_by_op: dict[str, list[str]] = {}
-    for item in block.items:
-        op = str(item.row.op)
-        site_id = str(item.row.site_id)
+    for row in rows:
+        op = str(row.op)
+        site_id = str(row.site_id)
         op_sites = sites_by_op.setdefault(op, [])
         if site_id not in op_sites:
             op_sites.append(site_id)
@@ -1254,6 +1281,8 @@ def render_parameter_row_4cols(
 def render_parameter_table(
     rows: list[ParameterRow],
     *,
+    group_layout: Sequence[GroupBlockLayout] | None = None,
+    model_rows: Sequence[ParameterRow] | None = None,
     metric_scale: float | None = None,
     primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
     layer_style_name_by_site_id: Mapping[str, str] | None = None,
@@ -1279,16 +1308,21 @@ def render_parameter_table(
     #     （store_bridge が `zip(rows_before, rows_after, strict=True)` で差分適用するため）
     updated_rows: list[ParameterRow] = []
 
-    # rows を “連続する group” ごとにブロック化する。
-    # `collapsing_header` をテーブル外へ出すことで、ヘッダを全幅で表示できる。
-    blocks = group_blocks_from_rows(
-        rows,
-        primitive_header_by_group=primitive_header_by_group,
-        layer_style_name_by_site_id=layer_style_name_by_site_id,
-        effect_chain_header_by_id=effect_chain_header_by_id,
-        step_info_by_site=step_info_by_site,
-        effect_step_ordinal_by_site=effect_step_ordinal_by_site,
+    # Store bridge は revision 内で不変な layout を渡す。単体利用時だけ rows から
+    # 構築し、stable frame の group/header/label 分類を繰り返さない。
+    layout = (
+        group_layout_from_rows(
+            rows,
+            primitive_header_by_group=primitive_header_by_group,
+            layer_style_name_by_site_id=layer_style_name_by_site_id,
+            effect_chain_header_by_id=effect_chain_header_by_id,
+            step_info_by_site=step_info_by_site,
+            effect_step_ordinal_by_site=effect_step_ordinal_by_site,
+        )
+        if group_layout is None
+        else group_layout
     )
+    indexed_rows = rows if model_rows is None else model_rows
 
     # --- Code（ポップアップ出力）---
     # “トリガ（ボタン）” と “表示（ポップアップ）” を分離し、コピペ用途に寄せる。
@@ -1300,7 +1334,7 @@ def render_parameter_table(
     # 最初に開いたグループのテーブルで 1 回だけ描画する。
     drew_column_headers = False
 
-    for block_index, block in enumerate(blocks):
+    for block_index, block in enumerate(layout):
         if block_index > 0 and block.header:
             spacing = getattr(imgui, "spacing", None)
             if callable(spacing):
@@ -1315,7 +1349,16 @@ def render_parameter_table(
             # visible=None なので close ボタン無しで常に表示する。
             group_open = True
             if block.header:
-                collapse_key = None if collapsed_headers is None else _collapse_key_for_block(block)
+                first_row = (
+                    None
+                    if not block.items
+                    else indexed_rows[block.items[0].row_index]
+                )
+                collapse_key = (
+                    None
+                    if collapsed_headers is None
+                    else _collapse_key_for_group(block.group_id, first_row)
+                )
                 if collapsed_headers is not None and collapse_key is not None:
                     want_open = collapse_key not in collapsed_headers
                     set_next_item_open = getattr(imgui, "set_next_item_open", None)
@@ -1370,8 +1413,20 @@ def render_parameter_table(
                 imgui.text_disabled(count_label)
                 imgui.same_line()
                 if imgui.small_button(button_label):
+                    snippet_block = GroupBlock(
+                        group_id=block.group_id,
+                        header_id=block.header_id,
+                        header=block.header,
+                        items=[
+                            GroupBlockItem(
+                                row=indexed_rows[item.row_index],
+                                visible_label=item.visible_label,
+                            )
+                            for item in block.items
+                        ],
+                    )
                     snippet_popup_text_new = snippet_for_block(
-                        block,
+                        snippet_block,
                         last_effective_by_key=last_effective_by_key,
                         layer_style_name_by_site_id=layer_style_name_by_site_id,
                         step_info_by_site=step_info_by_site,
@@ -1388,7 +1443,7 @@ def render_parameter_table(
             if not group_open:
                 # 折りたたみ中は描画しないが、rows_after の長さを揃えるため “変更なし” として返す。
                 for item in block.items:
-                    updated_rows.append(item.row)
+                    updated_rows.append(indexed_rows[item.row_index])
                 continue
 
             # --- open のときだけ、当該グループの行を 4 列テーブルとして描く ---
@@ -1404,7 +1459,7 @@ def render_parameter_table(
             opened = getattr(table, "opened", table)
             if not opened:
                 for item in block.items:
-                    updated_rows.append(item.row)
+                    updated_rows.append(indexed_rows[item.row_index])
                 continue
 
             try:
@@ -1419,13 +1474,16 @@ def render_parameter_table(
                     drew_column_headers = True
 
                 effect_heading_by_site = (
-                    _effect_step_heading_by_site(block)
+                    _effect_step_heading_by_rows(
+                        [indexed_rows[item.row_index] for item in block.items]
+                    )
                     if str(block.group_id[0]) == "effect_chain"
                     else {}
                 )
                 previous_effect_site: str | None = None
                 for item in block.items:
-                    item_site = str(item.row.site_id)
+                    row = indexed_rows[item.row_index]
+                    item_site = str(row.site_id)
                     if effect_heading_by_site and item_site != previous_effect_site:
                         _render_effect_step_heading(
                             imgui,
@@ -1433,12 +1491,12 @@ def render_parameter_table(
                         )
                         previous_effect_site = item_site
                     row_key = ParameterKey(
-                        op=item.row.op,
-                        site_id=item.row.site_id,
-                        arg=item.row.arg,
+                        op=row.op,
+                        site_id=row.site_id,
+                        arg=row.arg,
                     )
                     row_changed, updated = render_parameter_row_4cols(
-                        item.row,
+                        row,
                         visible_label=item.visible_label,
                         midi_learn_state=midi_learn_state,
                         midi_last_cc_change=midi_last_cc_change,

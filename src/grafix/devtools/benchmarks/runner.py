@@ -49,6 +49,12 @@ _INTERACTIVE_SCENARIO_SOURCE_FILE = Path(__file__).with_name(
 _PARAMETER_EDIT_SOURCE_FILE = Path(__file__).with_name(
     "parameter_edit_benchmark.py"
 )
+_PARAMETER_HOTPATH_SOURCE_FILE = Path(__file__).with_name(
+    "parameter_hotpath_benchmark.py"
+)
+_PERF_HOTPATH_SOURCE_FILE = Path(__file__).with_name(
+    "perf_hotpath_benchmark.py"
+)
 _HEAVY_EFFECT_FINAL_CHECKSUMS = {
     "growth": "88db2188d515eb8320998e5613ca66f5ce773842ae0318ba834ff3c1f2d7db35",
     "metaball": "1df0d8425ddd1f520de5a984eba822ee063fb080a4ae04f7b95a9317610177fd",
@@ -195,6 +201,8 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             support_source_files=(_SYSTEM_SOURCE_FILE,),
         ),
         *_parameter_edit_definitions(),
+        *_parameter_hotpath_definitions(),
+        *_perf_hotpath_definitions(),
         *_scaled_definitions(
             prefix="core.concat_recipe",
             label="repeated Geometry +",
@@ -1356,6 +1364,194 @@ def _parameter_edit_definitions() -> list[CaseDefinition]:
     ]
 
 
+def _parameter_hotpath_definitions() -> list[CaseDefinition]:
+    """大規模 ParamStore の merge/snapshot/visibility cases を返す。"""
+
+    definitions: list[CaseDefinition] = [
+        _definition(
+            "gui.parameter_layout.rows_10000",
+            "stable parameter group layout (10,000 rows)",
+            category="gui",
+            suite="parameters",
+            fixture="parameter_store_group_layout",
+            parameters={
+                "operation": "layout_reuse",
+                "rows": 10_000,
+                "samples": 24,
+            },
+            tags=(
+                "PARAM-05",
+                "group-layout",
+                "no-imgui",
+                "exact-checksum",
+            ),
+            selectable_suites=("parameters", "soak"),
+            setup=_setup_parameter_hotpath_scenario,
+            workload=_workload_parameter_hotpath_scenario,
+            support_source_files=(_PARAMETER_HOTPATH_SOURCE_FILE,),
+            self_sampling=True,
+        )
+    ]
+    for rows, selectable_suites in (
+        (1_000, ("parameters",)),
+        (10_000, ("parameters", "soak")),
+    ):
+        definitions.extend(
+            (
+                _definition(
+                    f"runtime.parameter_merge.rows_{rows}.change_steady",
+                    f"stable parameter merge ({rows:,} rows)",
+                    category="runtime",
+                    suite="parameters",
+                    fixture="parameter_store_stable_records",
+                    parameters={
+                        "operation": "merge_steady",
+                        "rows": rows,
+                        "samples": 24,
+                    },
+                    tags=(
+                        "PARAM-06",
+                        "stable-frame",
+                        "no-imgui",
+                        "exact-checksum",
+                    ),
+                    selectable_suites=selectable_suites,
+                    setup=_setup_parameter_hotpath_scenario,
+                    workload=_workload_parameter_hotpath_scenario,
+                    support_source_files=(_PARAMETER_HOTPATH_SOURCE_FILE,),
+                    self_sampling=True,
+                ),
+                _definition(
+                    f"runtime.parameter_snapshot.rows_{rows}.change_one",
+                    f"one-key parameter snapshot ({rows:,} rows)",
+                    category="runtime",
+                    suite="parameters",
+                    fixture="parameter_store_single_key_snapshot",
+                    parameters={
+                        "operation": "snapshot_one",
+                        "rows": rows,
+                        "samples": 24,
+                    },
+                    tags=(
+                        "PARAM-07",
+                        "single-key",
+                        "no-imgui",
+                        "exact-checksum",
+                    ),
+                    selectable_suites=selectable_suites,
+                    setup=_setup_parameter_hotpath_scenario,
+                    workload=_workload_parameter_hotpath_scenario,
+                    support_source_files=(_PARAMETER_HOTPATH_SOURCE_FILE,),
+                    self_sampling=True,
+                ),
+                _definition(
+                    f"gui.parameter_visibility.rows_{rows}.mode_default",
+                    f"default parameter visibility ({rows:,} rows)",
+                    category="gui",
+                    suite="parameters",
+                    fixture="parameter_store_visibility_default",
+                    parameters={
+                        "operation": "visibility_default",
+                        "rows": rows,
+                        "samples": 24,
+                    },
+                    tags=(
+                        "PARAM-08",
+                        "visibility",
+                        "no-imgui",
+                        "exact-checksum",
+                    ),
+                    selectable_suites=selectable_suites,
+                    setup=_setup_parameter_hotpath_scenario,
+                    workload=_workload_parameter_hotpath_scenario,
+                    support_source_files=(_PARAMETER_HOTPATH_SOURCE_FILE,),
+                    self_sampling=True,
+                ),
+            )
+        )
+    definitions.append(
+        _definition(
+            "gui.parameter_visibility.rows_10000.mode_search",
+            "parameter search visibility (10,000 rows)",
+            category="gui",
+            suite="parameters",
+            fixture="parameter_store_visibility_search",
+            parameters={
+                "operation": "visibility_search",
+                "rows": 10_000,
+                "samples": 24,
+            },
+            tags=(
+                "PARAM-08",
+                "search",
+                "no-imgui",
+                "exact-checksum",
+            ),
+            selectable_suites=("parameters", "soak"),
+            setup=_setup_parameter_hotpath_scenario,
+            workload=_workload_parameter_hotpath_scenario,
+            support_source_files=(_PARAMETER_HOTPATH_SOURCE_FILE,),
+            self_sampling=True,
+        )
+    )
+    definitions.append(
+        _definition(
+            "gui.parameter_favorites.rows_10000",
+            "stable parameter favorite view (10,000 rows)",
+            category="gui",
+            suite="parameters",
+            fixture="parameter_store_favorite_view",
+            parameters={
+                "operation": "favorite_view",
+                "rows": 10_000,
+                "samples": 24,
+            },
+            tags=(
+                "PARAM-09",
+                "favorite",
+                "no-imgui",
+                "exact-checksum",
+            ),
+            selectable_suites=("parameters", "soak"),
+            setup=_setup_parameter_hotpath_scenario,
+            workload=_workload_parameter_hotpath_scenario,
+            support_source_files=(_PARAMETER_HOTPATH_SOURCE_FILE,),
+            self_sampling=True,
+        )
+    )
+    return definitions
+
+
+def _perf_hotpath_definitions() -> list[CaseDefinition]:
+    """PerfCollector causal backlog の scaling cases を返す。"""
+
+    return [
+        _definition(
+            f"runtime.perf.causal_backlog.pending_{pending}",
+            f"PerfCollector causal backlog ({pending:,} pending)",
+            category="runtime",
+            suite="parameters",
+            fixture="ordered_causal_revisions",
+            parameters={"pending": pending, "samples": 24},
+            tags=(
+                "PERF-04",
+                "causal-backlog",
+                "exact-checksum",
+            ),
+            selectable_suites=selectable_suites,
+            setup=_setup_perf_backlog_scenario,
+            workload=_workload_perf_backlog_scenario,
+            support_source_files=(_PERF_HOTPATH_SOURCE_FILE,),
+            self_sampling=True,
+        )
+        for pending, selectable_suites in (
+            (100, ("parameters",)),
+            (1_000, ("parameters",)),
+            (4_096, ("parameters", "soak")),
+        )
+    ]
+
+
 def _multilayer_renderer_definitions() -> list[CaseDefinition]:
     """1/8/100 animated layer と changing-topology control を返す。"""
 
@@ -2156,6 +2352,60 @@ def _workload_parameter_edit_scenario(state: object) -> _CaseOutput:
     if not isinstance(state, ParameterEditScenario):
         raise TypeError("parameter edit scenario state is invalid")
     result = run_parameter_edit_scenario(state)
+    return _CaseOutput(
+        value=result.value,
+        metrics=result.metrics,
+        contracts=result.contracts,
+    )
+
+
+def _setup_parameter_hotpath_scenario(
+    parameters: dict[str, Any],
+    _seed: int,
+) -> object:
+    from grafix.devtools.benchmarks.parameter_hotpath_benchmark import (
+        make_parameter_hot_path_scenario,
+    )
+
+    return make_parameter_hot_path_scenario(parameters)
+
+
+def _workload_parameter_hotpath_scenario(state: object) -> _CaseOutput:
+    from grafix.devtools.benchmarks.parameter_hotpath_benchmark import (
+        ParameterHotPathScenario,
+        run_parameter_hot_path_scenario,
+    )
+
+    if not isinstance(state, ParameterHotPathScenario):
+        raise TypeError("parameter hot-path scenario state is invalid")
+    result = run_parameter_hot_path_scenario(state)
+    return _CaseOutput(
+        value=result.value,
+        metrics=result.metrics,
+        contracts=result.contracts,
+    )
+
+
+def _setup_perf_backlog_scenario(
+    parameters: dict[str, Any],
+    _seed: int,
+) -> object:
+    from grafix.devtools.benchmarks.perf_hotpath_benchmark import (
+        make_perf_backlog_scenario,
+    )
+
+    return make_perf_backlog_scenario(parameters)
+
+
+def _workload_perf_backlog_scenario(state: object) -> _CaseOutput:
+    from grafix.devtools.benchmarks.perf_hotpath_benchmark import (
+        PerfBacklogScenario,
+        run_perf_backlog_scenario,
+    )
+
+    if not isinstance(state, PerfBacklogScenario):
+        raise TypeError("perf backlog scenario state is invalid")
+    result = run_perf_backlog_scenario(state)
     return _CaseOutput(
         value=result.value,
         metrics=result.metrics,

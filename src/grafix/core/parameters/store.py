@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator, MutableSet
 from typing import TYPE_CHECKING, Any
 
 from .effects import EffectChainIndex
@@ -18,6 +18,38 @@ from .state import ParamState
 
 if TYPE_CHECKING:
     from .variations import Variation
+
+
+class _FavoriteKeySet(MutableSet[ParameterKey]):
+    """favorite mutation を store revision へ接続する mutable view。"""
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: ParamStore) -> None:
+        self._store = store
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._store._favorite_keys_data
+
+    def __iter__(self) -> Iterator[ParameterKey]:
+        return iter(self._store._favorite_keys_data)
+
+    def __len__(self) -> int:
+        return len(self._store._favorite_keys_data)
+
+    def add(self, key: ParameterKey) -> None:
+        data = self._store._favorite_keys_data
+        if key in data:
+            return
+        data.add(key)
+        self._store._touch_favorites()
+
+    def discard(self, key: ParameterKey) -> None:
+        data = self._store._favorite_keys_data
+        if key not in data:
+            return
+        data.discard(key)
+        self._store._touch_favorites()
 
 
 class ParamStore:
@@ -41,7 +73,7 @@ class ParamStore:
         self._effects = EffectChainIndex()
         self._collapsed_headers: set[str] = set()
         self._locked_keys: set[ParameterKey] = set()
-        self._favorite_keys: set[ParameterKey] = set()
+        self._favorite_keys_data: set[ParameterKey] = set()
         self._variations: dict[str, Variation] = {}
 
         # 永続化しない実行時情報（loaded/observed/reconcile-applied）。
@@ -50,6 +82,10 @@ class ParamStore:
         self._table_revision = 0
         self._value_revision = 0
         self._style_revision = 0
+        self._favorite_revision = 0
+        self._favorite_snapshot_revision = -1
+        self._favorite_snapshot: frozenset[ParameterKey] = frozenset()
+        self._favorite_tuple: tuple[ParameterKey, ...] = ()
         self._value_change_log: deque[tuple[int, tuple[ParameterKey, ...]]] = deque(
             maxlen=4096
         )
@@ -58,6 +94,8 @@ class ParamStore:
             Callable[[frozenset[str] | None], None] | None
         ) = None
         self._snapshot_cache_revision = -1
+        self._snapshot_cache_value_revision = -1
+        self._snapshot_cache_rebuilt_entries = 0
         self._snapshot_cache: object | None = None
 
     @property
@@ -83,6 +121,32 @@ class ParamStore:
         """global/layer style の値または関連し得る構造が変わる revision。"""
 
         return self._style_revision
+
+    @property
+    def favorite_revision(self) -> int:
+        """favorite 集合が変化したときだけ増える単調 revision。"""
+
+        return self._favorite_revision
+
+    @property
+    def _favorite_keys(self) -> set[ParameterKey]:
+        """既存の recovery 境界向けに raw favorite set を返す。"""
+
+        return self._favorite_keys_data
+
+    @_favorite_keys.setter
+    def _favorite_keys(self, keys: Iterable[ParameterKey]) -> None:
+        self._replace_favorite_keys(keys)
+
+    def _replace_favorite_keys(self, keys: Iterable[ParameterKey]) -> bool:
+        """favorite 集合を置換し、変更時だけ revision を一度進める。"""
+
+        normalized = set(keys)
+        if normalized == self._favorite_keys_data:
+            return False
+        self._favorite_keys_data = normalized
+        self._touch_favorites()
+        return True
 
     @property
     def load_provenance(self) -> LoadProvenance:
@@ -194,8 +258,29 @@ class ParamStore:
     def _locked_keys_ref(self) -> set[ParameterKey]:
         return self._locked_keys
 
-    def _favorite_keys_ref(self) -> set[ParameterKey]:
-        return self._favorite_keys
+    def _favorite_keys_ref(self) -> MutableSet[ParameterKey]:
+        # self 参照を永続属性に置くと exact-store deepcopy/restore の所有権が
+        # 壊れるため、mutation 境界でだけ lightweight view を作る。
+        return _FavoriteKeySet(self)
+
+    def _favorite_keys_snapshot(self) -> frozenset[ParameterKey]:
+        """revision 内で同一 identity の immutable favorite 集合を返す。"""
+
+        if self._favorite_snapshot_revision != self._favorite_revision:
+            snapshot = frozenset(self._favorite_keys_data)
+            self._favorite_snapshot = snapshot
+            self._favorite_tuple = tuple(
+                sorted(
+                    snapshot,
+                    key=lambda key: (key.op, key.site_id, key.arg),
+                )
+            )
+            self._favorite_snapshot_revision = self._favorite_revision
+        return self._favorite_snapshot
+
+    def _favorite_keys_tuple(self) -> tuple[ParameterKey, ...]:
+        self._favorite_keys_snapshot()
+        return self._favorite_tuple
 
     def _variations_ref(self) -> dict[str, Variation]:
         return self._variations
@@ -231,8 +316,35 @@ class ParamStore:
             ):
                 self._style_revision += 1
             self._value_change_log.append((self._value_revision, changed_keys))
-        self._snapshot_cache = None
-        self._snapshot_cache_revision = -1
+        if structure:
+            # label/meta/ordinal/entry cardinality が変わり得るため、value patch の
+            # base としても使わない。value-only 変更では immutable な旧 snapshot
+            # を次回差分構築の seed として保持する。
+            self._snapshot_cache = None
+            self._snapshot_cache_revision = -1
+            self._snapshot_cache_value_revision = -1
+        elif (
+            not changed_keys
+            and self._snapshot_cache is not None
+            and self._snapshot_cache_value_revision == self._value_revision
+        ):
+            # collapse state など ParamSnapshot に含まれない変更では、同じ
+            # immutable mapping をそのまま現 revision の cache として扱える。
+            self._snapshot_cache_revision = self._revision
+
+    def _touch_favorites(self) -> None:
+        """favorite overlay と永続保存だけを無効化する。"""
+
+        self._revision += 1
+        self._favorite_revision += 1
+        self._favorite_snapshot_revision = -1
+        # favorite は ParamSnapshot entry に含まれない。既存 snapshot の identity
+        # を保ち、Parameter GUI 側の favorite revision だけを無効化する。
+        if (
+            self._snapshot_cache is not None
+            and self._snapshot_cache_value_revision == self._value_revision
+        ):
+            self._snapshot_cache_revision = self._revision
 
     def value_changes_since(
         self,
@@ -294,9 +406,24 @@ class ParamStore:
             return None
         return self._snapshot_cache
 
-    def _set_snapshot_cache(self, snapshot: object) -> None:
+    def _get_snapshot_cache_seed(self) -> tuple[object, int] | None:
+        """structure change 以降の immutable snapshot と value revision を返す。"""
+
+        snapshot = self._snapshot_cache
+        if snapshot is None or self._snapshot_cache_value_revision < 0:
+            return None
+        return snapshot, self._snapshot_cache_value_revision
+
+    def _set_snapshot_cache(
+        self,
+        snapshot: object,
+        *,
+        rebuilt_entries: int,
+    ) -> None:
         self._snapshot_cache = snapshot
         self._snapshot_cache_revision = self._revision
+        self._snapshot_cache_value_revision = self._value_revision
+        self._snapshot_cache_rebuilt_entries = int(rebuilt_entries)
 
 
 __all__ = ["ParamStore"]

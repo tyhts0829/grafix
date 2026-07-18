@@ -205,6 +205,7 @@ def test_batch_exactly_isolates_render_mutations_and_restores_store(
     store = _variation_store()
     session = _Session(store, mutate_store_during_render=True)
     before_revision = store.revision
+    before_favorite_revision = store.favorite_revision
     before_states = deepcopy(store._states)
     before_meta = deepcopy(store._meta)
     before_explicit = deepcopy(store._explicit_by_key)
@@ -239,6 +240,13 @@ def test_batch_exactly_isolates_render_mutations_and_restores_store(
         for name, variation in variation_items
     )
     assert store.get_state(_DISCOVERED) is None
+
+    # exact restore 後に作る mutation view は、deepcopy 側ではなく元 store を更新する。
+    restored_revision = store.revision
+    store._favorite_keys_ref().add(_AMOUNT)
+    assert _AMOUNT in store._favorite_keys_ref()
+    assert store.favorite_revision == before_favorite_revision + 1
+    assert store.revision == restored_revision + 1
 
 
 def test_png_thumbnail_uses_requested_output_size(tmp_path: Path) -> None:

@@ -91,14 +91,15 @@ def test_row_pin_updates_store_and_default_favorite_filter() -> None:
         filter_state=ParameterFilterState(favorite_only=True),
     )
     visible_rows = [
-        row
-        for row, visible in zip(
+        (row, key in favorite_view.favorite_keys)
+        for row, key, visible in zip(
             favorite_view.model.rows,
+            favorite_view.model.keys,
             favorite_view.visible_mask,
             strict=True,
         )
         if visible
     ]
-    assert [(row.site_id, row.favorite) for row in visible_rows] == [
+    assert [(row.site_id, favorite) for row, favorite in visible_rows] == [
         (target.site_id, True)
     ]

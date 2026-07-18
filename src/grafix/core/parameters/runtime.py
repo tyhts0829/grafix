@@ -6,13 +6,107 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Iterable, Literal
 
 from .key import ParameterKey
 from .reconcile import ReconcileOrphan
 from .source import ValueSource
 
 LoadProvenance = Literal["primary", "session_recovery", "quarantined"]
+GroupKey = tuple[str, str]
+
+
+@dataclass(slots=True)
+class _GroupVisibilityTracker:
+    revision: int = 0
+
+    def touch(self) -> None:
+        self.revision += 1
+
+
+class _TrackedGroupSet(set[GroupKey]):
+    """loaded/observed group mutation を共有 revision へ接続する set。"""
+
+    __slots__ = ("_tracker",)
+
+    def __init__(self, values: Iterable[GroupKey] = ()) -> None:
+        super().__init__(values)
+        self._tracker: _GroupVisibilityTracker | None = None
+
+    def bind(self, tracker: _GroupVisibilityTracker) -> None:
+        self._tracker = tracker
+
+    def _touch(self) -> None:
+        tracker = self._tracker
+        if tracker is not None:
+            tracker.touch()
+
+    def add(self, element: GroupKey) -> None:
+        if element in self:
+            return
+        super().add(element)
+        self._touch()
+
+    def discard(self, element: GroupKey) -> None:
+        if element not in self:
+            return
+        super().discard(element)
+        self._touch()
+
+    def remove(self, element: GroupKey) -> None:
+        super().remove(element)
+        self._touch()
+
+    def pop(self) -> GroupKey:
+        element = super().pop()
+        self._touch()
+        return element
+
+    def clear(self) -> None:
+        if not self:
+            return
+        super().clear()
+        self._touch()
+
+    def update(self, *others: Iterable[GroupKey]) -> None:
+        before = len(self)
+        super().update(*others)
+        if len(self) != before:
+            self._touch()
+
+    def difference_update(self, *others: Iterable[object]) -> None:
+        before = len(self)
+        super().difference_update(*others)
+        if len(self) != before:
+            self._touch()
+
+    def intersection_update(self, *others: Iterable[object]) -> None:
+        before = set(self)
+        super().intersection_update(*others)
+        if self != before:
+            self._touch()
+
+    def symmetric_difference_update(self, other: Iterable[GroupKey]) -> None:
+        before = set(self)
+        super().symmetric_difference_update(other)
+        if self != before:
+            self._touch()
+
+    def __ior__(self, other: set[GroupKey]) -> _TrackedGroupSet:  # type: ignore[override,misc]
+        self.update(other)
+        return self
+
+    def __iand__(self, other: set[object]) -> _TrackedGroupSet:  # type: ignore[override,misc]
+        self.intersection_update(other)
+        return self
+
+    def __isub__(self, other: set[object]) -> _TrackedGroupSet:  # type: ignore[override,misc]
+        self.difference_update(other)
+        return self
+
+    def __ixor__(self, other: set[GroupKey]) -> _TrackedGroupSet:  # type: ignore[override,misc]
+        self.symmetric_difference_update(other)
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,8 +123,8 @@ class ParamStoreLoadDiagnostic:
 class ParamStoreRuntime:
     """ParamStore の実行時情報。"""
 
-    loaded_groups: set[tuple[str, str]] = field(default_factory=set)
-    observed_groups: set[tuple[str, str]] = field(default_factory=set)
+    loaded_groups: set[tuple[str, str]] = field(default_factory=_TrackedGroupSet)
+    observed_groups: set[tuple[str, str]] = field(default_factory=_TrackedGroupSet)
     reconcile_applied: set[tuple[tuple[str, str], tuple[str, str]]] = field(
         default_factory=set
     )
@@ -50,6 +144,114 @@ class ParamStoreRuntime:
     # 永続 store の revision と分け、毎 frame 更新され得る provenance/GUI cache の
     # 無効化に使う。
     effective_revision: int = 0
+    _visibility_tracker: _GroupVisibilityTracker = field(
+        default_factory=_GroupVisibilityTracker,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _effective_change_revision: int = field(
+        default=-1,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _effective_changed_keys: tuple[ParameterKey, ...] = field(
+        default=(),
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    _VISIBILITY_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"loaded_groups", "observed_groups"}
+    )
+
+    def __post_init__(self) -> None:
+        for name in self._VISIBILITY_FIELDS:
+            groups = getattr(self, name)
+            if isinstance(groups, _TrackedGroupSet):
+                groups.bind(self._visibility_tracker)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        tracker = getattr(self, "_visibility_tracker", None)
+        if tracker is not None and name in self._VISIBILITY_FIELDS:
+            groups = _TrackedGroupSet(value)  # type: ignore[arg-type]
+            groups.bind(tracker)
+            previous = getattr(self, name)
+            object.__setattr__(self, name, groups)
+            if previous != groups:
+                tracker.touch()
+            return
+        object.__setattr__(self, name, value)
+
+    @property
+    def visibility_revision(self) -> int:
+        """tracked loaded/observed set が変化した回数を返す。"""
+
+        return int(self._visibility_tracker.revision)
+
+    def visibility_cache_token(
+        self,
+    ) -> tuple[int] | tuple[
+        int,
+        frozenset[GroupKey],
+        frozenset[GroupKey],
+    ]:
+        """可視性 cache 用の exact token を返す。
+
+        通常の ``ParamStore`` は tracked set なので O(1)。旧 positional
+        construction で plain set を渡した場合だけ、互換性を保つため内容を読む。
+        """
+
+        if isinstance(self.loaded_groups, _TrackedGroupSet) and isinstance(
+            self.observed_groups,
+            _TrackedGroupSet,
+        ):
+            return (self.visibility_revision,)
+        return (
+            self.visibility_revision,
+            frozenset(
+                (str(op), str(site_id)) for op, site_id in self.loaded_groups
+            ),
+            frozenset(
+                (str(op), str(site_id)) for op, site_id in self.observed_groups
+            ),
+        )
+
+    def record_effective_changes(
+        self,
+        keys: Iterable[ParameterKey],
+    ) -> None:
+        """effective/source の最終差分を 1 frame 分として記録する。"""
+
+        changed = tuple(dict.fromkeys(keys))
+        if not changed:
+            return
+        self.effective_revision += 1
+        # GUI は直前 frame との差分だけを使う。履歴を蓄積すると
+        # all-key animation で key 数×frame 数の保持になるため、latest 1 件を
+        # 上書きし、revision gap は呼び出し側の full fallback に委ねる。
+        self._effective_change_revision = self.effective_revision
+        self._effective_changed_keys = changed
+
+    def effective_changes_since(
+        self,
+        revision: int,
+    ) -> frozenset[ParameterKey] | None:
+        """指定 revision 以降の変更 key を返し、log 欠落時は ``None``。"""
+
+        since = int(revision)
+        if since == self.effective_revision:
+            return frozenset()
+        if since < 0 or since > self.effective_revision:
+            return None
+        if (
+            since == self.effective_revision - 1
+            and self._effective_change_revision == self.effective_revision
+        ):
+            return frozenset(self._effective_changed_keys)
+        return None
 
 
 __all__ = [

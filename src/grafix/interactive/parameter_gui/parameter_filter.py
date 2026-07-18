@@ -69,32 +69,91 @@ def parameter_row_has_midi_mapping(row: ParameterRow) -> bool:
 
 
 def _search_corpus(record: ParameterFilterRecord) -> str:
-    midi = " ".join(
-        f"midi cc {cc} cc{cc} midi{cc}" for cc in parameter_row_midi_ccs(record.row)
-    )
+    static_corpus = parameter_static_search_corpus(record.row, record.label)
+    dynamic_corpus = parameter_dynamic_search_corpus(record.row, record.source)
+    return f"{static_corpus} {dynamic_corpus}"
+
+
+def parameter_static_search_corpus(row: ParameterRow, label: str) -> str:
+    """structure revision 内で不変な検索文字列を casefold 済みで返す。"""
+
     return " ".join(
         (
-            str(record.label),
-            str(record.row.label),
-            str(record.row.op),
-            str(record.row.arg),
-            str(record.row.site_id),
-            str(record.source),
-            str(record.row.display_name or ""),
-            str(record.row.description or ""),
-            str(record.row.unit or ""),
-            str(record.row.category or ""),
-            midi,
+            str(label),
+            str(row.label),
+            str(row.op),
+            str(row.arg),
+            str(row.site_id),
+            str(row.display_name or ""),
+            str(row.description or ""),
+            str(row.unit or ""),
+            str(row.category or ""),
         )
     ).casefold()
+
+
+def parameter_dynamic_search_corpus(row: ParameterRow, source: str) -> str:
+    """value/effective revision に依存する検索文字列を返す。"""
+
+    if row.cc_key is None:
+        return str(source).casefold()
+    midi = " ".join(
+        f"midi cc {cc} cc{cc} midi{cc}" for cc in parameter_row_midi_ccs(row)
+    )
+    return f"{source} {midi}".casefold()
+
+
+def parameter_search_tokens(query: str) -> tuple[str, ...]:
+    """query を casefold 済み AND token へ正規化する。"""
+
+    return tuple(token for token in str(query).casefold().split() if token)
+
+
+def parameter_search_token_may_be_dynamic(token: str) -> bool:
+    """token が source/MIDI overlay だけでも一致し得るか返す。"""
+
+    normalized = str(token).casefold()
+    dynamic_words = ("ui", "code", "midi", "cc", "live", "frozen")
+    if any(normalized in word for word in dynamic_words):
+        return True
+    if normalized == "-" or normalized.isdigit() or (
+        normalized.startswith("-") and normalized[1:].isdigit()
+    ):
+        return True
+    for prefix in ("cc", "midi"):
+        for start in range(len(prefix)):
+            suffix = prefix[start:]
+            if not normalized.startswith(suffix):
+                continue
+            number = normalized[len(suffix) :]
+            if number == "-" or number.isdigit() or (
+                number.startswith("-") and number[1:].isdigit()
+            ):
+                return True
+    return False
+
+
+def matches_parameter_search_corpus(
+    static_corpus: str,
+    row: ParameterRow,
+    source: str,
+    tokens: tuple[str, ...],
+) -> bool:
+    """静的 corpus と動的 overlay が全 token を含むか返す。"""
+
+    if not tokens:
+        return True
+    missing = tuple(token for token in tokens if token not in static_corpus)
+    if not missing:
+        return True
+    dynamic_corpus = parameter_dynamic_search_corpus(row, source)
+    return all(token in dynamic_corpus for token in missing)
 
 
 def matches_parameter_search(record: ParameterFilterRecord, query: str) -> bool:
     """Unicode casefold 済み AND token substring search を評価する。"""
 
-    tokens = tuple(token for token in str(query).casefold().split() if token)
-    if not tokens:
-        return True
+    tokens = parameter_search_tokens(query)
     corpus = _search_corpus(record)
     return all(token in corpus for token in tokens)
 
@@ -140,8 +199,13 @@ __all__ = [
     "ParameterFilterResult",
     "ParameterFilterState",
     "filter_parameter_records",
+    "matches_parameter_search_corpus",
     "matches_parameter_search",
+    "parameter_dynamic_search_corpus",
     "parameter_record_matches",
     "parameter_row_has_midi_mapping",
     "parameter_row_midi_ccs",
+    "parameter_search_token_may_be_dynamic",
+    "parameter_search_tokens",
+    "parameter_static_search_corpus",
 ]

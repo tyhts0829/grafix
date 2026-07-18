@@ -6,12 +6,13 @@ from typing import Any, cast
 import pytest
 
 from grafix.core.parameters.frame_params import FrameParamRecord
+from grafix.core.parameters.favorites import set_parameters_favorite
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.labels_ops import set_label
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters import merge_ops
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.parameters.snapshot_ops import store_snapshot
+from grafix.core.parameters.snapshot_ops import materialize_snapshot, store_snapshot
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.style import STYLE_GLOBAL_THICKNESS, style_key
 from grafix.core.parameters.style_ops import ensure_style_entries
@@ -162,6 +163,109 @@ def test_effective_revision_advances_once_only_when_final_snapshot_changes() -> 
     assert runtime.effective_revision == 3
 
 
+def test_stable_merge_skips_initial_value_canonicalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ParamStore()
+    records = [_record(index) for index in range(100)]
+    merge_frame_params(store, records)
+
+    def fail_canonicalize(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("stable merge canonicalized an existing state")
+
+    monkeypatch.setattr(
+        merge_ops,
+        "canonicalize_ui_value",
+        fail_canonicalize,
+    )
+
+    merge_frame_params(store, records)
+    assert len(store_snapshot(store)) == len(records)
+
+
+def test_stable_merge_writes_only_changed_runtime_key() -> None:
+    class CountingDict(dict[ParameterKey, object]):
+        writes = 0
+
+        def __setitem__(self, key: ParameterKey, value: object) -> None:
+            self.writes += 1
+            super().__setitem__(key, value)
+
+    store = ParamStore()
+    records = [replace(_record(index), source="code") for index in range(100)]
+    merge_frame_params(store, records)
+    runtime = store._runtime_ref()
+    effective = CountingDict(runtime.last_effective_by_key)
+    source = CountingDict(runtime.last_source_by_key)
+    runtime.last_effective_by_key = effective
+    runtime.last_source_by_key = source  # type: ignore[assignment]
+
+    merge_frame_params(
+        store,
+        [
+            *records[:-1],
+            replace(records[-1], effective=-1.0, source="ui"),
+        ],
+    )
+
+    assert effective.writes == 1
+    assert source.writes == 1
+    assert runtime.last_effective_by_key[records[-1].key] == -1.0
+    assert runtime.last_source_by_key[records[-1].key] == "ui"
+
+
+def test_duplicate_key_runtime_and_explicit_values_are_last_record_wins() -> None:
+    store = ParamStore()
+    first = replace(_record(1), effective=1.0, source="code", explicit=False)
+    merge_frame_params(store, [first])
+    runtime = store._runtime_ref()
+    revision = runtime.effective_revision
+
+    merge_frame_params(
+        store,
+        [
+            replace(first, effective=9.0, source="ui", explicit=False),
+            replace(first, effective=2.0, source="midi_live", explicit=True),
+        ],
+    )
+
+    state = store.get_state(first.key)
+    assert state is not None
+    assert state.override is False
+    assert store._explicit_by_key[first.key] is True
+    assert runtime.last_effective_by_key[first.key] == 2.0
+    assert runtime.last_source_by_key[first.key] == "midi_live"
+    assert runtime.effective_revision == revision + 1
+
+
+def test_structure_change_leaves_stable_cache_with_latest_schema() -> None:
+    store = ParamStore()
+    first = replace(
+        _record(1),
+        source="code",
+        chain_id="chain-a",
+        step_index=0,
+    )
+    merge_frame_params(store, [first])
+
+    changed_meta = ParamMeta(kind="int", ui_min=0, ui_max=100)
+    changed = replace(
+        first,
+        base=2,
+        effective=2,
+        meta=changed_meta,
+        chain_id="chain-b",
+        step_index=3,
+    )
+    merge_frame_params(store, [changed])
+    merge_frame_params(store, [changed])
+
+    meta = store.get_meta(first.key)
+    assert meta is not None
+    assert meta.kind == "int"
+    assert store.get_effect_step(first.key.op, first.key.site_id) == ("chain-b", 3)
+
+
 def test_failed_merge_restores_effective_snapshot_and_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -217,3 +321,83 @@ def test_cached_snapshot_state_cannot_be_mutated() -> None:
 
     assert store_snapshot(store) is snapshot
     assert snapshot[record.key][1].ui_value == 1.0
+
+
+def test_one_key_snapshot_rebuilds_only_changed_entry() -> None:
+    store = ParamStore()
+    records = [_record(index) for index in range(1_000)]
+    merge_frame_params(store, records)
+    before = store_snapshot(store)
+    key = records[500].key
+
+    assert update_state_from_ui(
+        store,
+        key,
+        123.5,
+        meta=records[500].meta,
+    )[0]
+    after = store_snapshot(store)
+
+    assert after is not before
+    assert before[key][1].ui_value == 500.0
+    assert after[key][1].ui_value == 123.5
+    assert after[records[0].key] is before[records[0].key]
+    assert store._snapshot_cache_rebuilt_entries == 1
+    assert getattr(after, "patch_entries", 0) == 1
+    assert materialize_snapshot(after) == {key: after[key] for key in after}
+
+
+def test_snapshot_patch_is_bounded_and_periodically_materialized() -> None:
+    store = ParamStore()
+    records = [_record(index) for index in range(100)]
+    merge_frame_params(store, records)
+    snapshots = [store_snapshot(store)]
+
+    for index, record in enumerate(records[:80]):
+        assert update_state_from_ui(
+            store,
+            record.key,
+            float(index) + 0.25,
+            meta=record.meta,
+        )[0]
+        snapshot = store_snapshot(store)
+        snapshots.append(snapshot)
+        assert getattr(snapshot, "patch_entries", 0) <= 64
+        assert store._snapshot_cache_rebuilt_entries == 1
+
+    assert snapshots[0][records[0].key][1].ui_value == 0.0
+    assert snapshots[-1][records[0].key][1].ui_value == 0.25
+    assert snapshots[-1][records[79].key][1].ui_value == 79.25
+
+
+def test_favorite_change_reuses_parameter_snapshot_identity() -> None:
+    store = ParamStore()
+    record = _record(1)
+    merge_frame_params(store, [record])
+    snapshot = store_snapshot(store)
+
+    assert set_parameters_favorite(store, [record.key], favorite=True) == (
+        record.key,
+    )
+
+    assert store_snapshot(store) is snapshot
+
+
+def test_favorite_change_does_not_mark_stale_value_snapshot_current() -> None:
+    store = ParamStore()
+    record = _record(1)
+    merge_frame_params(store, [record])
+    before = store_snapshot(store)
+
+    assert update_state_from_ui(
+        store,
+        record.key,
+        2.0,
+        meta=record.meta,
+    )[0]
+    set_parameters_favorite(store, [record.key], favorite=True)
+    after = store_snapshot(store)
+
+    assert after is not before
+    assert before[record.key][1].ui_value == 1.0
+    assert after[record.key][1].ui_value == 2.0

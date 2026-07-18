@@ -17,7 +17,10 @@ from grafix.core.builtins import (
 from grafix.core.effect_registry import effect_registry
 from grafix.core.primitive_registry import primitive_registry
 from grafix.core.parameters.key import ParameterKey
-from grafix.core.parameters.favorites import set_parameters_favorite
+from grafix.core.parameters.favorites import (
+    favorite_parameter_key_set,
+    set_parameters_favorite,
+)
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_ops import set_meta
@@ -33,12 +36,20 @@ from .labeling import (
     effect_chain_header_display_names_from_snapshot,
     effect_step_ordinals_by_site,
 )
-from .grouping import group_info_for_row
+from .group_blocks import (
+    GroupBlockLayout,
+    group_layout_from_rows,
+    visible_group_layout,
+)
 from .midi_learn import MidiLearnState
 from .parameter_filter import (
-    ParameterFilterRecord,
     ParameterFilterState,
-    filter_parameter_records,
+    matches_parameter_search_corpus,
+    parameter_dynamic_search_corpus,
+    parameter_row_has_midi_mapping,
+    parameter_search_token_may_be_dynamic,
+    parameter_search_tokens,
+    parameter_static_search_corpus,
 )
 from .table import (
     parameter_group_collapse_keys,
@@ -56,6 +67,54 @@ from .visibility import active_mask_for_rows
 _logger = logging.getLogger(__name__)
 _TABLE_MODEL_CACHE = ParameterTableModelCache()
 _ENSURED_OPS_BY_STORE_REVISION: WeakKeyDictionary[ParamStore, int] = WeakKeyDictionary()
+_TABLE_VIEW_CACHE: WeakKeyDictionary[
+    ParamStore,
+    tuple["_ParameterTableViewCacheKey", "ParameterTableView"],
+] = WeakKeyDictionary()
+_BASE_VISIBILITY_CACHE: WeakKeyDictionary[
+    ParamStore,
+    tuple["_ParameterBaseVisibilityCacheKey", tuple[bool, ...]],
+] = WeakKeyDictionary()
+_DYNAMIC_SEARCH_CORPUS_CACHE: WeakKeyDictionary[
+    ParamStore,
+    tuple["_ParameterDynamicSearchCacheKey", tuple[str, ...]],
+] = WeakKeyDictionary()
+_TABLE_VIEW_BUILD_COUNT = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ParameterDynamicSearchCacheKey:
+    """source/MIDI search overlay の revision key。"""
+
+    model_cache_key: ParameterTableCacheKey
+    value_revision: int
+    effective_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ParameterBaseVisibilityCacheKey:
+    """filter から独立した active/loaded mask の revision key。"""
+
+    model_cache_key: ParameterTableCacheKey
+    value_revision: int
+    show_inactive_params: bool
+    effective_revision: int
+    visibility_token: tuple[object, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ParameterTableViewCacheKey:
+    """view の可視性・filter 結果へ影響する revision/signature。"""
+
+    model_cache_key: ParameterTableCacheKey
+    value_revision: int
+    show_inactive_params: bool
+    filter_state: ParameterFilterState
+    effective_revision: int
+    favorite_revision: int
+    visibility_token: tuple[object, ...]
+    error_keys: frozenset[ParameterKey]
+    favorite_keys: frozenset[ParameterKey]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +123,9 @@ class ParameterTableView:
 
     model: ParameterTableModel
     visible_mask: tuple[bool, ...]
+    visible_row_indices: tuple[int, ...]
+    group_layout: tuple[GroupBlockLayout, ...]
+    favorite_keys: frozenset[ParameterKey]
     filtered_count: int
     total_count: int
 
@@ -343,8 +405,6 @@ def _build_parameter_table_model(
     for row in rows_from_snapshot(snapshot):
         op = str(row.op)
         arg = str(row.arg)
-        key = ParameterKey(op=op, site_id=str(row.site_id), arg=arg)
-        row = replace(row, favorite=key in store._favorite_keys_ref())
 
         if op in primitive_registry:
             known_args = primitive_known_args_by_op.get(op)
@@ -399,19 +459,65 @@ def _build_parameter_table_model(
         site_id = str(key.site_id)
         layer_style_name_by_site_id.setdefault(site_id, str(label) if label else "layer")
 
+    group_layout = group_layout_from_rows(
+        rows,
+        primitive_header_by_group=primitive_header_by_group,
+        layer_style_name_by_site_id=layer_style_name_by_site_id,
+        effect_chain_header_by_id=effect_chain_header_by_id,
+        step_info_by_site=step_info_by_site,
+        effect_step_ordinal_by_site=effect_step_ordinal_by_site,
+    )
+    keys = tuple(
+        ParameterKey(
+            op=str(row.op),
+            site_id=str(row.site_id),
+            arg=str(row.arg),
+        )
+        for row in rows
+    )
+    search_labels = [""] * len(rows)
+    for block in group_layout:
+        for item in block.items:
+            row = rows[item.row_index]
+            raw_label = raw_label_by_site.get(
+                (str(row.op), str(row.site_id)),
+                "",
+            )
+            search_labels[item.row_index] = " ".join(
+                part
+                for part in (
+                    item.visible_label,
+                    str(block.header or ""),
+                    str(raw_label),
+                )
+                if part
+            )
+    search_corpus_by_row = tuple(
+        parameter_static_search_corpus(row, search_labels[index])
+        for index, row in enumerate(rows)
+    )
+    mutable_row_indices_by_group: dict[tuple[str, str], list[int]] = {}
+    for index, key in enumerate(keys):
+        mutable_row_indices_by_group.setdefault(
+            (str(key.op), str(key.site_id)),
+            [],
+        ).append(index)
+
     return ParameterTableModel(
         cache_key=cache_key,
         value_revision=int(store.value_revision),
         snapshot=snapshot,
         rows=tuple(rows),
+        keys=keys,
+        search_corpus_by_row=search_corpus_by_row,
+        group_layout=group_layout,
         row_index_by_key=MappingProxyType(
+            {key: index for index, key in enumerate(keys)}
+        ),
+        row_indices_by_group=MappingProxyType(
             {
-                ParameterKey(
-                    op=str(row.op),
-                    site_id=str(row.site_id),
-                    arg=str(row.arg),
-                ): index
-                for index, row in enumerate(rows)
+                group: tuple(indices)
+                for group, indices in mutable_row_indices_by_group.items()
             }
         ),
         raw_label_by_site=MappingProxyType(raw_label_by_site),
@@ -478,7 +584,12 @@ def _parameter_table_model_for_store(store: ParamStore) -> ParameterTableModel:
 def clear_parameter_table_model_cache() -> None:
     """テスト/明示再初期化用にテーブルモデル cache を破棄する。"""
 
+    global _TABLE_VIEW_BUILD_COUNT
     _TABLE_MODEL_CACHE.clear()
+    _TABLE_VIEW_CACHE.clear()
+    _BASE_VISIBILITY_CACHE.clear()
+    _DYNAMIC_SEARCH_CORPUS_CACHE.clear()
+    _TABLE_VIEW_BUILD_COUNT = 0
     _ENSURED_OPS_BY_STORE_REVISION.clear()
 
 
@@ -486,6 +597,12 @@ def parameter_table_model_build_count() -> int:
     """テーブルモデルの累積構築回数を返す。"""
 
     return _TABLE_MODEL_CACHE.build_count
+
+
+def parameter_table_view_build_count() -> int:
+    """visibility/filter view を実際に構築した累積回数を返す。"""
+
+    return int(_TABLE_VIEW_BUILD_COUNT)
 
 
 def _visible_mask_for_model(
@@ -532,23 +649,185 @@ def _visible_mask_for_model(
     ]
 
 
-def _search_label_for_row(row: ParameterRow, model: ParameterTableModel) -> str:
-    """表示 label/header/raw label を検索用の 1 文字列へまとめる。"""
+def _base_visible_mask_for_model(
+    store: ParamStore,
+    model: ParameterTableModel,
+    *,
+    show_inactive: bool,
+) -> tuple[bool, ...]:
+    """query/filter から独立した active/loaded mask を revision cache する。"""
 
-    info = group_info_for_row(
-        row,
-        primitive_header_by_group=model.primitive_header_by_group,
-        layer_style_name_by_site_id=model.layer_style_name_by_site_id,
-        effect_chain_header_by_id=model.effect_chain_header_by_id,
-        step_info_by_site=model.step_info_by_site,
-        effect_step_ordinal_by_site=model.effect_step_ordinal_by_site,
+    runtime = store._runtime_ref()
+    # show-inactive でも loaded-but-not-observed group は隠すため visibility token
+    # は常に必要。value/effective は active 判定を行う場合だけ key に含める。
+    cache_key = _ParameterBaseVisibilityCacheKey(
+        model_cache_key=model.cache_key,
+        value_revision=(-1 if show_inactive else int(model.value_revision)),
+        show_inactive_params=bool(show_inactive),
+        effective_revision=(
+            -1 if show_inactive else int(runtime.effective_revision)
+        ),
+        visibility_token=runtime.visibility_cache_token(),
     )
-    raw_label = model.raw_label_by_site.get((str(row.op), str(row.site_id)), "")
-    return " ".join(
-        part
-        for part in (str(info.visible_label), str(info.header or ""), str(raw_label))
-        if part
+    cached = _BASE_VISIBILITY_CACHE.get(store)
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+
+    activity_mask: Sequence[bool] | None = None
+    if not show_inactive:
+        activity_mask = active_mask_for_rows(
+            model.rows,
+            show_inactive=False,
+            last_effective_by_key=runtime.last_effective_by_key,
+        )
+    mask = tuple(
+        _visible_mask_for_model(
+            store,
+            model.rows,
+            show_inactive=show_inactive,
+            activity_mask=activity_mask,
+        )
     )
+    _BASE_VISIBILITY_CACHE[store] = (cache_key, mask)
+    return mask
+
+
+def _parameter_table_view_from_mask(
+    model: ParameterTableModel,
+    visible_mask: Sequence[bool],
+    *,
+    favorite_keys: frozenset[ParameterKey],
+) -> ParameterTableView:
+    """mask と静的 model layout を描画用 view へまとめる。"""
+
+    normalized_mask = tuple(bool(visible) for visible in visible_mask)
+    visible_row_indices = tuple(
+        index for index, visible in enumerate(normalized_mask) if visible
+    )
+    return ParameterTableView(
+        model=model,
+        visible_mask=normalized_mask,
+        visible_row_indices=visible_row_indices,
+        group_layout=visible_group_layout(model.group_layout, normalized_mask),
+        favorite_keys=favorite_keys,
+        filtered_count=len(visible_row_indices),
+        total_count=len(normalized_mask),
+    )
+
+
+def _reuse_default_parameter_table_view(
+    store: ParamStore,
+    cached: tuple[_ParameterTableViewCacheKey, ParameterTableView],
+    cache_key: _ParameterTableViewCacheKey,
+    model: ParameterTableModel,
+    *,
+    favorite_keys: frozenset[ParameterKey],
+) -> ParameterTableView | None:
+    """default view の mask が不変なら、最新 value model だけ差し替える。"""
+
+    previous_key, previous_view = cached
+    default_filter = ParameterFilterState()
+    if (
+        previous_key.model_cache_key != cache_key.model_cache_key
+        or previous_key.show_inactive_params != cache_key.show_inactive_params
+        or previous_key.filter_state != default_filter
+        or cache_key.filter_state != default_filter
+        or previous_key.visibility_token != cache_key.visibility_token
+    ):
+        return None
+
+    # show-inactive 時の default filter は value/effective/source/error/favorite
+    # で mask が変わらない。loaded/observed は上の token 比較で検証済み。
+    if cache_key.show_inactive_params:
+        return replace(
+            previous_view,
+            model=model,
+            favorite_keys=favorite_keys,
+        )
+
+    value_changes = store.value_changes_since(previous_key.value_revision)
+    effective_changes = store._runtime_ref().effective_changes_since(
+        previous_key.effective_revision
+    )
+    if value_changes is None or effective_changes is None:
+        return None
+    changed_keys = value_changes | effective_changes
+    if not _changed_groups_keep_default_mask(
+        store,
+        model,
+        previous_view.visible_mask,
+        changed_keys,
+    ):
+        return None
+    return replace(
+        previous_view,
+        model=model,
+        favorite_keys=favorite_keys,
+    )
+
+
+def _changed_groups_keep_default_mask(
+    store: ParamStore,
+    model: ParameterTableModel,
+    previous_mask: Sequence[bool],
+    changed_keys: AbstractSet[ParameterKey],
+) -> bool:
+    """変更 key の所属 group だけを再評価し、mask 同値性を返す。"""
+
+    changed_groups: set[tuple[str, str]] = set()
+    for key in changed_keys:
+        if key not in model.row_index_by_key:
+            return False
+        changed_groups.add((str(key.op), str(key.site_id)))
+
+    for group in changed_groups:
+        indices = model.row_indices_by_group.get(group)
+        if indices is None:
+            return False
+        rows = [model.rows[index] for index in indices]
+        current = _visible_mask_for_model(
+            store,
+            rows,
+            show_inactive=False,
+        )
+        if any(
+            bool(previous_mask[index]) != bool(visible)
+            for index, visible in zip(indices, current, strict=True)
+        ):
+            return False
+    return True
+
+
+def _dynamic_search_corpus_for_model(
+    store: ParamStore,
+    model: ParameterTableModel,
+) -> tuple[str, ...]:
+    """source/MIDI 検索 overlay を revision 内で 1 回だけ構築する。"""
+
+    runtime = store._runtime_ref()
+    cache_key = _ParameterDynamicSearchCacheKey(
+        model_cache_key=model.cache_key,
+        value_revision=int(model.value_revision),
+        effective_revision=int(runtime.effective_revision),
+    )
+    cached = _DYNAMIC_SEARCH_CORPUS_CACHE.get(store)
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+    corpus_items: list[str] = []
+    append_corpus = corpus_items.append
+    last_source_by_key = runtime.last_source_by_key
+    for row, key in zip(model.rows, model.keys, strict=True):
+        source = source_badge_for_row(row, last_source_by_key.get(key))
+        # MIDI 未割当が通常ケース。専用 helper の呼び出しと CC token 構築判定を
+        # 省き、初回の動的 query でも 10,000 行を frame budget 内に収める。
+        append_corpus(
+            str(source).casefold()
+            if row.cc_key is None
+            else parameter_dynamic_search_corpus(row, source)
+        )
+    corpus = tuple(corpus_items)
+    _DYNAMIC_SEARCH_CORPUS_CACHE[store] = (cache_key, corpus)
+    return corpus
 
 
 def parameter_table_view_for_store(
@@ -561,79 +840,209 @@ def parameter_table_view_for_store(
 ) -> ParameterTableView:
     """既存 visibility と検索/filter を合成した immutable view を返す。"""
 
+    global _TABLE_VIEW_BUILD_COUNT
+
     state = ParameterFilterState() if filter_state is None else filter_state
     favorites = (
-        store._favorite_keys_ref()
+        favorite_parameter_key_set(store)
         if favorite_keys is None
-        else favorite_keys
+        else frozenset(favorite_keys)
     )
     model = _parameter_table_model_for_store(store)
     rows = model.rows
     runtime = store._runtime_ref()
-    # activity が表示条件にも filter にも不要なら、group ごとの値辞書と
-    # ui_visible rule の全行評価を省く。検索/favorite/error 等は active flag を
-    # 参照しないため、show_inactive=True ではこの fast path を共有できる。
+    normalized_error_keys = frozenset(error_keys)
+    cache_key = _ParameterTableViewCacheKey(
+        model_cache_key=model.cache_key,
+        value_revision=int(model.value_revision),
+        show_inactive_params=bool(show_inactive_params),
+        filter_state=state,
+        effective_revision=int(runtime.effective_revision),
+        favorite_revision=int(store.favorite_revision),
+        visibility_token=runtime.visibility_cache_token(),
+        error_keys=normalized_error_keys,
+        favorite_keys=favorites,
+    )
+    cached = _TABLE_VIEW_CACHE.get(store)
+    if (
+        cached is not None
+        and cached[0] == cache_key
+        and cached[1].model is model
+    ):
+        return cached[1]
+    if cached is not None:
+        reused = _reuse_default_parameter_table_view(
+            store,
+            cached,
+            cache_key,
+            model,
+            favorite_keys=favorites,
+        )
+        if reused is not None:
+            _TABLE_VIEW_CACHE[store] = (cache_key, reused)
+            return reused
+
+    # base visibility は query/filter の変更から独立しているため、検索文字を
+    # 入力するたびに ui_visible rule を全件再評価しない。
+    base_visible_mask = _base_visible_mask_for_model(
+        store,
+        model,
+        show_inactive=bool(show_inactive_params),
+    )
     activity_mask: Sequence[bool] | None = None
-    if not bool(show_inactive_params) or state.activity != "all":
+    if state.activity != "all":
         activity_mask = active_mask_for_rows(
             rows,
             show_inactive=False,
             last_effective_by_key=runtime.last_effective_by_key,
         )
-    base_visible_mask = _visible_mask_for_model(
-        store,
-        rows,
-        show_inactive=bool(show_inactive_params),
-        activity_mask=activity_mask,
-    )
 
     # 通常時（検索/filter 無し）は静的 search label/source record を組み立てない。
     # 大規模 scene の既定フレームコストを、従来の visibility 判定と同程度に保つ。
     if state == ParameterFilterState():
-        visible_mask = tuple(bool(visible) for visible in base_visible_mask)
-        return ParameterTableView(
-            model=model,
-            visible_mask=visible_mask,
-            filtered_count=sum(visible_mask),
-            total_count=len(rows),
+        view = _parameter_table_view_from_mask(
+            model,
+            base_visible_mask,
+            favorite_keys=favorites,
         )
-
-    records: list[ParameterFilterRecord] = []
-    for index, row in enumerate(rows):
-        key = ParameterKey(op=str(row.op), site_id=str(row.site_id), arg=str(row.arg))
-        records.append(
-            ParameterFilterRecord(
-                row=row,
-                label=_search_label_for_row(row, model),
-                source=source_badge_for_row(
-                    row,
-                    runtime.last_source_by_key.get(key),
-                ),
-                active=(
+    else:
+        query_tokens = parameter_search_tokens(state.query)
+        query_only = (
+            bool(query_tokens)
+            and state.activity == "all"
+            and not state.ui_override_only
+            and not state.midi_mapped_only
+            and not state.error_only
+            and not state.favorite_only
+        )
+        static_query_only = (
+            query_only
+            and all(
+                not parameter_search_token_may_be_dynamic(token)
+                for token in query_tokens
+            )
+        )
+        if static_query_only:
+            # 静的 substring だけの通常検索は、row/source object を合成せず
+            # casefold 済み corpus を tight comprehension で走査する。
+            if len(query_tokens) == 1:
+                token = query_tokens[0]
+                visible_mask = tuple(
+                    bool(base_visible and token in corpus)
+                    for base_visible, corpus in zip(
+                        base_visible_mask,
+                        model.search_corpus_by_row,
+                        strict=True,
+                    )
+                )
+            else:
+                visible_mask = tuple(
+                    bool(
+                        base_visible
+                        and all(token in corpus for token in query_tokens)
+                    )
+                    for base_visible, corpus in zip(
+                        base_visible_mask,
+                        model.search_corpus_by_row,
+                        strict=True,
+                    )
+                )
+        elif query_only:
+            dynamic_corpus_by_row = _dynamic_search_corpus_for_model(
+                store,
+                model,
+            )
+            if len(query_tokens) == 1:
+                token = query_tokens[0]
+                visible_mask = tuple(
+                    bool(
+                        base_visible
+                        and (
+                            token in static_corpus
+                            or token in dynamic_corpus
+                        )
+                    )
+                    for base_visible, static_corpus, dynamic_corpus in zip(
+                        base_visible_mask,
+                        model.search_corpus_by_row,
+                        dynamic_corpus_by_row,
+                        strict=True,
+                    )
+                )
+            else:
+                visible_mask = tuple(
+                    bool(
+                        base_visible
+                        and all(
+                            token in static_corpus or token in dynamic_corpus
+                            for token in query_tokens
+                        )
+                    )
+                    for base_visible, static_corpus, dynamic_corpus in zip(
+                        base_visible_mask,
+                        model.search_corpus_by_row,
+                        dynamic_corpus_by_row,
+                        strict=True,
+                    )
+                )
+        else:
+            matches_filter: list[bool] = []
+            for index, (row, key, static_corpus) in enumerate(
+                zip(
+                    rows,
+                    model.keys,
+                    model.search_corpus_by_row,
+                    strict=True,
+                )
+            ):
+                active = (
                     True
                     if activity_mask is None
                     else bool(activity_mask[index])
-                ),
-                has_error=key in error_keys,
-                favorite=key in favorites,
+                )
+                matches = True
+                if state.activity == "active" and not active:
+                    matches = False
+                elif state.activity == "inactive" and active:
+                    matches = False
+                elif state.ui_override_only and not bool(row.override):
+                    matches = False
+                elif state.midi_mapped_only and not parameter_row_has_midi_mapping(row):
+                    matches = False
+                elif state.error_only and key not in normalized_error_keys:
+                    matches = False
+                elif state.favorite_only and key not in favorites:
+                    matches = False
+                elif query_tokens:
+                    source = source_badge_for_row(
+                        row,
+                        runtime.last_source_by_key.get(key),
+                    )
+                    matches = matches_parameter_search_corpus(
+                        static_corpus,
+                        row,
+                        source,
+                        query_tokens,
+                    )
+                matches_filter.append(matches)
+
+            visible_mask = tuple(
+                bool(base_visible and matches)
+                for base_visible, matches in zip(
+                    base_visible_mask,
+                    matches_filter,
+                    strict=True,
+                )
             )
+        view = _parameter_table_view_from_mask(
+            model,
+            visible_mask,
+            favorite_keys=favorites,
         )
 
-    filtered = filter_parameter_records(records, state)
-    visible_mask = tuple(
-        bool(base_visible and matches_filter)
-        for base_visible, matches_filter in zip(
-            base_visible_mask,
-            filtered.mask,
-            strict=True,
-        )
-    )
-    return ParameterTableView(
-        model=model,
-        visible_mask=visible_mask,
-        filtered_count=sum(visible_mask),
-        total_count=len(rows),
-    )
+    _TABLE_VIEW_CACHE[store] = (cache_key, view)
+    _TABLE_VIEW_BUILD_COUNT += 1
+    return view
 
 
 def _apply_updated_rows_to_store(
@@ -777,6 +1186,7 @@ def set_all_parameter_groups_collapsed(
     model = table_view.model
     collapse_keys = parameter_group_collapse_keys(
         list(model.rows),
+        group_layout=model.group_layout,
         primitive_header_by_group=model.primitive_header_by_group,
         layer_style_name_by_site_id=model.layer_style_name_by_site_id,
         effect_chain_header_by_id=model.effect_chain_header_by_id,
@@ -828,26 +1238,38 @@ def render_store_parameter_table(
 
     # 行・ヘッダ・順序は (store revision, registry revision) 内で不変。
     # effective/MIDI/active/loaded はモデル外に置き、描画直前にだけ合成する。
-    model = _parameter_table_model_for_store(store)
-    if table_view is None or table_view.model is not model:
-        table_view = parameter_table_view_for_store(
-            store,
-            show_inactive_params=bool(show_inactive_params),
-            filter_state=filter_state,
-            error_keys=error_keys,
-            favorite_keys=favorite_keys,
-        )
-        model = table_view.model
+    # 呼び出し側が前 frame の view を保持していても、cheap cache lookup で
+    # effective/source/favorite/loaded/error の revision/signature を検証する。
+    current_view = parameter_table_view_for_store(
+        store,
+        show_inactive_params=bool(show_inactive_params),
+        filter_state=filter_state,
+        error_keys=error_keys,
+        favorite_keys=favorite_keys,
+    )
+    table_view = current_view
+    model = table_view.model
     rows_before = model.rows
-    visible_mask = table_view.visible_mask
-    view_rows = [
-        row for row, visible in zip(rows_before, visible_mask, strict=True) if visible
-    ]
+    visible_row_indices = table_view.visible_row_indices
+    view_rows: list[ParameterRow] = []
+    render_rows = list(rows_before)
+    for index in visible_row_indices:
+        row = rows_before[index]
+        favorite = model.keys[index] in table_view.favorite_keys
+        visible_row = (
+            row
+            if bool(row.favorite) == favorite
+            else replace(row, favorite=favorite)
+        )
+        render_rows[index] = visible_row
+        view_rows.append(visible_row)
 
     runtime = store._runtime_ref()
     collapsed_before = frozenset(store._collapsed_headers_ref())
     changed, view_rows_after = render_parameter_table(
         view_rows,
+        group_layout=table_view.group_layout,
+        model_rows=render_rows,
         metric_scale=metric_scale,
         primitive_header_by_group=model.primitive_header_by_group,
         layer_style_name_by_site_id=model.layer_style_name_by_site_id,
@@ -868,15 +1290,10 @@ def render_store_parameter_table(
         store._touch(structure=False)
 
     if changed:
-        view_iter = iter(view_rows_after)
-        rows_after = [
-            next(view_iter) if visible else row
-            for row, visible in zip(rows_before, visible_mask, strict=True)
-        ]
         _apply_updated_rows_to_store(
             store,
             model.snapshot,
-            rows_before,
-            rows_after,
+            view_rows,
+            view_rows_after,
         )
     return bool(changed or collapsed_changed)

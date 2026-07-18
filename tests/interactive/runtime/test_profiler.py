@@ -312,6 +312,62 @@ def test_profiler_counts_pending_input_and_latency_sample_eviction() -> None:
     assert snapshot.input_to_present_samples == 256
 
 
+def test_profiler_matches_only_the_ordered_causal_prefix() -> None:
+    perf = PerfCollector(
+        enabled=True,
+        console_output=False,
+        print_every=10_000,
+    )
+
+    with perf.frame():
+        for revision in range(100, 105):
+            perf.record_event(
+                "parameter_revision_created",
+                revision=revision,
+                timestamp_ns=revision * 1_000,
+            )
+        perf.record_event(
+            "preview_presented",
+            revision=101,
+            timestamp_ns=200_000,
+        )
+
+    snapshot = perf.snapshot()
+    assert snapshot.input_to_present_samples == 2
+    assert snapshot.input_to_present_p50_ms == pytest.approx(0.0995)
+
+    with perf.frame():
+        perf.record_event(
+            "preview_presented",
+            revision=104,
+            timestamp_ns=300_000,
+        )
+
+    snapshot = perf.snapshot()
+    assert snapshot.input_to_present_samples == 5
+    assert snapshot.input_to_present_max_ms == pytest.approx(0.198)
+
+
+def test_profiler_rejects_out_of_order_causal_input_revisions() -> None:
+    perf = PerfCollector(enabled=True, console_output=False)
+
+    perf.record_event(
+        "parameter_revision_created",
+        revision=2,
+        timestamp_ns=1_000,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="causal input revision は単調非減少",
+    ):
+        perf.record_event(
+            "parameter_revision_created",
+            revision=1,
+            timestamp_ns=2_000,
+        )
+
+
 def test_deferred_frame_tail_and_deadline_use_full_loop_duration() -> None:
     perf = PerfCollector(
         enabled=True,

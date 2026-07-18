@@ -4,7 +4,7 @@
 
 Grafix の性能計測は、次の 2 系統を分けて扱う。
 
-- **再現可能な比較**: `python -m grafix benchmark` の schema v3 runner
+- **再現可能な比較**: `python -m grafix benchmark` の schema v4 runner
 - **実ウィンドウの診断**: `PerfCollector` による interactive frame 計測
 
 wall time だけで最適化を判断せず、出力 checksum、実行環境、case 定義、

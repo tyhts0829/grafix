@@ -572,7 +572,10 @@ class PerfCollector:
         revision: int | None = None,
         timestamp_ns: int | None = None,
     ) -> None:
-        """frame/revision と結び付く causal event を bounded に記録する。"""
+        """frame/revision と結び付く causal event を bounded に記録する。
+
+        input 作成 event の revision は、geometry/style の各系列で単調非減少とする。
+        """
 
         if not self.enabled:
             return
@@ -626,8 +629,14 @@ class PerfCollector:
         revision: int,
         timestamp_ns: int,
     ) -> None:
-        pending[int(revision)] = int(timestamp_ns)
-        pending.move_to_end(int(revision))
+        normalized_revision = int(revision)
+        if pending and normalized_revision < next(reversed(pending)):
+            raise ValueError(
+                "causal input revision は単調非減少である必要があります: "
+                f"{normalized_revision}"
+            )
+        pending[normalized_revision] = int(timestamp_ns)
+        pending.move_to_end(normalized_revision)
         while len(pending) > _EVENT_LIMIT:
             pending.popitem(last=False)
             self._causal_input_drop_count += 1
@@ -638,15 +647,19 @@ class PerfCollector:
         revision: int,
         timestamp_ns: int,
     ) -> None:
-        for created_revision, created_ns in tuple(pending.items()):
-            if created_revision > int(revision):
-                continue
+        presented_revision = int(revision)
+        matched_revisions: list[int] = []
+        for created_revision in pending:
+            if created_revision > presented_revision:
+                break
+            matched_revisions.append(created_revision)
+        for created_revision in matched_revisions:
+            created_ns = pending.pop(created_revision)
             if len(self._input_to_present_ns) == self._input_to_present_ns.maxlen:
                 self._latency_sample_drop_count += 1
             self._input_to_present_ns.append(
                 max(0, int(timestamp_ns) - created_ns)
             )
-            del pending[created_revision]
 
     def close(self) -> None:
         """trace writer の残件を flush して終了する。"""

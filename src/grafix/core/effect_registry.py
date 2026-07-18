@@ -121,6 +121,10 @@ def effect(
                 for g in inputs:
                     if out_coords is g.coords and out_offsets is g.offsets:
                         return g
+                    if out_offsets is g.offsets:
+                        realized = g._with_coords(out_coords)
+                        if realized is not None:
+                            return realized
             return realized_geometry_from_tuple(
                 out,
                 context=f"@effect {f.__module__}.{f.__name__}",

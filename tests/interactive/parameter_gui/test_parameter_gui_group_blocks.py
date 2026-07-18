@@ -1,4 +1,9 @@
-from grafix.interactive.parameter_gui.group_blocks import group_blocks_from_rows
+from grafix.interactive.parameter_gui.group_blocks import (
+    group_blocks_from_layout,
+    group_blocks_from_rows,
+    group_layout_from_rows,
+    visible_group_layout,
+)
 from grafix.interactive.parameter_gui.table import _effect_step_heading_by_site
 from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.view import ParameterRow
@@ -106,3 +111,71 @@ def test_group_blocks_from_rows_style_is_single_block():
     blocks = group_blocks_from_rows(rows)
     assert len(blocks) == 1
     assert blocks[0].header == "Style"
+
+
+def test_visible_group_layout_matches_regrouping_filtered_rows():
+    rows = [
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="n_sides"),
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="r"),
+        _row(op="circle", site_id="c:1", ordinal=1, arg="r"),
+    ]
+    headers = {("polygon", 1): "P", ("circle", 1): "C"}
+    layout = group_layout_from_rows(
+        rows,
+        primitive_header_by_group=headers,
+    )
+    mask = (False, True, True)
+    view_rows = [row for row, visible in zip(rows, mask, strict=True) if visible]
+
+    from_layout = group_blocks_from_layout(
+        rows,
+        visible_group_layout(layout, mask),
+    )
+    regrouped = group_blocks_from_rows(
+        view_rows,
+        primitive_header_by_group=headers,
+    )
+
+    assert [
+        (
+            block.group_id,
+            block.header_id,
+            block.header,
+            [(item.row, item.visible_label) for item in block.items],
+        )
+        for block in from_layout
+    ] == [
+        (
+            block.group_id,
+            block.header_id,
+            block.header,
+            [(item.row, item.visible_label) for item in block.items],
+        )
+        for block in regrouped
+    ]
+
+
+def test_visible_group_layout_reuses_full_layout_when_all_rows_are_visible():
+    rows = [
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="n_sides"),
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="r"),
+    ]
+    layout = group_layout_from_rows(rows)
+
+    assert visible_group_layout(layout, (True, True)) is layout
+
+
+def test_visible_group_layout_reuses_unchanged_blocks_with_model_indices():
+    rows = [
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="r"),
+        _row(op="circle", site_id="c:1", ordinal=1, arg="r"),
+        _row(op="line", site_id="l:1", ordinal=1, arg="length"),
+    ]
+    layout = group_layout_from_rows(rows)
+
+    filtered = visible_group_layout(layout, (True, False, True))
+
+    assert filtered == (layout[0], layout[2])
+    assert filtered[0] is layout[0]
+    assert filtered[1] is layout[2]
+    assert filtered[1].items[0].row_index == 2

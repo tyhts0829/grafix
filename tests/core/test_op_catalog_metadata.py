@@ -13,7 +13,7 @@ from grafix.core.effect_registry import EffectFunc
 from grafix.core.op_registry import OpRegistry, OpSpec
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import PrimitiveFunc
-from grafix.core.realized_geometry import GeomTuple
+from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 
 def _empty_geometry() -> GeomTuple:
@@ -74,6 +74,122 @@ def test_effect_decorator_excludes_each_geometry_input(
     assert spec.required_args == ("weight",)
     assert spec.description == "2 入力用 catalog 検証 effect。"
     assert spec.provenance.endswith(".catalog_effect")
+
+
+def test_effect_reuses_validated_offsets_when_only_coords_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
+    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
+    output_coords = np.asarray(
+        [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+
+    @effect_registry_module.effect
+    def coords_only_effect(g: GeomTuple) -> GeomTuple:
+        return output_coords, g[1]
+
+    input_geometry = RealizedGeometry(
+        coords=np.asarray(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            dtype=np.float32,
+        ),
+        offsets=np.asarray([0, 1, 2], dtype=np.int32),
+    )
+    result = registry["coords_only_effect"].evaluator([input_geometry], ())
+
+    assert result.coords is output_coords
+    assert result.offsets is input_geometry.offsets
+    assert result.coords.flags.writeable is False
+    np.testing.assert_array_equal(
+        result.coords,
+        np.asarray(
+            [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_effect_trusted_offsets_conditions_fall_back_to_normal_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
+    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
+    output_coords = np.asarray(
+        [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        dtype=np.float64,
+    )
+
+    @effect_registry_module.effect
+    def converted_effect(g: GeomTuple) -> GeomTuple:
+        return output_coords, g[1]
+
+    input_geometry = RealizedGeometry(
+        coords=np.asarray(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            dtype=np.float32,
+        ),
+        offsets=np.asarray([0, 2], dtype=np.int32),
+    )
+    result = registry["converted_effect"].evaluator([input_geometry], ())
+
+    assert result.coords.dtype == np.float32
+    assert result.offsets.dtype == np.int32
+    assert result.coords is not output_coords
+    assert result.offsets is input_geometry.offsets
+    np.testing.assert_array_equal(result.coords, output_coords)
+
+
+def test_effect_different_offsets_use_normal_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
+    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
+    output_coords = np.asarray(
+        [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    output_offsets = np.asarray([0, 1, 2], dtype=np.int32)
+
+    @effect_registry_module.effect
+    def repartition_effect(_g: GeomTuple) -> GeomTuple:
+        return output_coords, output_offsets
+
+    input_geometry = RealizedGeometry(
+        coords=np.zeros((2, 3), dtype=np.float32),
+        offsets=np.asarray([0, 2], dtype=np.int32),
+    )
+    result = registry["repartition_effect"].evaluator([input_geometry], ())
+
+    assert result.coords is output_coords
+    assert result.offsets is output_offsets
+    assert result.offsets is not input_geometry.offsets
+    assert result.coords.flags.writeable is False
+    assert result.offsets.flags.writeable is False
+
+
+def test_effect_trusted_offsets_length_mismatch_uses_existing_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
+    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
+
+    @effect_registry_module.effect
+    def invalid_coords_effect(g: GeomTuple) -> GeomTuple:
+        return np.zeros((1, 3), dtype=np.float32), g[1]
+
+    input_geometry = RealizedGeometry(
+        coords=np.zeros((2, 3), dtype=np.float32),
+        offsets=np.asarray([0, 2], dtype=np.int32),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"@effect .*\.invalid_coords_effect: "
+        r"\(coords, offsets\) が不正です",
+    ):
+        registry["invalid_coords_effect"].evaluator([input_geometry], ())
 
 
 def test_new_op_spec_catalog_fields_have_compatible_defaults() -> None:

@@ -192,6 +192,8 @@ def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -
         collapsed.discard(old_collapse_key)
         collapsed.add(f"primitive:{op}:{new_site_id}")
 
+    locked = store._locked_keys_ref()
+    favorites = set(store._favorite_keys_snapshot())
     for old_key in _group_keys(store, op=op, site_id=str(old_site_id)):
         new_key = ParameterKey(op=op, site_id=str(new_site_id), arg=str(old_key.arg))
         old_meta = store._meta.get(old_key)
@@ -212,12 +214,10 @@ def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -
         if old_explicit is not None and new_key not in store._explicit_by_key:
             store._explicit_by_key[new_key] = bool(old_explicit)
 
-        locked = store._locked_keys_ref()
         if old_key in locked:
             locked.discard(old_key)
             locked.add(new_key)
 
-        favorites = store._favorite_keys_ref()
         if old_key in favorites:
             favorites.discard(old_key)
             favorites.add(new_key)
@@ -231,6 +231,7 @@ def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -
                 ui_max=ui_max,
             )
 
+    store._replace_favorite_keys(favorites)
     store._touch()
 
 

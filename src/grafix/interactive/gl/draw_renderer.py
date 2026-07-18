@@ -167,6 +167,13 @@ class DrawRenderer:
         self._framebuffer_size = (1, 1)
         self._viewport = (0, 0, 1, 1)
         self._viewport_size = (1, 1)
+        # uniform は program/context に属し、frame をまたいで保持される。
+        # viewport 変更時だけ線幅の換算値が変わり得るため invalidation する。
+        self._line_width_uniform = self.program["line_width_px"]
+        self._color_uniform = self.program["color"]
+        self._last_draw_style: (
+            tuple[float, tuple[float, float, float]] | None
+        ) = None
         self.program["viewport_size"].value = (1.0, 1.0)
         # 射影行列はキャンバス寸法にのみ依存するため初期化時に一度設定する。
         projection = render_utils.build_projection(
@@ -271,6 +278,7 @@ class DrawRenderer:
         self.ctx.viewport = viewport
         if size != self._viewport_size:
             self._viewport_size = size
+            self._last_draw_style = None
             self.program["viewport_size"].value = (float(size[0]), float(size[1]))
 
     def clear(self, color: tuple[float, float, float]) -> None:
@@ -716,11 +724,19 @@ class DrawRenderer:
         thickness: float,
     ) -> None:
         """LineMesh を draw call で描画する。"""
-        self.program["line_width_px"].value = line_width_for_short_side(
-            thickness,
-            (float(self._viewport_size[0]), float(self._viewport_size[1])),
-        )
-        self.program["color"].value = (*color, 1.0)
+        previous_style = self._last_draw_style
+        if (
+            previous_style is None
+            or thickness != previous_style[0]
+            or color != previous_style[1]
+        ):
+            normalized_thickness = float(thickness)
+            self._line_width_uniform.value = line_width_for_short_side(
+                normalized_thickness,
+                (float(self._viewport_size[0]), float(self._viewport_size[1])),
+            )
+            self._color_uniform.value = (*color, 1.0)
+            self._last_draw_style = (normalized_thickness, color)
 
         # ボトルネックになりやすい: 多レイヤー/多 draw call 時はここ（ドライバ/GL 呼び出し）が支配しやすい。
         mesh.vao.render(mode=self.ctx.LINE_STRIP, vertices=mesh.index_count)
@@ -739,6 +755,7 @@ class DrawRenderer:
         self._mesh_cache_bytes = 0
         self._dynamic_mesh_bytes = 0
         self._dynamic_slot_count = 0
+        self._last_draw_style = None
         self.program.release()
         self.ctx.release()
 

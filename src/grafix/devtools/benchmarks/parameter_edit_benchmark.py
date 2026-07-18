@@ -72,6 +72,13 @@ def make_parameter_edit_scenario(
         raise RuntimeError("parameter edit benchmark metadata is missing")
     history = ParamStoreHistory(store)
     model = store_bridge._parameter_table_model_for_store(store)
+    # 実際の slider 操作は Parameter panel が少なくとも 1 frame 描画された後に
+    # 始まる。初回 view/layout 構築を changed-frame tail に混ぜず、操作中の
+    # cache hit / sparse invalidation を同じ条件で測る。
+    store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=True,
+    )
     return ParameterEditScenario(
         rows=rows,
         changed_frames=changed_frames,

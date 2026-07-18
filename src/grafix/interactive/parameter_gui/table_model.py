@@ -12,6 +12,8 @@ from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.view import ParameterRow
 
+from .group_blocks import GroupBlockLayout
+
 RegistryRevision: TypeAlias = tuple[int, int, int]
 ParameterTableCacheKey: TypeAlias = tuple[int, RegistryRevision]
 
@@ -29,7 +31,11 @@ class ParameterTableModel:
     value_revision: int
     snapshot: ParamSnapshot
     rows: tuple[ParameterRow, ...]
+    keys: tuple[ParameterKey, ...]
+    search_corpus_by_row: tuple[str, ...]
+    group_layout: tuple[GroupBlockLayout, ...]
     row_index_by_key: Mapping[ParameterKey, int]
+    row_indices_by_group: Mapping[tuple[str, str], tuple[int, ...]]
     raw_label_by_site: Mapping[tuple[str, str], str]
     primitive_header_by_group: Mapping[tuple[str, int], str]
     layer_style_name_by_site_id: Mapping[str, str]

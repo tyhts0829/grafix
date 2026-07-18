@@ -100,12 +100,14 @@ def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
     primitive_known_args_by_op: dict[str, set[str]] = {}
     effect_known_args_by_op: dict[str, set[str]] = {}
 
+    favorites = set(store._favorite_keys_snapshot())
+    locked = store._locked_keys_ref()
     keys = (
         set(store._states)
         | set(store._meta)
         | set(store._explicit_by_key)
-        | set(store._locked_keys_ref())
-        | set(store._favorite_keys_ref())
+        | set(locked)
+        | favorites
     )
     # 何が削除されたかをデバッグしやすいよう、順序を固定して走査する。
     for key in sorted(keys, key=lambda k: (str(k.op), str(k.site_id), str(k.arg))):
@@ -139,10 +141,11 @@ def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
         store._states.pop(key, None)
         store._meta.pop(key, None)
         store._explicit_by_key.pop(key, None)
-        store._locked_keys_ref().discard(key)
-        store._favorite_keys_ref().discard(key)
+        locked.discard(key)
+        favorites.discard(key)
 
     if removed:
+        store._replace_favorite_keys(favorites)
         store._touch()
     return removed
 
@@ -187,12 +190,15 @@ def prune_groups(store: ParamStore, groups_to_remove: Iterable[GroupKey]) -> Non
     for key in list(store._explicit_by_key.keys()):
         if (str(key.op), str(key.site_id)) in groups:
             del store._explicit_by_key[key]
-    for key in list(store._locked_keys_ref()):
+    locked = store._locked_keys_ref()
+    for key in list(locked):
         if (str(key.op), str(key.site_id)) in groups:
-            store._locked_keys_ref().discard(key)
-    for key in list(store._favorite_keys_ref()):
+            locked.discard(key)
+    favorites = set(store._favorite_keys_snapshot())
+    for key in tuple(favorites):
         if (str(key.op), str(key.site_id)) in groups:
-            store._favorite_keys_ref().discard(key)
+            favorites.discard(key)
+    store._replace_favorite_keys(favorites)
 
     # 表示ラベルは parameter の有無とは独立に残ってしまうので、グループ単位で明示削除する。
     for op, site_id in groups:

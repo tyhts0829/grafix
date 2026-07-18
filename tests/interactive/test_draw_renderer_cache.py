@@ -44,6 +44,71 @@ class _FakeMesh:
         self.released = True
 
 
+class _FakeUniform:
+    def __init__(self) -> None:
+        self.values: list[object] = []
+
+    @property
+    def value(self) -> object | None:
+        return None if not self.values else self.values[-1]
+
+    @value.setter
+    def value(self, value: object) -> None:
+        self.values.append(value)
+
+
+class _FakeDrawContext:
+    LINE_STRIP = 3
+
+    def __init__(self) -> None:
+        self.viewport = (0, 0, 1, 1)
+        self.clear_calls = 0
+
+    def clear(self, *_args: object, **_kwargs: object) -> None:
+        self.clear_calls += 1
+
+
+class _FakeVao:
+    def __init__(self, name: str, draw_order: list[str]) -> None:
+        self._name = name
+        self._draw_order = draw_order
+        self.calls: list[dict[str, int]] = []
+
+    def render(self, **kwargs: int) -> None:
+        self._draw_order.append(self._name)
+        self.calls.append(dict(kwargs))
+
+
+def _draw_renderer() -> tuple[
+    DrawRenderer,
+    dict[str, _FakeUniform],
+]:
+    renderer = DrawRenderer.__new__(DrawRenderer)
+    renderer.ctx = _FakeDrawContext()
+    uniforms = {
+        "viewport_size": _FakeUniform(),
+        "line_width_px": _FakeUniform(),
+        "color": _FakeUniform(),
+    }
+    renderer.program = uniforms
+    renderer._canvas_w = 800
+    renderer._canvas_h = 800
+    renderer._framebuffer_size = (800, 800)
+    renderer._viewport = (0, 0, 800, 800)
+    renderer._viewport_size = (800, 800)
+    renderer._line_width_uniform = uniforms["line_width_px"]
+    renderer._color_uniform = uniforms["color"]
+    renderer._last_draw_style = None
+    return renderer, uniforms
+
+
+def _draw_mesh(name: str, draw_order: list[str]) -> SimpleNamespace:
+    return SimpleNamespace(
+        vao=_FakeVao(name, draw_order),
+        index_count=6,
+    )
+
+
 def _renderer() -> DrawRenderer:
     renderer = DrawRenderer.__new__(DrawRenderer)
     renderer.ctx = SimpleNamespace(release=lambda: None)
@@ -63,6 +128,65 @@ def _renderer() -> DrawRenderer:
     renderer._dynamic_mesh_max_bytes = 64 * 1024 * 1024
     renderer._dynamic_mesh_max_entries = 256
     return renderer
+
+
+def test_renderer_skips_same_style_uniform_writes_across_layers_and_frames() -> None:
+    renderer, uniforms = _draw_renderer()
+    draw_order: list[str] = []
+    first = _draw_mesh("first", draw_order)
+    second = _draw_mesh("second", draw_order)
+    third = _draw_mesh("third", draw_order)
+    style = {"color": (0.2, 0.3, 0.4), "thickness": 0.01}
+
+    renderer.draw_prepared_mesh(first, **style)
+    renderer.draw_prepared_mesh(second, **style)
+    renderer.clear((1.0, 1.0, 1.0))
+    renderer.draw_prepared_mesh(third, **style)
+
+    assert uniforms["line_width_px"].values == [4.0]
+    assert uniforms["color"].values == [(0.2, 0.3, 0.4, 1.0)]
+    assert draw_order == ["first", "second", "third"]
+    for mesh in (first, second, third):
+        assert mesh.vao.calls == [{"mode": 3, "vertices": 6}]
+
+
+def test_renderer_alternating_styles_keep_required_uniform_writes_and_order() -> None:
+    renderer, uniforms = _draw_renderer()
+    draw_order: list[str] = []
+    mesh = _draw_mesh("mesh", draw_order)
+    styles = (
+        {"color": (0.2, 0.3, 0.4), "thickness": 0.01},
+        {"color": (0.8, 0.1, 0.6), "thickness": 0.025},
+        {"color": (0.2, 0.3, 0.4), "thickness": 0.01},
+    )
+
+    for style in styles:
+        renderer.draw_prepared_mesh(mesh, **style)
+
+    assert uniforms["line_width_px"].values == [4.0, 10.0, 4.0]
+    assert uniforms["color"].values == [
+        (0.2, 0.3, 0.4, 1.0),
+        (0.8, 0.1, 0.6, 1.0),
+        (0.2, 0.3, 0.4, 1.0),
+    ]
+    assert draw_order == ["mesh", "mesh", "mesh"]
+
+
+def test_renderer_viewport_change_invalidates_draw_style_uniforms() -> None:
+    renderer, uniforms = _draw_renderer()
+    mesh = _draw_mesh("mesh", [])
+    style = {"color": (0.2, 0.3, 0.4), "thickness": 0.01}
+
+    renderer.draw_prepared_mesh(mesh, **style)
+    renderer.viewport(400, 400)
+    renderer.draw_prepared_mesh(mesh, **style)
+
+    assert uniforms["viewport_size"].values == [(400.0, 400.0)]
+    assert uniforms["line_width_px"].values == [4.0, 2.0]
+    assert uniforms["color"].values == [
+        (0.2, 0.3, 0.4, 1.0),
+        (0.2, 0.3, 0.4, 1.0),
+    ]
 
 
 def _geometry(

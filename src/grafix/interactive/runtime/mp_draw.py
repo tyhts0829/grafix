@@ -48,7 +48,7 @@ from grafix.core.operation_diagnostics import (
 )
 from grafix.core.parameters import FrameLabelRecord, FrameParamRecord
 from grafix.core.parameters.context import parameter_context_from_snapshot
-from grafix.core.parameters.snapshot_ops import ParamSnapshot
+from grafix.core.parameters.snapshot_ops import ParamSnapshot, materialize_snapshot
 from grafix.core.parameters.source import MidiFrameSnapshot
 from grafix.core.preview_quality import PreviewQuality, preview_quality_context
 from grafix.core.scene import SceneItem, normalize_scene
@@ -830,7 +830,7 @@ class MpDraw:
             and self._snapshot_payload_revision == normalized_revision
         ):
             return cached
-        payload: ParamSnapshot = dict(snapshot)
+        payload: ParamSnapshot = materialize_snapshot(snapshot)
         self._snapshot_payload_revision = normalized_revision
         self._snapshot_payload = payload
         self._snapshot_payload_copy_count += 1

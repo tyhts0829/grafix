@@ -11,6 +11,7 @@ from grafix.interactive.parameter_gui.parameter_filter import (
     filter_parameter_records,
     matches_parameter_search,
     parameter_row_midi_ccs,
+    parameter_search_token_may_be_dynamic,
 )
 
 
@@ -128,3 +129,35 @@ def test_filter_state_is_immutable_and_rejects_unknown_activity() -> None:
         state.query = "changed"  # type: ignore[misc]
     with pytest.raises(ValueError, match="activity filter"):
         ParameterFilterState(activity="other")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "token",
+    (
+        "ode",
+        "idi",
+        "fro",
+        "rozen",
+        "ive",
+        "cc74",
+        "c74",
+        "midi74",
+        "idi74",
+        "74",
+        "-",
+        "cc-",
+        "c-",
+        "midi-",
+        "idi-",
+        "di-",
+        "i-",
+    ),
+)
+def test_dynamic_search_token_detection_preserves_substring_semantics(
+    token: str,
+) -> None:
+    assert parameter_search_token_may_be_dynamic(token)
+
+
+def test_static_only_search_token_can_use_index() -> None:
+    assert not parameter_search_token_may_be_dynamic("spiral_field")

@@ -370,6 +370,7 @@ def _decode_param_store_current(
                     store._locked_keys_ref().add(key)
 
         favorite_parameters = ui_obj.get("favorite_parameters", [])
+        favorite_keys: set[ParameterKey] = set()
         if isinstance(favorite_parameters, list):
             for item in favorite_parameters:
                 if not isinstance(item, dict):
@@ -384,7 +385,8 @@ def _decode_param_store_current(
                     continue
                 # UI state 単独の孤児を作らず、reconcile 可能な parameter だけ残す。
                 if key in store._states and key in store._meta:
-                    store._favorite_keys_ref().add(key)
+                    favorite_keys.add(key)
+        store._replace_favorite_keys(favorite_keys)
 
     variations_obj = obj.get("variations", [])
     if isinstance(variations_obj, list):

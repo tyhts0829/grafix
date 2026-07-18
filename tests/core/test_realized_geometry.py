@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.core.realized_geometry import (
     RealizedGeometry,
@@ -23,6 +24,51 @@ def test_realized_geometry_byte_size_counts_both_arrays() -> None:
     geometry = _geometry([[0, 0, 0], [1, 0, 0]], [0, 2])
 
     assert geometry.byte_size == geometry.coords.nbytes + geometry.offsets.nbytes
+
+
+def test_with_coords_reuses_validated_offsets_and_freezes_coords() -> None:
+    geometry = _geometry([[0, 0, 0], [1, 0, 0]], [0, 1, 2])
+    coords = np.asarray([[2, 0, 0], [3, 0, 0]], dtype=np.float32)
+
+    result = geometry._with_coords(coords)
+
+    assert result is not None
+    assert result.coords is coords
+    assert result.offsets is geometry.offsets
+    assert result.coords.flags.writeable is False
+    assert result.offsets.flags.writeable is False
+    np.testing.assert_array_equal(result.coords, coords)
+
+
+def test_with_coords_defers_non_trusted_inputs_to_normal_validation() -> None:
+    geometry = _geometry([[0, 0, 0], [1, 0, 0]], [0, 2])
+
+    assert (
+        geometry._with_coords(
+            np.asarray([[2, 0, 0], [3, 0, 0]], dtype=np.float64)
+        )
+        is None
+    )
+    assert (
+        geometry._with_coords(
+            np.asarray([[2, 0], [3, 0]], dtype=np.float32)
+        )
+        is None
+    )
+    assert (
+        geometry._with_coords(
+            np.asarray([[2, 0, 0]], dtype=np.float32)
+        )
+        is None
+    )
+
+
+def test_public_constructor_still_rejects_non_monotonic_offsets() -> None:
+    with pytest.raises(ValueError, match="offsets は単調非減少"):
+        RealizedGeometry(
+            coords=np.zeros((2, 3), dtype=np.float32),
+            offsets=np.asarray([0, 2, 1, 2], dtype=np.int32),
+        )
 
 
 def test_concat_realized_geometries_preserves_empty_lines_and_offsets() -> None:

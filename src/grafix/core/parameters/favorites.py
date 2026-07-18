@@ -13,12 +13,13 @@ from .store import ParamStore
 def favorite_parameter_keys(store: ParamStore) -> tuple[ParameterKey, ...]:
     """favorite に登録されている key を安定順の tuple で返す。"""
 
-    return tuple(
-        sorted(
-            store._favorite_keys_ref(),
-            key=lambda key: (key.op, key.site_id, key.arg),
-        )
-    )
+    return store._favorite_keys_tuple()
+
+
+def favorite_parameter_key_set(store: ParamStore) -> frozenset[ParameterKey]:
+    """favorite key の revision 内で不変な immutable view を返す。"""
+
+    return store._favorite_keys_snapshot()
 
 
 def is_parameter_favorite(store: ParamStore, key: ParameterKey) -> bool:
@@ -26,7 +27,7 @@ def is_parameter_favorite(store: ParamStore, key: ParameterKey) -> bool:
 
     if not isinstance(key, ParameterKey):
         raise TypeError("key must be a ParameterKey")
-    return key in store._favorite_keys_ref()
+    return key in store._favorite_keys_snapshot()
 
 
 def set_parameters_favorite(
@@ -54,7 +55,7 @@ def set_parameters_favorite(
         )
     )
 
-    favorites = store._favorite_keys_ref()
+    favorites = set(store._favorite_keys_snapshot())
     changed: list[ParameterKey] = []
     for key in ordered_keys:
         if favorite:
@@ -67,12 +68,13 @@ def set_parameters_favorite(
             changed.append(key)
 
     if changed:
-        store._touch()
+        store._replace_favorite_keys(favorites)
     return tuple(changed)
 
 
 __all__ = [
     "favorite_parameter_keys",
+    "favorite_parameter_key_set",
     "is_parameter_favorite",
     "set_parameters_favorite",
 ]

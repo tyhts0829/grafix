@@ -89,6 +89,28 @@ class RealizedGeometry:
 
         return int(self.coords.nbytes + self.offsets.nbytes)
 
+    def _with_coords(self, coords: object) -> RealizedGeometry | None:
+        """検証済み offsets を共有できる場合だけ新しい内部 geometry を返す。
+
+        trusted 条件を満たさない入力は拒否せず、呼び出し側が通常の変換・検証へ
+        fallback できるよう ``None`` を返す。
+        """
+
+        coords_array = np.asarray(coords)
+        if (
+            coords_array.ndim != 2
+            or coords_array.shape[1] != 3
+            or coords_array.dtype != np.float32
+            or self.offsets[-1] != coords_array.shape[0]
+        ):
+            return None
+
+        coords_array.setflags(write=False)
+        result = object.__new__(RealizedGeometry)
+        object.__setattr__(result, "coords", coords_array)
+        object.__setattr__(result, "offsets", self.offsets)
+        return result
+
 
 def realized_geometry_from_tuple(value: object, *, context: str) -> RealizedGeometry:
     """`(coords, offsets)` を `RealizedGeometry` に変換する。

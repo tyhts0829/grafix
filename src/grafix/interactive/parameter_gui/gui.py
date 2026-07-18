@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from grafix.core.font_resolver import default_font_path, resolve_font_path
 from grafix.core.parameters.key import ParameterKey
-from grafix.core.parameters.favorites import favorite_parameter_keys
+from grafix.core.parameters.favorites import favorite_parameter_key_set
 from grafix.core.parameters.history import (
     ParamSnapshotSlots,
     ParamStoreHistory,
@@ -511,7 +511,7 @@ class ParameterGUI:
         self._show_inactive_params = False
         self._parameter_filter_state = ParameterFilterState()
         self._parameter_table_view: ParameterTableView | None = None
-        self._favorite_parameter_keys = frozenset(favorite_parameter_keys(store))
+        self._favorite_parameter_keys = favorite_parameter_key_set(store)
         self._parameter_error_keys: frozenset[ParameterKey] = frozenset()
         self._parameter_help_row: ParameterRow | None = None
         self._reconcile_orphan_model: ReconcileOrphanPanelModel = reconcile_orphan_panel_model(
@@ -660,7 +660,7 @@ class ParameterGUI:
             show_inactive_params=bool(getattr(self, "_show_inactive_params", False)),
             filter_state=getattr(self, "_parameter_filter_state", ParameterFilterState()),
             error_keys=getattr(self, "_parameter_error_keys", frozenset()),
-            favorite_keys=frozenset(favorite_parameter_keys(self._store)),
+            favorite_keys=favorite_parameter_key_set(self._store),
         )
         return variation_scope_summary(self._store, view, state.scope)
 
@@ -1398,9 +1398,7 @@ class ParameterGUI:
         """Table固有のfilterとMIDI global commandをtable直上へ配置する。"""
 
         imgui = self._imgui
-        self._favorite_parameter_keys = frozenset(
-            favorite_parameter_keys(self._store)
-        )
+        self._favorite_parameter_keys = favorite_parameter_key_set(self._store)
         state = getattr(self, "_parameter_filter_state", ParameterFilterState())
         align_text = getattr(imgui, "align_text_to_frame_padding", None)
         if callable(align_text):
@@ -1631,9 +1629,7 @@ class ParameterGUI:
         self._reconcile_orphan_model = reconcile_orphan_panel_model(
             list_reconcile_orphans(self._store)
         )
-        self._favorite_parameter_keys = frozenset(
-            favorite_parameter_keys(self._store)
-        )
+        self._favorite_parameter_keys = favorite_parameter_key_set(self._store)
         self._parameter_table_view = None
         close_popup = getattr(imgui, "close_current_popup", None)
         if callable(close_popup):
