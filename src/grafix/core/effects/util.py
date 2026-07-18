@@ -12,6 +12,8 @@ from grafix.core.operation_diagnostics import emit_operation_diagnostic
 
 DEFAULT_MAX_GRID_CELLS = 4_000_000
 RESAMPLE_CLOSED_DISTANCE_EPS = 0.01
+_PLANAR_EPS_ABS = 1e-6
+_PLANAR_EPS_REL = 1e-5
 
 _RESAMPLE_COPY = 0
 _RESAMPLE_OPEN = 1
@@ -46,6 +48,104 @@ def pack_polylines(lines: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarray]
         stop = int(offsets64[index + 1])
         coords[start:stop] = array
     return coords, offsets64.astype(np.int32)
+
+
+@dataclass(frozen=True, slots=True)
+class PlanarRing:
+    """平面化済みの閉曲線と、その二次元境界を保持する。
+
+    ``vertices`` は先頭点と末尾点が一致する ``(N, 2)`` float64 配列、
+    ``mins`` と ``maxs`` はその ``(2,)`` float64 境界である。
+    """
+
+    vertices: np.ndarray
+    mins: np.ndarray
+    maxs: np.ndarray
+
+
+def planarity_threshold(points: np.ndarray) -> float:
+    """点群の大きさに応じた平面性判定の許容値を返す。"""
+
+    if points.size == 0:
+        return float(_PLANAR_EPS_ABS)
+    p = points.astype(np.float64, copy=False)
+    mins = np.min(p, axis=0)
+    maxs = np.max(p, axis=0)
+    diag = float(np.linalg.norm(maxs - mins))
+    return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
+
+
+def close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
+    """端点間の距離が閾値以内なら、終点を始点へ揃える。"""
+
+    if points.shape[0] < 2:
+        return points
+    dist = float(np.linalg.norm(points[0] - points[-1]))
+    if dist <= float(threshold):
+        return np.concatenate([points[:-1], points[0:1]], axis=0)
+    return points
+
+
+def extract_planar_rings(
+    coords: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    auto_close_threshold: float,
+) -> list[PlanarRing]:
+    """平面化済みのpacked geometryから閉曲線だけを入力順に抽出する。"""
+
+    rings: list[PlanarRing] = []
+    for i in range(int(offsets.size) - 1):
+        s = int(offsets[i])
+        e = int(offsets[i + 1])
+        poly3 = coords[s:e]
+        if poly3.shape[0] < 3:
+            continue
+
+        closed3 = close_curve(poly3, float(auto_close_threshold))
+        if closed3.shape[0] < 4:
+            continue
+        if not np.allclose(closed3[0], closed3[-1], rtol=0.0, atol=1e-12):
+            continue
+
+        vertices = closed3[:, :2].astype(np.float64, copy=False)
+        rings.append(
+            PlanarRing(
+                vertices=vertices,
+                mins=np.min(vertices, axis=0),
+                maxs=np.max(vertices, axis=0),
+            )
+        )
+    return rings
+
+
+def pack_planar_rings(
+    rings: list[PlanarRing],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """閉曲線列をNumbaへ渡す連結バッファへ入力順に詰める。"""
+
+    n = len(rings)
+    total = 0
+    for ring in rings:
+        total += int(ring.vertices.shape[0])
+
+    ring_vertices = np.empty((total, 2), dtype=np.float64)
+    ring_offsets = np.empty((n + 1,), dtype=np.int32)
+    ring_mins = np.empty((n, 2), dtype=np.float64)
+    ring_maxs = np.empty((n, 2), dtype=np.float64)
+
+    ring_offsets[0] = 0
+    cursor = 0
+    for i, ring in enumerate(rings):
+        vertices = ring.vertices.astype(np.float64, copy=False)
+        count = int(vertices.shape[0])
+        ring_vertices[cursor : cursor + count] = vertices
+        cursor += count
+        ring_offsets[i + 1] = np.int32(cursor)
+        ring_mins[i] = ring.mins
+        ring_maxs[i] = ring.maxs
+
+    return ring_vertices, ring_offsets, ring_mins, ring_maxs
 
 
 def _grid_axis_count(*, span: float, pitch: float, limit: int) -> int:

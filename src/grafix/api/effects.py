@@ -9,12 +9,16 @@ from typing import Any, Callable
 
 from ._param_resolution import resolve_api_params, set_api_label
 from grafix.core.builtins import ensure_builtin_effect_registered, ensure_builtin_effects_registered
-from grafix.core.effect_registry import EffectFunc, effect_registry
+from grafix.core.effect_registry import EffectFunc
 from grafix.core.geometry import Geometry
 from grafix.core.op_registry import OpCatalogEntry
 from grafix.core.parameters import caller_site_id
 
+# parameters package の初期化後に読み、prune_ops 経由の循環 import を避ける。
+import grafix.core.effect_registry as effect_registry_module
+
 from ._op_validation import validate_operation_kwargs
+
 
 @dataclass(frozen=True, slots=True)
 class EffectBuilder:
@@ -52,13 +56,14 @@ class EffectBuilder:
         """
         # effect チェーンは「入力 Geometry に対して、steps を順番に wrap していく」だけの処理。
         # ここでは実体変換は行わず、あくまで Geometry DAG（レシピ）を構築する。
+        registry = effect_registry_module.effect_registry
         first_inputs = (geometry, *more_geometries)
         result = geometry
         for step_index, (op, params, site_id) in enumerate(self.steps):
             # site_id は「その effect ステップが宣言された呼び出し箇所」。
             # 例: E.scale(...).rotate(...)(g) の scale と rotate を別の GUI 行として扱うため、
             # apply（__call__）時点ではなく「ステップ追加時点」で固定された site_id を使う。
-            spec = effect_registry[op]
+            spec = registry[op]
 
             resolved = resolve_api_params(
                 op=op,
@@ -113,9 +118,9 @@ class EffectBuilder:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        if name not in effect_registry:
+        if name not in effect_registry_module.effect_registry:
             ensure_builtin_effect_registered(name)
-        if name not in effect_registry:
+        if name not in effect_registry_module.effect_registry:
             raise AttributeError(f"未登録の effect: {name!r}")
 
         def factory(**params: Any) -> "EffectBuilder":
@@ -135,7 +140,7 @@ class EffectBuilder:
             key = params.pop("key", None)
             instance_key = params.pop("instance_key", None)
             shared = params.pop("shared", False)
-            spec = effect_registry[name]
+            spec = effect_registry_module.effect_registry[name]
             validate_operation_kwargs(op=name, spec=spec, params=params)
             site_id = caller_site_id(
                 skip=1,
@@ -173,7 +178,7 @@ class EffectNamespace:
         """
 
         ensure_builtin_effects_registered()
-        return effect_registry.catalog()
+        return effect_registry_module.effect_registry.catalog()
 
     def describe(self, name: str) -> OpCatalogEntry[EffectFunc]:
         """effect の catalog entry を名前で取得する。
@@ -195,11 +200,11 @@ class EffectNamespace:
         """
 
         name_s = str(name)
-        if name_s not in effect_registry:
+        if name_s not in effect_registry_module.effect_registry:
             ensure_builtin_effect_registered(name_s)
-        if name_s not in effect_registry:
+        if name_s not in effect_registry_module.effect_registry:
             raise KeyError(f"未登録の effect: {name_s!r}")
-        return effect_registry.describe(name_s)
+        return effect_registry_module.effect_registry.describe(name_s)
 
     def __getattr__(self, name: str) -> Callable[..., EffectBuilder]:
         """effect 名に対応する EffectBuilder ファクトリを返す。
@@ -222,9 +227,9 @@ class EffectNamespace:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        if name not in effect_registry:
+        if name not in effect_registry_module.effect_registry:
             ensure_builtin_effect_registered(name)
-        if name not in effect_registry:
+        if name not in effect_registry_module.effect_registry:
             raise AttributeError(f"未登録の effect: {name!r}")
 
         def factory(**params: Any) -> EffectBuilder:
@@ -244,7 +249,7 @@ class EffectNamespace:
             key = params.pop("key", None)
             instance_key = params.pop("instance_key", None)
             shared = params.pop("shared", False)
-            spec = effect_registry[name]
+            spec = effect_registry_module.effect_registry[name]
             validate_operation_kwargs(op=name, spec=spec, params=params)
             site_id = caller_site_id(
                 skip=1,

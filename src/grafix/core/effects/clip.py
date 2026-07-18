@@ -19,7 +19,7 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .util import PlanarFrame, empty_geom, pack_polylines
+from .util import PlanarFrame, empty_geom, pack_polylines, planarity_threshold
 
 clip_meta = {
     "mode": ParamMeta(
@@ -32,20 +32,6 @@ clip_meta = {
         description="クリップ結果にマスク輪郭を加えて出力する。",
     ),
 }
-
-_PLANAR_EPS_ABS = 1e-6
-_PLANAR_EPS_REL = 1e-5
-
-
-def _planarity_threshold(points: np.ndarray) -> float:
-    if points.size == 0:
-        return float(_PLANAR_EPS_ABS)
-    p = points.astype(np.float64, copy=False)
-    mins = np.min(p, axis=0)
-    maxs = np.max(p, axis=0)
-    diag = float(np.linalg.norm(maxs - mins))
-    return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
-
 
 def _remove_consecutive_duplicates(
     path: list[tuple[int, int]],
@@ -125,7 +111,7 @@ def clip(
         return base_coords, base_offsets
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
-    threshold = _planarity_threshold(mask_coords)
+    threshold = planarity_threshold(mask_coords)
     if not frame.is_planar(threshold):
         return base_coords, base_offsets
 

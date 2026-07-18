@@ -20,6 +20,7 @@ from .util import (
     empty_geom,
     marching_squares_loops,
     pack_polylines,
+    planarity_threshold,
     scanline_evenodd_mask,
     squared_euclidean_distance_transform,
 )
@@ -28,9 +29,6 @@ MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 DRAFT_MAX_GRID_POINTS = 262_144
 DRAFT_MAX_STEPS = 600
 DRAFT_MAX_CELL_STEPS = 14_000_000
-
-_PLANAR_EPS_ABS = 1e-6
-_PLANAR_EPS_REL = 1e-5
 
 reaction_diffusion_meta = {
     "grid_pitch": ParamMeta(
@@ -111,16 +109,6 @@ reaction_diffusion_meta = {
         description="マスク境界を濃度勾配なし、または外側濃度固定として扱う。",
     ),
 }
-
-
-def _planarity_threshold(points: np.ndarray) -> float:
-    if points.size == 0:
-        return float(_PLANAR_EPS_ABS)
-    p = points.astype(np.float64, copy=False)
-    mins = np.min(p, axis=0)
-    maxs = np.max(p, axis=0)
-    diag = float(np.linalg.norm(maxs - mins))
-    return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
 
 
 def _pack_mask_rings_xy(
@@ -321,7 +309,7 @@ def reaction_diffusion(
         return empty_geom()
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
-    if not frame.is_planar(_planarity_threshold(mask_coords)):
+    if not frame.is_planar(planarity_threshold(mask_coords)):
         return empty_geom()
 
     aligned_mask = frame.to_local(mask_coords)

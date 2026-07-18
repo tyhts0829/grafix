@@ -205,7 +205,7 @@ def _row_visible_label(row: ParameterRow) -> str:
 
     op = str(row.op)
     if op in preset_registry:
-        op = preset_registry.get_display_op(op)
+        op = preset_registry[op].display_op
     display_arg = row.display_name or row.arg
     return format_contextual_row_label(op, int(row.ordinal), display_arg)
 

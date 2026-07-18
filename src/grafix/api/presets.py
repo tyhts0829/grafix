@@ -12,10 +12,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from grafix.core.preset_registry import preset_func_registry
 from grafix.core.parameters import validate_parameter_identity
 from grafix.core.runtime_config import runtime_config
 from grafix.core.scene import SceneItem
+
+import grafix.core.preset_registry as preset_registry_module
 
 _AUTOLOAD_KEY: tuple[Path | None, tuple[Path, ...]] | None = None
 
@@ -67,7 +68,7 @@ class PresetNamespace:
 
         _autoload_preset_modules()
 
-        func = preset_func_registry.get(name)
+        func = preset_registry_module.preset_registry.get(name)
         if func is None:
             raise AttributeError(f"未登録の preset: {name!r}")
         pending_name = self._pending_name

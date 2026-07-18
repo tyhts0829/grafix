@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 import numpy as np
 
@@ -34,16 +33,17 @@ from .util import (
     GridSpec,
     PlanarFrame,
     empty_geom,
+    extract_planar_rings,
     marching_squares_loops,
+    pack_planar_rings,
     pack_polylines,
+    planarity_threshold,
     signed_distance_grid_edt,
 )
 
 MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
-_PLANAR_EPS_ABS = 1e-6
-_PLANAR_EPS_REL = 1e-5
 
 isocontour_meta = {
     "spacing": ParamMeta(
@@ -98,133 +98,6 @@ isocontour_meta = {
         description="生成した等値線に元の入力線を加えて出力する。",
     ),
 }
-
-
-@dataclass(frozen=True, slots=True)
-class _Ring2D:
-    """平面化済みの閉曲線（リング）を SDF 評価用に保持する。
-
-    `isocontour()` は入力が 3D でも「ほぼ平面」と仮定して処理するため、
-    まず XY 平面上の 2D 座標に揃え（Z を落とし）リングを抽出してから SDF を作る。
-
-    Notes
-    -----
-    `vertices` は「閉じたポリライン」で、先頭と末尾が一致している前提（first == last）。
-    """
-
-    vertices: np.ndarray  # (N, 2) float64, closed (first == last)
-    mins: np.ndarray  # (2,) float64
-    maxs: np.ndarray  # (2,) float64
-
-
-def _planarity_threshold(points: np.ndarray) -> float:
-    """「平面から外れている」とみなす Z 方向の許容値を求める。
-
-    入力スケールに依存しないように、
-    - 絶対誤差 `_PLANAR_EPS_ABS`
-    - 相対誤差 `_PLANAR_EPS_REL * bbox_diag`
-    の大きい方を採用する。
-    """
-
-    if points.size == 0:
-        return float(_PLANAR_EPS_ABS)
-    p = points.astype(np.float64, copy=False)
-    mins = np.min(p, axis=0)
-    maxs = np.max(p, axis=0)
-    diag = float(np.linalg.norm(maxs - mins))
-    return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
-
-
-def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
-    """端点が近いポリラインを「閉曲線」とみなし、先頭点を末尾に複製する。
-
-    Notes
-    -----
-    すでに閉じている場合（last が first と同一）でも、そのまま返す。
-    端点距離が `threshold` を超える場合は「開曲線」として扱い、変更しない。
-    """
-
-    if points.shape[0] < 2:
-        return points
-    dist = float(np.linalg.norm(points[0] - points[-1]))
-    if dist <= float(threshold):
-        return np.concatenate([points[:-1], points[0:1]], axis=0)
-    return points
-
-
-def _extract_rings_xy(
-    coords_xy: np.ndarray,
-    offsets: np.ndarray,
-    *,
-    auto_close_threshold: float,
-) -> list[_Ring2D]:
-    """XY 平面上のポリライン列から「閉曲線リング」だけを抽出する。
-
-    - 点数が足りないものは捨てる
-    - `auto_close_threshold` 以内なら閉曲線として扱い、先頭点を末尾に複製する
-    - 閉曲線にならないもの（開曲線）は捨てる
-    """
-
-    rings: list[_Ring2D] = []
-    for i in range(int(offsets.size) - 1):
-        s = int(offsets[i])
-        e = int(offsets[i + 1])
-        poly3 = coords_xy[s:e]
-        if poly3.shape[0] < 3:
-            continue
-
-        closed3 = _close_curve(poly3, float(auto_close_threshold))
-        if closed3.shape[0] < 4:
-            continue
-
-        # 明示的に「先頭と末尾が一致」しているものだけをリングとして扱う。
-        # ここで弾くことで、以降の処理（SDF/内外判定/線分縫合）が単純になる。
-        if not np.allclose(closed3[0], closed3[-1], rtol=0.0, atol=1e-12):
-            continue
-
-        v2 = closed3[:, :2].astype(np.float64, copy=False)
-        mins = np.min(v2, axis=0)
-        maxs = np.max(v2, axis=0)
-        rings.append(_Ring2D(vertices=v2, mins=mins, maxs=maxs))
-
-    return rings
-
-
-def _pack_rings(
-    rings: list[_Ring2D],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """リング群を Numba 用の「平坦な配列」に詰め直す。
-
-    Numba 側では Python の list / dataclass を扱いにくいため、
-    - `ring_vertices`: 全リングの頂点を連結した (total, 2)
-    - `ring_offsets`: 各リングの開始位置（prefix sum）
-    - `ring_mins`, `ring_maxs`: 各リングの AABB
-    に分解して渡す。
-    """
-
-    n = len(rings)
-    total = 0
-    for ring in rings:
-        total += int(ring.vertices.shape[0])
-
-    ring_vertices = np.empty((total, 2), dtype=np.float64)
-    ring_offsets = np.empty((n + 1,), dtype=np.int32)
-    ring_mins = np.empty((n, 2), dtype=np.float64)
-    ring_maxs = np.empty((n, 2), dtype=np.float64)
-
-    ring_offsets[0] = 0
-    cursor = 0
-    for i, ring in enumerate(rings):
-        v = ring.vertices.astype(np.float64, copy=False)
-        m = int(v.shape[0])
-        ring_vertices[cursor : cursor + m] = v
-        cursor += m
-        ring_offsets[i + 1] = np.int32(cursor)
-        ring_mins[i] = ring.mins
-        ring_maxs[i] = ring.maxs
-
-    return ring_vertices, ring_offsets, ring_mins, ring_maxs
-
 
 
 @effect(meta=isocontour_meta, n_inputs=1)
@@ -306,12 +179,16 @@ def isocontour(
         gamma_f = 1.0
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
-    if not frame.is_planar(_planarity_threshold(mask_coords)):
+    if not frame.is_planar(planarity_threshold(mask_coords)):
         return empty_geom()
     coords_xy_all = frame.to_local(mask_coords)
 
     # 閉曲線のみを抽出（外周＋穴）。
-    rings = _extract_rings_xy(coords_xy_all, mask_offsets, auto_close_threshold=auto_close)
+    rings = extract_planar_rings(
+        coords_xy_all,
+        mask_offsets,
+        auto_close_threshold=auto_close,
+    )
     if not rings:
         return empty_geom()
 
@@ -336,7 +213,7 @@ def isocontour(
     pitch = grid.pitch
 
     # 1) グリッド上で SDF を評価する（EDT: 近似 / `O(Ngrid)`）。
-    ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
+    ring_vertices, ring_offsets, ring_mins, ring_maxs = pack_planar_rings(rings)
     sdf = signed_distance_grid_edt(
         xs.astype(np.float64, copy=False),
         ys.astype(np.float64, copy=False),

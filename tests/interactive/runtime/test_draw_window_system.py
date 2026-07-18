@@ -371,7 +371,7 @@ def test_midi_frame_snapshot_distinguishes_live_frozen_and_disabled() -> None:
     assert system._midi_frame_snapshot() is None
 
 
-def test_capture_snapshot_re_evaluates_with_final_quality() -> None:
+def test_capture_snapshot_re_evaluates_with_final_quality(tmp_path: Path) -> None:
     runner = _FakeSceneRunner([([], True)])
     system = _make_scene_only_system(
         runner=runner,
@@ -400,15 +400,23 @@ def test_capture_snapshot_re_evaluates_with_final_quality() -> None:
     )
     system._last_frame_t = 0.0
 
-    snapshot = system._final_capture_snapshot()
+    snapshot = system.final_capture_frame()
 
     assert runner.run_kwargs[-1]["quality"] == "final"
+    assert isinstance(snapshot, FrameExportSnapshot)
     assert snapshot.t == pytest.approx(1.25)
     assert snapshot.canvas_size == (100, 80)
     assert snapshot.provenance is not None
     assert snapshot.provenance.frame.quality == "final"
     assert snapshot.provenance.frame.frame_index == 0
     assert len(provenance_builder.calls) == 1
+
+    captured = CaptureService().export(snapshot, tmp_path / "thumbnail.svg")
+    manifest = json.loads(captured.manifest_path.read_text(encoding="utf-8"))
+
+    assert captured.path.is_file()
+    assert manifest["frame"]["t"] == pytest.approx(1.25)
+    assert manifest["output"]["canvas_size"] == {"width": 100, "height": 80}
 
 
 class _RenderFailure(RuntimeError):
@@ -1495,7 +1503,9 @@ def test_close_drains_bound_and_unbound_capture_requests_in_fifo_order(
     assert jobs.close_calls == 1
 
 
-def test_close_releases_remaining_resources_and_raises_first_cleanup_error() -> None:
+def test_close_releases_remaining_resources_and_raises_first_cleanup_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     calls: list[str] = []
     first_error = RuntimeError("export close failed")
 
@@ -1540,9 +1550,17 @@ def test_close_releases_remaining_resources_and_raises_first_cleanup_error() -> 
         Any,
         SimpleNamespace(release=lambda: calls.append("release renderer")),
     )
+
+    def switch_context() -> None:
+        calls.append("switch context")
+        raise RuntimeError("secondary context activation failure")
+
     system.window = cast(
         Any,
-        SimpleNamespace(close=lambda: calls.append("close window")),
+        SimpleNamespace(
+            switch_to=switch_context,
+            close=lambda: calls.append("close window"),
+        ),
     )
 
     with pytest.raises(RuntimeError, match="export close failed") as exc_info:
@@ -1557,9 +1575,14 @@ def test_close_releases_remaining_resources_and_raises_first_cleanup_error() -> 
         "save midi",
         "close midi",
         "close scene",
+        "switch context",
         "release renderer",
         "close window",
     ]
+    logged = [record.getMessage() for record in caplog.records]
+    assert all("close PNG/G-code export worker" not in message for message in logged)
+    assert any("close scene runner" in message for message in logged)
+    assert any("activate draw GL context" in message for message in logged)
     system.close()
 
 
@@ -1888,6 +1911,39 @@ def test_video_recording_locks_window_size_and_restores_constraints_on_stop(
         ("minimum", 320, 320),
     ]
     assert system._recording_window_constraints_locked is False
+
+
+def test_restore_window_constraints_attempts_both_and_keeps_first_error(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    first_error = RuntimeError("maximum failed")
+
+    class FailingConstraintWindow(_ConstraintWindow):
+        def set_maximum_size(self, width: int, height: int) -> None:
+            del width, height
+            calls.append("maximum")
+            raise first_error
+
+        def set_minimum_size(self, width: int, height: int) -> None:
+            del width, height
+            calls.append("minimum")
+            raise RuntimeError("minimum failed")
+
+    system, _window = _video_system_with_constraint_window(
+        tmp_path=tmp_path,
+        recording=_FakeVideoRecording(),
+        playing=False,
+    )
+    system.window = cast(Any, FailingConstraintWindow())
+    system._recording_window_constraints_locked = True
+
+    with pytest.raises(RuntimeError) as exc_info:
+        system._restore_draw_window_resize_constraints()
+
+    assert exc_info.value is first_error
+    assert calls == ["maximum", "minimum"]
+    assert system._recording_window_constraints_locked is True
 
 
 def test_video_recording_start_failure_restores_window_constraints_and_transport(

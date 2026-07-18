@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Literal, TypeAlias
 
 ValueSource = Literal["code", "ui", "midi_live", "midi_frozen"]
 MidiValueSource = Literal["midi_live", "midi_frozen"]
+ParameterLoadMode: TypeAlias = Literal["code", "saved", "recovery"] | Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,4 +66,4 @@ class MidiFrameSnapshot(Mapping[int, float]):
         return len(self.entries)
 
 
-__all__ = ["MidiFrameSnapshot", "MidiValueSource", "ValueSource"]
+__all__ = ["MidiFrameSnapshot", "MidiValueSource", "ParameterLoadMode", "ValueSource"]

@@ -171,7 +171,7 @@ def concat_geom_tuples(*geometries: GeomTuple) -> GeomTuple:
         結合後の (coords, offsets)。
     """
     if not geometries:
-        return _empty_geom_tuple()
+        return empty_geom_tuple()
     if len(geometries) == 1:
         coords, offsets = geometries[0]
         return (
@@ -195,7 +195,7 @@ def concat_realized_geometries(*geometries: RealizedGeometry) -> RealizedGeometr
         結合後の実体ジオメトリ。
     """
     if not geometries:
-        coords, offsets = _empty_geom_tuple()
+        coords, offsets = empty_geom_tuple()
         return RealizedGeometry(coords=coords, offsets=offsets)
     if len(geometries) == 1:
         return geometries[0]
@@ -204,11 +204,28 @@ def concat_realized_geometries(*geometries: RealizedGeometry) -> RealizedGeometr
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
-def _empty_geom_tuple() -> GeomTuple:
+def empty_geom_tuple() -> GeomTuple:
+    """標準 dtype を持つ空の packed geometry を返す。"""
+
     return (
         np.zeros((0, 3), dtype=np.float32),
         np.zeros((1,), dtype=np.int32),
     )
+
+
+def lines_to_geom_tuple(lines: list[np.ndarray]) -> GeomTuple:
+    """ポリライン列を入力順のまま packed geometry へ連結する。"""
+
+    if not lines:
+        return empty_geom_tuple()
+    coords = np.concatenate(lines, axis=0).astype(np.float32, copy=False)
+    offsets = np.empty((len(lines) + 1,), dtype=np.int32)
+    offsets[0] = 0
+    acc = 0
+    for i, line in enumerate(lines):
+        acc += int(line.shape[0])
+        offsets[i + 1] = acc
+    return coords, offsets
 
 
 def _concat_arrays(geometries: Sequence[GeomTuple]) -> GeomTuple:

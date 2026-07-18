@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grafix.api.render import ExportResult, Frame
+from grafix.api.render import ExportFormat, ExportResult, Frame
 from grafix.export.capture import CaptureService
 
 
@@ -32,7 +32,18 @@ def export(
         連番付与を含む実 artifact path、形式、manifest path。
     """
 
-    return CaptureService().export(frame, path, overwrite=overwrite)
+    if not isinstance(frame, Frame):
+        raise TypeError("frame は Frame である必要があります")
+    artifact_format = ExportFormat.from_path(path)
+    config = frame.metadata.effective_config
+    captured = CaptureService().export(
+        frame,
+        path,
+        overwrite=overwrite,
+        png_scale=config.png_scale,
+        gcode_config=config.gcode,
+    )
+    return ExportResult(captured.path, artifact_format, captured.manifest_path)
 
 
 __all__ = ["export"]

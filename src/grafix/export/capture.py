@@ -1,4 +1,4 @@
-"""render 済み Frame の encode と安全な公開を一つにまとめる。"""
+"""render 済み frame snapshot の encode と安全な公開を一つにまとめる。"""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ import shutil
 import tempfile
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
 from pathlib import Path
 from typing import Protocol
 
-from grafix.api.render import ExportFormat, ExportResult, Frame, RGB01
 from grafix.core.capture_provenance import CaptureProvenance
 from grafix.core.capture_manifest import (
     CaptureManifest,
@@ -22,7 +22,7 @@ from grafix.core.capture_manifest import (
 )
 from grafix.core.output_paths import VersionedPathAllocator, gcode_layer_output_path
 from grafix.core.pipeline import RealizedLayer
-from grafix.core.runtime_config import GCodeExportConfig
+from grafix.core.runtime_config import GCodeExportConfig, RuntimeConfig
 from grafix.export.gcode import GCodeParams, export_gcode
 from grafix.export.image import png_output_size, rasterize_svg_to_png
 from grafix.export.svg import export_svg
@@ -41,7 +41,7 @@ class CaptureFrame(Protocol):
     def canvas_size(self) -> tuple[int, int]: ...
 
     @property
-    def background_color_rgb01(self) -> RGB01: ...
+    def background_color_rgb01(self) -> tuple[float, float, float]: ...
 
     @property
     def t(self) -> float: ...
@@ -58,33 +58,41 @@ class CaptureMode(StrEnum):
     GCODE = "gcode"
     GCODE_LAYERS = "gcode_layers"
 
-    @property
-    def export_format(self) -> ExportFormat:
-        """この mode が使用する path suffix の形式を返す。"""
-
-        if self is CaptureMode.GCODE_LAYERS:
-            return ExportFormat.GCODE
-        return ExportFormat(self.value)
-
     @classmethod
     def from_path(cls, path: str | Path) -> CaptureMode:
         """path suffix から単一成果物の capture mode を返す。"""
 
-        return cls(ExportFormat.from_path(path).value)
+        suffix = Path(path).suffix.casefold()
+        if suffix not in (".svg", ".png", ".gcode"):
+            raise ValueError(f"未対応または未指定の export suffix です: {suffix!r}")
+        return cls(suffix[1:])
 
     def validate_path(self, path: str | Path) -> Path:
         """mode と path suffix の一致を検証し、Path を返す。"""
 
         target = Path(path)
-        ExportFormat.resolve(target, self.export_format)
+        suffix_mode = self.from_path(target)
+        artifact_mode = CaptureMode.GCODE if self is CaptureMode.GCODE_LAYERS else self
+        if suffix_mode is not artifact_mode:
+            raise ValueError(
+                "export format と path suffix が一致しません: "
+                f"format={artifact_mode.value!r}, suffix={target.suffix!r}"
+            )
         return target
 
 
-def _coerce_mode(mode: CaptureMode | ExportFormat | str) -> CaptureMode:
+@dataclass(frozen=True, slots=True)
+class CaptureResult:
+    """CaptureService が公開した単一成果物と manifest。"""
+
+    path: Path
+    mode: CaptureMode
+    manifest_path: Path
+
+
+def _coerce_mode(mode: CaptureMode | str) -> CaptureMode:
     if isinstance(mode, CaptureMode):
         return mode
-    if isinstance(mode, ExportFormat):
-        return CaptureMode(mode.value)
     try:
         return CaptureMode(str(mode).strip().casefold())
     except ValueError as exc:
@@ -116,8 +124,16 @@ def _gcode_params(config: GCodeExportConfig | None) -> GCodeParams | None:
     )
 
 
+def _frame_runtime_config(frame: CaptureFrame) -> RuntimeConfig | None:
+    """公開 Frame が保持する session 固定 config を構造的に取得する。"""
+
+    metadata = getattr(frame, "metadata", None)
+    config = getattr(metadata, "effective_config", None)
+    return config if isinstance(config, RuntimeConfig) else None
+
+
 class CaptureService:
-    """Frame の形式別 encode、versioning、manifest 付き publish を所有する。
+    """CaptureFrame の形式別 encode、versioning、manifest 付き publish を所有する。
 
     Parameters
     ----------
@@ -148,7 +164,7 @@ class CaptureService:
         frame: CaptureFrame,
         path: str | Path,
         *,
-        mode: CaptureMode | ExportFormat | str,
+        mode: CaptureMode | str,
         output_size: tuple[int, int] | None = None,
         timeout_s: float = _DEFAULT_ENCODE_TIMEOUT_S,
         deadline_monotonic: float | None = None,
@@ -233,7 +249,7 @@ class CaptureService:
         frame: CaptureFrame,
         path: str | Path,
         *,
-        mode: CaptureMode | ExportFormat | str,
+        mode: CaptureMode | str,
     ) -> tuple[Path, ...]:
         """mode と layer 構成から正式な成果物 path 列を返す。"""
 
@@ -257,7 +273,7 @@ class CaptureService:
         path: str | Path,
         staged_paths: Sequence[str | Path],
         *,
-        mode: CaptureMode | ExportFormat | str,
+        mode: CaptureMode | str,
         overwrite: bool = False,
         output_size: tuple[int, int] | None = None,
     ) -> PublishedCaptureGeneration | None:
@@ -310,21 +326,21 @@ class CaptureService:
 
     def export(
         self,
-        frame: Frame,
+        frame: CaptureFrame,
         path: str | Path,
         *,
         overwrite: bool = False,
         output_size: tuple[int, int] | None = None,
-    ) -> ExportResult:
-        """Frame を suffix から推論した形式で安全に保存する。
+        png_scale: float | None = None,
+        gcode_config: GCodeExportConfig | None = None,
+    ) -> CaptureResult:
+        """CaptureFrame を suffix から推論した形式で安全に保存する。
 
         ``overwrite=False`` では既存 artifact/manifest を避けて version path を予約し、
         publish 直前の late collision も別 version へ再試行する。encode は一度だけ
         private sibling staging で行い、成功した artifact と manifest だけを公開する。
         """
 
-        if not isinstance(frame, Frame):
-            raise TypeError("frame は Frame である必要があります")
         requested_path = Path(path)
         mode = CaptureMode.from_path(requested_path)
         if output_size is not None and mode is not CaptureMode.PNG:
@@ -342,11 +358,23 @@ class CaptureService:
         )
         staged_output = staging_dir / requested_path.name
         try:
-            frame_config = frame.metadata.effective_config
+            frame_config = _frame_runtime_config(frame)
+            effective_png_scale = (
+                frame_config.png_scale
+                if png_scale is None and frame_config is not None
+                else png_scale
+            )
+            effective_gcode_config = gcode_config
+            if effective_gcode_config is None:
+                snapshot_gcode_config = getattr(frame, "gcode_config", None)
+                if snapshot_gcode_config is not None:
+                    effective_gcode_config = snapshot_gcode_config
+                elif frame_config is not None:
+                    effective_gcode_config = frame_config.gcode
             if mode is CaptureMode.PNG:
                 effective_output_size = output_size or png_output_size(
                     frame.canvas_size,
-                    scale=frame_config.png_scale,
+                    scale=effective_png_scale,
                 )
             else:
                 effective_output_size = frame.canvas_size
@@ -356,7 +384,7 @@ class CaptureService:
                 mode=mode,
                 output_size=effective_output_size,
                 gcode_config=(
-                    frame_config.gcode if mode is CaptureMode.GCODE else None
+                    effective_gcode_config if mode is CaptureMode.GCODE else None
                 ),
             )
             if overwrite:
@@ -369,9 +397,9 @@ class CaptureService:
                     output_size=effective_output_size,
                 )
                 assert published is not None
-                return ExportResult(
+                return CaptureResult(
                     path=published.artifact_paths[0],
-                    format=mode.export_format,
+                    mode=mode,
                     manifest_path=published.manifest_path,
                 )
 
@@ -390,9 +418,9 @@ class CaptureService:
                     last_collision = exc
                     continue
                 assert published is not None
-                return ExportResult(
+                return CaptureResult(
                     path=published.artifact_paths[0],
-                    format=mode.export_format,
+                    mode=mode,
                     manifest_path=published.manifest_path,
                 )
             raise FileExistsError(
@@ -403,4 +431,4 @@ class CaptureService:
             shutil.rmtree(staging_dir, ignore_errors=True)
 
 
-__all__ = ["CaptureFrame", "CaptureMode", "CaptureService"]
+__all__ = ["CaptureFrame", "CaptureMode", "CaptureResult", "CaptureService"]

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import importlib
 import inspect
 import sys
 import traceback
@@ -15,23 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import grafix.core.effect_registry as effect_registry_module
+import grafix.core.preset_registry as preset_registry_module
+import grafix.core.primitive_registry as primitive_registry_module
 from grafix.core.effect_registry import EffectFunc
 from grafix.core.op_registry import OpRegistry, OpSpec
-from grafix.core.preset_registry import (
-    PresetFuncRegistry,
-    PresetRegistry,
-    PresetSpec,
-)
+from grafix.core.preset_registry import PresetRegistry, PresetSpec
 from grafix.core.primitive_registry import PrimitiveFunc
 from grafix.core.scene import SceneItem
-
-api_effects_module = importlib.import_module("grafix.api.effects")
-api_preset_module = importlib.import_module("grafix.api.preset")
-api_presets_module = importlib.import_module("grafix.api.presets")
-api_primitives_module = importlib.import_module("grafix.api.primitives")
-effect_registry_module = importlib.import_module("grafix.core.effect_registry")
-preset_registry_module = importlib.import_module("grafix.core.preset_registry")
-primitive_registry_module = importlib.import_module("grafix.core.primitive_registry")
 
 ReloadStatus = Literal["unchanged", "reloaded", "failed"]
 SourceFingerprint = tuple[int, int] | tuple[Literal["missing"]]
@@ -54,7 +44,6 @@ class _RegistryBundle:
     effects: OpRegistry[EffectFunc]
     primitives: OpRegistry[PrimitiveFunc]
     presets: PresetRegistry
-    preset_funcs: PresetFuncRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +51,6 @@ class _RegistryMappings:
     effects: Mapping[str, OpSpec[EffectFunc]]
     primitives: Mapping[str, OpSpec[PrimitiveFunc]]
     presets: Mapping[str, PresetSpec]
-    preset_funcs: Mapping[str, Callable[..., SceneItem]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +69,6 @@ def _live_bundle() -> _RegistryBundle:
         effects=effect_registry_module.effect_registry,
         primitives=primitive_registry_module.primitive_registry,
         presets=preset_registry_module.preset_registry,
-        preset_funcs=preset_registry_module.preset_func_registry,
     )
 
 
@@ -90,7 +77,6 @@ def _bundle_mappings(bundle: _RegistryBundle) -> _RegistryMappings:
         effects=dict(bundle.effects.items()),
         primitives=dict(bundle.primitives.items()),
         presets=dict(bundle.presets.items()),
-        preset_funcs=dict(bundle.preset_funcs.items()),
     )
 
 
@@ -126,20 +112,10 @@ def _candidate_bundle(
         for name, spec in live.primitives.items()
         if not _same_source(spec.source, source_path)
     }
-    removed_presets: set[str] = {
-        name
-        for name, func in live.preset_funcs.items()
-        if _same_source(_callable_source(func), source_path)
-    }
-    preset_funcs: dict[str, Callable[..., SceneItem]] = {
-        name: func
-        for name, func in live.preset_funcs.items()
-        if name not in removed_presets
-    }
     presets: dict[str, PresetSpec] = {
         op: spec
         for op, spec in live.presets.items()
-        if not (op.startswith("preset.") and op.removeprefix("preset.") in removed_presets)
+        if not _same_source(_callable_source(spec.func), source_path)
     }
 
     # watched sourceが既存名をoverwriteしていた場合、source削除時にはwatch開始前の
@@ -150,8 +126,6 @@ def _candidate_bundle(
         primitives.setdefault(primitive_name, primitive_spec)
     for preset_op, preset_spec in baseline.presets.items():
         presets.setdefault(preset_op, preset_spec)
-    for preset_name, preset_func in baseline.preset_funcs.items():
-        preset_funcs.setdefault(preset_name, preset_func)
 
     staged_effects: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
     staged_effects.replace_all(effects)
@@ -159,13 +133,10 @@ def _candidate_bundle(
     staged_primitives.replace_all(primitives)
     staged_presets = PresetRegistry()
     staged_presets.replace_all(presets)
-    staged_preset_funcs = PresetFuncRegistry()
-    staged_preset_funcs.replace_all(preset_funcs)
     return _RegistryBundle(
         effects=staged_effects,
         primitives=staged_primitives,
         presets=staged_presets,
-        preset_funcs=staged_preset_funcs,
     )
 
 
@@ -177,12 +148,6 @@ def _use_staged_registries(bundle: _RegistryBundle) -> Iterator[None]:
         (effect_registry_module, "effect_registry", bundle.effects),
         (primitive_registry_module, "primitive_registry", bundle.primitives),
         (preset_registry_module, "preset_registry", bundle.presets),
-        (preset_registry_module, "preset_func_registry", bundle.preset_funcs),
-        (api_effects_module, "effect_registry", bundle.effects),
-        (api_primitives_module, "primitive_registry", bundle.primitives),
-        (api_preset_module, "preset_registry", bundle.presets),
-        (api_preset_module, "preset_func_registry", bundle.preset_funcs),
-        (api_presets_module, "preset_func_registry", bundle.preset_funcs),
     )
     previous = tuple(getattr(module, name) for module, name, _value in bindings)
     try:
@@ -322,17 +287,14 @@ def _commit_bundle(*, live: _RegistryBundle, staged: _RegistryBundle) -> None:
         effects=OpRegistry(kind="effect"),
         primitives=OpRegistry(kind="primitive"),
         presets=PresetRegistry(),
-        preset_funcs=PresetFuncRegistry(),
     )
     _candidate_validation.effects.replace_all(mappings.effects)
     _candidate_validation.primitives.replace_all(mappings.primitives)
     _candidate_validation.presets.replace_all(mappings.presets)
-    _candidate_validation.preset_funcs.replace_all(mappings.preset_funcs)
 
     live.effects.replace_all(mappings.effects)
     live.primitives.replace_all(mappings.primitives)
     live.presets.replace_all(mappings.presets)
-    live.preset_funcs.replace_all(mappings.preset_funcs)
 
 
 def _replace_staged_registry_references(
@@ -345,7 +307,6 @@ def _replace_staged_registry_references(
         id(staged.effects): live.effects,
         id(staged.primitives): live.primitives,
         id(staged.presets): live.presets,
-        id(staged.preset_funcs): live.preset_funcs,
     }
     for name, value in tuple(vars(module).items()):
         replacement = replacements.get(id(value))
@@ -546,12 +507,10 @@ class SourceReloadController:
             effects=OpRegistry(kind="effect"),
             primitives=OpRegistry(kind="primitive"),
             presets=PresetRegistry(),
-            preset_funcs=PresetFuncRegistry(),
         )
         restored.effects.replace_all(state.previous_registries.effects)
         restored.primitives.replace_all(state.previous_registries.primitives)
         restored.presets.replace_all(state.previous_registries.presets)
-        restored.preset_funcs.replace_all(state.previous_registries.preset_funcs)
         _commit_bundle(live=self._live, staged=restored)
 
         current_module = self._module_name

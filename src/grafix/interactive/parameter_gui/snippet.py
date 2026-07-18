@@ -342,7 +342,7 @@ def snippet_for_block(
         row0 = rows[0]
         op = str(row0.op)
         # preset は “表示名” と実装 op が一致しないケースがあるため、registry で表示名へ寄せる。
-        call_name = preset_registry.get_display_op(op)
+        call_name = preset_registry[op].display_op
         prefix = "P."
         if raw_label_by_site is not None:
             raw_label = raw_label_by_site.get((op, str(row0.site_id)))

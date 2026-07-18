@@ -13,7 +13,11 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import GeomTuple
+from grafix.core.realized_geometry import (
+    GeomTuple,
+    empty_geom_tuple,
+    lines_to_geom_tuple,
+)
 
 _MAX_EXPANDED_CHARS = 500_000
 
@@ -99,25 +103,6 @@ LSYSTEM_UI_VISIBLE = {
     "axiom": lambda v: str(v.get("kind", "plant")) == "custom",
     "rules": lambda v: str(v.get("kind", "plant")) == "custom",
 }
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
-def _lines_to_realized(lines: list[np.ndarray]) -> GeomTuple:
-    if not lines:
-        return _empty_geometry()
-    coords = np.concatenate(lines, axis=0).astype(np.float32, copy=False)
-    offsets = np.empty((len(lines) + 1,), dtype=np.int32)
-    offsets[0] = 0
-    acc = 0
-    for i, ln in enumerate(lines):
-        acc += int(ln.shape[0])
-        offsets[i + 1] = acc
-    return coords, offsets
 
 
 def _parse_rules_text(rules: str) -> dict[str, str]:
@@ -375,7 +360,7 @@ def lsystem(
 
     program = _expand_lsystem(ax, rules_map, iters=int(iters))
     if not program:
-        return _empty_geometry()
+        return empty_geom_tuple()
 
     lines = _turtle_to_polylines(
         program,
@@ -387,4 +372,4 @@ def lsystem(
         seed=int(seed),
         z=float(cz),
     )
-    return _lines_to_realized(lines)
+    return lines_to_geom_tuple(lines)

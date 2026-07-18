@@ -320,6 +320,43 @@ def test_cleanup_steps_preserve_the_session_error_over_cleanup_errors() -> None:
     assert calls == ["cleanup", "final"]
 
 
+def test_cleanup_steps_catch_base_exceptions_and_keep_the_first_identity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[str] = []
+
+    class CleanupFault(BaseException):
+        pass
+
+    first_error = CleanupFault("first")
+
+    def fail_first() -> None:
+        calls.append("first")
+        raise first_error
+
+    def fail_second() -> None:
+        calls.append("second")
+        raise CleanupFault("second")
+
+    def finish() -> None:
+        calls.append("finish")
+
+    with pytest.raises(CleanupFault) as exc_info:
+        runner_module._run_cleanup_steps(
+            [
+                ("first", fail_first),
+                ("second", fail_second),
+                ("finish", finish),
+            ]
+        )
+
+    assert exc_info.value is first_error
+    assert calls == ["first", "second", "finish"]
+    logged = [record.getMessage() for record in caplog.records]
+    assert all("first" not in message for message in logged)
+    assert any("second" in message for message in logged)
+
+
 def test_midi_save_failure_still_closes_the_owned_input_port() -> None:
     calls: list[str] = []
     save_error = RuntimeError("snapshot write failed")

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from grafix.core.font_resolver import default_font_path, resolve_font_path
+from grafix.core.lifecycle import CleanupErrors
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.favorites import favorite_parameter_key_set
 from grafix.core.parameters.history import (
@@ -2104,38 +2105,27 @@ class ParameterGUI:
             return
         self._closed = True
 
-        first_error: BaseException | None = None
-
-        def _attempt(step: Callable[[], object]) -> None:
-            nonlocal first_error
-            try:
-                step()
-            except BaseException as exc:
-                # 1 つの teardown 失敗で後続 resource をリークさせない。
-                if first_error is None:
-                    first_error = exc
+        errors = CleanupErrors()
 
         window = getattr(self, "_window", None)
         switch_to = getattr(window, "switch_to", None)
         if callable(switch_to):
             # renderer.shutdown() が解放する GL resource の所有 context を
             # 必ず current にしてから backend を破棄する。
-            _attempt(switch_to)
+            errors.attempt(switch_to)
 
         renderer = getattr(self, "_renderer", None)
         shutdown = getattr(renderer, "shutdown", None)
         if callable(shutdown):
-            _attempt(shutdown)
+            errors.attempt(shutdown)
 
         imgui = getattr(self, "_imgui", None)
         context = getattr(self, "_context", None)
         destroy_context = getattr(imgui, "destroy_context", None)
         if callable(destroy_context) and context is not None:
-            _attempt(lambda: destroy_context(context))
+            errors.attempt(lambda: destroy_context(context))
 
         close_window = getattr(window, "close", None)
         if callable(close_window):
-            _attempt(close_window)
-
-        if first_error is not None:
-            raise first_error
+            errors.attempt(close_window)
+        errors.raise_if_any()

@@ -17,9 +17,9 @@
 実体は「arg -> predicate（表示するなら True）」の辞書。
 
 - ルールは registry に登録される（永続化しない）
-  - preset: `preset_registry.get_ui_visible(op)`
-  - primitive: `primitive_registry.get_ui_visible(op)`
-  - effect: `effect_registry.get_ui_visible(op)`
+  - preset: `preset_registry[op].ui_visible`
+  - primitive: `primitive_registry[op].ui_visible`
+  - effect: `effect_registry[op].ui_visible`
 - GUI 側は行の group を `(op, site_id)` とみなし、group 内の “現在値辞書” を作って predicate に渡す
   - 現在値は基本 `last_effective_by_key`（解決後の実効値）
   - 無ければ `row.ui_value` にフォールバック

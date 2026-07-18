@@ -16,17 +16,11 @@ import numpy as np
 from grafix.core.font_resolver import resolve_font_path
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import GeomTuple
+from grafix.core.realized_geometry import GeomTuple, empty_geom_tuple
 
 DEFAULT_FONT = "NotoSansJP-Regular.ttf"
 
 logger = logging.getLogger(__name__)
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
 
 
 class _LRU:
@@ -343,7 +337,7 @@ def _polylines_to_realized(
         p.astype(np.float32, copy=False) for p in polylines if int(p.shape[0]) >= 2
     ]
     if not filtered:
-        return _empty_geometry()
+        return empty_geom_tuple()
 
     coords = np.concatenate(filtered, axis=0).astype(np.float32, copy=False)
 

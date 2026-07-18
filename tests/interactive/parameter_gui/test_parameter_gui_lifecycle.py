@@ -38,7 +38,9 @@ class _FailingImGui:
         raise RuntimeError("context destroy failed")
 
 
-def test_close_switches_to_owned_context_and_attempts_every_cleanup_step() -> None:
+def test_close_switches_to_owned_context_and_attempts_every_cleanup_step(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     calls: list[str] = []
     gui = ParameterGUI.__new__(ParameterGUI)
     gui._closed = False
@@ -60,6 +62,7 @@ def test_close_switches_to_owned_context_and_attempts_every_cleanup_step() -> No
     # 最初の close が例外を返しても、二重解放はしない。
     gui.close()
     assert len(calls) == 4
+    assert caplog.records == []
 
 
 def test_partial_initialization_cleans_resources_and_preserves_root_error(

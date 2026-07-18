@@ -9,11 +9,10 @@ from pathlib import Path
 import pytest
 
 import grafix.core.capture_provenance as provenance_module
-from grafix import G, RenderSession
+from grafix import G, RenderSession, export
 from grafix.core.capture_provenance import GitProvenance
 from grafix.core.parameters.style import style_key
 from grafix.core.parameters.ui_ops import update_state_from_ui
-from grafix.export.capture import CaptureService
 from grafix.interactive.runtime.source_reload import ReloadedDraw
 
 
@@ -69,7 +68,7 @@ def test_render_session_snapshots_session_and_frame_provenance_once(
             lambda _path: (_ for _ in ()).throw(AssertionError("git rediscovery")),
         )
         second = session.render(1.0)
-        result = CaptureService().export(second, tmp_path / "frame.svg")
+        result = export(second, tmp_path / "frame.svg")
 
     assert source_calls == 1
     assert git_calls == 1
@@ -186,7 +185,7 @@ def test_git_unavailable_is_explicit_in_manifest(
 
     with RenderSession(_draw) as session:
         frame = session.render(0.0)
-        result = CaptureService().export(frame, tmp_path / "frame.svg")
+        result = export(frame, tmp_path / "frame.svg")
 
     assert result.manifest_path is not None
     payload = json.loads(result.manifest_path.read_text(encoding="utf-8"))
@@ -242,11 +241,11 @@ def test_frame_seed_override_is_explicit_and_does_not_touch_global_rng(
         cleared = session.render(0.0, provenance_seed=None)
         rng_after = random.getstate()
 
-        overridden_export = CaptureService().export(
+        overridden_export = export(
             overridden,
             tmp_path / "overridden.svg",
         )
-        cleared_export = CaptureService().export(
+        cleared_export = export(
             cleared,
             tmp_path / "cleared.svg",
         )

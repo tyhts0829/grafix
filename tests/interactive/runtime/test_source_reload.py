@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from grafix.core.preset_registry import preset_func_registry, preset_registry
+from grafix.core.geometry import Geometry
+from grafix.core.preset_registry import preset_registry
 from grafix.core.primitive_registry import primitive_registry
 from grafix.core.realize import realize
 from grafix.interactive.runtime.mp_draw import MpDraw
@@ -39,6 +40,56 @@ def watch_reload_shape():
 def draw(t):
     return G.watch_reload_shape()
 """
+
+
+def _preset_source(
+    *,
+    name: str,
+    generation: int,
+    kind: str = "float",
+    fail: bool = False,
+    bind_registry_global: bool = False,
+) -> str:
+    registry_import = (
+        "from grafix.core.preset_registry import "
+        "preset_registry as imported_preset_registry"
+        if bind_registry_global
+        else ""
+    )
+    registry_check = (
+        """
+    from grafix.core.preset_registry import preset_registry as current_preset_registry
+    if imported_preset_registry is not current_preset_registry:
+        raise RuntimeError("staged preset registry leaked")
+"""
+        if bind_registry_global
+        else ""
+    )
+    failure = "raise RuntimeError('candidate failed')" if fail else ""
+    return f"""
+from grafix import P, preset
+from grafix.core.geometry import Geometry
+{registry_import}
+
+@preset(meta={{"amount": {{"kind": "{kind}"}}}})
+def {name}(amount={generation}):
+    return Geometry.create(
+        op="concat",
+        params={{"generation": {generation}, "amount": amount}},
+    )
+
+{failure}
+
+def draw(t):
+{registry_check}
+    return P.{name}()
+"""
+
+
+def _draw_generation(draw: object) -> int:
+    result = draw(0.0)  # type: ignore[operator]
+    assert isinstance(result, Geometry)
+    return int(dict(result.args)["generation"])
 
 
 def test_reload_swaps_draw_and_registry_only_after_candidate_success(
@@ -127,7 +178,7 @@ def draw(t):
     )
 
     with SourceReloadController(source_path) as controller:
-        assert preset_func_registry.get("watch_reload_preset") is not None
+        assert preset_registry.get("watch_reload_preset") is not None
         assert "preset.watch_reload_preset" in preset_registry
 
         _write_source(
@@ -142,10 +193,97 @@ def draw(t):
         result = controller.poll(force=True)
 
         assert result.status == "reloaded"
-        assert preset_func_registry.get("watch_reload_preset") is None
+        assert preset_registry.get("watch_reload_preset") is None
         assert "preset.watch_reload_preset" not in preset_registry
 
-    assert preset_func_registry.get("watch_reload_preset") is None
+    assert preset_registry.get("watch_reload_preset") is None
+
+
+def test_preset_reload_is_atomic_and_rollback_restores_one_spec(
+    tmp_path: Path,
+) -> None:
+    name = "watch_atomic_preset"
+    op = f"preset.{name}"
+    source_path = tmp_path / "sketch.py"
+    _write_source(
+        source_path,
+        _preset_source(name=name, generation=1),
+    )
+
+    controller = SourceReloadController(source_path)
+    try:
+        original_spec = dict(preset_registry.items())[op]
+        original_revision = preset_registry.revision
+        assert preset_registry.get(name) is original_spec.func
+        assert original_spec.meta["amount"].kind == "float"
+        assert _draw_generation(controller.draw) == 1
+
+        _write_source(
+            source_path,
+            _preset_source(
+                name=name,
+                generation=2,
+                kind="int",
+                fail=True,
+            ),
+        )
+        failed = controller.poll(force=True)
+
+        assert failed.status == "failed"
+        assert preset_registry.revision == original_revision
+        assert dict(preset_registry.items())[op] is original_spec
+        assert preset_registry.get(name) is original_spec.func
+        assert _draw_generation(controller.draw) == 1
+
+        _write_source(
+            source_path,
+            _preset_source(name=name, generation=2, kind="int"),
+        )
+        reloaded = controller.poll(force=True, retain_rollback=True)
+
+        assert reloaded.status == "reloaded"
+        assert preset_registry.revision == original_revision + 1
+        replacement_spec = dict(preset_registry.items())[op]
+        assert replacement_spec is not original_spec
+        assert preset_registry.get(name) is replacement_spec.func
+        assert replacement_spec.meta["amount"].kind == "int"
+        assert _draw_generation(controller.draw) == 2
+
+        restored_draw = controller.rollback_generation(reloaded.generation)
+
+        assert preset_registry.revision == original_revision + 2
+        assert dict(preset_registry.items())[op] is original_spec
+        assert preset_registry.get(name) is original_spec.func
+        assert restored_draw is controller.draw
+        assert _draw_generation(restored_draw) == 1
+    finally:
+        before_close = preset_registry.revision
+        controller.close()
+
+    assert preset_registry.revision == before_close + 1
+    assert op not in preset_registry
+    assert preset_registry.get(name) is None
+
+
+def test_reload_rebinds_source_module_registry_global_to_live_object(
+    tmp_path: Path,
+) -> None:
+    name = "watch_registry_binding_preset"
+    source_path = tmp_path / "sketch.py"
+    _write_source(
+        source_path,
+        _preset_source(
+            name=name,
+            generation=3,
+            bind_registry_global=True,
+        ),
+    )
+
+    with SourceReloadController(source_path) as controller:
+        assert _draw_generation(controller.draw) == 3
+        assert preset_registry.get(name) is not None
+
+    assert preset_registry.get(name) is None
 
 
 def test_transactional_reload_can_rollback_registry_and_draw(tmp_path: Path) -> None:

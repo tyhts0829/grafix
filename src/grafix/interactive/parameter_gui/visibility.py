@@ -79,7 +79,7 @@ def active_mask_for_rows(
             ensure_builtin_effect_registered(op)
         rules: Mapping[str, UiVisiblePred]
         if op in preset_registry:
-            rules = preset_registry.get_ui_visible(op)
+            rules = preset_registry[op].ui_visible
         elif op in primitive_registry:
             rules = primitive_registry[op].ui_visible
         elif op in effect_registry:

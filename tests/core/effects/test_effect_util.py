@@ -6,10 +6,15 @@ import pytest
 from grafix.core.effects.util import (
     GridSpec,
     PlanarFrame,
+    PlanarRing,
     ResamplePlan,
+    close_curve,
     empty_geom,
+    extract_planar_rings,
     marching_squares_loops,
+    pack_planar_rings,
     pack_polylines,
+    planarity_threshold,
     rasterize_ring_boundary_mask,
     resample_polylines,
     scanline_evenodd_mask,
@@ -54,6 +59,123 @@ def test_pack_polylines_preserves_order_empty_lines_and_standard_dtypes() -> Non
         coords,
         np.asarray([[0, 1, 2], [3, 4, 5], [6, 7, 8]], dtype=np.float32),
     )
+
+
+def test_planarity_threshold_uses_fixed_floor_and_bbox_scale() -> None:
+    assert planarity_threshold(np.empty((0, 3), dtype=np.float32)) == 1e-6
+
+    points = np.asarray([[0.0, 0.0, 0.0], [3.0, 4.0, 0.0]], dtype=np.float32)
+
+    assert planarity_threshold(points) == pytest.approx(5e-5)
+
+
+def test_close_curve_preserves_open_identity_and_reallocates_closed_curve() -> None:
+    short = np.asarray([[0.0, 0.0, 0.0]], dtype=np.float32)
+    open_with_matching_xy = np.asarray(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.01]],
+        dtype=np.float32,
+    )
+    closed = np.asarray(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+
+    assert close_curve(short, 1e-3) is short
+    assert close_curve(open_with_matching_xy, 1e-3) is open_with_matching_xy
+
+    result = close_curve(closed, 1e-3)
+
+    assert result is not closed
+    assert not np.shares_memory(result, closed)
+    assert result.dtype == closed.dtype
+    np.testing.assert_array_equal(result, closed)
+
+
+def test_extract_planar_rings_filters_and_preserves_input_order() -> None:
+    lines = [
+        np.asarray([[90, 90, 0], [91, 91, 0]], dtype=np.float32),
+        np.asarray(
+            [[0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0], [0, 0, 0]],
+            dtype=np.float32,
+        ),
+        np.asarray(
+            [
+                [10, 0, 0],
+                [12, 0, 0],
+                [12, 2, 0],
+                [10, 2, 0],
+                [10, 0, 5e-4],
+            ],
+            dtype=np.float32,
+        ),
+        np.asarray(
+            [[20, 0, 0], [22, 0, 0], [22, 2, 0], [20, 2, 0]],
+            dtype=np.float32,
+        ),
+        np.asarray([[30, 0, 0], [31, 0, 0], [30, 0, 0]], dtype=np.float32),
+    ]
+    coords = np.concatenate(lines, axis=0)
+    offsets = np.asarray(
+        [0, *np.cumsum([line.shape[0] for line in lines])],
+        dtype=np.int32,
+    )
+
+    rings = extract_planar_rings(
+        coords,
+        offsets,
+        auto_close_threshold=1e-3,
+    )
+
+    assert len(rings) == 2
+    assert [ring.vertices.dtype for ring in rings] == [np.float64, np.float64]
+    assert [ring.vertices.shape for ring in rings] == [(5, 2), (5, 2)]
+    np.testing.assert_array_equal(rings[0].mins, np.asarray([0.0, 0.0]))
+    np.testing.assert_array_equal(rings[0].maxs, np.asarray([2.0, 2.0]))
+    np.testing.assert_array_equal(rings[1].mins, np.asarray([10.0, 0.0]))
+    np.testing.assert_array_equal(rings[1].maxs, np.asarray([12.0, 2.0]))
+    for ring in rings:
+        np.testing.assert_array_equal(ring.vertices[0], ring.vertices[-1])
+
+
+def test_pack_planar_rings_preserves_buffers_and_allocates_fresh_arrays() -> None:
+    rings = [
+        PlanarRing(
+            vertices=np.asarray([[0, 0], [1, 0], [0, 0]], dtype=np.float32),
+            mins=np.asarray([0, 0], dtype=np.float32),
+            maxs=np.asarray([1, 0], dtype=np.float32),
+        ),
+        PlanarRing(
+            vertices=np.asarray([[2, 3], [4, 5]], dtype=np.float64),
+            mins=np.asarray([2, 3], dtype=np.float64),
+            maxs=np.asarray([4, 5], dtype=np.float64),
+        ),
+    ]
+
+    first = pack_planar_rings(rings)
+    second = pack_planar_rings(rings)
+
+    vertices, offsets, mins, maxs = first
+    assert vertices.dtype == np.float64
+    assert offsets.dtype == np.int32
+    assert mins.dtype == np.float64
+    assert maxs.dtype == np.float64
+    assert offsets.tolist() == [0, 3, 5]
+    np.testing.assert_array_equal(
+        vertices,
+        np.asarray([[0, 0], [1, 0], [0, 0], [2, 3], [4, 5]], dtype=np.float64),
+    )
+    np.testing.assert_array_equal(mins, np.asarray([[0, 0], [2, 3]]))
+    np.testing.assert_array_equal(maxs, np.asarray([[1, 0], [4, 5]]))
+    for array, fresh in zip(first, second, strict=True):
+        assert array.flags.c_contiguous
+        assert array.flags.owndata
+        assert not np.shares_memory(array, fresh)
+
+    empty_vertices, empty_offsets, empty_mins, empty_maxs = pack_planar_rings([])
+    assert empty_vertices.shape == (0, 2)
+    assert empty_offsets.tolist() == [0]
+    assert empty_mins.shape == (0, 2)
+    assert empty_maxs.shape == (0, 2)
 
 
 def test_resample_plan_counts_all_lines_before_allocation_at_cap_boundary() -> None:

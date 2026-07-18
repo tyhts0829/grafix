@@ -40,12 +40,7 @@ from typing import TYPE_CHECKING, Callable, TypeAlias, cast
 
 from pyglet.window import key
 
-from grafix.api.render import (
-    Frame,
-    ParameterLoadMode,
-    RenderOptions,
-    RenderSessionMetadata,
-)
+from grafix.core.lifecycle import CleanupErrors
 from grafix.core.parameters import ParamStore
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.pipeline import RealizedLayer
@@ -97,7 +92,7 @@ from grafix.interactive.runtime.export_job_system import (
 from grafix.interactive.runtime.recording_system import VideoRecordingSystem
 from grafix.interactive.runtime.scene_runner import SceneRunner
 from grafix.core.parameters.style_resolver import StyleResolver
-from grafix.core.parameters.source import MidiFrameSnapshot
+from grafix.core.parameters.source import MidiFrameSnapshot, ParameterLoadMode
 from grafix.core.preview_quality import PreviewQuality
 from grafix.interactive.runtime.video_recorder import default_video_output_path
 
@@ -245,13 +240,6 @@ class DrawWindowSystem:
             seed=seed,
         )
         self._provenance_frame_index = 0
-        self._render_options = RenderOptions(
-            canvas_size=settings.canvas_size,
-            background_color=settings.background_color,
-            line_color=settings.line_color,
-            line_thickness=settings.line_thickness,
-        )
-
         self._style = StyleResolver(
             self._store,
             base_background_color_rgb01=settings.background_color,
@@ -356,7 +344,7 @@ class DrawWindowSystem:
                     self._retry_source_reload,
                     category="reload",
                 )
-        except BaseException:
+        except BaseException as error:
             # constructor が return しない場合、runner は部分構築 object を close
             # できない。ここで取得済み resource を全て逆順に試す。MIDI ownership は
             # 正常構築後にだけ移るため、失敗時は caller が close する。
@@ -373,14 +361,15 @@ class DrawWindowSystem:
                 cleanup_steps.append(("renderer", renderer.release))
             if window is not None:
                 cleanup_steps.append(("draw window", window.close))
+            errors = CleanupErrors(
+                initial_error=error,
+                report_secondary=lambda label: _logger.exception(
+                    "DrawWindowSystem initialization cleanup failed: %s",
+                    label,
+                ),
+            )
             for label, cleanup in cleanup_steps:
-                try:
-                    cleanup()
-                except BaseException:
-                    _logger.exception(
-                        "DrawWindowSystem initialization cleanup failed: %s",
-                        label,
-                    )
+                errors.attempt(cleanup, label)
             raise
 
     def _on_key_press(self, symbol: int, modifiers: int) -> None:
@@ -1122,31 +1111,27 @@ class DrawWindowSystem:
         window = getattr(self, "window", None)
         set_minimum_size = getattr(window, "set_minimum_size", None)
         set_maximum_size = getattr(window, "set_maximum_size", None)
-        first_error: BaseException | None = None
+        errors = CleanupErrors()
 
         # maximum を先に緩めれば、現在サイズと復元minimumの中間状態で
         # platform が不要にwindowをresizeするのを避けられる。
         if callable(set_maximum_size):
-            try:
-                set_maximum_size(
+            errors.attempt(
+                lambda: set_maximum_size(
                     _RESTORED_DRAW_WINDOW_MAX_SIZE,
                     _RESTORED_DRAW_WINDOW_MAX_SIZE,
                 )
-            except BaseException as exc:
-                first_error = exc
+            )
         if callable(set_minimum_size):
-            try:
-                set_minimum_size(
+            errors.attempt(
+                lambda: set_minimum_size(
                     MINIMUM_DRAW_WINDOW_WIDTH,
                     MINIMUM_DRAW_WINDOW_HEIGHT,
                 )
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+            )
 
-        if first_error is not None:
-            # 次回stop/cleanupで復元を再試行できるようlockedを保つ。
-            raise first_error
+        # 失敗時は次回 stop/cleanup で復元を再試行できるよう locked を保つ。
+        errors.raise_if_any()
         self._recording_window_constraints_locked = False
 
     def stop_video_recording(
@@ -1166,7 +1151,7 @@ class DrawWindowSystem:
             else float(self._clock.t())
         )
         staged_capture = None
-        stop_error: BaseException | None = None
+        errors = CleanupErrors(report_secondary=_logger.exception)
         try:
             staged_capture = self._recording.stop_to_staging(
                 timeout_s=timeout_s,
@@ -1174,33 +1159,26 @@ class DrawWindowSystem:
                 abort_reason=abort_reason,
             )
         except BaseException as exc:
-            stop_error = exc
-        finally:
-            self._recording_capture = None
-            self._preview_was_playing_before_recording = None
-            try:
-                # seek は録画終了という不連続境界の epoch も進める。
-                self._clock.seek(end_t)
-                if was_playing:
-                    self._clock.play()
-            except BaseException as exc:
-                if stop_error is None:
-                    stop_error = exc
-                else:
-                    _logger.exception(
-                        "Failed to restore transport after recording stop failure"
-                    )
-            try:
-                self._restore_draw_window_resize_constraints()
-            except BaseException as exc:
-                if stop_error is None:
-                    stop_error = exc
-                else:
-                    _logger.exception(
-                        "Failed to restore draw window constraints after recording stop failure"
-                    )
-        if stop_error is not None:
-            raise stop_error
+            errors.record(exc)
+
+        self._recording_capture = None
+        self._preview_was_playing_before_recording = None
+
+        def restore_transport() -> None:
+            # seek は録画終了という不連続境界の epoch も進める。
+            self._clock.seek(end_t)
+            if was_playing:
+                self._clock.play()
+
+        errors.attempt(
+            restore_transport,
+            "Failed to restore transport after recording stop failure",
+        )
+        errors.attempt(
+            self._restore_draw_window_resize_constraints,
+            "Failed to restore draw window constraints after recording stop failure",
+        )
+        errors.raise_if_any()
         if staged_capture is None:
             return
         if capture is None:
@@ -1514,30 +1492,13 @@ class DrawWindowSystem:
             gcode_config=self._capture_gcode_config(),
         )
 
-    def final_capture_frame(self) -> Frame:
-        """現在時刻を final 品質で評価し、thumbnail用の immutable Frame を返す。"""
+    def final_capture_frame(self) -> FrameExportSnapshot:
+        """現在時刻を final 品質で評価し、thumbnail用 snapshot を返す。"""
 
         snapshot = self._final_capture_snapshot()
-        provenance = snapshot.provenance
-        if provenance is None:
+        if snapshot.provenance is None:
             raise RuntimeError("capture provenance is unavailable")
-        style = self._style.resolve()
-        metadata = RenderSessionMetadata(
-            config_path=self._effective_config.config_path,
-            effective_config=self._effective_config,
-            parameter_source=self._parameter_source,
-            parameter_store_path=self._parameter_store_path,
-            parameter_load_provenance=self._store.load_provenance,
-            provenance=provenance.session,
-        )
-        return Frame(
-            t=snapshot.t,
-            layers=snapshot.layers,
-            options=self._render_options,
-            style=style,
-            metadata=metadata,
-            provenance=provenance,
-        )
+        return snapshot
 
     def _midi_frame_snapshot(self) -> MidiFrameSnapshot | None:
         """現在frameのMIDI値とlive/frozen由来を一つのsnapshotへ固定する。"""
@@ -1985,20 +1946,12 @@ class DrawWindowSystem:
             return max(0.0, capture_deadline - time.monotonic())
 
         self._closed = True
-        first_error: BaseException | None = None
-
-        def attempt(label: str, action: Callable[[], object]) -> None:
-            nonlocal first_error
-            try:
-                action()
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-                else:
-                    _logger.exception(
-                        "Cleanup step failed after an earlier error: %s",
-                        label,
-                    )
+        errors = CleanupErrors(
+            report_secondary=lambda label: _logger.exception(
+                "Cleanup step failed after an earlier error: %s",
+                label,
+            )
+        )
 
         # --- 録画 ---
         # completed video temp を最初に artifact+manifest transaction へ確定する。
@@ -2010,39 +1963,37 @@ class DrawWindowSystem:
                     stop_reason="shutdown",
                 )
 
-        attempt("stop video recording", stop_recording)
+        errors.attempt(stop_recording, "stop video recording")
 
         # --- PNG/G-code export ---
         # normal close は deadline 内でdrainし、超過時は明示cancelする。
         # drain 自体が失敗した場合も worker close/poll は必ず試す。
-        attempt(
-            "drain PNG/G-code exports",
+        errors.attempt(
             lambda: self._drain_exports_on_close(
                 timeout_s=capture_time_remaining()
             ),
+            "drain PNG/G-code exports",
         )
-        attempt("close PNG/G-code export worker", self._export_jobs.close)
-        attempt("poll terminal export results", self._poll_export_results)
+        errors.attempt(self._export_jobs.close, "close PNG/G-code export worker")
+        errors.attempt(self._poll_export_results, "poll terminal export results")
 
         # --- MIDI ---
         # session は controller と frozen state を一体で所有する。
         midi = self._midi_session
         self._midi_session = None
         if midi is not None:
-            attempt("close MIDI session", midi.close)
+            errors.attempt(midi.close, "close MIDI session")
 
         # --- mp-draw worker / scene 実行器 ---
-        attempt("close scene runner", self._scene_runner.close)
+        errors.attempt(self._scene_runner.close, "close scene runner")
         perf = getattr(self, "_perf", None)
         if perf is not None:
-            attempt("close performance trace", perf.close)
+            errors.attempt(perf.close, "close performance trace")
 
         # renderer が保持している GPU リソースの所有 context を current にしてから解放する。
         switch_to = getattr(self.window, "switch_to", None)
         if callable(switch_to):
-            attempt("activate draw GL context", switch_to)
-        attempt("release renderer", self._renderer.release)
-        attempt("close draw window", self.window.close)
-
-        if first_error is not None:
-            raise first_error
+            errors.attempt(switch_to, "activate draw GL context")
+        errors.attempt(self._renderer.release, "release renderer")
+        errors.attempt(self.window.close, "close draw window")
+        errors.raise_if_any()

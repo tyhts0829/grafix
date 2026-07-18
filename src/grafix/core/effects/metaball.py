@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
@@ -16,15 +15,17 @@ from grafix.core.realized_geometry import GeomTuple
 from .util import (
     DEFAULT_MAX_GRID_CELLS,
     GridSpec,
+    PlanarRing,
     PlanarFrame,
+    extract_planar_rings,
     marching_squares_loops,
+    pack_planar_rings,
     pack_polylines,
+    planarity_threshold,
     scanline_evenodd_mask,
 )
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
-_PLANAR_EPS_ABS = 1e-6
-_PLANAR_EPS_REL = 1e-5
 MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 DRAFT_MAX_GRID_POINTS = 16_384
 DRAFT_MIN_RING_SEGMENTS = 8
@@ -67,91 +68,7 @@ metaball_meta = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class _Ring2D:
-    vertices: np.ndarray  # (N, 2) float64, closed (first == last)
-    mins: np.ndarray  # (2,) float64
-    maxs: np.ndarray  # (2,) float64
-
-
-def _planarity_threshold(points: np.ndarray) -> float:
-    if points.size == 0:
-        return float(_PLANAR_EPS_ABS)
-    p = points.astype(np.float64, copy=False)
-    mins = np.min(p, axis=0)
-    maxs = np.max(p, axis=0)
-    diag = float(np.linalg.norm(maxs - mins))
-    return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
-
-
-def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
-    if points.shape[0] < 2:
-        return points
-    dist = float(np.linalg.norm(points[0] - points[-1]))
-    if dist <= float(threshold):
-        return np.concatenate([points[:-1], points[0:1]], axis=0)
-    return points
-
-
-def _extract_rings_xy(
-    coords_xy: np.ndarray,
-    offsets: np.ndarray,
-    *,
-    auto_close_threshold: float,
-) -> list[_Ring2D]:
-    rings: list[_Ring2D] = []
-    for i in range(int(offsets.size) - 1):
-        s = int(offsets[i])
-        e = int(offsets[i + 1])
-        poly3 = coords_xy[s:e]
-        if poly3.shape[0] < 3:
-            continue
-
-        closed3 = _close_curve(poly3, float(auto_close_threshold))
-        if closed3.shape[0] < 4:
-            # 3 点（閉じ含む）以下は面を作れない。
-            continue
-
-        # 閉曲線のみを face として扱う（開曲線は無視）。
-        if not np.allclose(closed3[0], closed3[-1], rtol=0.0, atol=1e-12):
-            continue
-
-        v2 = closed3[:, :2].astype(np.float64, copy=False)
-        mins = np.min(v2, axis=0)
-        maxs = np.max(v2, axis=0)
-        rings.append(_Ring2D(vertices=v2, mins=mins, maxs=maxs))
-    return rings
-
-
-def _pack_rings(
-    rings: list[_Ring2D],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """リング列を Numba 入力用の連結バッファへパックする。"""
-    n = len(rings)
-    total = 0
-    for ring in rings:
-        total += int(ring.vertices.shape[0])
-
-    ring_vertices = np.empty((total, 2), dtype=np.float64)
-    ring_offsets = np.empty((n + 1,), dtype=np.int32)
-    ring_mins = np.empty((n, 2), dtype=np.float64)
-    ring_maxs = np.empty((n, 2), dtype=np.float64)
-
-    ring_offsets[0] = 0
-    cursor = 0
-    for i, ring in enumerate(rings):
-        v = ring.vertices.astype(np.float64, copy=False)
-        m = int(v.shape[0])
-        ring_vertices[cursor : cursor + m] = v
-        cursor += m
-        ring_offsets[i + 1] = np.int32(cursor)
-        ring_mins[i] = ring.mins
-        ring_maxs[i] = ring.maxs
-
-    return ring_vertices, ring_offsets, ring_mins, ring_maxs
-
-
-def _draft_ring_segment_floor(ring: _Ring2D) -> int:
+def _draft_ring_segment_floor(ring: PlanarRing) -> int:
     return min(
         max(0, int(ring.vertices.shape[0]) - 1),
         DRAFT_MIN_RING_SEGMENTS,
@@ -163,7 +80,7 @@ def _ring_length_for_draft(vertices: np.ndarray) -> float:
     return float(np.sum(np.sqrt(np.sum(delta * delta, axis=1))))
 
 
-def _draft_ring_segment_target(ring: _Ring2D, *, step: float) -> int:
+def _draft_ring_segment_target(ring: PlanarRing, *, step: float) -> int:
     original_segments = max(0, int(ring.vertices.shape[0]) - 1)
     floor_segments = _draft_ring_segment_floor(ring)
     if original_segments <= floor_segments:
@@ -225,11 +142,11 @@ def _resample_ring_for_draft(
 
 
 def _simplify_rings_for_draft(
-    rings: list[_Ring2D],
+    rings: list[PlanarRing],
     *,
     pitch: float,
     max_segments: int,
-) -> tuple[list[_Ring2D], int, int, int, int]:
+) -> tuple[list[PlanarRing], int, int, int, int]:
     original_ring_count = len(rings)
     original_segments = sum(
         max(0, int(ring.vertices.shape[0]) - 1) for ring in rings
@@ -286,7 +203,7 @@ def _simplify_rings_for_draft(
             _draft_ring_segment_target(ring, step=high) for ring in selected
         ]
 
-    simplified: list[_Ring2D] = []
+    simplified: list[PlanarRing] = []
     effective_segments = 0
     for ring, target_segments in zip(selected, target_counts, strict=True):
         vertices = _resample_ring_for_draft(
@@ -298,7 +215,7 @@ def _simplify_rings_for_draft(
             simplified.append(ring)
         else:
             simplified.append(
-                _Ring2D(
+                PlanarRing(
                     vertices=vertices,
                     mins=np.min(vertices, axis=0),
                     maxs=np.max(vertices, axis=0),
@@ -577,11 +494,15 @@ def metaball(
         auto_close = 0.0
 
     frame = PlanarFrame.from_points(coords, offsets)
-    if not frame.is_planar(_planarity_threshold(coords)):
+    if not frame.is_planar(planarity_threshold(coords)):
         return coords, offsets
     coords_xy_all = frame.to_local(coords)
 
-    rings = _extract_rings_xy(coords_xy_all, offsets, auto_close_threshold=auto_close)
+    rings = extract_planar_rings(
+        coords_xy_all,
+        offsets,
+        auto_close_threshold=auto_close,
+    )
     if not rings:
         return coords, offsets
 
@@ -674,7 +595,7 @@ def metaball(
                 ),
                 severity="info",
             )
-    ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
+    ring_vertices, ring_offsets, ring_mins, ring_maxs = pack_planar_rings(rings)
     inside_mask = scanline_evenodd_mask(
         ys,
         origin_x=grid.origin_x,

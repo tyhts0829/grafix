@@ -4,12 +4,14 @@ from pathlib import Path
 
 import pytest
 
+import grafix.core.preset_registry as preset_registry_module
 from grafix import P
 from grafix.api import preset
 from grafix.core.geometry import Geometry
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.snapshot_ops import store_snapshot
+from grafix.core.preset_registry import PresetRegistry
 from grafix.core.runtime_config import set_config_path
 
 
@@ -135,3 +137,50 @@ def test_preset_namespace_supports_p_call_name_without_signature() -> None:
 
     site_ids = {k.site_id for k in snap.keys() if k.op == "preset.b_only_sample"}
     assert any(str(site_id).endswith("|1") for site_id in site_ids)
+
+
+def test_preset_registration_is_single_revision_and_duplicate_is_non_mutating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    isolated = PresetRegistry()
+    monkeypatch.setattr(preset_registry_module, "preset_registry", isolated)
+
+    @preset(meta={"amount": {"kind": "float"}})
+    def duplicate_contract(amount: float = 1.0) -> Geometry:
+        return Geometry.create(op="concat", params={"amount": amount})
+
+    original = duplicate_contract
+    original_spec = dict(isolated.items())["preset.duplicate_contract"]
+    assert isolated.revision == 1
+    assert isolated.get("duplicate_contract") is original
+    assert P.duplicate_contract is original
+
+    def invalid_duplicate_contract() -> Geometry:
+        return Geometry.create(op="concat")
+
+    invalid_duplicate_contract.__name__ = "duplicate_contract"
+    with pytest.raises(
+        ValueError,
+        match=r"^preset 'duplicate_contract' は既に登録されている$",
+    ):
+        preset(meta={"missing": {"kind": "float"}})(invalid_duplicate_contract)
+
+    assert isolated.revision == 1
+    assert dict(isolated.items())["preset.duplicate_contract"] is original_spec
+    assert isolated.get("duplicate_contract") is original
+
+
+def test_preset_namespace_unknown_error_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        preset_registry_module,
+        "preset_registry",
+        PresetRegistry(),
+    )
+
+    with pytest.raises(
+        AttributeError,
+        match=r"^未登録の preset: 'missing_contract'$",
+    ):
+        _ = P.missing_contract

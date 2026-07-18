@@ -3,8 +3,10 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import json
+import queue
 import time
 import weakref
+from collections import deque
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,6 +99,213 @@ def test_partial_queue_creation_closes_the_first_queue() -> None:
         system._create_queues()
 
     assert calls == ["cancel", "close", "join"]
+
+
+def test_close_queue_attempts_every_step_and_raises_first_base_exception() -> None:
+    calls: list[str] = []
+
+    class CleanupFault(BaseException):
+        pass
+
+    first_error = CleanupFault("cancel failed")
+
+    class Queue:
+        def cancel_join_thread(self) -> None:
+            calls.append("cancel")
+            raise first_error
+
+        def close(self) -> None:
+            calls.append("close")
+            raise CleanupFault("close failed")
+
+        def join_thread(self) -> None:
+            calls.append("join")
+
+    with pytest.raises(CleanupFault) as exc_info:
+        ExportJobSystem._close_queue(cast(Any, Queue()), cancel=True)
+
+    assert exc_info.value is first_error
+    assert calls == ["cancel", "close", "join"]
+
+
+def test_close_queues_continues_with_result_queue_after_task_queue_failure() -> None:
+    calls: list[str] = []
+
+    class CleanupFault(BaseException):
+        pass
+
+    first_error = CleanupFault("task cancel failed")
+
+    class Queue:
+        def __init__(self, name: str, *, fail_cancel: bool = False) -> None:
+            self.name = name
+            self.fail_cancel = fail_cancel
+
+        def cancel_join_thread(self) -> None:
+            calls.append(f"{self.name}.cancel")
+            if self.fail_cancel:
+                raise first_error
+
+        def close(self) -> None:
+            calls.append(f"{self.name}.close")
+
+        def join_thread(self) -> None:
+            calls.append(f"{self.name}.join")
+
+    system = object.__new__(ExportJobSystem)
+    system._task_q = cast(Any, Queue("task", fail_cancel=True))
+    system._result_q = cast(Any, Queue("result"))
+
+    with pytest.raises(CleanupFault) as exc_info:
+        system._close_queues(cancel_pending=True)
+
+    assert exc_info.value is first_error
+    assert calls == [
+        "task.cancel",
+        "task.close",
+        "task.join",
+        "result.close",
+        "result.join",
+    ]
+
+
+def test_join_process_preserves_escalation_order_after_cleanup_failures() -> None:
+    calls: list[str] = []
+
+    class CleanupFault(BaseException):
+        pass
+
+    first_error = CleanupFault("initial join failed")
+
+    class Process:
+        def __init__(self) -> None:
+            self.join_count = 0
+            self.alive = iter((True, True, False))
+
+        def join(self, *, timeout: float) -> None:
+            assert timeout == export_job_system._WORKER_JOIN_TIMEOUT_S
+            self.join_count += 1
+            calls.append(f"join:{self.join_count}")
+            if self.join_count == 1:
+                raise first_error
+
+        def is_alive(self) -> bool:
+            calls.append("is_alive")
+            return next(self.alive)
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+            raise CleanupFault("terminate failed")
+
+        def kill(self) -> None:
+            calls.append("kill")
+
+        def close(self) -> None:
+            calls.append("close")
+            raise CleanupFault("process close failed")
+
+    with pytest.raises(CleanupFault) as exc_info:
+        ExportJobSystem._join_process(cast(Any, Process()))
+
+    assert exc_info.value is first_error
+    assert calls == [
+        "join:1",
+        "is_alive",
+        "terminate",
+        "join:2",
+        "is_alive",
+        "kill",
+        "join:3",
+        "is_alive",
+        "close",
+    ]
+
+
+def test_replace_worker_attempts_join_queues_and_recreation_after_failures() -> None:
+    calls: list[str] = []
+
+    class CleanupFault(BaseException):
+        pass
+
+    first_error = CleanupFault("terminate failed")
+
+    class Process:
+        def is_alive(self) -> bool:
+            calls.append("is_alive")
+            return True
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+            raise first_error
+
+    system = object.__new__(ExportJobSystem)
+    system._proc = cast(Any, Process())
+
+    def fail_join(_proc: object) -> None:
+        calls.append("join")
+        raise CleanupFault("join failed")
+
+    def fail_close_queues(*, cancel_pending: bool) -> None:
+        assert cancel_pending is True
+        calls.append("close queues")
+        raise CleanupFault("queue close failed")
+
+    def create_queues() -> None:
+        calls.append("create queues")
+
+    system._join_process = fail_join
+    system._close_queues = fail_close_queues
+    system._create_queues = create_queues
+
+    with pytest.raises(CleanupFault) as exc_info:
+        system._replace_worker()
+
+    assert exc_info.value is first_error
+    assert calls == [
+        "is_alive",
+        "terminate",
+        "join",
+        "close queues",
+        "create queues",
+    ]
+    assert system._proc is None
+
+
+def test_close_treats_full_idle_sentinel_queue_as_pending_work() -> None:
+    calls: list[str] = []
+
+    class Process:
+        def is_alive(self) -> bool:
+            calls.append("is_alive")
+            return True
+
+    class FullQueue:
+        def put_nowait(self, value: object) -> None:
+            assert value is None
+            calls.append("signal")
+            raise queue.Full
+
+    system = object.__new__(ExportJobSystem)
+    system._closed = False
+    system._in_flight = None
+    system._pending = deque()
+    system._completed = deque()
+    system._proc = cast(Any, Process())
+    system._task_q = cast(Any, FullQueue())
+    system._join_process = lambda _proc: calls.append("join")
+    system._close_queues = lambda *, cancel_pending: calls.append(
+        f"close queues:{cancel_pending}"
+    )
+
+    system.close()
+
+    assert calls == [
+        "is_alive",
+        "signal",
+        "join",
+        "close queues:True",
+    ]
+    assert system._proc is None
 
 
 def test_worker_releases_completed_job_snapshot_before_waiting_for_next() -> None:

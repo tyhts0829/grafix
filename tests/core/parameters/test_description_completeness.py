@@ -27,7 +27,7 @@ from grafix.core.parameters.style import (
     style_key,
 )
 from grafix.core.parameters.style_ops import ensure_style_entries
-from grafix.core.preset_registry import PresetFuncRegistry, PresetRegistry
+from grafix.core.preset_registry import PresetRegistry
 from grafix.core.primitive_registry import primitive_registry
 
 
@@ -111,10 +111,9 @@ def test_preset_activate_description_is_injected(
     """preset の共通 activate metadata も空でない説明を持つ。"""
 
     preset_module = importlib.import_module("grafix.api.preset")
-    isolated_specs = PresetRegistry()
-    isolated_funcs = PresetFuncRegistry()
-    monkeypatch.setattr(preset_module, "preset_registry", isolated_specs)
-    monkeypatch.setattr(preset_module, "preset_func_registry", isolated_funcs)
+    preset_registry_module = importlib.import_module("grafix.core.preset_registry")
+    isolated = PresetRegistry()
+    monkeypatch.setattr(preset_registry_module, "preset_registry", isolated)
 
     @preset_module.preset(
         meta={
@@ -127,8 +126,9 @@ def test_preset_activate_description_is_injected(
     def description_probe(value: float = 1.0) -> object:
         return value
 
-    _ = description_probe
-    spec = dict(isolated_specs.items())["preset.description_probe"]
+    assert isolated.revision == 1
+    assert isolated.get("description_probe") is description_probe
+    spec = dict(isolated.items())["preset.description_probe"]
     assert _has_description(spec.meta.get("activate")), (
         "Description が空の operation.arg: preset.description_probe.activate"
     )

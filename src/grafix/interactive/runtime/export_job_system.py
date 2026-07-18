@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from grafix.core.capture_provenance import CaptureProvenance
+from grafix.core.lifecycle import CleanupErrors
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET
 from grafix.core.runtime_config import GCodeExportConfig
@@ -645,102 +646,66 @@ class ExportJobSystem:
 
     @staticmethod
     def _join_process(proc: mp_process.BaseProcess) -> None:
-        first_error: BaseException | None = None
-
-        def attempt(action: Callable[[], object]) -> None:
-            nonlocal first_error
-            try:
-                action()
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+        errors = CleanupErrors()
 
         def is_alive() -> bool:
-            nonlocal first_error
             try:
                 return bool(proc.is_alive())
             except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+                errors.record(exc)
                 # 生存状態を確認できない場合も、後続の terminate/kill は試す。
                 return True
 
-        attempt(lambda: proc.join(timeout=_WORKER_JOIN_TIMEOUT_S))
+        errors.attempt(
+            lambda: proc.join(timeout=_WORKER_JOIN_TIMEOUT_S),
+        )
         if is_alive():
-            attempt(proc.terminate)
-            attempt(lambda: proc.join(timeout=_WORKER_JOIN_TIMEOUT_S))
+            errors.attempt(proc.terminate)
+            errors.attempt(
+                lambda: proc.join(timeout=_WORKER_JOIN_TIMEOUT_S),
+            )
         if is_alive():
-            attempt(proc.kill)
-            attempt(lambda: proc.join(timeout=_WORKER_JOIN_TIMEOUT_S))
+            errors.attempt(proc.kill)
+            errors.attempt(
+                lambda: proc.join(timeout=_WORKER_JOIN_TIMEOUT_S),
+            )
         if not is_alive():
-            attempt(proc.close)
-
-        if first_error is not None:
-            raise first_error
+            errors.attempt(proc.close)
+        errors.raise_if_any()
 
     @staticmethod
     def _close_queue(worker_queue: mp_queues.Queue[Any], *, cancel: bool) -> None:
-        first_error: BaseException | None = None
-
-        def attempt(action: Callable[[], object]) -> None:
-            nonlocal first_error
-            try:
-                action()
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-
+        errors = CleanupErrors()
         if cancel:
-            attempt(worker_queue.cancel_join_thread)
-        attempt(worker_queue.close)
-        attempt(worker_queue.join_thread)
-
-        if first_error is not None:
-            raise first_error
+            errors.attempt(worker_queue.cancel_join_thread)
+        errors.attempt(worker_queue.close)
+        errors.attempt(worker_queue.join_thread)
+        errors.raise_if_any()
 
     def _close_queues(self, *, cancel_pending: bool) -> None:
-        first_error: BaseException | None = None
-        for worker_queue, cancel in (
-            (self._task_q, cancel_pending),
-            (self._result_q, False),
-        ):
-            try:
-                self._close_queue(worker_queue, cancel=cancel)
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-
-        if first_error is not None:
-            raise first_error
+        task_q = self._task_q
+        result_q = self._result_q
+        errors = CleanupErrors()
+        errors.attempt(lambda: self._close_queue(task_q, cancel=cancel_pending))
+        errors.attempt(lambda: self._close_queue(result_q, cancel=False))
+        errors.raise_if_any()
 
     def _replace_worker(self) -> None:
-        first_error: BaseException | None = None
+        errors = CleanupErrors()
         proc = self._proc
         if proc is not None:
-            try:
+            def terminate_live_worker() -> None:
                 if proc.is_alive():
                     proc.terminate()
-            except BaseException as exc:
-                first_error = exc
-            try:
-                self._join_process(proc)
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-        self._proc = None
-        try:
-            self._close_queues(cancel_pending=True)
-        except BaseException as exc:
-            if first_error is None:
-                first_error = exc
-        try:
-            self._create_queues()
-        except BaseException as exc:
-            if first_error is None:
-                first_error = exc
 
-        if first_error is not None:
-            raise first_error
+            errors.attempt(terminate_live_worker)
+            errors.attempt(lambda: self._join_process(proc))
+        self._proc = None
+        errors.attempt(
+            lambda: self._close_queues(cancel_pending=True),
+        )
+        errors.attempt(lambda: self._create_queues())
+        errors.raise_if_any()
 
     @staticmethod
     def _terminal_result(
@@ -987,7 +952,7 @@ class ExportJobSystem:
         self._in_flight = None
         self._pending.clear()
 
-        first_error: BaseException | None = None
+        errors = CleanupErrors()
         proc = self._proc
         if proc is not None and not had_in_flight:
             try:
@@ -996,26 +961,18 @@ class ExportJobSystem:
             except queue.Full:
                 had_in_flight = True
             except BaseException as exc:
-                first_error = exc
+                errors.record(exc)
                 had_in_flight = True
         if proc is not None:
-            try:
-                self._join_process(proc)
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+            errors.attempt(lambda: self._join_process(proc))
         self._proc = None
         try:
-            self._close_queues(cancel_pending=had_in_flight)
-        except BaseException as exc:
-            if first_error is None:
-                first_error = exc
+            errors.attempt(lambda: self._close_queues(cancel_pending=had_in_flight))
         finally:
             if current is not None:
                 _cleanup_job_staging(current)
 
-        if first_error is not None:
-            raise first_error
+        errors.raise_if_any()
 
 
 __all__ = [

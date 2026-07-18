@@ -18,6 +18,7 @@ import pyglet
 from pyglet.window import key
 
 from grafix.core.layer import LayerStyleDefaults
+from grafix.core.lifecycle import CleanupErrors
 from grafix.core.runtime_config import (
     RuntimeConfigFallback,
     runtime_config,
@@ -108,21 +109,19 @@ def _run_cleanup_steps(
 ) -> None:
     """shutdown step を全て試し、最初の例外を最後に再送出する。"""
 
-    first_error = initial_error
-    for label, step in steps:
-        try:
-            step()
-        except BaseException as exc:
-            if first_error is None:
-                first_error = exc
-            else:
-                _logger.exception(
-                    "Shutdown step failed after an earlier error: %s",
-                    label,
-                )
+    def report_secondary(label: str) -> None:
+        _logger.exception(
+            "Shutdown step failed after an earlier error: %s",
+            label,
+        )
 
-    if first_error is not None:
-        raise first_error
+    errors = CleanupErrors(
+        initial_error=initial_error,
+        report_secondary=report_secondary,
+    )
+    for label, step in steps:
+        errors.attempt(step, label)
+    errors.raise_if_any()
 
 
 def _persist_param_store_on_shutdown(

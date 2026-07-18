@@ -12,7 +12,10 @@ import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import GeomTuple
+from grafix.core.realized_geometry import (
+    GeomTuple,
+    lines_to_geom_tuple,
+)
 
 laplace_field_grid_meta = {
     "preset": ParamMeta(
@@ -200,25 +203,6 @@ laplace_field_grid_meta = {
         description="指数写像 exp(kW) で W に掛ける複素係数 k の虚部を指定します。",
     ),
 }
-
-
-def _empty_geometry() -> GeomTuple:
-    coords = np.zeros((0, 3), dtype=np.float32)
-    offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
-def _lines_to_realized(lines: list[np.ndarray]) -> GeomTuple:
-    if not lines:
-        return _empty_geometry()
-    coords = np.concatenate(lines, axis=0).astype(np.float32, copy=False)
-    offsets = np.empty((len(lines) + 1,), dtype=np.int32)
-    offsets[0] = 0
-    acc = 0
-    for i, ln in enumerate(lines):
-        acc += int(ln.shape[0])
-        offsets[i + 1] = acc
-    return coords, offsets
 
 
 def _split_by_mask(points: np.ndarray, mask: np.ndarray) -> list[np.ndarray]:
@@ -507,7 +491,7 @@ def laplace_field_grid(
                 z = np.complex128(a_f) * np.exp(np.complex128(1j) * theta)
                 base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
                 emit_line_from_z(z, base_mask=base_mask)
-            return _lines_to_realized(lines_out)
+            return lines_to_geom_tuple(lines_out)
 
         radius_min = a_f * (1.0 + gap_f)
 
@@ -584,4 +568,4 @@ def laplace_field_grid(
     else:
         raise ValueError(f"laplace_field_grid の preset が不明: {preset_s!r}")
 
-    return _lines_to_realized(lines_out)
+    return lines_to_geom_tuple(lines_out)

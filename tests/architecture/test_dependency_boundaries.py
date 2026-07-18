@@ -81,6 +81,29 @@ def _resolve_importfrom_targets(
     return targets
 
 
+def _constant_importlib_module(node: ast.Call) -> str | None:
+    """canonical ``importlib.import_module`` の定数 module 名だけを返す。"""
+
+    func = node.func
+    if not (
+        isinstance(func, ast.Attribute)
+        and func.attr == "import_module"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "importlib"
+    ):
+        return None
+
+    argument: ast.expr | None = node.args[0] if node.args else None
+    if argument is None:
+        argument = next(
+            (keyword.value for keyword in node.keywords if keyword.arg == "name"),
+            None,
+        )
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+        return argument.value
+    return None
+
+
 def _import_modules_in_file(*, path: Path, src_root: Path) -> set[str]:
     current_module, is_package = _module_name_for_path(path=path, src_root=src_root)
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -98,14 +121,29 @@ def _import_modules_in_file(*, path: Path, src_root: Path) -> set[str]:
                 node=node,
             )
             modules.update(targets)
+            continue
+        if isinstance(node, ast.Call):
+            module = _constant_importlib_module(node)
+            if module is not None:
+                modules.add(module)
 
     return modules
+
+
+def _is_forbidden_import(
+    module: str,
+    *,
+    forbidden_prefixes: tuple[str, ...],
+    forbidden_exact: tuple[str, ...],
+) -> bool:
+    return module in forbidden_exact or module.startswith(forbidden_prefixes)
 
 
 def _assert_no_forbidden_imports(
     *,
     root: Path,
     forbidden_prefixes: tuple[str, ...],
+    forbidden_exact: tuple[str, ...] = (),
 ) -> None:
     repo_root = _repo_root()
     src_root = repo_root / "src"
@@ -118,7 +156,17 @@ def _assert_no_forbidden_imports(
             violations.append(f"{rel}: {e}")
             continue
 
-        bad = sorted([m for m in modules if m.startswith(forbidden_prefixes)])
+        bad = sorted(
+            [
+                module
+                for module in modules
+                if _is_forbidden_import(
+                    module,
+                    forbidden_prefixes=forbidden_prefixes,
+                    forbidden_exact=forbidden_exact,
+                )
+            ]
+        )
         if bad:
             violations.append(f"{rel}: {', '.join(bad)}")
 
@@ -127,19 +175,43 @@ def _assert_no_forbidden_imports(
         raise AssertionError(f"依存境界違反の import を検出:\n{joined}")
 
 
-def test_core_does_not_depend_on_export_or_interactive() -> None:
+def test_core_does_not_depend_on_api_export_or_interactive() -> None:
     root = _repo_root()
     _assert_no_forbidden_imports(
         root=root / "src" / "grafix" / "core",
-        forbidden_prefixes=("grafix.export", "grafix.interactive", "pyglet", "moderngl", "imgui"),
+        forbidden_prefixes=(
+            "grafix.api",
+            "grafix.export",
+            "grafix.interactive",
+            "pyglet",
+            "moderngl",
+            "imgui",
+        ),
+        forbidden_exact=("grafix",),
     )
 
 
-def test_export_does_not_depend_on_interactive() -> None:
+def test_export_does_not_depend_on_api_or_interactive() -> None:
     root = _repo_root()
     _assert_no_forbidden_imports(
         root=root / "src" / "grafix" / "export",
-        forbidden_prefixes=("grafix.interactive", "pyglet", "moderngl", "imgui"),
+        forbidden_prefixes=(
+            "grafix.api",
+            "grafix.interactive",
+            "pyglet",
+            "moderngl",
+            "imgui",
+        ),
+        forbidden_exact=("grafix",),
+    )
+
+
+def test_interactive_does_not_depend_on_api() -> None:
+    root = _repo_root()
+    _assert_no_forbidden_imports(
+        root=root / "src" / "grafix" / "interactive",
+        forbidden_prefixes=("grafix.api",),
+        forbidden_exact=("grafix",),
     )
 
 
@@ -177,6 +249,7 @@ def test__resolve_importfrom_targets_handles_relative_imports() -> None:
         is_package=False,
         node=node,
     )
+    assert "grafix" in got
     assert "grafix.export" in got
 
     node = _parse_single_stmt("from . import context\n")
@@ -196,6 +269,59 @@ def test__resolve_importfrom_targets_handles_relative_imports() -> None:
         node=node,
     )
     assert got == {"grafix.export"}
+
+    node = _parse_single_stmt("from grafix import *\n")
+    assert isinstance(node, ast.ImportFrom)
+    got = _resolve_importfrom_targets(
+        current_module="grafix.core.pipeline",
+        is_package=False,
+        node=node,
+    )
+    assert got == {"grafix"}
+
+
+def test__import_modules_in_file_detects_constant_dynamic_and_root_imports(
+    tmp_path: Path,
+) -> None:
+    src_root = tmp_path / "src"
+    path = src_root / "grafix" / "interactive" / "sample.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "\n".join(
+            [
+                "import importlib",
+                'importlib.import_module("grafix.api.render")',
+                'importlib.import_module(name="grafix.api.preset")',
+                "from grafix import G, api, export as export_frame, interactive, run",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    modules = _import_modules_in_file(path=path, src_root=src_root)
+
+    assert {
+        "grafix",
+        "grafix.G",
+        "grafix.api",
+        "grafix.export",
+        "grafix.interactive",
+        "grafix.run",
+        "grafix.api.render",
+        "grafix.api.preset",
+    } <= modules
+
+
+def test__is_forbidden_import_handles_root_exact_without_blocking_core() -> None:
+    kwargs = {
+        "forbidden_prefixes": ("grafix.api",),
+        "forbidden_exact": ("grafix",),
+    }
+
+    assert _is_forbidden_import("grafix", **kwargs)
+    assert _is_forbidden_import("grafix.api.render", **kwargs)
+    assert not _is_forbidden_import("grafix.core.geometry", **kwargs)
 
 
 def test__resolve_importfrom_targets_rejects_unresolvable_relative_imports() -> None:

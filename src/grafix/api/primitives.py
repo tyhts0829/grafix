@@ -13,10 +13,14 @@ from grafix.core.builtins import (
 from grafix.core.geometry import Geometry
 from grafix.core.op_registry import OpCatalogEntry
 from grafix.core.parameters import caller_site_id
-from grafix.core.primitive_registry import PrimitiveFunc, primitive_registry
+from grafix.core.primitive_registry import PrimitiveFunc
+
+# parameters package の初期化後に読み、prune_ops 経由の循環 import を避ける。
+import grafix.core.primitive_registry as primitive_registry_module
 
 from ._op_validation import validate_operation_kwargs
 from ._param_resolution import resolve_api_params, set_api_label
+
 
 class PrimitiveNamespace:
     """primitive Geometry ノードを生成する名前空間。
@@ -38,7 +42,7 @@ class PrimitiveNamespace:
         """
 
         ensure_builtin_primitives_registered()
-        return primitive_registry.catalog()
+        return primitive_registry_module.primitive_registry.catalog()
 
     def describe(self, name: str) -> OpCatalogEntry[PrimitiveFunc]:
         """primitive の catalog entry を名前で取得する。
@@ -60,11 +64,11 @@ class PrimitiveNamespace:
         """
 
         name_s = str(name)
-        if name_s not in primitive_registry:
+        if name_s not in primitive_registry_module.primitive_registry:
             ensure_builtin_primitive_registered(name_s)
-        if name_s not in primitive_registry:
+        if name_s not in primitive_registry_module.primitive_registry:
             raise KeyError(f"未登録の primitive: {name_s!r}")
-        return primitive_registry.describe(name_s)
+        return primitive_registry_module.primitive_registry.describe(name_s)
 
     def __getattr__(self, name: str) -> Callable[..., Geometry]:
         """primitive 名に対応する Geometry ファクトリを返す。
@@ -87,9 +91,9 @@ class PrimitiveNamespace:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        if name not in primitive_registry:
+        if name not in primitive_registry_module.primitive_registry:
             ensure_builtin_primitive_registered(name)
-        if name not in primitive_registry:
+        if name not in primitive_registry_module.primitive_registry:
             raise AttributeError(f"未登録の primitive: {name!r}")
 
         def factory(**params: Any) -> Geometry:
@@ -106,7 +110,7 @@ class PrimitiveNamespace:
                 生成された Geometry ノード。
             """
 
-            spec = primitive_registry[name]
+            spec = primitive_registry_module.primitive_registry[name]
             key = params.pop("key", None)
             instance_key = params.pop("instance_key", None)
             shared = params.pop("shared", False)

@@ -16,8 +16,7 @@ from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.variations import diff_variation, list_variations
 
 if TYPE_CHECKING:
-    from grafix.api.render import Frame
-    from grafix.export.capture import CaptureService
+    from grafix.export.capture import CaptureFrame, CaptureService
 
     from .store_bridge import ParameterTableView
 
@@ -169,13 +168,13 @@ def normalize_variation_selection(
 def make_capture_service_thumbnail_capture(
     capture_service: CaptureService,
     *,
-    frame_provider: Callable[[], Frame | None],
+    frame_provider: Callable[[], CaptureFrame | None],
     output_path_for_name: VariationThumbnailPath,
     output_size: tuple[int, int] | None = None,
 ) -> VariationThumbnailCapture:
     """Phase 6 ``CaptureService`` を GUI thumbnail callback へ適合する。
 
-    Parameter GUI は preview frame を所有しないため、描画側が immutable Frame と
+    Parameter GUI は preview frame を所有しないため、描画側が immutable snapshot と
     保存先を供給する。この境界により GUI は GL/encode を抱えず、CaptureService の
     no-clobber publish 契約をそのまま利用できる。
     """

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from grafix import G, ExportFormat, Frame, RenderOptions, RenderSession, render
+from grafix import G, ExportFormat, Frame, RenderOptions, RenderSession, export, render
 from grafix.core.capture_manifest import capture_manifest_path_for
 from grafix.core.runtime_config import runtime_config, set_config_path
 from grafix.export import capture as capture_module
@@ -36,7 +36,7 @@ def test_export_infers_suffix_versions_existing_and_writes_manifest(
     base = tmp_path / "drawing.svg"
     base.write_bytes(b"existing artwork")
 
-    result = CaptureService().export(frame, base)
+    result = export(frame, base)
 
     assert result.path == tmp_path / "drawing_001.svg"
     assert result.format is ExportFormat.SVG
@@ -78,7 +78,7 @@ def test_manifest_only_collision_is_allocated_as_next_version(
     old_manifest = capture_manifest_path_for(base)
     old_manifest.write_bytes(b"external manifest")
 
-    result = CaptureService().export(frame, base)
+    result = export(frame, base)
 
     assert result.path == tmp_path / "drawing_001.svg"
     assert old_manifest.read_bytes() == b"external manifest"
@@ -134,7 +134,7 @@ def test_encoder_failure_removes_private_staging_and_publishes_nothing(
     monkeypatch.setattr(capture_module, "export_svg", fail_svg)
 
     with pytest.raises(RuntimeError, match="encoder failed"):
-        CaptureService().export(frame, output)
+        export(frame, output)
 
     assert not output.exists()
     assert not capture_manifest_path_for(output).exists()
@@ -145,13 +145,12 @@ def test_overwrite_replaces_artifact_and_manifest_as_requested(
     frame: Frame,
     tmp_path: Path,
 ) -> None:
-    service = CaptureService()
     output = tmp_path / "drawing.svg"
     output.write_bytes(b"old artifact")
     manifest = capture_manifest_path_for(output)
     manifest.write_bytes(b"old manifest")
 
-    result = service.export(frame, output, overwrite=True)
+    result = export(frame, output, overwrite=True)
 
     assert result.path == output
     assert output.read_bytes().startswith(b"<?xml")
@@ -199,7 +198,6 @@ def test_png_uses_private_svg_and_effective_background(
         output_size=(64, 48),
     )
 
-    assert result.format is ExportFormat.PNG
     assert result.path.read_bytes() == b"png"
     assert raster_backgrounds == [frame.background_color_rgb01]
     assert raster_sizes == [(64, 48)]
@@ -220,7 +218,6 @@ def test_gcode_capture_is_byte_identical_to_existing_encoder(
 
     result = CaptureService().export(frame, tmp_path / "captured.gcode")
 
-    assert result.format is ExportFormat.GCODE
     assert result.path.read_bytes() == expected.read_bytes()
 
 
@@ -244,9 +241,15 @@ def test_gcode_export_uses_closed_render_session_effective_config(
         frame = render(lambda _t: (), config_path=render_config_path)
         assert runtime_config() is caller_config
 
-        result = CaptureService().export(frame, tmp_path / "closed-session.gcode")
+        result = export(frame, tmp_path / "closed-session.gcode")
+        direct = CaptureService().export(
+            frame,
+            tmp_path / "closed-session-direct.gcode",
+        )
 
+        assert result.format is ExportFormat.GCODE
         assert "G1 Z37.0" in result.path.read_text(encoding="utf-8")
+        assert "G1 Z37.0" in direct.path.read_text(encoding="utf-8")
         assert result.manifest_path is not None
         manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
         assert manifest["config"]["effective"]["gcode"]["z_up"] == 17.0
@@ -293,9 +296,15 @@ def test_png_export_uses_closed_render_session_effective_scale(
         )
         assert runtime_config() is caller_config
 
-        result = CaptureService().export(frame, tmp_path / "closed-session.png")
+        result = export(frame, tmp_path / "closed-session.png")
+        direct = CaptureService().export(
+            frame,
+            tmp_path / "closed-session-direct.png",
+        )
 
-        assert observed_sizes == [(35, 28)]
+        assert result.format is ExportFormat.PNG
+        assert observed_sizes == [(35, 28), (35, 28)]
+        assert direct.path.read_bytes() == b"png"
         assert result.manifest_path is not None
         manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
         assert manifest["config"]["effective"]["png_scale"] == 3.5
@@ -311,7 +320,16 @@ def test_export_rejects_unsupported_suffix_before_creating_parent(
     parent = tmp_path / "missing"
 
     with pytest.raises(ValueError, match="suffix"):
-        CaptureService().export(frame, parent / "drawing.jpg")
+        export(frame, parent / "drawing.jpg")
+
+    assert not parent.exists()
+
+
+def test_public_export_validates_frame_before_path_suffix(tmp_path: Path) -> None:
+    parent = tmp_path / "missing"
+
+    with pytest.raises(TypeError, match="frame は Frame"):
+        export(object(), parent / "drawing.jpg")  # type: ignore[arg-type]
 
     assert not parent.exists()
 

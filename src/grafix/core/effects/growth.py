@@ -24,14 +24,16 @@ from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
 from .util import (
     GridSpec,
     PlanarFrame,
+    PlanarRing,
     empty_geom,
+    extract_planar_rings,
+    pack_planar_rings,
     pack_polylines,
+    planarity_threshold,
     signed_distance_grid_edt,
 )
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
-_PLANAR_EPS_ABS = 1e-6
-_PLANAR_EPS_REL = 1e-5
 
 _MAX_ITERS = 10_000
 _MAX_TOTAL_POINTS = 200_000
@@ -87,13 +89,6 @@ growth_meta = {
 
 
 @dataclass(frozen=True, slots=True)
-class _Ring2D:
-    vertices: np.ndarray  # (N,2) float64, closed (first == last)
-    mins: np.ndarray  # (2,) float64
-    maxs: np.ndarray  # (2,) float64
-
-
-@dataclass(frozen=True, slots=True)
 class _GrowthSimulationResult:
     rings: list[np.ndarray]
     iterations: int
@@ -102,75 +97,6 @@ class _GrowthSimulationResult:
     rejected_total_points: int | None
     force_grid_requested_cells: int = 0
     force_grid_effective_cells: int = 0
-
-
-def _planarity_threshold(points: np.ndarray) -> float:
-    if points.size == 0:
-        return float(_PLANAR_EPS_ABS)
-    p = points.astype(np.float64, copy=False)
-    mins = np.min(p, axis=0)
-    maxs = np.max(p, axis=0)
-    diag = float(np.linalg.norm(maxs - mins))
-    return max(float(_PLANAR_EPS_ABS), float(_PLANAR_EPS_REL) * diag)
-
-
-def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
-    if points.shape[0] < 2:
-        return points
-    dist = float(np.linalg.norm(points[0] - points[-1]))
-    if dist <= float(threshold):
-        return np.concatenate([points[:-1], points[0:1]], axis=0)
-    return points
-
-
-def _extract_rings_xy(
-    coords_xyz: np.ndarray,
-    offsets: np.ndarray,
-    *,
-    auto_close_threshold: float,
-) -> list[_Ring2D]:
-    rings: list[_Ring2D] = []
-    for i in range(int(offsets.size) - 1):
-        s = int(offsets[i])
-        e = int(offsets[i + 1])
-        poly3 = coords_xyz[s:e]
-        if poly3.shape[0] < 3:
-            continue
-
-        closed3 = _close_curve(poly3, float(auto_close_threshold))
-        if closed3.shape[0] < 4:
-            continue
-        if not np.allclose(closed3[0], closed3[-1], rtol=0.0, atol=1e-12):
-            continue
-
-        v2 = closed3[:, :2].astype(np.float64, copy=False)
-        mins = np.min(v2, axis=0)
-        maxs = np.max(v2, axis=0)
-        rings.append(_Ring2D(vertices=v2, mins=mins, maxs=maxs))
-
-    return rings
-
-
-def _pack_rings(
-    rings: list[_Ring2D],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    total = int(sum(int(r.vertices.shape[0]) for r in rings))
-    ring_vertices = np.empty((total, 2), dtype=np.float64)
-    ring_offsets = np.zeros((len(rings) + 1,), dtype=np.int32)
-    ring_mins = np.empty((len(rings), 2), dtype=np.float64)
-    ring_maxs = np.empty((len(rings), 2), dtype=np.float64)
-
-    cursor = 0
-    for i, ring in enumerate(rings):
-        v = ring.vertices.astype(np.float64, copy=False)
-        m = int(v.shape[0])
-        ring_vertices[cursor : cursor + m] = v
-        cursor += m
-        ring_offsets[i + 1] = np.int32(cursor)
-        ring_mins[i] = ring.mins
-        ring_maxs[i] = ring.maxs
-
-    return ring_vertices, ring_offsets, ring_mins, ring_maxs
 
 
 def _ring_total_length(vertices: np.ndarray) -> float:
@@ -242,15 +168,15 @@ def _resample_ring_closed(vertices: np.ndarray, *, step_hint: float) -> np.ndarr
 
 
 def _simplify_rings_for_sdf(
-    rings: list[_Ring2D],
+    rings: list[PlanarRing],
     *,
     step_sdf: float,
-) -> list[_Ring2D]:
+) -> list[PlanarRing]:
     step = float(step_sdf)
     if not np.isfinite(step) or step <= 0.0:
         return rings
 
-    out: list[_Ring2D] = []
+    out: list[PlanarRing] = []
     for ring in rings:
         v = ring.vertices
         n = int(v.shape[0])
@@ -272,7 +198,7 @@ def _simplify_rings_for_sdf(
         v2 = _resample_ring_closed(v, step_hint=step)
         mins = np.min(v2, axis=0)
         maxs = np.max(v2, axis=0)
-        out.append(_Ring2D(vertices=v2, mins=mins, maxs=maxs))
+        out.append(PlanarRing(vertices=v2, mins=mins, maxs=maxs))
 
     return out
 
@@ -1150,7 +1076,7 @@ def growth(
             reason="growth requires a closed mask with a well-defined plane",
         )
         return empty_geom()
-    if not frame.is_planar(_planarity_threshold(mask_coords)):
+    if not frame.is_planar(planarity_threshold(mask_coords)):
         emit_operation_diagnostic(
             op="growth.mask",
             original_value="nonplanar",
@@ -1161,7 +1087,7 @@ def growth(
 
     aligned_mask = frame.to_local(mask_coords)
 
-    rings = _extract_rings_xy(
+    rings = extract_planar_rings(
         aligned_mask,
         mask_offsets,
         auto_close_threshold=float(_AUTO_CLOSE_THRESHOLD_DEFAULT),
@@ -1188,7 +1114,7 @@ def growth(
     step_sdf = max(spacing, 0.5)
     rings = _simplify_rings_for_sdf(rings, step_sdf=step_sdf)
 
-    ring_vertices, ring_offsets, ring_mins, ring_maxs = _pack_rings(rings)
+    ring_vertices, ring_offsets, ring_mins, ring_maxs = pack_planar_rings(rings)
 
     sdf_pad = max(spacing * 6.0, 2.0)
     sdf, sdf_origin_x, sdf_origin_y, sdf_pitch = _build_sdf_grid(

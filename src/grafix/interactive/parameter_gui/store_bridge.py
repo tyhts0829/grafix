@@ -217,7 +217,7 @@ def _order_rows_for_display(
 
     def _preset_arg_index(op: str, arg: str) -> int:
         if op not in preset_arg_index_by_op:
-            order = preset_registry.get_param_order(op)
+            order = preset_registry[op].param_order
             preset_arg_index_by_op[op] = {a: i for i, a in enumerate(order)}
         index_by_arg = preset_arg_index_by_op[op]
         return int(index_by_arg.get(arg, 10**9))
@@ -420,7 +420,7 @@ def _build_parameter_table_model(
         elif op in preset_registry:
             known_args = preset_known_args_by_op.get(op)
             if known_args is None:
-                known_args = set(preset_registry.get_meta(op))
+                known_args = set(preset_registry[op].meta)
                 preset_known_args_by_op[op] = known_args
             if arg not in known_args:
                 pair = (op, arg)

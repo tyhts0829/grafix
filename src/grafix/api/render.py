@@ -30,6 +30,7 @@ from grafix.core.parameters.persistence import (
     load_param_store_with_recovery,
 )
 from grafix.core.parameters.runtime import LoadProvenance
+from grafix.core.parameters.source import ParameterLoadMode
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.style_resolver import FrameStyle, StyleResolver
 from grafix.core.pipeline import RealizedLayer, realize_scene
@@ -42,7 +43,6 @@ from grafix.core.scene import SceneItem
 
 RGB01: TypeAlias = tuple[float, float, float]
 RGB8: TypeAlias = tuple[int, int, int]
-ParameterLoadMode: TypeAlias = Literal["code", "saved", "recovery"] | Path
 
 
 # 依存ライブラリや OS の色データベースに結果を左右されない、CSS の基本色名。

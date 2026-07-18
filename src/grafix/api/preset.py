@@ -19,8 +19,10 @@ from grafix.core.parameters.labels_ops import set_label
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_dict_from_user
 from grafix.core.parameters.resolver import resolve_params
-from grafix.core.preset_registry import preset_func_registry, preset_registry
 from grafix.core.scene import SceneItem
+
+# parameters package の初期化後に読み、registry module を循環なく参照する。
+import grafix.core.preset_registry as preset_registry_module
 
 _PSpec = ParamSpec("_PSpec")
 _PRESET_ACTIVATE_META = ParamMeta(
@@ -30,13 +32,8 @@ _PRESET_ACTIVATE_META = ParamMeta(
 
 # --- 役割メモ ---
 #
-# - preset_registry:
-#   Parameter GUI/永続化のための「preset の静的仕様（meta / 表示名 / 引数順）」を保持する。
-#   ここに登録される op は `ParameterKey(op=..., site_id=..., arg=...)` の op 側にも使われる。
-#
-# - preset_func_registry:
-#   実際に呼び出される preset 関数（ラッパ後）を name -> callable で保持する。
-#   `P.<name>(...)` の解決はこのレジストリの内容に依存する。
+# preset_registry は callable と GUI/永続化向けの静的仕様を同じ世代で保持する。
+# canonical op は `ParameterKey(op=..., site_id=..., arg=...)` の op 側にも使われる。
 
 
 def _defaults_from_signature(
@@ -122,12 +119,13 @@ def preset(
     def decorator(func: Callable[_PSpec, SceneItem]) -> Callable[_PSpec, SceneItem]:
         preset_name = str(func.__name__)
         # name 重複は「P.<name>」の解決が曖昧になるため禁止する。
-        if preset_name in preset_func_registry:
+        registry = preset_registry_module.preset_registry
+        if registry.get(preset_name) is not None:
             raise ValueError(f"preset '{preset_name}' は既に登録されている")
 
         # GUI 側で扱う op 名は `preset.<funcname>` に固定する。
         # 目的: preset を「1 種類の op」として分類/表示し、ParameterKey の op にも使う。
-        preset_op = f"preset.{preset_name}"
+        preset_op = preset_registry_module.preset_op(preset_name)
         sig = inspect.signature(func)
         if "activate" in sig.parameters:
             raise ValueError(
@@ -140,15 +138,6 @@ def preset(
         meta_with_activate = {"activate": _PRESET_ACTIVATE_META, **meta_norm}
         # GUI の行順は「定義したシグネチャ順」を優先する（dict の順序に依存しない）。
         sig_order = [arg_name for arg_name in sig.parameters if arg_name in meta_keys]
-        # preset_registry には「GUI 用の静的仕様」を登録する（実関数は preset_func_registry）。
-        preset_registry._register(
-            preset_op,
-            display_op=preset_name,
-            meta=meta_with_activate,
-            param_order=("activate", *sig_order),
-            ui_visible=ui_visible,
-            overwrite=False,
-        )
 
         @wraps(func)
         def wrapper(*args: _PSpec.args, **kwargs: _PSpec.kwargs) -> SceneItem:
@@ -286,8 +275,15 @@ def preset(
             with parameter_recording_muted():
                 return func(*bound.args, **bound.kwargs)
 
-        # callable として呼べるよう、name -> wrapper を登録する（P.<name> から参照される）。
-        preset_func_registry._register(preset_name, wrapper, overwrite=False)
+        # callable と GUI 用の静的仕様を、一つの spec として原子的に登録する。
+        registry._register(
+            preset_name,
+            wrapper,
+            display_op=preset_name,
+            meta=meta_with_activate,
+            param_order=("activate", *sig_order),
+            ui_visible=ui_visible,
+        )
         return wrapper
 
     return decorator

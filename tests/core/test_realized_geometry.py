@@ -7,6 +7,8 @@ from grafix.core.realized_geometry import (
     RealizedGeometry,
     concat_geom_tuples,
     concat_realized_geometries,
+    empty_geom_tuple,
+    lines_to_geom_tuple,
 )
 
 
@@ -114,3 +116,50 @@ def test_concat_no_geometries_returns_canonical_empty_geometry() -> None:
 
     assert result.coords.shape == (0, 3)
     assert result.offsets.tolist() == [0]
+
+
+def test_empty_geom_tuple_returns_fresh_standard_buffers() -> None:
+    first_coords, first_offsets = empty_geom_tuple()
+    second_coords, second_offsets = empty_geom_tuple()
+
+    assert first_coords.shape == (0, 3)
+    assert first_coords.dtype == np.float32
+    assert first_offsets.tolist() == [0]
+    assert first_offsets.dtype == np.int32
+    assert first_coords is not second_coords
+    assert first_offsets is not second_offsets
+
+
+def test_lines_to_geom_tuple_preserves_order_dtypes_and_empty_lines() -> None:
+    lines = [
+        np.asarray([[0, 1, 2], [3, 4, 5]], dtype=np.float64),
+        np.empty((0, 3), dtype=np.float32),
+        np.asarray([[6, 7, 8]], dtype=np.float32),
+    ]
+
+    coords, offsets = lines_to_geom_tuple(lines)
+
+    assert coords.dtype == np.float32
+    assert coords.flags.c_contiguous
+    assert coords.flags.owndata
+    assert offsets.dtype == np.int32
+    assert offsets.flags.c_contiguous
+    assert offsets.flags.owndata
+    assert offsets.tolist() == [0, 2, 2, 3]
+    np.testing.assert_array_equal(
+        coords,
+        np.asarray([[0, 1, 2], [3, 4, 5], [6, 7, 8]], dtype=np.float32),
+    )
+
+
+def test_lines_to_geom_tuple_keeps_each_all_empty_line_in_offsets() -> None:
+    coords, offsets = lines_to_geom_tuple(
+        [
+            np.empty((0, 3), dtype=np.float64),
+            np.empty((0, 3), dtype=np.float32),
+        ]
+    )
+
+    assert coords.shape == (0, 3)
+    assert coords.dtype == np.float32
+    assert offsets.tolist() == [0, 0, 0]

@@ -779,19 +779,17 @@ def _render_p_protocol(preset_names: list[str]) -> str:
     lines.append('        """preset を `P.<name>(...)` で呼び出す。"""\n')
     lines.append("        ...\n\n")
 
-    from grafix.core.preset_registry import preset_func_registry, preset_registry  # type: ignore[import]
+    from grafix.core.preset_registry import preset_op, preset_registry  # type: ignore[import]
 
     for preset_name in preset_names:
-        impl = preset_func_registry.get(preset_name)
+        impl = preset_registry.get(preset_name)
         if impl is None:
             continue
 
-        op = f"preset.{preset_name}"
-        if op not in preset_registry:
-            continue
-
-        meta_by_name: dict[str, Any] = dict(preset_registry.get_meta(op))
-        param_order = [p for p in preset_registry.get_param_order(op) if _is_valid_identifier(p)]
+        op = preset_op(preset_name)
+        spec = preset_registry[op]
+        meta_by_name: dict[str, Any] = dict(spec.meta)
+        param_order = [p for p in spec.param_order if _is_valid_identifier(p)]
 
         params: list[str] = []
         if meta_by_name:
@@ -854,7 +852,7 @@ def generate_stubs_str(
 
     from grafix.core.primitive_registry import primitive_registry  # type: ignore[import]
     from grafix.core.effect_registry import effect_registry  # type: ignore[import]
-    from grafix.core.preset_registry import preset_func_registry, preset_registry  # type: ignore[import]
+    from grafix.core.preset_registry import preset_registry  # type: ignore[import]
     from grafix.core.runtime_config import runtime_config  # type: ignore[import]
 
     roots = tuple(Path(root).expanduser().resolve(strict=False) for root in source_roots)
@@ -887,12 +885,15 @@ def generate_stubs_str(
         for d in cfg.preset_module_dirs
         if Path(d).resolve(strict=False).is_dir()
     )
+    preset_entries = tuple(
+        (op.removeprefix("preset."), spec.func)
+        for op, spec in preset_registry.items()
+    )
     preset_names = sorted(
         name
-        for name, fn in preset_func_registry.items()
+        for name, fn in preset_entries
         if _is_valid_identifier(name)
         and not name.startswith("_")
-        and f"preset.{name}" in preset_registry
         and (
             (
                 any(
