@@ -143,30 +143,33 @@ def torus(
     major_r32 = np.float32(major_r)
     minor_r32 = np.float32(minor_r)
 
+    # 出力順を従来どおり「子午線群、緯線群」とし、最終配列へ直接書き込む。
+    # stack/concatenate を重ねないことで、major_n * minor_n に比例する一時配列を減らす。
+    coords = np.empty((output_vertices, 3), dtype=np.float32)
+
     # --- 子午線（major 角ごとに 1 本）---
+    meridian_len = minor_n + 1
+    meridian_vertices = major_n * meridian_len
+    coords_m = coords[:meridian_vertices].reshape(major_n, meridian_len, 3)
+
     r_phi = major_r32 + minor_r32 * cos_phi  # (minor_n,)
-    x_m = r_phi[None, :] * cos_theta[:, None]  # (major_n, minor_n)
-    y_m = r_phi[None, :] * sin_theta[:, None]
+    coords_m[:, :-1, 0] = r_phi[None, :] * cos_theta[:, None]
+    coords_m[:, :-1, 1] = r_phi[None, :] * sin_theta[:, None]
     z_phi = minor_r32 * sin_phi
-    z_m = np.broadcast_to(z_phi, x_m.shape)
-    coords_m = np.stack([x_m, y_m, z_m], axis=2)
-    coords_m = np.concatenate([coords_m, coords_m[:, :1, :]], axis=1)
-    coords_m = coords_m.reshape(-1, 3)
+    coords_m[:, :-1, 2] = z_phi[None, :]
+    coords_m[:, -1, :] = coords_m[:, 0, :]
 
     # --- 緯線（minor 角ごとに 1 本）---
-    r_ring = major_r32 + minor_r32 * cos_phi  # (minor_n,)
-    x_p = r_ring[:, None] * cos_theta[None, :]  # (minor_n, major_n)
-    y_p = r_ring[:, None] * sin_theta[None, :]
-    z_p = (minor_r32 * sin_phi)[:, None]
-    z_p = np.broadcast_to(z_p, x_p.shape)
-    coords_p = np.stack([x_p, y_p, z_p], axis=2)
-    coords_p = np.concatenate([coords_p, coords_p[:, :1, :]], axis=1)
-    coords_p = coords_p.reshape(-1, 3)
-
-    coords = np.concatenate([coords_m, coords_p], axis=0).astype(np.float32, copy=False)
-
-    meridian_len = minor_n + 1
     parallel_len = major_n + 1
+    coords_p = coords[meridian_vertices:].reshape(minor_n, parallel_len, 3)
+
+    r_ring = major_r32 + minor_r32 * cos_phi  # (minor_n,)
+    coords_p[:, :-1, 0] = r_ring[:, None] * cos_theta[None, :]
+    coords_p[:, :-1, 1] = r_ring[:, None] * sin_theta[None, :]
+    z_p = (minor_r32 * sin_phi)[:, None]
+    coords_p[:, :-1, 2] = z_p
+    coords_p[:, -1, :] = coords_p[:, 0, :]
+
     polyline_count = major_n + minor_n
     offsets = np.empty((polyline_count + 1,), dtype=np.int32)
     offsets[0] = 0

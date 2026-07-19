@@ -99,7 +99,8 @@ def bold(
     if n_vertices <= 0 or n_lines <= 0:
         return coords, offsets
 
-    # out_coords64 を経て float32 へ変換するため、float64 作業配列も budget に含める。
+    # 従来の float64 作業配列を含む budget 判定境界を
+    # 高速 path でも維持する。
     ensure_geometry_output(
         "bold",
         vertices=n_vertices * copies,
@@ -113,23 +114,88 @@ def bold(
     offsets_xy[1:] = _sample_offsets_xy(rng=rng, n=copies - 1, radius=r)
 
     base_coords64 = coords.astype(np.float64, copy=False)
-    out_coords64 = np.empty((n_vertices * copies, 3), dtype=np.float64)
-    for k in range(copies):
-        s = k * n_vertices
-        e = s + n_vertices
-        out_coords64[s:e] = base_coords64
-        out_coords64[s:e, 0] += offsets_xy[k, 0]
-        out_coords64[s:e, 1] += offsets_xy[k, 1]
+    standard_packed_input = (
+        copies >= 3
+        and type(coords) is np.ndarray
+        and type(offsets) is np.ndarray
+        and coords.dtype == np.float32
+        and offsets.dtype == np.int32
+        and coords.ndim == 2
+        and coords.shape[1] == 3
+        and offsets.ndim == 1
+    )
+    # 7 copies 以下は小配列で従来 loop の方が速いため、そのまま使う。
+    direct_pack_candidate = copies >= 8 and standard_packed_input
+    default_errstate = direct_pack_candidate and np.geterr() == {
+        "divide": "warn",
+        "over": "warn",
+        "under": "ignore",
+        "invalid": "warn",
+    }
+    if default_errstate:
+        # C-order の全要素 reduction は、bool/abs の全長 temporary より速い。
+        # signaling NaN 等の警告はこの判定では出さず、
+        # 従来 branch 側だけで出す。
+        with np.errstate(all="ignore"):
+            coord_min = float(np.min(base_coords64))
+            coord_max = float(np.max(base_coords64))
+        finite_input = math.isfinite(coord_min) and math.isfinite(coord_max)
+        max_abs_coord = max(abs(coord_min), abs(coord_max))
+    else:
+        finite_input = False
+        max_abs_coord = float("inf")
+    direct_pack = finite_input and r <= float(np.finfo(np.float32).max) - max_abs_coord
+
+    if direct_pack:
+        # 入力は float64 へ拡張してから加算し、ufunc の float64 loop から
+        # float32 の出力へ cast する。従来の「float64 加算後 float32 化」と
+        # 同じ丸めを保ちつつ、copies 倍の float64 作業配列を確保しない。
+        coords_out = np.empty((n_vertices * copies, 3), dtype=np.float32)
+        out_coords_view = coords_out.reshape(copies, n_vertices, 3)
+        out_coords_view[...] = base_coords64
+        np.add(
+            out_coords_view[:, :, 0],
+            offsets_xy[:, None, 0],
+            out=out_coords_view[:, :, 0],
+            casting="unsafe",
+        )
+        np.add(
+            out_coords_view[:, :, 1],
+            offsets_xy[:, None, 1],
+            out=out_coords_view[:, :, 1],
+            casting="unsafe",
+        )
+    else:
+        # 非有限値、通常外 dtype/shape、ndarray subclass、変更された
+        # NumPy errstate は警告・例外回数まで従来どおりにする。
+        out_coords64 = np.empty((n_vertices * copies, 3), dtype=np.float64)
+        for k in range(copies):
+            s = k * n_vertices
+            e = s + n_vertices
+            out_coords64[s:e] = base_coords64
+            out_coords64[s:e, 0] += offsets_xy[k, 0]
+            out_coords64[s:e, 1] += offsets_xy[k, 1]
+        coords_out = out_coords64.astype(np.float32, copy=False)
 
     tail = offsets[1:].astype(np.int64, copy=False)
     out_offsets = np.empty((n_lines * copies + 1,), dtype=np.int32)
     out_offsets[0] = 0
-    for k in range(copies):
-        start = 1 + k * n_lines
-        end = start + n_lines
-        out_offsets[start:end] = (tail + k * n_vertices).astype(np.int32, copy=False)
+    if standard_packed_input:
+        shifts = np.arange(copies, dtype=np.int64) * n_vertices
+        np.add(
+            tail[None, :],
+            shifts[:, None],
+            out=out_offsets[1:].reshape(copies, n_lines),
+            casting="unsafe",
+        )
+    else:
+        for k in range(copies):
+            start = 1 + k * n_lines
+            end = start + n_lines
+            out_offsets[start:end] = (tail + k * n_vertices).astype(
+                np.int32, copy=False
+            )
 
-    coords_out = out_coords64.astype(np.float32, copy=False)
     return coords_out, out_offsets
 
 

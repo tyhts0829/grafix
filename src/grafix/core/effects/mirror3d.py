@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from functools import lru_cache
 
 import numpy as np
 
@@ -13,6 +14,8 @@ from .util import empty_geom
 
 EPS = 1e-6
 INCLUDE_BOUNDARY = True
+_PACKED_POLYHEDRAL_MIN_SOURCE_LINES = 32
+_PACKED_DEDUP_MIN_LINES = 64
 
 mirror3d_meta = {
     "mode": ParamMeta(
@@ -24,11 +27,14 @@ mirror3d_meta = {
         kind="int",
         ui_min=1,
         ui_max=64,
-        description="放射対称で回転軸まわりを等分する数。",
+        description=(
+            "回転軸まわりの等分数。180 / n_azimuth 度のくさびを回転・反射し、"
+            "通常は最大 2 × n_azimuth 個、赤道面反射時は最大 4 × n_azimuth 個へ複製する。"
+        ),
     ),
     "center": ParamMeta(
         kind="vec3",
-        ui_min=0.0,
+        ui_min=-300.0,
         ui_max=300.0,
         description="三次元の回転および反射に使用する中心点。",
     ),
@@ -42,7 +48,7 @@ mirror3d_meta = {
         kind="float",
         ui_min=-180.0,
         ui_max=180.0,
-        description="放射対称の複製元となるくさびの開始角。",
+        description="放射対称の複製元となるくさびの開始角を度単位で指定する。",
     ),
     "mirror_equator": ParamMeta(
         kind="bool",
@@ -289,11 +295,19 @@ def _mirror3d_polyhedral(
             if p.shape[0] >= 1:
                 src_lines.append(p.astype(np.float32, copy=False))
 
-    out_lines: list[np.ndarray] = []
-    for p in src_lines:
-        p_local = p - center
-        for M in mats:
-            out_lines.append((p_local @ M.T + center).astype(np.float32, copy=False))
+    out_lines = _packed_polyhedral_transforms(
+        src_lines,
+        mats=mats,
+        center=center,
+    )
+    if out_lines is None:
+        out_lines = []
+        for p in src_lines:
+            p_local = p - center
+            for M in mats:
+                out_lines.append(
+                    (p_local @ M.T + center).astype(np.float32, copy=False)
+                )
 
     if use_reflection and out_lines:
         # 代表反射: y=cy（ローカルでは y=0）
@@ -307,7 +321,52 @@ def _mirror3d_polyhedral(
     return out_lines
 
 
-def _polyhedral_rotation_mats(group: str) -> list[np.ndarray]:
+def _packed_polyhedral_transforms(
+    src_lines: list[np.ndarray],
+    *,
+    mats: tuple[np.ndarray, ...],
+    center: np.ndarray,
+) -> list[np.ndarray] | None:
+    """uniform な多数 line を source-major 順のまま一括変換する。"""
+    if len(src_lines) < _PACKED_POLYHEDRAL_MIN_SOURCE_LINES or not mats:
+        return None
+
+    shape = src_lines[0].shape
+    if (
+        len(shape) != 2
+        or shape[0] == 0
+        or shape[1] != 3
+        or any(
+            line.shape != shape
+            or line.dtype != np.float32
+            or not line.flags.c_contiguous
+            for line in src_lines
+        )
+    ):
+        return None
+
+    stacked_sources = np.stack(src_lines, axis=0)
+    if not bool(np.all(np.isfinite(stacked_sources))):
+        return None
+
+    stacked_mats_t = np.stack([matrix.T for matrix in mats], axis=0)
+    transformed = (
+        np.matmul(
+            (stacked_sources - center)[:, None, :, :],
+            stacked_mats_t[None, :, :, :],
+        )
+        + center
+    )
+    packed = transformed.reshape(
+        len(src_lines) * len(mats),
+        shape[0],
+        shape[1],
+    )
+    return [packed[index] for index in range(packed.shape[0])]
+
+
+@lru_cache(maxsize=3)
+def _polyhedral_rotation_mats(group: str) -> tuple[np.ndarray, ...]:
     def rotM(axis3: np.ndarray, ang: float) -> np.ndarray:
         a = _unit(axis3)
         c = float(np.cos(ang))
@@ -423,7 +482,10 @@ def _polyhedral_rotation_mats(group: str) -> list[np.ndarray]:
     for M in mats:
         key = tuple(np.rint(M.flatten() * inv).astype(np.int64).tolist())
         uniq[key] = M.astype(np.float32, copy=False)
-    return list(uniq.values())
+    result = tuple(uniq.values())
+    for M in result:
+        M.setflags(write=False)
+    return result
 
 
 def _show_planes_azimuth(
@@ -654,18 +716,59 @@ def _clip_polyhedron_octant(
 
 
 def _dedup_lines(lines: Iterable[np.ndarray]) -> list[np.ndarray]:
-    seen: set[tuple[int, ...]] = set()
+    if isinstance(lines, list):
+        packed = _dedup_uniform_finite_lines(lines)
+        if packed is not None:
+            return packed
+
+    seen: set[tuple[int, bytes]] = set()
     out: list[np.ndarray] = []
     inv = 1.0 / EPS if EPS > 0 else 1e6
     for ln in lines:
         if ln.shape[0] == 0:
             continue
         q = np.rint(ln.astype(np.float32, copy=False) * inv).astype(np.int64)
-        key = (int(q.shape[0]),) + tuple(q.flatten().tolist())
+        key = (int(q.shape[0]), q.tobytes())
         if key in seen:
             continue
         seen.add(key)
         out.append(ln.astype(np.float32, copy=False))
+    return out
+
+
+def _dedup_uniform_finite_lines(lines: list[np.ndarray]) -> list[np.ndarray] | None:
+    """uniform な多数 line を一括量子化し、元順の first line を残す。"""
+    if len(lines) < _PACKED_DEDUP_MIN_LINES:
+        return None
+
+    shape = lines[0].shape
+    if (
+        len(shape) != 2
+        or shape[0] == 0
+        or shape[1] != 3
+        or any(
+            line.shape != shape
+            or line.dtype != np.float32
+            or not line.flags.c_contiguous
+            for line in lines
+        )
+    ):
+        return None
+
+    stacked = np.stack(lines, axis=0)
+    if not bool(np.all(np.isfinite(stacked))):
+        return None
+
+    inv = 1.0 / EPS if EPS > 0 else 1e6
+    quantized = np.rint(stacked * inv).astype(np.int64)
+    seen: set[tuple[int, bytes]] = set()
+    out: list[np.ndarray] = []
+    for index, line in enumerate(lines):
+        key = (int(shape[0]), quantized[index].tobytes())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
     return out
 
 

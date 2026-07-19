@@ -56,6 +56,14 @@ def primitive(
         ``"content"`` は同一入力の結果を再利用する既定契約。operation はpureかつ
         deterministicにし、乱数は明示 ``seed`` 引数から生成する。時刻・global stateへ
         依存するoperationだけ ``"none"`` を指定してCPU/GPU cacheを迂回する。
+    meta : Mapping[str, ParamMeta | Mapping[str, object]] or None, optional
+        キーワード引数名から Parameter GUI 用 metadata への対応。組み込み primitive
+        では必須、ユーザー定義 primitive では任意。ユーザー定義時は各 metadata の
+        ``description`` も任意だが、GUI Help と生成 stub のため記述を推奨する。
+        None の場合、引数を Parameter GUI に表示しない。
+    ui_visible : Mapping[str, UiVisiblePred] or None, optional
+        引数名から、現在の引数値を受け取って表示可否を返す述語への対応。
+        Parameter GUI の表示だけを制御し、非表示になった引数の値は変更しない。
 
     Examples
     --------

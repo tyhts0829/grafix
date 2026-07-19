@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 
@@ -21,13 +21,23 @@ from grafix.core.realized_geometry import GeomTuple, empty_geom_tuple
 DEFAULT_FONT = "NotoSansJP-Regular.ttf"
 
 logger = logging.getLogger(__name__)
+_UNSET = object()
 
 
 class _LRU:
     """単純な上限付き LRU キャッシュ（キー: str）。"""
 
-    def __init__(self, maxsize: int = 4096) -> None:
+    def __init__(
+        self,
+        maxsize: int = 4096,
+        *,
+        maxbytes: int | None = None,
+        size_of: Callable[[Any], int] | None = None,
+    ) -> None:
         self.maxsize = int(maxsize)
+        self.maxbytes = None if maxbytes is None else int(maxbytes)
+        self._size_of = size_of
+        self._byte_size = 0
         self._od: "OrderedDict[str, Any]" = OrderedDict()
 
     def get(self, key: str) -> Any | None:
@@ -37,10 +47,37 @@ class _LRU:
         return value
 
     def set(self, key: str, value: Any) -> None:
+        previous = self._od.pop(key, _UNSET)
+        if previous is not _UNSET:
+            self._byte_size -= self._value_size(previous)
         self._od[key] = value
+        self._byte_size += self._value_size(value)
         self._od.move_to_end(key)
-        if len(self._od) > self.maxsize:
-            self._od.popitem(last=False)
+        while len(self._od) > self.maxsize or (
+            self.maxbytes is not None and self._byte_size > self.maxbytes
+        ):
+            _old_key, old_value = self._od.popitem(last=False)
+            self._byte_size -= self._value_size(old_value)
+
+    def __len__(self) -> int:
+        return len(self._od)
+
+    @property
+    def byte_size(self) -> int:
+        return self._byte_size
+
+    def clear(self) -> None:
+        self._od.clear()
+        self._byte_size = 0
+
+    def _value_size(self, value: Any) -> int:
+        if self._size_of is None:
+            return 0
+        return int(self._size_of(value))
+
+
+def _glyph_polyline_bytes(value: Any) -> int:
+    return sum(int(polyline.nbytes) for polyline in value)
 
 
 class TextRenderer:
@@ -49,6 +86,11 @@ class TextRenderer:
     _instance: "TextRenderer | None" = None
     _fonts: dict[str, Any] = {}
     _glyph_cache = _LRU(maxsize=4096)
+    _glyph_polyline_cache = _LRU(
+        maxsize=256,
+        maxbytes=32 * 1024 * 1024,
+        size_of=_glyph_polyline_bytes,
+    )
 
     def __new__(cls) -> "TextRenderer":
         if cls._instance is None:
@@ -64,7 +106,7 @@ class TextRenderer:
         if idx < 0:
             idx = 0
 
-        resolved = path.resolve()
+        resolved = path
         cache_key = f"{resolved}|{idx}"
         cached = cls._fonts.get(cache_key)
         if cached is not None:
@@ -85,6 +127,8 @@ class TextRenderer:
         font_path: Path,
         font_index: int,
         flat_seg_len_units: float,
+        tt_font: Any | None = None,
+        cmap: Any = _UNSET,
     ) -> tuple:
         """平坦化済みのグリフコマンド（`RecordingPen.value` 互換タプル）を返す。"""
         from fontPens.flattenPen import FlattenPen  # type: ignore[import-untyped]
@@ -93,7 +137,7 @@ class TextRenderer:
             RecordingPen,
         )
 
-        resolved = font_path.resolve()
+        resolved = font_path
         key = (
             f"{resolved}|{int(font_index)}|{char}|{round(float(flat_seg_len_units), 6)}"
         )
@@ -101,13 +145,15 @@ class TextRenderer:
         if cached is not None:
             return cached
 
-        tt_font = cls.get_font(resolved, int(font_index))
-        cmap = tt_font.getBestCmap()
-        if cmap is None:
+        font_obj = (
+            cls.get_font(resolved, int(font_index)) if tt_font is None else tt_font
+        )
+        cmap_obj = font_obj.getBestCmap() if cmap is _UNSET else cmap
+        if cmap_obj is None:
             cls._glyph_cache.set(key, tuple())
             return tuple()
 
-        glyph_name = cmap.get(ord(char))
+        glyph_name = cmap_obj.get(ord(char))
         if glyph_name is None:
             if char.isascii() and char.isprintable():
                 glyph_name = char
@@ -121,7 +167,7 @@ class TextRenderer:
                 cls._glyph_cache.set(key, tuple())
                 return tuple()
 
-        glyph_set = tt_font.getGlyphSet()
+        glyph_set = font_obj.getGlyphSet()
         glyph = glyph_set.get(glyph_name)
         if glyph is None:
             logger.warning(
@@ -153,6 +199,47 @@ class TextRenderer:
         result = tuple(flat.value)
         cls._glyph_cache.set(key, result)
         return result
+
+    @classmethod
+    def get_glyph_polylines(
+        cls,
+        *,
+        char: str,
+        font_path: Path,
+        font_index: int,
+        flat_seg_len_units: float,
+        tt_font: Any,
+        cmap: Any,
+    ) -> tuple[np.ndarray, ...]:
+        """配置前のグリフ輪郭をfont unit座標のまま返す。"""
+
+        resolved = font_path
+        key = (
+            f"{resolved}|{int(font_index)}|{char}|"
+            f"{round(float(flat_seg_len_units), 6)}"
+        )
+        cached = cls._glyph_polyline_cache.get(key)
+        if cached is not None:
+            return cached
+
+        commands = cls.get_glyph_commands(
+            char=char,
+            font_path=resolved,
+            font_index=int(font_index),
+            flat_seg_len_units=float(flat_seg_len_units),
+            tt_font=tt_font,
+            cmap=cmap,
+        )
+        polylines = _glyph_commands_to_polylines_font_units(commands)
+        cls._glyph_polyline_cache.set(key, polylines)
+        return polylines
+
+    @classmethod
+    def clear_glyph_caches(cls) -> None:
+        """font outline由来の二つのbounded cacheを同時に空にする。"""
+
+        cls._glyph_cache.clear()
+        cls._glyph_polyline_cache.clear()
 
 
 TEXT_RENDERER = TextRenderer()
@@ -187,6 +274,53 @@ def _get_char_advance_em(char: str, tt_font: Any) -> float:
         return space_advance
 
 
+class _CallLocalFontMetrics:
+    """1回のtext生成内でfont metric参照を文字単位に再利用する。"""
+
+    def __init__(self, tt_font: Any) -> None:
+        self._tt_font = tt_font
+        self._space_advance: float | None = None
+        self._cmap: Any = _UNSET
+        self._advances: dict[str, float] = {}
+
+    def space_advance_em(self) -> float:
+        cached = self._space_advance
+        if cached is None:
+            cached = _get_space_advance_em(self._tt_font)
+            self._space_advance = cached
+        return cached
+
+    def cmap(self) -> Any:
+        if self._cmap is _UNSET:
+            self._cmap = self._tt_font.getBestCmap()
+        return self._cmap
+
+    def char_advance_em(self, char: str) -> float:
+        cached = self._advances.get(char)
+        if cached is not None:
+            return cached
+
+        space_advance = self.space_advance_em()
+        if char == " ":
+            advance = space_advance
+        else:
+            cmap = self.cmap()
+            glyph_name = None if cmap is None else cmap.get(ord(char))
+            if glyph_name is None:
+                advance = space_advance
+            else:
+                try:
+                    advance_width = self._tt_font["hmtx"].metrics[glyph_name][0]
+                    advance = float(advance_width) / float(
+                        self._tt_font["head"].unitsPerEm
+                    )
+                except Exception:
+                    advance = space_advance
+
+        self._advances[char] = advance
+        return advance
+
+
 def _get_font_ascent_em(tt_font: Any, *, units_per_em: float) -> float:
     """フォントの ascent を em 比で返す。
 
@@ -214,7 +348,7 @@ def _wrap_line_by_width_em(
     line_str: str,
     *,
     max_width_em: float,
-    tt_font: Any,
+    char_advance_em: Callable[[str], float],
     letter_spacing_em: float,
 ) -> list[str]:
     """1 行分の文字列を指定幅（em）で折り返して返す。
@@ -239,7 +373,7 @@ def _wrap_line_by_width_em(
 
     while i < n:
         ch = line_str[i]
-        adv = _get_char_advance_em(ch, tt_font)
+        adv = char_advance_em(ch)
         inc = adv + (s_em if segment_len > 0 else 0.0)
 
         if segment_len > 0 and (segment_width_em + inc) > float(max_width_em):
@@ -272,18 +406,10 @@ def _wrap_line_by_width_em(
     return out
 
 
-def _glyph_commands_to_polylines_em(
+def _glyph_commands_to_polylines_font_units(
     glyph_commands: Iterable,
-    *,
-    units_per_em: float,
-    x_em: float,
-    y_em: float,
-) -> list[np.ndarray]:
-    """RecordingPen.value から「1em=1」の座標系でポリライン列へ変換して返す。"""
-    scale = 1.0 / float(units_per_em)
-    x_offset = float(x_em) * float(units_per_em)
-    y_offset = float(y_em) * float(units_per_em)
-
+) -> tuple[np.ndarray, ...]:
+    """RecordingPen.valueから配置前のfont unit輪郭を生成する。"""
     polylines: list[np.ndarray] = []
     current: list[list[float]] = []
 
@@ -300,12 +426,8 @@ def _glyph_commands_to_polylines_em(
         arr2 = np.asarray(current, dtype=np.float32)
         # フォント座標（Y+上）を描画座標（Y+下）へ反転
         arr2[:, 1] *= -1.0
-        arr2[:, 0] = (arr2[:, 0] + np.float32(x_offset)) * np.float32(scale)
-        arr2[:, 1] = (arr2[:, 1] + np.float32(y_offset)) * np.float32(scale)
-
-        arr3 = np.zeros((arr2.shape[0], 3), dtype=np.float32)
-        arr3[:, :2] = arr2
-        polylines.append(arr3)
+        arr2.setflags(write=False)
+        polylines.append(arr2)
         current = []
 
     for cmd_type, cmd_values in glyph_commands:
@@ -323,29 +445,70 @@ def _glyph_commands_to_polylines_em(
             continue
 
     flush(close=False)
-    return polylines
+    return tuple(polylines)
 
 
-def _polylines_to_realized(
-    polylines: list[np.ndarray],
+def _pack_text_geometry(
+    placements: list[tuple[tuple[np.ndarray, ...], float, float]],
+    extra_polylines: list[np.ndarray],
     *,
+    units_per_em: float,
     center: tuple[float, float, float],
     scale: float,
 ) -> GeomTuple:
-    """ポリライン列を (coords, offsets) へ変換して返す。"""
-    filtered = [
-        p.astype(np.float32, copy=False) for p in polylines if int(p.shape[0]) >= 2
-    ]
-    if not filtered:
+    """配置指定から最終packed geometryへ直接書き込む。"""
+
+    line_count = 0
+    vertex_count = 0
+    for polylines, _x_em, _y_em in placements:
+        for polyline in polylines:
+            length = int(polyline.shape[0])
+            if length >= 2:
+                line_count += 1
+                vertex_count += length
+    for polyline in extra_polylines:
+        length = int(polyline.shape[0])
+        if length >= 2:
+            line_count += 1
+            vertex_count += length
+
+    if line_count == 0:
         return empty_geom_tuple()
 
-    coords = np.concatenate(filtered, axis=0).astype(np.float32, copy=False)
+    coords = np.empty((vertex_count, 3), dtype=np.float32)
+    offsets = np.empty((line_count + 1,), dtype=np.int32)
+    offsets[0] = 0
 
-    offsets = np.zeros(len(filtered) + 1, dtype=np.int32)
-    acc = 0
-    for i, line in enumerate(filtered):
-        acc += int(line.shape[0])
-        offsets[i + 1] = acc
+    cursor = 0
+    line_index = 0
+    if placements:
+        unit_scale = np.float32(1.0 / float(units_per_em))
+        upm = float(units_per_em)
+        for polylines, x_em, y_em in placements:
+            x_offset = np.float32(float(x_em) * upm)
+            y_offset = np.float32(float(y_em) * upm)
+            for polyline in polylines:
+                length = int(polyline.shape[0])
+                if length < 2:
+                    continue
+                end = cursor + length
+                target = coords[cursor:end]
+                target[:, 0] = (polyline[:, 0] + x_offset) * unit_scale
+                target[:, 1] = (polyline[:, 1] + y_offset) * unit_scale
+                target[:, 2] = 0.0
+                cursor = end
+                line_index += 1
+                offsets[line_index] = cursor
+
+    for polyline in extra_polylines:
+        length = int(polyline.shape[0])
+        if length < 2:
+            continue
+        end = cursor + length
+        coords[cursor:end] = polyline
+        cursor = end
+        line_index += 1
+        offsets[line_index] = cursor
 
     try:
         cx, cy, cz = center
@@ -520,6 +683,7 @@ def text(
     font_path = resolve_font_path(font)
     tt_font = TEXT_RENDERER.get_font(font_path, fi)
     units_per_em = float(tt_font["head"].unitsPerEm)  # type: ignore[index]
+    metrics = _CallLocalFontMetrics(tt_font)
     q = float(quality)
     if q < 0.0:
         q = 0.0
@@ -545,19 +709,20 @@ def text(
                 _wrap_line_by_width_em(
                     line_str,
                     max_width_em=bw_em,
-                    tt_font=tt_font,
+                    char_advance_em=metrics.char_advance_em,
                     letter_spacing_em=float(letter_spacing_em),
                 )
             )
         lines = wrapped
 
-    polylines: list[np.ndarray] = []
+    placements: list[tuple[tuple[np.ndarray, ...], float, float]] = []
+    glyphs_by_char: dict[str, tuple[np.ndarray, ...]] = {}
 
     y_em = _get_font_ascent_em(tt_font, units_per_em=units_per_em)
     for li, line_str in enumerate(lines):
         width_em = 0.0
         for ch in line_str:
-            width_em += _get_char_advance_em(ch, tt_font) + float(letter_spacing_em)
+            width_em += metrics.char_advance_em(ch) + float(letter_spacing_em)
         if line_str:
             width_em -= float(letter_spacing_em)
 
@@ -571,26 +736,25 @@ def text(
         cur_x_em = x_em
         for ch in line_str:
             if ch != " ":
-                cmds = TEXT_RENDERER.get_glyph_commands(
-                    char=ch,
-                    font_path=font_path,
-                    font_index=fi,
-                    flat_seg_len_units=seg_len_units,
-                )
-                if cmds:
-                    polylines.extend(
-                        _glyph_commands_to_polylines_em(
-                            cmds,
-                            units_per_em=units_per_em,
-                            x_em=cur_x_em,
-                            y_em=y_em,
-                        )
+                glyph_polylines = glyphs_by_char.get(ch)
+                if glyph_polylines is None:
+                    glyph_polylines = TEXT_RENDERER.get_glyph_polylines(
+                        char=ch,
+                        font_path=font_path,
+                        font_index=fi,
+                        flat_seg_len_units=seg_len_units,
+                        tt_font=tt_font,
+                        cmap=metrics.cmap(),
                     )
-            cur_x_em += _get_char_advance_em(ch, tt_font) + float(letter_spacing_em)
+                    glyphs_by_char[ch] = glyph_polylines
+                if glyph_polylines:
+                    placements.append((glyph_polylines, cur_x_em, y_em))
+            cur_x_em += metrics.char_advance_em(ch) + float(letter_spacing_em)
 
         if li < len(lines) - 1:
             y_em += float(line_height)
 
+    extra_polylines: list[np.ndarray] = []
     if use_bb and bool(show_bounding_box) and bw > 0.0 and bh > 0.0 and s_abs > 0.0:
         bw_em = bw / s_abs
         bh_em = bh / s_abs
@@ -608,7 +772,7 @@ def text(
         y0 = 0.0
         y1 = bh_em
         z0 = 0.0
-        polylines.extend(
+        extra_polylines.extend(
             [
                 np.asarray([[x0, y0, z0], [x1, y0, z0]], dtype=np.float32),
                 np.asarray([[x1, y0, z0], [x1, y1, z0]], dtype=np.float32),
@@ -617,4 +781,10 @@ def text(
             ]
         )
 
-    return _polylines_to_realized(polylines, center=center, scale=scale)
+    return _pack_text_geometry(
+        placements,
+        extra_polylines,
+        units_per_em=units_per_em,
+        center=center,
+        scale=scale,
+    )

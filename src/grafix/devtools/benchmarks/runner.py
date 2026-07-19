@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -55,6 +56,10 @@ _PARAMETER_HOTPATH_SOURCE_FILE = Path(__file__).with_name(
 _PERF_HOTPATH_SOURCE_FILE = Path(__file__).with_name(
     "perf_hotpath_benchmark.py"
 )
+_PRIMITIVE_SOURCE_FILE = Path(__file__).with_name("primitive_benchmark.py")
+_REMAINING_EFFECT_SOURCE_FILE = Path(__file__).with_name(
+    "remaining_effect_benchmark.py"
+)
 _HEAVY_EFFECT_FINAL_CHECKSUMS = {
     "growth": "88db2188d515eb8320998e5613ca66f5ce773842ae0318ba834ff3c1f2d7db35",
     "metaball": "1df0d8425ddd1f520de5a984eba822ee063fb080a4ae04f7b95a9317610177fd",
@@ -85,13 +90,28 @@ class CaseDefinition:
     tags: tuple[str, ...]
     selectable_suites: tuple[str, ...]
     setup: Callable[[dict[str, Any], int], object]
-    workload: Callable[[object], "_CaseOutput"]
+    workload: Callable[[object], object]
+    postprocess: Callable[[object, object], "_CaseOutput"] | None = None
+    measurement_context: (
+        Callable[[object], AbstractContextManager[object]] | None
+    ) = None
     support_source_files: tuple[Path, ...] = ()
     support_implementations: tuple[Callable[..., object], ...] = ()
     checksum_policy: str = "exact"
     self_sampling: bool = False
 
     def spec(self, *, seed: int) -> CaseSpec:
+        implementations: tuple[Callable[..., object], ...] = (
+            self.setup,
+            self.workload,
+            *((self.postprocess,) if self.postprocess is not None else ()),
+            *(
+                (self.measurement_context,)
+                if self.measurement_context is not None
+                else ()
+            ),
+            *self.support_implementations,
+        )
         return make_case_spec(
             case_id=self.case_id,
             version=self.version,
@@ -101,11 +121,7 @@ class CaseDefinition:
             fixture=self.fixture,
             parameters=self.parameters,
             seed=seed,
-            implementation=(
-                self.setup,
-                self.workload,
-                *self.support_implementations,
-            ),
+            implementation=implementations,
             support_source_files=self.support_source_files,
             tags=self.tags,
             checksum_policy=self.checksum_policy,
@@ -160,6 +176,8 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
         ),
         *_effect_definitions(),
         *_target_effect_speedup_definitions(),
+        *_remaining_effect_definitions(),
+        *_primitive_definitions(),
         *_scaled_definitions(
             prefix="runtime.provenance",
             label="stable parameter provenance",
@@ -997,8 +1015,14 @@ def _measure_in_process(
     target_ns: int,
     disable_gc: bool,
 ) -> CaseResult:
+    context: AbstractContextManager[object] | None = None
+    context_entered = False
     try:
         state = definition.setup(dict(definition.parameters), int(seed))
+        if definition.measurement_context is not None:
+            context = definition.measurement_context(state)
+            context.__enter__()
+            context_entered = True
         setup_rss = _peak_rss_bytes()
         if definition.self_sampling:
             iterations = 1
@@ -1019,6 +1043,7 @@ def _measure_in_process(
         measured_outputs: list[_CaseOutput] = []
         semantic_checksum: tuple[str, str] | None = None
         output: _CaseOutput | None = None
+        raw_output: object | None = None
         was_gc_enabled = gc.isenabled()
         if disable_gc and was_gc_enabled:
             gc.disable()
@@ -1026,14 +1051,20 @@ def _measure_in_process(
             for _ in range(samples):
                 started = time.perf_counter_ns()
                 for _iteration in range(iterations):
-                    output = definition.workload(state)
+                    raw_output = definition.workload(state)
                 raw_samples.append(
                     Sample(
                         elapsed_ns=time.perf_counter_ns() - started,
                         iterations=iterations,
                     )
                 )
-                assert output is not None
+                if raw_output is None:
+                    raise RuntimeError("benchmark workload returned no output")
+                output = _postprocess_case_output(
+                    definition,
+                    state=state,
+                    raw_output=raw_output,
+                )
                 measured_outputs.append(
                     _CaseOutput(
                         value=None,
@@ -1113,6 +1144,9 @@ def _measure_in_process(
             status="error",
             error=f"{type(exc).__name__}: {exc}",
         )
+    finally:
+        if context is not None and context_entered:
+            context.__exit__(None, None, None)
 
 
 def _aggregate_measured_outputs(
@@ -1184,8 +1218,26 @@ def _aggregate_measured_outputs(
     )
 
 
+def _postprocess_case_output(
+    definition: CaseDefinition,
+    *,
+    state: object,
+    raw_output: object,
+) -> _CaseOutput:
+    """timed workload の raw output を計測区間外で semantic output にする。"""
+
+    output = (
+        definition.postprocess(state, raw_output)
+        if definition.postprocess is not None
+        else raw_output
+    )
+    if not isinstance(output, _CaseOutput):
+        raise TypeError("benchmark workload must produce _CaseOutput")
+    return output
+
+
 def _calibrate(
-    workload: Callable[[object], _CaseOutput],
+    workload: Callable[[object], object],
     state: object,
     *,
     target_ns: int,
@@ -1269,7 +1321,11 @@ def _definition(
     tags: tuple[str, ...],
     selectable_suites: tuple[str, ...],
     setup: Callable[[dict[str, Any], int], object],
-    workload: Callable[[object], _CaseOutput],
+    workload: Callable[[object], object],
+    postprocess: Callable[[object, object], _CaseOutput] | None = None,
+    measurement_context: (
+        Callable[[object], AbstractContextManager[object]] | None
+    ) = None,
     support_source_files: tuple[Path, ...] = (),
     support_implementations: tuple[Callable[..., object], ...] = (),
     self_sampling: bool = False,
@@ -1286,6 +1342,8 @@ def _definition(
         selectable_suites=selectable_suites,
         setup=setup,
         workload=workload,
+        postprocess=postprocess,
+        measurement_context=measurement_context,
         support_source_files=support_source_files,
         support_implementations=support_implementations,
         checksum_policy="exact",
@@ -1835,6 +1893,67 @@ def _target_effect_speedup_definitions() -> list[CaseDefinition]:
     ]
 
 
+def _primitive_definitions() -> list[CaseDefinition]:
+    """全組み込み primitive の direct raw actual-work case を返す。"""
+
+    from grafix.devtools.benchmarks.primitive_benchmark import (
+        primitive_benchmark_cases,
+        run_raw_primitive,
+        setup_primitive_benchmark,
+    )
+
+    return [
+        _definition(
+            case.case_id,
+            case.label,
+            category="primitive",
+            suite="primitives",
+            fixture=case.fixture,
+            parameters=case.parameters(),
+            tags=case.tags,
+            selectable_suites=case.selectable_suites,
+            setup=setup_primitive_benchmark,
+            workload=run_raw_primitive,
+            postprocess=_postprocess_primitive,
+            support_source_files=(_PRIMITIVE_SOURCE_FILE,),
+        )
+        for case in primitive_benchmark_cases()
+    ]
+
+
+def _remaining_effect_definitions() -> list[CaseDefinition]:
+    """除外 5 件以外の effect direct-evaluator actual-work case を返す。"""
+
+    from grafix.devtools.benchmarks.remaining_effect_benchmark import (
+        remaining_effect_benchmark_cases,
+        remaining_effect_measurement_context,
+        run_remaining_effect,
+        setup_remaining_effect_benchmark,
+    )
+
+    return [
+        _definition(
+            case.case_id,
+            case.label,
+            category="effect",
+            suite="effects-remaining",
+            fixture=case.fixture,
+            parameters=case.parameters(),
+            tags=case.tags,
+            selectable_suites=case.selectable_suites,
+            setup=setup_remaining_effect_benchmark,
+            workload=run_remaining_effect,
+            postprocess=_postprocess_remaining_effect,
+            measurement_context=remaining_effect_measurement_context,
+            support_source_files=(
+                _REMAINING_EFFECT_SOURCE_FILE,
+                _CASES_SOURCE_FILE,
+            ),
+        )
+        for case in remaining_effect_benchmark_cases()
+    ]
+
+
 def _legacy_system_definitions() -> list[CaseDefinition]:
     """従来の system/micro 診断を schema v4 の個別 case として返す。"""
 
@@ -1910,6 +2029,36 @@ def _legacy_system_definitions() -> list[CaseDefinition]:
         )
         for case_id, label, workload_id, parameters in cases
     ]
+
+
+def _postprocess_primitive(state: object, output: object) -> _CaseOutput:
+    """raw primitive output を共通metrics/contractsへ変換する。"""
+
+    from grafix.devtools.benchmarks.primitive_benchmark import (
+        observe_primitive_output,
+    )
+
+    observation = observe_primitive_output(state, output)
+    return _CaseOutput(
+        value=observation.geometry,
+        metrics=observation.metrics,
+        contracts=observation.contracts,
+    )
+
+
+def _postprocess_remaining_effect(state: object, output: object) -> _CaseOutput:
+    """timed effect output を共通 metrics/contracts へ変換する。"""
+
+    from grafix.devtools.benchmarks.remaining_effect_benchmark import (
+        observe_remaining_effect_output,
+    )
+
+    observation = observe_remaining_effect_output(state, output)
+    return _CaseOutput(
+        value=observation.geometry,
+        metrics=observation.metrics,
+        contracts=observation.contracts,
+    )
 
 
 def _setup_effect(parameters: dict[str, Any], seed: int) -> object:

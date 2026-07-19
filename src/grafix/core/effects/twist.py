@@ -23,7 +23,7 @@ twist_meta = {
         kind="float",
         ui_min=0.0,
         ui_max=360.0,
-        description="ねじり軸に沿った位置に応じて到達する最大回転角。",
+        description="ねじり軸方向の両端で負から正へ変化する最大回転角を度単位で指定する。",
     ),
     "axis_dir": ParamMeta(
         kind="vec3",

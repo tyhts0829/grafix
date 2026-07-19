@@ -11,6 +11,7 @@ from weakref import WeakKeyDictionary
 
 from .frame_params import FrameParamRecord
 from .key import ParameterKey
+from .meta import merge_code_description_with_stored_meta
 from .reconcile_ops import reconcile_loaded_groups_for_runtime
 from .runtime import ParamStoreRuntime
 from .source import ValueSource
@@ -27,6 +28,8 @@ class _StableMergeEntry:
 
     group: tuple[str, str]
     meta_kind: str
+    meta_choices: tuple[str, ...] | None
+    meta_description: str | None
     effect_step: tuple[str, int] | None
     explicit: bool | None
     last_effective: object
@@ -133,6 +136,8 @@ def _merge_frame_params(
         if (
             entry is None
             or entry.meta_kind != rec.meta.kind
+            or entry.meta_choices != rec.meta.choices
+            or entry.meta_description != rec.meta.description
             or (
                 desired_effect_step is not None
                 and entry.effect_step != desired_effect_step
@@ -166,8 +171,16 @@ def _merge_frame_params(
                 structure_changed = True
 
             existing_meta = store._meta.get(key)
-            if existing_meta is None or existing_meta.kind != rec.meta.kind:
-                store._set_meta(key, rec.meta)
+            desired_meta = (
+                rec.meta
+                if existing_meta is None
+                else merge_code_description_with_stored_meta(
+                    rec.meta,
+                    existing_meta,
+                )
+            )
+            if existing_meta != desired_meta:
+                store._set_meta(key, desired_meta)
                 structure_changed = True
 
             current_effect_step = effects.get_step(key.op, key.site_id)
@@ -189,6 +202,12 @@ def _merge_frame_params(
                 entry = _StableMergeEntry(
                     group=group,
                     meta_kind=str(rec.meta.kind),
+                    meta_choices=(
+                        None
+                        if rec.meta.choices is None
+                        else tuple(rec.meta.choices)
+                    ),
+                    meta_description=rec.meta.description,
                     effect_step=current_effect_step,
                     explicit=store._explicit_by_key.get(key),
                     last_effective=runtime.last_effective_by_key.get(key, _MISSING),
@@ -200,6 +219,12 @@ def _merge_frame_params(
                 # frame-local 状態は同じ entry に残して last-record-wins を守る。
                 entry.group = group
                 entry.meta_kind = str(rec.meta.kind)
+                entry.meta_choices = (
+                    None
+                    if rec.meta.choices is None
+                    else tuple(rec.meta.choices)
+                )
+                entry.meta_description = rec.meta.description
                 entry.effect_step = current_effect_step
 
         _merge_runtime_observation(

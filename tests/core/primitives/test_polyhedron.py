@@ -7,6 +7,7 @@ import pytest
 
 from grafix.api import G
 from grafix.core.geometry import Geometry
+from grafix.core.primitives.polyhedron import _POLYHEDRON_CACHE, polyhedron
 from grafix.core.realize import realize
 from grafix.core.primitives import polyhedron as _polyhedron_module  # noqa: F401
 
@@ -63,3 +64,31 @@ def test_polyhedron_center_and_scale_affect_coords() -> None:
 
     expected = base.coords * np.float32(scale) + center
     np.testing.assert_allclose(moved.coords, expected, rtol=0.0, atol=1e-6)
+
+
+def test_polyhedron_raw_arrays_are_fresh_writable_and_do_not_share_cache() -> None:
+    """packed resource cacheを使っても、呼び出し側へは独立した配列を返す。"""
+
+    kind = "truncated_icosidodecahedron"
+    coords_a, offsets_a = polyhedron(kind=kind)
+    coords_b, offsets_b = polyhedron(kind=kind)
+
+    assert coords_a.flags.writeable
+    assert offsets_a.flags.writeable
+    assert coords_b.flags.writeable
+    assert offsets_b.flags.writeable
+    assert not np.shares_memory(coords_a, coords_b)
+    assert not np.shares_memory(offsets_a, offsets_b)
+
+    cached_coords, cached_offsets = _POLYHEDRON_CACHE[kind]
+    assert not cached_coords.flags.writeable
+    assert not cached_offsets.flags.writeable
+    assert not np.shares_memory(coords_a, cached_coords)
+    assert not np.shares_memory(offsets_a, cached_offsets)
+
+    expected_coords = coords_b.copy()
+    expected_offsets = offsets_b.copy()
+    coords_a[0, 0] = np.float32(123.0)
+    offsets_a[0] = np.int32(1)
+    np.testing.assert_array_equal(coords_b, expected_coords)
+    np.testing.assert_array_equal(offsets_b, expected_offsets)

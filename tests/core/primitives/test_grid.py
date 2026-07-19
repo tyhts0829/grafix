@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from grafix.core.geometry import Geometry
+from grafix.core.primitives.grid import grid as raw_grid
 from grafix.core.realize import realize
 from grafix.core.primitives import grid as _grid_module  # noqa: F401
 
@@ -67,3 +68,18 @@ def test_grid_is_empty_when_both_zero() -> None:
 
     assert realized.coords.shape == (0, 3)
     assert realized.offsets.tolist() == [0]
+
+
+def test_grid_transformed_raw_coords_keep_independent_owner() -> None:
+    """非identity変換後のraw coordsは従来どおり自身のbufferを所有する。"""
+
+    coords, offsets = raw_grid(
+        nx=3,
+        ny=2,
+        center=(1.0, 2.0, 3.0),
+        scale=2.0,
+    )
+
+    assert coords.flags.owndata
+    assert coords.flags.writeable
+    assert offsets.flags.owndata

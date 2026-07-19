@@ -60,6 +60,17 @@ def effect(
         ``"content"`` はpure/deterministicな結果を同一入力間で再利用する。
         乱数は明示 ``seed`` 引数を使う。時刻・global stateへ依存するeffectだけ
         ``"none"`` を指定してCPU/GPU cacheを迂回する。
+    n_inputs : int, optional
+        effect が受け取る入力 Geometry の数。1 以上を指定し、デコレート対象関数は
+        その数の `(coords, offsets)` タプルを位置引数として受け取る。
+    meta : Mapping[str, ParamMeta | Mapping[str, object]] or None, optional
+        キーワード引数名から Parameter GUI 用 metadata への対応。組み込み effect
+        では必須、ユーザー定義 effect では任意。ユーザー定義時は各 metadata の
+        ``description`` も任意だが、GUI Help と生成 stub のため記述を推奨する。
+        None の場合、引数を Parameter GUI に表示しない。
+    ui_visible : Mapping[str, UiVisiblePred] or None, optional
+        引数名から、現在の引数値を受け取って表示可否を返す述語への対応。
+        Parameter GUI の表示だけを制御し、非表示になった引数の値は変更しない。
 
     Examples
     --------

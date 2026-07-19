@@ -134,8 +134,11 @@ def polygon(
     y = y * s32 + np.float32(cy)
     z = z * s32 + np.float32(cz)
 
-    coords = np.stack([x, y, z], axis=1).astype(np.float32, copy=False)
-    # 先頭頂点を終端に複製してポリラインを閉じる。
-    coords = np.concatenate([coords, coords[:1]], axis=0)
+    # 先頭頂点を終端に複製する領域まで一度に確保し、中間concatenateを避ける。
+    coords = np.empty((x.shape[0] + 1, 3), dtype=np.float32)
+    coords[:-1, 0] = x
+    coords[:-1, 1] = y
+    coords[:-1, 2] = z
+    coords[-1] = coords[0]
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
     return coords, offsets

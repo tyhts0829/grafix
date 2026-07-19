@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
+import grafix.core.effects.drop as drop_module
 from grafix.api import E, G
+from grafix.core.effects.drop import drop as drop_impl
+from grafix.core.operation_diagnostics import operation_diagnostic_context
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
-from grafix.core.effects.drop import drop as drop_impl
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -337,3 +341,171 @@ def test_drop_probability_position_gradient_by_x() -> None:
     )
     np.testing.assert_allclose(realized.coords, expected_coords, rtol=0.0, atol=1e-6)
     assert realized.offsets.tolist() == [0, 2]
+
+
+def _many_two_point_lines(n_lines: int = 512) -> GeomTuple:
+    rng = np.random.default_rng(20260719)
+    starts = rng.uniform(-100.0, 100.0, size=(n_lines, 3)).astype(np.float32)
+    delta = rng.normal(0.0, 3.0, size=(n_lines, 3)).astype(np.float32)
+    points = np.empty((n_lines, 2, 3), dtype=np.float32)
+    points[:, 0] = starts
+    points[:, 1] = starts + delta
+    coords = points.reshape(-1, 3)
+    offsets = np.arange(0, 2 * n_lines + 1, 2, dtype=np.int32)
+    return coords, offsets
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        {
+            "interval": 3,
+            "index_offset": 1,
+            "probability_base": (0.15, 0.15, 0.15),
+            "seed": 20260719,
+        },
+        {
+            "interval": 7,
+            "index_offset": -5,
+            "min_length": 2.5,
+            "max_length": 6.0,
+            "probability_base": (0.2, 0.3, 0.1),
+            "probability_slope": (0.5, -0.25, 0.125),
+            "seed": 12345,
+            "keep_mode": "keep",
+        },
+        {
+            "interval": 10_000,
+            "index_offset": 9_999,
+            "keep_mode": "drop",
+        },
+        {
+            "interval": 1,
+            "keep_mode": "drop",
+        },
+    ),
+)
+def test_drop_many_two_point_fast_path_matches_generic_bitwise(
+    arguments: dict[str, object],
+) -> None:
+    coords, offsets = _many_two_point_lines()
+    generic_coords = np.asfortranarray(coords)
+    coords.setflags(write=False)
+    offsets.setflags(write=False)
+    generic_coords.setflags(write=False)
+    input_bytes = coords.tobytes()
+
+    actual_coords, actual_offsets = drop_impl(
+        (coords, offsets),
+        **arguments,
+    )
+    expected_coords, expected_offsets = drop_impl(
+        (generic_coords, offsets),
+        **arguments,
+    )
+
+    np.testing.assert_array_equal(
+        actual_coords.view(np.uint32),
+        expected_coords.view(np.uint32),
+    )
+    np.testing.assert_array_equal(actual_offsets, expected_offsets)
+    assert actual_coords.dtype == expected_coords.dtype == np.float32
+    assert actual_offsets.dtype == expected_offsets.dtype == np.int32
+    assert actual_coords.flags.c_contiguous
+    assert actual_offsets.flags.c_contiguous
+    assert not np.shares_memory(actual_coords, coords)
+    assert not np.shares_memory(actual_offsets, offsets)
+    assert coords.tobytes() == input_bytes
+    assert not coords.flags.writeable
+    assert not offsets.flags.writeable
+
+
+def test_drop_two_point_resource_limit_covers_primary_with_bounded_scratch() -> None:
+    estimated_peak = drop_module._TWO_POINT_FAST_PATH_MAX_LINES * 192
+
+    assert estimated_peak <= 8 * 1024 * 1024
+    assert (
+        drop_module._TWO_POINT_FAST_PATH_MIN_LINES
+        <= 5_000
+        <= drop_module._TWO_POINT_FAST_PATH_MAX_LINES
+    )
+
+
+def test_drop_two_point_resource_limit_boundary_matches_fallback_observably(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    n_lines = 128
+    coords, offsets = _many_two_point_lines(n_lines)
+    coords.setflags(write=False)
+    offsets.setflags(write=False)
+    before = (coords.tobytes(), offsets.tobytes())
+    monkeypatch.setattr(
+        drop_module,
+        "_TWO_POINT_FAST_PATH_MAX_LINES",
+        n_lines,
+    )
+
+    original_pack = drop_module._pack_uniform_two_point_lines
+    pack_calls = 0
+
+    def _spy_pack(
+        input_coords: np.ndarray,
+        keep_mask: np.ndarray,
+    ) -> GeomTuple:
+        nonlocal pack_calls
+        pack_calls += 1
+        return original_pack(input_coords, keep_mask)
+
+    monkeypatch.setattr(drop_module, "_pack_uniform_two_point_lines", _spy_pack)
+    arguments = {
+        "interval": 7,
+        "index_offset": -5,
+        "min_length": 2.5,
+        "max_length": 6.0,
+        "probability_base": (0.2, 0.3, 0.1),
+        "probability_slope": (0.5, -0.25, 0.125),
+        "seed": 12345,
+        "keep_mode": "keep",
+    }
+    with (
+        warnings.catch_warnings(record=True) as fast_warnings,
+        operation_diagnostic_context() as fast_diagnostics,
+    ):
+        warnings.simplefilter("always")
+        fast = drop_module.drop((coords, offsets), **arguments)
+    assert pack_calls == 1
+
+    monkeypatch.setattr(
+        drop_module,
+        "_TWO_POINT_FAST_PATH_MAX_LINES",
+        n_lines - 1,
+    )
+    with (
+        warnings.catch_warnings(record=True) as fallback_warnings,
+        operation_diagnostic_context() as fallback_diagnostics,
+    ):
+        warnings.simplefilter("always")
+        fallback = drop_module.drop((coords, offsets), **arguments)
+
+    assert pack_calls == 1
+    np.testing.assert_array_equal(
+        fast[0].view(np.uint32),
+        fallback[0].view(np.uint32),
+    )
+    np.testing.assert_array_equal(fast[1], fallback[1])
+    assert fast[0].dtype == fallback[0].dtype == np.float32
+    assert fast[1].dtype == fallback[1].dtype == np.int32
+    assert fast[0].flags.c_contiguous
+    assert fallback[0].flags.c_contiguous
+    assert not np.shares_memory(fast[0], coords)
+    assert not np.shares_memory(fallback[0], coords)
+    assert [str(item.message) for item in fast_warnings] == [
+        str(item.message) for item in fallback_warnings
+    ]
+    assert [item.category for item in fast_warnings] == [
+        item.category for item in fallback_warnings
+    ]
+    assert fast_diagnostics.snapshot() == fallback_diagnostics.snapshot()
+    assert (coords.tobytes(), offsets.tobytes()) == before
+    assert not coords.flags.writeable
+    assert not offsets.flags.writeable

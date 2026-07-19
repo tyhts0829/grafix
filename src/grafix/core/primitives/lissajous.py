@@ -129,9 +129,11 @@ def lissajous(
     )
     x = np.sin(np.float32(a_i) * t + np.float32(phase_rad)) * np.float32(0.5)
     y = np.sin(np.float32(b_i) * t) * np.float32(0.5)
-    z = np.zeros_like(x, dtype=np.float32)
 
-    coords = np.stack([x, y, z], axis=1).astype(np.float32, copy=False)
+    coords = np.empty((samples_i, 3), dtype=np.float32)
+    coords[:, 0] = x
+    coords[:, 1] = y
+    coords[:, 2] = 0.0
     if s_f != 1.0:
         coords *= np.float32(s_f)
     if (cx_f, cy_f, cz_f) != (0.0, 0.0, 0.0):

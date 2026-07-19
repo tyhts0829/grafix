@@ -5,7 +5,11 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from numba import njit  # type: ignore[attr-defined, import-untyped]
+from numba import (  # type: ignore[attr-defined, import-untyped]
+    get_num_threads,
+    njit,
+    prange,
+)
 
 from grafix.core.effect_registry import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
@@ -30,6 +34,12 @@ MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 DRAFT_MAX_GRID_POINTS = 16_384
 DRAFT_MIN_RING_SEGMENTS = 8
 DRAFT_MAX_CELL_SEGMENTS = 12_000_000
+_PARALLEL_FIELD_WORK_THRESHOLD = 100_000
+_PACKED_FIELD_MIN_GRID_POINTS = 256
+_PACKED_FIELD_SEGMENT_BYTES = 5 * np.dtype(np.float64).itemsize
+_PACKED_FIELD_OFFSET_BYTES = np.dtype(np.int64).itemsize
+_PACKED_FIELD_MAX_SEGMENT_SCRATCH_BYTES = 8 * 1024 * 1024
+_PACKED_FIELD_MAX_ROW_SCRATCH_BYTES = 8 * 1024 * 1024
 
 metaball_meta = {
     "radius": ParamMeta(
@@ -231,7 +241,7 @@ def _simplify_rings_for_draft(
 
 
 @njit(cache=True)
-def _evaluate_field_grid_numba(
+def _evaluate_field_grid_baseline_numba(
     xs: np.ndarray,
     ys: np.ndarray,
     ring_vertices: np.ndarray,
@@ -239,6 +249,8 @@ def _evaluate_field_grid_numba(
     inside_mask: np.ndarray,
     inv_r2: float,
 ) -> np.ndarray:
+    """追加 scratch を持たない従来順の exact fallback。"""
+
     ny = int(ys.shape[0])
     nx = int(xs.shape[0])
     n_rings = int(ring_offsets.shape[0]) - 1
@@ -261,7 +273,6 @@ def _evaluate_field_grid_numba(
                     bx = float(ring_vertices[k + 1, 0])
                     by = float(ring_vertices[k + 1, 1])
 
-                    # distance^2 to segment
                     dx = bx - ax
                     dy = by - ay
                     denom = dx * dx + dy * dy
@@ -286,6 +297,271 @@ def _evaluate_field_grid_numba(
 
     return out
 
+
+@njit(inline="always")
+def _pack_field_segments_numba(
+    ring_vertices: np.ndarray,
+    ring_offsets: np.ndarray,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
+    n_rings = int(ring_offsets.shape[0]) - 1
+    n_segments = 0
+    for ri in range(n_rings):
+        n_segments += max(
+            0,
+            int(ring_offsets[ri + 1]) - int(ring_offsets[ri]) - 1,
+        )
+    segment_offsets = np.empty((n_rings + 1,), dtype=np.int64)
+    segment_ax = np.empty((n_segments,), dtype=np.float64)
+    segment_ay = np.empty((n_segments,), dtype=np.float64)
+    segment_dx = np.empty((n_segments,), dtype=np.float64)
+    segment_dy = np.empty((n_segments,), dtype=np.float64)
+    segment_denom = np.empty((n_segments,), dtype=np.float64)
+    segment_offsets[0] = 0
+    cursor = 0
+    for ri in range(n_rings):
+        start = int(ring_offsets[ri])
+        stop = int(ring_offsets[ri + 1])
+        for k in range(start, stop - 1):
+            ax = float(ring_vertices[k, 0])
+            ay = float(ring_vertices[k, 1])
+            dx = float(ring_vertices[k + 1, 0]) - ax
+            dy = float(ring_vertices[k + 1, 1]) - ay
+            segment_ax[cursor] = ax
+            segment_ay[cursor] = ay
+            segment_dx[cursor] = dx
+            segment_dy[cursor] = dy
+            segment_denom[cursor] = dx * dx + dy * dy
+            cursor += 1
+        segment_offsets[ri + 1] = cursor
+
+    return (
+        segment_offsets,
+        segment_ax,
+        segment_ay,
+        segment_dx,
+        segment_dy,
+        segment_denom,
+    )
+
+
+@njit(inline="always")
+def _evaluate_field_row_numba(
+    xs: np.ndarray,
+    y: float,
+    segment_offsets: np.ndarray,
+    segment_ax: np.ndarray,
+    segment_ay: np.ndarray,
+    segment_dx: np.ndarray,
+    segment_dy: np.ndarray,
+    segment_denom: np.ndarray,
+    inside_row: np.ndarray,
+    minimum_row: np.ndarray,
+    out_row: np.ndarray,
+    inv_r2: float,
+) -> None:
+    nx = int(xs.shape[0])
+    n_rings = int(segment_offsets.shape[0]) - 1
+    for ri in range(n_rings):
+        for i in range(nx):
+            minimum_row[i] = 1e300
+
+        start = int(segment_offsets[ri])
+        stop = int(segment_offsets[ri + 1])
+        for segment_index in range(start, stop):
+            ax = float(segment_ax[segment_index])
+            ay = float(segment_ay[segment_index])
+            dx = float(segment_dx[segment_index])
+            dy = float(segment_dy[segment_index])
+            denominator = float(segment_denom[segment_index])
+            for i in range(nx):
+                x = float(xs[i])
+                if denominator <= 0.0:
+                    distance_sq = (x - ax) * (x - ax) + (y - ay) * (y - ay)
+                else:
+                    position = ((x - ax) * dx + (y - ay) * dy) / denominator
+                    if position < 0.0:
+                        position = 0.0
+                    elif position > 1.0:
+                        position = 1.0
+                    closest_x = ax + position * dx
+                    closest_y = ay + position * dy
+                    distance_sq = (x - closest_x) * (x - closest_x) + (y - closest_y) * (
+                        y - closest_y
+                    )
+                if distance_sq < minimum_row[i]:
+                    minimum_row[i] = distance_sq
+
+        for i in range(nx):
+            out_row[i] += math.exp(-minimum_row[i] * inv_r2)
+
+    for i in range(nx):
+        out_row[i] += float(inside_row[i])
+
+
+@njit(cache=True)
+def _evaluate_field_grid_serial_numba(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    ring_vertices: np.ndarray,
+    ring_offsets: np.ndarray,
+    inside_mask: np.ndarray,
+    inv_r2: float,
+) -> np.ndarray:
+    ny = int(ys.shape[0])
+    nx = int(xs.shape[0])
+    segments = _pack_field_segments_numba(ring_vertices, ring_offsets)
+    out = np.zeros((ny, nx), dtype=np.float64)
+    minimum_row = np.empty((nx,), dtype=np.float64)
+    for j in range(ny):
+        _evaluate_field_row_numba(
+            xs,
+            float(ys[j]),
+            segments[0],
+            segments[1],
+            segments[2],
+            segments[3],
+            segments[4],
+            segments[5],
+            inside_mask[j],
+            minimum_row,
+            out[j],
+            inv_r2,
+        )
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _evaluate_field_grid_parallel_numba(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    ring_vertices: np.ndarray,
+    ring_offsets: np.ndarray,
+    inside_mask: np.ndarray,
+    inv_r2: float,
+) -> np.ndarray:
+    ny = int(ys.shape[0])
+    nx = int(xs.shape[0])
+    segments = _pack_field_segments_numba(ring_vertices, ring_offsets)
+    out = np.zeros((ny, nx), dtype=np.float64)
+    for j in prange(ny):
+        # Numba はこの allocation を loop 外へ hoist し、worker ごとに再利用する。
+        minimum_row = np.empty((nx,), dtype=np.float64)
+        _evaluate_field_row_numba(
+            xs,
+            float(ys[j]),
+            segments[0],
+            segments[1],
+            segments[2],
+            segments[3],
+            segments[4],
+            segments[5],
+            inside_mask[j],
+            minimum_row,
+            out[j],
+            inv_r2,
+        )
+    return out
+
+
+def _packed_field_segment_scratch_bytes(
+    *,
+    segment_count: int,
+    ring_count: int,
+) -> int:
+    """segment invariant pack の常駐 scratch byte 数を返す。"""
+
+    return (
+        max(0, int(segment_count)) * _PACKED_FIELD_SEGMENT_BYTES
+        + (max(0, int(ring_count)) + 1) * _PACKED_FIELD_OFFSET_BYTES
+    )
+
+
+def _use_packed_field_path(
+    *,
+    nx: int,
+    ny: int,
+    segment_count: int,
+    ring_count: int,
+) -> bool:
+    """pack 構築コストと追加メモリが有利な範囲だけ高速経路を許可する。"""
+
+    grid_points = max(0, int(nx)) * max(0, int(ny))
+    if grid_points < _PACKED_FIELD_MIN_GRID_POINTS:
+        return False
+    if (
+        _packed_field_segment_scratch_bytes(
+            segment_count=segment_count,
+            ring_count=ring_count,
+        )
+        > _PACKED_FIELD_MAX_SEGMENT_SCRATCH_BYTES
+    ):
+        return False
+    return (
+        max(0, int(nx)) * np.dtype(np.float64).itemsize
+        <= _PACKED_FIELD_MAX_ROW_SCRATCH_BYTES
+    )
+
+
+def _evaluate_field_grid_numba(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    ring_vertices: np.ndarray,
+    ring_offsets: np.ndarray,
+    inside_mask: np.ndarray,
+    inv_r2: float,
+) -> np.ndarray:
+    """resource gate 後、小仕事量は serial、大仕事量は行並列化する。"""
+
+    n_rings = max(0, int(ring_offsets.shape[0]) - 1)
+    n_segments = max(0, int(ring_vertices.shape[0]) - n_rings)
+    nx = int(xs.shape[0])
+    ny = int(ys.shape[0])
+    if not _use_packed_field_path(
+        nx=nx,
+        ny=ny,
+        segment_count=n_segments,
+        ring_count=n_rings,
+    ):
+        return _evaluate_field_grid_baseline_numba(
+            xs,
+            ys,
+            ring_vertices,
+            ring_offsets,
+            inside_mask,
+            inv_r2,
+        )
+
+    work = nx * ny * n_segments
+    thread_count = get_num_threads()
+    parallel_row_scratch = (
+        thread_count * nx * np.dtype(np.float64).itemsize
+    )
+    kernel = (
+        _evaluate_field_grid_parallel_numba
+        if (
+            thread_count > 1
+            and ny > 1
+            and work >= _PARALLEL_FIELD_WORK_THRESHOLD
+            and parallel_row_scratch
+            <= _PACKED_FIELD_MAX_ROW_SCRATCH_BYTES
+        )
+        else _evaluate_field_grid_serial_numba
+    )
+    return kernel(
+        xs,
+        ys,
+        ring_vertices,
+        ring_offsets,
+        inside_mask,
+        inv_r2,
+    )
 
 
 def _pack_loops_xy(loops_xy: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:

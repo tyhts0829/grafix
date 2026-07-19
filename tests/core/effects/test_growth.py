@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,111 @@ from grafix.api import E, G
 from grafix.core.operation_diagnostics import operation_diagnostic_context
 from grafix.core.preview_quality import preview_quality_context
 from grafix.core.realize import realize
+
+
+def _geometry_digest(geometry: tuple[np.ndarray, np.ndarray]) -> str:
+    digest = hashlib.sha256()
+    digest.update(geometry[0].tobytes())
+    digest.update(geometry[1].tobytes())
+    return digest.hexdigest()
+
+
+def test_growth_insert_noop_reuses_unchanged_ring() -> None:
+    import grafix.core.effects.growth as module
+
+    ring = np.asarray(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        dtype=np.float64,
+    )
+    before = ring.tobytes()
+
+    actual = module._insert_points_ring_xy(ring, target_spacing=2.0)
+
+    assert actual is ring
+    assert ring.tobytes() == before
+
+
+def test_growth_build_prev_next_handles_multiple_rings_exactly() -> None:
+    import grafix.core.effects.growth as module
+
+    offsets = np.asarray([0, 4, 7, 12], dtype=np.int32)
+
+    previous, following = module._build_prev_next(12, offsets)
+
+    np.testing.assert_array_equal(
+        previous,
+        np.asarray([3, 0, 1, 2, 6, 4, 5, 11, 7, 8, 9, 10], dtype=np.int32),
+    )
+    np.testing.assert_array_equal(
+        following,
+        np.asarray([1, 2, 3, 0, 5, 6, 4, 8, 9, 10, 11, 7], dtype=np.int32),
+    )
+
+
+@pytest.mark.parametrize(
+    ("quality", "iters", "boundary_mode", "expected_shape", "expected_sha256"),
+    [
+        (
+            "final",
+            1,
+            "slide",
+            (61, 3),
+            "9b55c60ab27d115876c80faf31d74fcc79ec4ddad6a284e22c83e6565e39efb9",
+        ),
+        (
+            "final",
+            9,
+            "slide",
+            (70, 3),
+            "071062eab5f7def176228d975e25b47be27ce187ddd83f4d07bd5cb435742e42",
+        ),
+        (
+            "final",
+            9,
+            "bounce",
+            (71, 3),
+            "e6d8369f40c5e56e044561c6d9f4f54f155b46c4d76e0f7d1ca90ce0cdec4035",
+        ),
+        (
+            "draft",
+            64,
+            "slide",
+            (97, 3),
+            "cdcef04db71dca81d58fe88be574876f9bd15eb0f39d68c3928faeb072ed2399",
+        ),
+        (
+            "final",
+            64,
+            "slide",
+            (162, 3),
+            "26e9878be42d0045fac38bf43492c291ccc337b09df8c56a039ef80b27cd5ac1",
+        ),
+    ],
+)
+def test_growth_matches_frozen_iteration_and_quality_snapshots(
+    quality: str,
+    iters: int,
+    boundary_mode: str,
+    expected_shape: tuple[int, int],
+    expected_sha256: str,
+) -> None:
+    import grafix.core.effects.growth as module
+
+    realized_mask = realize(G.polygon(n_sides=32, scale=80.0))
+    mask = (realized_mask.coords, realized_mask.offsets)
+    with preview_quality_context(quality):  # type: ignore[arg-type]
+        actual = module.growth(
+            mask,
+            seed_count=4,
+            target_spacing=3.0,
+            boundary_avoid=1.0,
+            boundary_mode=boundary_mode,
+            iters=iters,
+            seed=37,
+        )
+
+    assert actual[0].shape == expected_shape
+    assert _geometry_digest(actual) == expected_sha256
 
 
 def test_growth_returns_empty_for_invalid_mask_even_when_show_mask() -> None:

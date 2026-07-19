@@ -8,8 +8,18 @@ from grafix.api import G
 
 @primitive(
     meta={
-        "size": {"kind": "float", "ui_min": 10.0, "ui_max": 140.0},
-        "center": {"kind": "vec3", "ui_min": 0.0, "ui_max": 300.0},
+        "size": {
+            "kind": "float",
+            "ui_min": 10.0,
+            "ui_max": 140.0,
+            "description": "菱形の頂点間の幅と高さ。",
+        },
+        "center": {
+            "kind": "vec3",
+            "ui_min": 0.0,
+            "ui_max": 300.0,
+            "description": "菱形の中心座標 (x, y, z)。",
+        },
     }
 )
 def diamond(

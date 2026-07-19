@@ -72,7 +72,7 @@ repeat_meta = {
         kind="vec3",
         ui_min=-180.0,
         ui_max=180.0,
-        description="最後の複製へ到達するまでに補間する各軸の回転角。",
+        description="最後の複製へ到達するまでに補間する各軸の回転角を度単位で指定する。",
     ),
     "scale": ParamMeta(
         kind="vec3",

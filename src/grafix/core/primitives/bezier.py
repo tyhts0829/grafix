@@ -34,6 +34,24 @@ def bezier(
     """4制御点からcubic Bezier curveを生成する。
 
     ``p0``〜``p3`` はcode-owned引数で、Parameter GUIには表示しない。
+
+    Parameters
+    ----------
+    p0 : Sequence[float], optional
+        曲線の始点となる 2 次元または 3 次元座標。
+    p1 : Sequence[float], optional
+        始点側の接線方向と曲がり方を定める第 1 制御点。
+    p2 : Sequence[float], optional
+        終点側の接線方向と曲がり方を定める第 2 制御点。
+    p3 : Sequence[float], optional
+        曲線の終点となる 2 次元または 3 次元座標。
+    segments : int, optional
+        4 制御点で定まる曲線を近似する直線セグメントの数。
+
+    Returns
+    -------
+    GeomTuple
+        1 本の曲線を表す座標配列とオフセット配列。
     """
 
     count = segment_count(segments, op="bezier", minimum=1)

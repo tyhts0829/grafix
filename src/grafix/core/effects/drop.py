@@ -9,12 +9,17 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from .util import empty_geom
 
+# 高速 path の float64 中間配列・bool mask を 1 line あたり 192 bytes と
+# 保守的に見積もっても、追加 peak が 8 MiB 未満に収まる上限にする。
+_TWO_POINT_FAST_PATH_MIN_LINES = 64
+_TWO_POINT_FAST_PATH_MAX_LINES = 32_768
+
 drop_meta = {
     "interval": ParamMeta(
         kind="int",
         ui_min=0,
         ui_max=100,
-        description="線または面のインデックスを対象にする一定間隔を指定する。",
+        description="線または面をインデックス順に一定間隔で対象にする。1 以上で有効、0 以下で無効。",
     ),
     "index_offset": ParamMeta(
         kind="int",
@@ -26,13 +31,13 @@ drop_meta = {
         kind="float",
         ui_min=-1.0,
         ui_max=200.0,
-        description="この長さ以下の線または面を選択対象にする。",
+        description="0 以上のとき、この長さ以下の線または面を対象にする。負値で無効。",
     ),
     "max_length": ParamMeta(
         kind="float",
         ui_min=-1.0,
         ui_max=200.0,
-        description="この長さ以上の線または面を選択対象にする。",
+        description="0 以上のとき、この長さ以上の線または面を対象にする。負値で無効。",
     ),
     "probability_base": ParamMeta(
         kind="vec3",
@@ -86,6 +91,46 @@ def _compute_polyline_lengths(
             L += float(np.sqrt(np.dot(d, d)))
         lengths[i] = L
     return lengths
+
+
+def _has_uniform_two_point_lines(
+    coords: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    n_lines: int,
+) -> bool:
+    """標準 packed geometry が 2 点 line だけで構成されるかを返す。"""
+
+    if (
+        n_lines < _TWO_POINT_FAST_PATH_MIN_LINES
+        or n_lines > _TWO_POINT_FAST_PATH_MAX_LINES
+        or coords.__class__ is not np.ndarray
+        or offsets.__class__ is not np.ndarray
+        or coords.dtype != np.float32
+        or offsets.dtype != np.int32
+        or not coords.flags.c_contiguous
+        or not offsets.flags.c_contiguous
+        or coords.shape != (2 * n_lines, 3)
+    ):
+        return False
+    expected_offsets = np.arange(0, 2 * n_lines + 1, 2, dtype=np.int32)
+    return bool(np.array_equal(offsets, expected_offsets))
+
+
+def _pack_uniform_two_point_lines(
+    coords: np.ndarray,
+    keep_mask: np.ndarray,
+) -> GeomTuple:
+    """2 点 line の選択結果を入力順の exact-size 配列へ詰める。"""
+
+    kept_count = int(np.count_nonzero(keep_mask))
+    if kept_count <= 0:
+        return empty_geom()
+
+    point_mask = np.repeat(keep_mask, 2)
+    out_coords = coords[point_mask]
+    out_offsets = np.arange(0, 2 * kept_count + 1, 2, dtype=np.int32)
+    return out_coords, out_offsets
 
 
 @effect(meta=drop_meta)
@@ -242,6 +287,61 @@ def drop(
         for k in range(3):
             e = float(extent[k])
             inv_extent[k] = 0.0 if e < 1e-9 else 1.0 / e
+
+    uniform_two_point_lines = by_mode == "line" and _has_uniform_two_point_lines(
+        coords,
+        offsets,
+        n_lines=n_lines,
+    )
+    if uniform_two_point_lines and (
+        not (use_min or use_max or prob_enabled)
+        or bool(np.all(np.isfinite(coords)))
+    ):
+        selected = np.zeros((n_lines,), dtype=bool)
+
+        if eff_interval is not None and index_offset_i < n_lines:
+            selected[index_offset_i::eff_interval] = True
+
+        points = coords.reshape(n_lines, 2, 3)
+        if use_min or use_max:
+            delta = np.subtract(
+                points[:, 1, :],
+                points[:, 0, :],
+                dtype=np.float64,
+            )
+            two_point_lengths = np.sqrt(np.sum(delta * delta, axis=1))
+            if use_min:
+                selected |= two_point_lengths <= min_length_f
+            if use_max:
+                selected |= two_point_lengths >= max_length_f
+
+        if rng is not None:
+            centroids = np.add(
+                points[:, 0, :],
+                points[:, 1, :],
+                dtype=np.float64,
+            )
+            centroids *= 0.5
+
+            tx = (centroids[:, 0] - center[0]) * inv_extent[0]
+            ty = (centroids[:, 1] - center[1]) * inv_extent[1]
+            tz = (centroids[:, 2] - center[2]) * inv_extent[2]
+            np.clip(tx, -1.0, 1.0, out=tx)
+            np.clip(ty, -1.0, 1.0, out=ty)
+            np.clip(tz, -1.0, 1.0, out=tz)
+
+            p_x = base_px + slope_x * tx
+            p_y = base_py + slope_y * ty
+            p_z = base_pz + slope_z * tz
+            np.clip(p_x, 0.0, 1.0, out=p_x)
+            np.clip(p_y, 0.0, 1.0, out=p_y)
+            np.clip(p_z, 0.0, 1.0, out=p_z)
+
+            p_eff = 1.0 - (1.0 - p_x) * (1.0 - p_y) * (1.0 - p_z)
+            selected |= rng.random(n_lines) < p_eff
+
+        keep_mask = ~selected if keep == "drop" else selected
+        return _pack_uniform_two_point_lines(coords, keep_mask)
 
     def _p_eff_for_range(start: int, end: int) -> float:
         if end <= start:

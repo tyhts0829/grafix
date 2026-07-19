@@ -80,6 +80,15 @@ _PARAMETER_IDENTITY_STUB_PARAMS = (
     "shared: bool = ...",
 )
 
+_PARAMETER_IDENTITY_STUB_DOCS = {
+    "key": "コード移動後も同じパラメータグループとして扱うための semantic identity。",
+    "instance_key": "loop/comprehension の反復ごとにパラメータグループを分ける identity。",
+    "shared": (
+        "True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。"
+        "instance_key とは同時指定できない。"
+    ),
+}
+
 
 def _is_valid_identifier(name: str) -> bool:
     """`name` が Python の識別子として安全（attribute/method 名に使える）かを返す。"""
@@ -497,7 +506,9 @@ def _render_docstring(
 ) -> list[str]:
     """stub のメソッド docstring（複数行）を組み立てる。
 
-    `inspect.getdoc()` からの抽出結果を優先し、無ければ registry meta からのヒントを補う。
+    非空の ``ParamMeta.description`` は registry metadata を source of truth とする。
+    description が無い引数は ``inspect.getdoc()`` の抽出結果を優先し、
+    それも無ければ registry meta からのヒントを補う。
     返す行は「インデント無し」。`_render_method()` 側でインデントを付ける。
     """
     lines: list[str] = []
@@ -506,10 +517,14 @@ def _render_docstring(
 
     arg_lines: list[str] = []
     for p in param_order:
-        desc = parsed_param_docs.get(p)
-        if desc is None:
-            hint = _meta_hint(meta_by_name.get(p))
-            desc = hint
+        meta = meta_by_name.get(p)
+        meta_description = getattr(meta, "description", None)
+        if isinstance(meta_description, str) and meta_description.strip():
+            desc = _meta_hint(meta)
+        else:
+            desc = parsed_param_docs.get(p)
+            if desc is None:
+                desc = _meta_hint(meta)
         if desc:
             arg_lines.append(f"    {p}: {desc}")
 
@@ -520,6 +535,30 @@ def _render_docstring(
         lines.extend(arg_lines)
 
     return lines
+
+
+def _render_operation_docstring(
+    *,
+    summary: str | None,
+    param_order: list[str],
+    parsed_param_docs: dict[str, str],
+    meta_by_name: dict[str, Any],
+) -> list[str]:
+    """operation 引数と共通 identity 引数の説明を含む docstring を組み立てる。"""
+
+    all_param_order = list(
+        dict.fromkeys((*param_order, *_PARAMETER_IDENTITY_STUB_DOCS))
+    )
+    all_param_docs = {
+        **parsed_param_docs,
+        **_PARAMETER_IDENTITY_STUB_DOCS,
+    }
+    return _render_docstring(
+        summary=summary,
+        param_order=all_param_order,
+        parsed_param_docs=all_param_docs,
+        meta_by_name=meta_by_name,
+    )
 
 
 def _render_method(
@@ -590,7 +629,7 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
 
         doc = inspect.getdoc(impl) if impl is not None else spec.doc
         parsed_summary, parsed_docs = _parse_numpy_doc(doc or "")
-        doc_lines = _render_docstring(
+        doc_lines = _render_operation_docstring(
             summary=parsed_summary,
             param_order=[p for p in param_order if _is_valid_identifier(p)],
             parsed_param_docs=parsed_docs,
@@ -651,7 +690,7 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
 
         doc = inspect.getdoc(impl) if impl is not None else spec.doc
         parsed_summary, parsed_docs = _parse_numpy_doc(doc or "")
-        doc_lines = _render_docstring(
+        doc_lines = _render_operation_docstring(
             summary=parsed_summary,
             param_order=[p for p in param_order if _is_valid_identifier(p)],
             parsed_param_docs=parsed_docs,
@@ -711,7 +750,7 @@ def _render_e_protocol(effect_names: list[str]) -> str:
 
         doc = inspect.getdoc(impl) if impl is not None else spec.doc
         parsed_summary, parsed_docs = _parse_numpy_doc(doc or "")
-        doc_lines = _render_docstring(
+        doc_lines = _render_operation_docstring(
             summary=parsed_summary,
             param_order=[p for p in param_order if _is_valid_identifier(p)],
             parsed_param_docs=parsed_docs,
@@ -806,7 +845,7 @@ def _render_p_protocol(preset_names: list[str]) -> str:
         )
 
         parsed_summary, parsed_docs = _parse_numpy_doc(inspect.getdoc(impl) or "")
-        doc_lines = _render_docstring(
+        doc_lines = _render_operation_docstring(
             summary=parsed_summary,
             param_order=param_order,
             parsed_param_docs=parsed_docs,

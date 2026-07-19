@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 import numpy as np
 
@@ -211,8 +212,8 @@ def _sphere_zigzag(subdivisions: int) -> list[np.ndarray]:
     return polylines
 
 
-def _sphere_icosphere(subdivisions: int) -> list[np.ndarray]:
-    """アイコスフィア手法（階層細分化）で球ワイヤーを生成する。"""
+def _sphere_icosphere(subdivisions: int) -> GeomTuple:
+    """アイコスフィアを従来の DFS/辺順のまま packed geometry へ直接生成する。"""
 
     phi = (1.0 + math.sqrt(5.0)) / 2.0
     base_vertices = np.array(
@@ -258,45 +259,81 @@ def _sphere_icosphere(subdivisions: int) -> list[np.ndarray]:
         (8, 1, 9),
     ]
 
-    def midpoint_on_sphere(p1: np.ndarray, p2: np.ndarray) -> np.ndarray:
+    EdgeKey = tuple[int, int]
+
+    def edge_key(v1: int, v2: int) -> EdgeKey:
+        return (v1, v2) if v1 <= v2 else (v2, v1)
+
+    # 共有辺は同じ頂点 id の組で表す。座標演算は初回だけ従来どおり行い、
+    # 以後は同じ float32 midpoint を再利用する。
+    vertices = [base_vertices[i] for i in range(int(base_vertices.shape[0]))]
+    midpoint_cache: dict[EdgeKey, int] = {}
+
+    def midpoint_on_sphere(v1: int, v2: int) -> int:
+        key = edge_key(v1, v2)
+        cached = midpoint_cache.get(key)
+        if cached is not None:
+            return cached
+
+        p1 = vertices[v1]
+        p2 = vertices[v2]
         mid = (p1 + p2) * np.float32(0.5)
         norm = float(np.linalg.norm(mid))
         if norm <= 0.0:
-            return np.array([0.0, 0.0, 0.0], dtype=np.float32)
-        return mid / np.float32(norm) * np.float32(_RADIUS)
+            result = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        else:
+            result = mid / np.float32(norm) * np.float32(_RADIUS)
+        result_id = len(vertices)
+        vertices.append(result)
+        midpoint_cache[key] = result_id
+        return result_id
 
-    def subdivide_triangle(v1: np.ndarray, v2: np.ndarray, v3: np.ndarray, level: int):
-        if level <= 0:
-            return [(v1, v2), (v2, v3), (v3, v1)]
+    level = int(subdivisions)
+    if level < 0:
+        level = 0
+    expected_edges = 30 * (4**level)
+    coords = np.empty((expected_edges * 2, 3), dtype=np.float32)
+    seen: set[EdgeKey] = set()
+    edge_at = 0
+
+    def emit_edge(v0: int, v1: int) -> None:
+        nonlocal edge_at
+        key = edge_key(v0, v1)
+        if key in seen:
+            return
+        seen.add(key)
+        coords[edge_at * 2] = vertices[v0]
+        coords[edge_at * 2 + 1] = vertices[v1]
+        edge_at += 1
+
+    def subdivide_triangle(
+        v1: int,
+        v2: int,
+        v3: int,
+        remaining: int,
+    ) -> None:
+        if remaining <= 0:
+            emit_edge(v1, v2)
+            emit_edge(v2, v3)
+            emit_edge(v3, v1)
+            return
 
         m1 = midpoint_on_sphere(v1, v2)
         m2 = midpoint_on_sphere(v2, v3)
         m3 = midpoint_on_sphere(v3, v1)
 
-        edges = []
-        edges.extend(subdivide_triangle(v1, m1, m3, level - 1))
-        edges.extend(subdivide_triangle(m1, v2, m2, level - 1))
-        edges.extend(subdivide_triangle(m3, m2, v3, level - 1))
-        edges.extend(subdivide_triangle(m1, m2, m3, level - 1))
-        return edges
+        subdivide_triangle(v1, m1, m3, remaining - 1)
+        subdivide_triangle(m1, v2, m2, remaining - 1)
+        subdivide_triangle(m3, m2, v3, remaining - 1)
+        subdivide_triangle(m1, m2, m3, remaining - 1)
 
-    all_edges: list[tuple[np.ndarray, np.ndarray]] = []
-    for a, b, c in base_faces:
-        v1, v2, v3 = base_vertices[a], base_vertices[b], base_vertices[c]
-        all_edges.extend(subdivide_triangle(v1, v2, v3, int(subdivisions)))
+    for v1, v2, v3 in base_faces:
+        subdivide_triangle(v1, v2, v3, level)
 
-    seen: set[tuple[tuple[float, float, float], tuple[float, float, float]]] = set()
-    polylines: list[np.ndarray] = []
-    for p0, p1 in all_edges:
-        k0 = (float(p0[0]), float(p0[1]), float(p0[2]))
-        k1 = (float(p1[0]), float(p1[1]), float(p1[2]))
-        key = (k0, k1) if k0 <= k1 else (k1, k0)
-        if key in seen:
-            continue
-        seen.add(key)
-        polylines.append(np.array([p0, p1], dtype=np.float32))
-
-    return polylines
+    if edge_at != expected_edges:
+        coords = coords[: edge_at * 2].copy()
+    offsets = np.arange(0, coords.shape[0] + 1, 2, dtype=np.int32)
+    return coords, offsets
 
 
 def _sphere_rings(subdivisions: int, mode: int) -> list[np.ndarray]:
@@ -370,6 +407,51 @@ def _sphere_rings(subdivisions: int, mode: int) -> list[np.ndarray]:
     return polylines
 
 
+@lru_cache(maxsize=16)
+def _sphere_base_geometry(style: str, subdivisions: int, mode: int) -> GeomTuple:
+    """配置前の単位球を immutable な packed geometry として再利用する。"""
+
+    if style == "icosphere":
+        coords, offsets = _sphere_icosphere(subdivisions)
+    else:
+        if style == "latlon":
+            polylines = _sphere_latlon(subdivisions, mode)
+        elif style == "zigzag":
+            polylines = _sphere_zigzag(subdivisions)
+        else:
+            polylines = _sphere_rings(subdivisions, mode)
+        coords, offsets = _polylines_to_realized(
+            polylines,
+            center=(0.0, 0.0, 0.0),
+            scale=1.0,
+        )
+
+    coords.setflags(write=False)
+    offsets.setflags(write=False)
+    return coords, offsets
+
+
+def _place_cached_sphere(
+    packed: GeomTuple,
+    *,
+    center: tuple[float, float, float],
+    scale: float,
+) -> GeomTuple:
+    """cache を共有せず、従来と同じ float32 順序で scale/center を適用する。"""
+
+    base_coords, base_offsets = packed
+    coords = base_coords.copy()
+    offsets = base_offsets.copy()
+
+    s_f = float(scale)
+    if s_f != 1.0:
+        coords *= np.float32(s_f)
+    cx, cy, cz = float(center[0]), float(center[1]), float(center[2])
+    if (cx, cy, cz) != (0.0, 0.0, 0.0):
+        coords += np.array([cx, cy, cz], dtype=np.float32)
+    return coords, offsets
+
+
 @primitive(meta=sphere_meta, ui_visible=SPHERE_UI_VISIBLE)
 def sphere(
     *,
@@ -434,16 +516,9 @@ def sphere(
     except Exception as exc:
         raise ValueError("sphere の scale は float である必要がある") from exc
 
-    if style == "latlon":
-        polylines = _sphere_latlon(s, m)
-    elif style == "zigzag":
-        polylines = _sphere_zigzag(s)
-    elif style == "icosphere":
-        polylines = _sphere_icosphere(s)
-    else:
-        polylines = _sphere_rings(s, m)
-
-    return _polylines_to_realized(polylines, center=(cx, cy, cz), scale=s_f)
+    base_mode = m if style in {"latlon", "rings"} else 0
+    packed = _sphere_base_geometry(style, s, base_mode)
+    return _place_cached_sphere(packed, center=(cx, cy, cz), scale=s_f)
 
 
 __all__ = ["sphere", "sphere_meta"]

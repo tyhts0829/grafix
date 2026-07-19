@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from numba import njit  # type: ignore[attr-defined, import-untyped]
+from numba import get_num_threads, njit, prange  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
@@ -29,6 +29,8 @@ MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 DRAFT_MAX_GRID_POINTS = 262_144
 DRAFT_MAX_STEPS = 600
 DRAFT_MAX_CELL_STEPS = 14_000_000
+_PARALLEL_MIN_GRID_CELLS = 65_536
+_PARALLEL_MIN_STEPS = 8
 
 reaction_diffusion_meta = {
     "grid_pitch": ParamMeta(
@@ -153,7 +155,7 @@ def _pack_mask_rings_xy(
 
 
 @njit(cache=True)
-def _gray_scott_simulate_masked(
+def _gray_scott_simulate_masked_serial(
     u0: np.ndarray,
     v0: np.ndarray,
     mask: np.ndarray,
@@ -176,12 +178,20 @@ def _gray_scott_simulate_masked(
     u_out = 1.0
     v_out = 0.0
 
+    if int(steps) > 0:
+        for j in range(ny):
+            for i in range(nx):
+                if mask[j, i] != 0:
+                    continue
+                u[j, i] = u_out
+                v[j, i] = v_out
+                u2[j, i] = u_out
+                v2[j, i] = v_out
+
     for _ in range(int(steps)):
         for j in range(ny):
             for i in range(nx):
                 if mask[j, i] == 0:
-                    u2[j, i] = u_out
-                    v2[j, i] = v_out
                     continue
 
                 uc = float(u[j, i])
@@ -245,6 +255,164 @@ def _gray_scott_simulate_masked(
         v, v2 = v2, v
 
     return v
+
+
+@njit(cache=True, parallel=True)
+def _gray_scott_simulate_masked_parallel(
+    u0: np.ndarray,
+    v0: np.ndarray,
+    mask: np.ndarray,
+    *,
+    steps: int,
+    du: float,
+    dv: float,
+    feed: float,
+    kill: float,
+    dt: float,
+    boundary: int,  # 0: noflux, 1: dirichlet
+) -> np.ndarray:
+    ny = int(u0.shape[0])
+    nx = int(u0.shape[1])
+    u = u0.copy()
+    v = v0.copy()
+    if int(steps) <= 0:
+        return v
+    u2 = np.empty_like(u)
+    v2 = np.empty_like(v)
+
+    u_out = 1.0
+    v_out = 0.0
+
+    # active と 4 近傍の状態は step 間で不変なので、mask 走査を最初の 1 回に集約する。
+    neighbor_flags = np.zeros((ny, nx), dtype=np.uint8)
+    for j in range(ny):
+        for i in range(nx):
+            if mask[j, i] == 0:
+                u[j, i] = u_out
+                v[j, i] = v_out
+                u2[j, i] = u_out
+                v2[j, i] = v_out
+                continue
+            flags = 16
+            if j - 1 >= 0 and mask[j - 1, i] != 0:
+                flags |= 1
+            if j + 1 < ny and mask[j + 1, i] != 0:
+                flags |= 2
+            if i - 1 >= 0 and mask[j, i - 1] != 0:
+                flags |= 4
+            if i + 1 < nx and mask[j, i + 1] != 0:
+                flags |= 8
+            neighbor_flags[j, i] = flags
+
+    for _ in range(int(steps)):
+        # 各 cell は読み取り元とは別の ping-pong buffer だけへ書き込む。
+        for j in prange(ny):
+            for i in range(nx):
+                flags = int(neighbor_flags[j, i])
+                if flags & 16 == 0:
+                    continue
+
+                uc = float(u[j, i])
+                vc = float(v[j, i])
+
+                # up
+                if flags & 1 == 0:
+                    uu = uc if boundary == 0 else u_out
+                    vu = vc if boundary == 0 else v_out
+                else:
+                    uu = float(u[j - 1, i])
+                    vu = float(v[j - 1, i])
+
+                # down
+                if flags & 2 == 0:
+                    ud = uc if boundary == 0 else u_out
+                    vd = vc if boundary == 0 else v_out
+                else:
+                    ud = float(u[j + 1, i])
+                    vd = float(v[j + 1, i])
+
+                # left
+                if flags & 4 == 0:
+                    ul = uc if boundary == 0 else u_out
+                    vl = vc if boundary == 0 else v_out
+                else:
+                    ul = float(u[j, i - 1])
+                    vl = float(v[j, i - 1])
+
+                # right
+                if flags & 8 == 0:
+                    ur = uc if boundary == 0 else u_out
+                    vr = vc if boundary == 0 else v_out
+                else:
+                    ur = float(u[j, i + 1])
+                    vr = float(v[j, i + 1])
+
+                lap_u = (uu + ud + ul + ur) - 4.0 * uc
+                lap_v = (vu + vd + vl + vr) - 4.0 * vc
+
+                uvv = uc * vc * vc
+                du_term = float(du) * lap_u - uvv + float(feed) * (1.0 - uc)
+                dv_term = float(dv) * lap_v + uvv - (float(feed) + float(kill)) * vc
+
+                un = uc + du_term * float(dt)
+                vn = vc + dv_term * float(dt)
+
+                if un < 0.0:
+                    un = 0.0
+                elif un > 1.0:
+                    un = 1.0
+                if vn < 0.0:
+                    vn = 0.0
+                elif vn > 1.0:
+                    vn = 1.0
+
+                u2[j, i] = un
+                v2[j, i] = vn
+
+        u, u2 = u2, u
+        v, v2 = v2, v
+
+    return v
+
+
+def _gray_scott_simulate_masked(
+    u0: np.ndarray,
+    v0: np.ndarray,
+    mask: np.ndarray,
+    *,
+    steps: int,
+    du: float,
+    dv: float,
+    feed: float,
+    kill: float,
+    dt: float,
+    boundary: int,
+) -> np.ndarray:
+    use_parallel = (
+        get_num_threads() > 1
+        and int(u0.shape[0]) >= 2
+        and int(u0.size) >= _PARALLEL_MIN_GRID_CELLS
+        and int(steps) >= _PARALLEL_MIN_STEPS
+        and bool(np.isfinite(u0).all())
+        and bool(np.isfinite(v0).all())
+    )
+    simulate = (
+        _gray_scott_simulate_masked_parallel
+        if use_parallel
+        else _gray_scott_simulate_masked_serial
+    )
+    return simulate(
+        u0,
+        v0,
+        mask,
+        steps=steps,
+        du=du,
+        dv=dv,
+        feed=feed,
+        kill=kill,
+        dt=dt,
+        boundary=boundary,
+    )
 
 
 

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from grafix.api import G
+from grafix.core.font_resolver import resolve_font_path
+from grafix.core.primitives import text as text_module
+from grafix.core.primitives.text import text as text_impl
 from grafix.core.realize import realize
 
 
@@ -203,3 +208,72 @@ def test_text_missing_glyph_is_treated_as_space() -> None:
     assert missing.coords.shape == spaced.coords.shape
     assert missing.offsets.tolist() == spaced.offsets.tolist()
     assert np.allclose(missing.coords, spaced.coords, atol=1e-5)
+
+
+def test_text_raw_results_are_fresh_writable_and_non_sharing() -> None:
+    for value in ("HELLO", ""):
+        first_coords, first_offsets = text_impl(
+            text=value, font="GoogleSans-Regular.ttf"
+        )
+        second_coords, second_offsets = text_impl(
+            text=value, font="GoogleSans-Regular.ttf"
+        )
+
+        assert first_coords.flags.writeable
+        assert first_offsets.flags.writeable
+        assert second_coords.flags.writeable
+        assert second_offsets.flags.writeable
+        assert not np.shares_memory(first_coords, second_coords)
+        assert not np.shares_memory(first_offsets, second_offsets)
+        assert np.array_equal(first_coords, second_coords)
+        assert np.array_equal(first_offsets, second_offsets)
+
+
+def test_text_preplacement_glyph_cache_is_bounded_readonly_and_reused() -> None:
+    cache = text_module.TEXT_RENDERER._glyph_polyline_cache
+    command_cache = text_module.TEXT_RENDERER._glyph_cache
+    text_module.TEXT_RENDERER.clear_glyph_caches()
+
+    text_impl(text="ABBA", font="GoogleSans-Regular.ttf", quality=0.5)
+    first_values = tuple(cache._od.values())
+    first_ids = tuple(id(value) for value in first_values)
+    text_impl(
+        text="BAAB",
+        font="GoogleSans-Regular.ttf",
+        quality=0.5,
+        center=(10.0, 20.0, 0.0),
+        scale=3.0,
+    )
+    second_values = tuple(cache._od.values())
+
+    try:
+        assert 0 < len(cache) <= cache.maxsize
+        assert 0 < len(command_cache) <= command_cache.maxsize
+        assert cache.maxbytes is not None
+        assert cache.byte_size <= cache.maxbytes
+        assert set(first_ids) == {id(value) for value in second_values}
+        assert all(
+            not polyline.flags.writeable
+            for glyph in second_values
+            for polyline in glyph
+        )
+    finally:
+        text_module.TEXT_RENDERER.clear_glyph_caches()
+    assert len(cache) == 0
+    assert cache.byte_size == 0
+    assert len(command_cache) == 0
+
+
+def test_text_resolves_an_already_absolute_font_path_only_once(monkeypatch) -> None:
+    font_path = resolve_font_path("GoogleSans-Regular.ttf")
+    original_resolve = Path.resolve
+    calls: list[Path] = []
+
+    def counting_resolve(self: Path, *args, **kwargs):
+        calls.append(self)
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    text_impl(text="ABBA", font=str(font_path), quality=0.5)
+
+    assert len(calls) == 1

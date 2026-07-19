@@ -55,14 +55,25 @@ def _reflect_index(i: int, n: int) -> int:
     return int(j)
 
 
-@njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _smooth_reflect_nb(points: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    n = int(points.shape[0])
+@njit(cache=True, fastmath=True, inline="always")  # type: ignore[misc]
+def _smooth_reflect_line_into_nb(
+    points: np.ndarray,
+    start: int,
+    stop: int,
+    kernel: np.ndarray,
+    out: np.ndarray,
+) -> None:
+    source = points[start:stop]
+    target = out[start:stop]
+    n = int(source.shape[0])
     if n <= 1:
-        return points
+        if n == 1:
+            target[0, 0] = source[0, 0]
+            target[0, 1] = source[0, 1]
+            target[0, 2] = source[0, 2]
+        return
 
     r = int(kernel.shape[0] // 2)
-    out = np.empty_like(points)
     for i in range(n):
         ax = 0.0
         ay = 0.0
@@ -70,23 +81,29 @@ def _smooth_reflect_nb(points: np.ndarray, kernel: np.ndarray) -> np.ndarray:
         for k in range(-r, r + 1):
             j = _reflect_index(i + k, n)
             w = float(kernel[k + r])
-            ax += w * float(points[j, 0])
-            ay += w * float(points[j, 1])
-            az += w * float(points[j, 2])
-        out[i, 0] = np.float32(ax)
-        out[i, 1] = np.float32(ay)
-        out[i, 2] = np.float32(az)
-    return out
+            ax += w * float(source[j, 0])
+            ay += w * float(source[j, 1])
+            az += w * float(source[j, 2])
+        target[i, 0] = np.float32(ax)
+        target[i, 1] = np.float32(ay)
+        target[i, 2] = np.float32(az)
 
 
-@njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _smooth_wrap_nb(points: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    n = int(points.shape[0])
+@njit(cache=True, fastmath=True, inline="always")  # type: ignore[misc]
+def _smooth_wrap_line_into_nb(
+    points: np.ndarray,
+    start: int,
+    stop: int,
+    kernel: np.ndarray,
+    out: np.ndarray,
+) -> None:
+    source = points[start : stop - 1]
+    target = out[start:stop]
+    n = int(source.shape[0])
     if n <= 0:
-        return points
+        return
 
     r = int(kernel.shape[0] // 2)
-    out = np.empty_like(points)
     for i in range(n):
         ax = 0.0
         ay = 0.0
@@ -94,13 +111,36 @@ def _smooth_wrap_nb(points: np.ndarray, kernel: np.ndarray) -> np.ndarray:
         for k in range(-r, r + 1):
             j = (i + k) % n
             w = float(kernel[k + r])
-            ax += w * float(points[j, 0])
-            ay += w * float(points[j, 1])
-            az += w * float(points[j, 2])
-        out[i, 0] = np.float32(ax)
-        out[i, 1] = np.float32(ay)
-        out[i, 2] = np.float32(az)
-    return out
+            ax += w * float(source[j, 0])
+            ay += w * float(source[j, 1])
+            az += w * float(source[j, 2])
+        target[i, 0] = np.float32(ax)
+        target[i, 1] = np.float32(ay)
+        target[i, 2] = np.float32(az)
+
+    # 閉曲線は末尾を畳み込み対象から外し、平滑化後の先頭を複写する。
+    target[n, 0] = target[0, 0]
+    target[n, 1] = target[0, 1]
+    target[n, 2] = target[0, 2]
+
+
+@njit(cache=True, fastmath=True)  # type: ignore[misc]
+def _smooth_packed_into_nb(
+    points: np.ndarray,
+    offsets: np.ndarray,
+    closed_flags: np.ndarray,
+    kernel: np.ndarray,
+    out: np.ndarray,
+) -> None:
+    """packed line 全体を一度の JIT 呼び出しで平滑化して ``out`` へ書く。"""
+
+    for line_index in range(int(offsets.shape[0]) - 1):
+        start = int(offsets[line_index])
+        stop = int(offsets[line_index + 1])
+        if closed_flags[line_index]:
+            _smooth_wrap_line_into_nb(points, start, stop, kernel, out)
+        else:
+            _smooth_reflect_line_into_nb(points, start, stop, kernel, out)
 
 
 @effect(meta=lowpass_meta)
@@ -171,16 +211,13 @@ def lowpass(
         sigma_in_samples=float(sigma_in_samples), max_radius=MAX_KERNEL_RADIUS
     )
     resampled, offsets_out = resample_polylines(coords, plan)
+    closed_flags = np.fromiter(
+        (line.closed for line in plan.lines),
+        dtype=np.bool_,
+        count=n_lines,
+    )
     coords_out = np.empty_like(resampled)
-    for line in plan.lines:
-        source = resampled[line.output_start : line.output_stop]
-        target = coords_out[line.output_start : line.output_stop]
-        if line.closed:
-            smoothed = _smooth_wrap_nb(source[:-1], kernel)
-            target[:-1] = smoothed
-            target[-1] = smoothed[0]
-        else:
-            target[:] = _smooth_reflect_nb(source, kernel)
+    _smooth_packed_into_nb(resampled, offsets_out, closed_flags, kernel, coords_out)
     return coords_out, offsets_out
 
 

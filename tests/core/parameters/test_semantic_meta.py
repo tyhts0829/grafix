@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -8,6 +9,10 @@ from grafix.core.parameters.codec import (
     dumps_param_store,
     encode_param_store,
     loads_param_store,
+)
+from grafix.core.parameters.context import (
+    parameter_context,
+    parameter_context_from_snapshot,
 )
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.key import ParameterKey
@@ -18,6 +23,7 @@ from grafix.core.parameters.memento import (
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_from_spec, meta_to_spec
+from grafix.core.parameters.resolver import resolve_params
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.variations import create_variation, list_variations
@@ -186,3 +192,99 @@ def test_rows_from_snapshot_carries_semantic_meta() -> None:
     assert row.category == SEMANTIC_META.category
     assert row.advanced is True
     assert row.recommended_range == SEMANTIC_META.recommended_range
+
+
+def test_merge_refreshes_code_description_and_preserves_stored_gui_range() -> None:
+    store = ParamStore()
+    key = ParameterKey(op="semantic-op", site_id="site-1", arg="width")
+    stale_meta = replace(
+        SEMANTIC_META,
+        ui_min=-10.0,
+        ui_max=10.0,
+        description=None,
+    )
+    merge_frame_params(
+        store,
+        [FrameParamRecord(key=key, base=1.5, meta=stale_meta, explicit=False)],
+    )
+
+    merge_frame_params(
+        store,
+        [FrameParamRecord(key=key, base=1.5, meta=SEMANTIC_META, explicit=False)],
+    )
+
+    expected = replace(SEMANTIC_META, ui_min=-10.0, ui_max=10.0)
+    assert store.get_meta(key) == expected
+
+    revision = store.revision
+    merge_frame_params(
+        store,
+        [FrameParamRecord(key=key, base=1.5, meta=SEMANTIC_META, explicit=False)],
+    )
+    assert store.get_meta(key) == expected
+    assert store.revision == revision
+
+
+def test_resolver_refreshes_description_from_current_code() -> None:
+    store = ParamStore()
+    stale_meta = replace(
+        SEMANTIC_META,
+        ui_min=-10.0,
+        ui_max=10.0,
+        description=None,
+    )
+    with parameter_context(store):
+        resolve_params(
+            op="semantic-op",
+            params={"width": 1.5},
+            meta={"width": stale_meta},
+            site_id="site-1",
+            explicit_args=set(),
+        )
+
+    with parameter_context(store):
+        resolve_params(
+            op="semantic-op",
+            params={"width": 1.5},
+            meta={"width": SEMANTIC_META},
+            site_id="site-1",
+            explicit_args=set(),
+        )
+
+    key = ParameterKey(op="semantic-op", site_id="site-1", arg="width")
+    assert store.get_meta(key) == replace(
+        SEMANTIC_META,
+        ui_min=-10.0,
+        ui_max=10.0,
+    )
+
+
+def test_worker_snapshot_records_current_description() -> None:
+    store = ParamStore()
+    key = ParameterKey(op="semantic-op", site_id="site-1", arg="width")
+    stale_meta = replace(
+        SEMANTIC_META,
+        ui_min=-10.0,
+        ui_max=10.0,
+        description=None,
+    )
+    merge_frame_params(
+        store,
+        [FrameParamRecord(key=key, base=1.5, meta=stale_meta, explicit=False)],
+    )
+
+    with parameter_context_from_snapshot(store_snapshot(store)) as frame_params:
+        resolve_params(
+            op="semantic-op",
+            params={"width": 1.5},
+            meta={"width": SEMANTIC_META},
+            site_id="site-1",
+            explicit_args=set(),
+        )
+
+    [record] = frame_params.records
+    assert record.meta == replace(
+        SEMANTIC_META,
+        ui_min=-10.0,
+        ui_max=10.0,
+    )

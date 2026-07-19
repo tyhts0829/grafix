@@ -22,6 +22,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def _format_meta(meta: ParamMeta) -> str:
     parts = [f"kind={meta.kind!r}"]
+    if meta.description is not None:
+        parts.append(f"description={meta.description!r}")
     if meta.ui_min is not None:
         parts.append(f"ui_min={meta.ui_min!r}")
     if meta.ui_max is not None:

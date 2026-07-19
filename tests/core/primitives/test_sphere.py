@@ -7,6 +7,7 @@ import pytest
 
 from grafix.api import G
 from grafix.core.geometry import Geometry
+from grafix.core.primitives.sphere import _sphere_base_geometry, sphere
 from grafix.core.realize import realize
 from grafix.core.primitives import sphere as _sphere_module  # noqa: F401
 
@@ -90,3 +91,34 @@ def test_sphere_center_and_scale_affect_coords() -> None:
 
     # zigzag の先頭点は (0, +R, 0)。R=0.5。
     np.testing.assert_allclose(realized.coords[0], [10.0, 21.5, 30.0], rtol=0.0, atol=1e-6)
+
+
+@pytest.mark.parametrize("style", ("latlon", "zigzag", "icosphere", "rings"))
+def test_sphere_raw_arrays_are_fresh_writable_and_do_not_share_cache(style: str) -> None:
+    """配置前cacheを使っても、raw primitive APIは独立したwritable配列を返す。"""
+
+    params = {"subdivisions": 2, "style": style, "line_mode": "both"}
+    coords_a, offsets_a = sphere(**params)
+    coords_b, offsets_b = sphere(**params)
+
+    assert coords_a.flags.writeable
+    assert offsets_a.flags.writeable
+    assert coords_b.flags.writeable
+    assert offsets_b.flags.writeable
+    assert not np.shares_memory(coords_a, coords_b)
+    assert not np.shares_memory(offsets_a, offsets_b)
+
+    coords_expected = coords_b.copy()
+    offsets_expected = offsets_b.copy()
+    coords_a[0, 0] = np.float32(123.0)
+    offsets_a[0] = np.int32(1)
+    np.testing.assert_array_equal(coords_b, coords_expected)
+    np.testing.assert_array_equal(offsets_b, offsets_expected)
+
+
+def test_sphere_cached_base_is_immutable() -> None:
+    """内部cache自体は書き換え不能とし、後続出力を汚染させない。"""
+
+    coords, offsets = _sphere_base_geometry("icosphere", 2, 0)
+    assert not coords.flags.writeable
+    assert not offsets.flags.writeable

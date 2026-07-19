@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+
+import numba
 import numpy as np
 import pytest
 
@@ -28,6 +31,131 @@ def _circle_ring(radius: float, sides: int) -> np.ndarray:
         axis=1,
     ).astype(np.float32, copy=False)
     return np.concatenate([coords, coords[:1]], axis=0)
+
+
+def _kernel_fixture() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    u0 = np.linspace(0.05, 0.95, num=30, dtype=np.float32).reshape(5, 6)
+    v0 = np.linspace(0.9, 0.1, num=30, dtype=np.float32).reshape(5, 6)
+    mask = np.asarray(
+        [
+            [0, 1, 1, 0, 2, 0],
+            [1, 1, 0, 1, 1, 1],
+            [1, 0, 1, 1, 0, 1],
+            [2, 1, 1, 0, 1, 1],
+            [0, 1, 0, 1, 1, 0],
+        ],
+        dtype=np.uint8,
+    )
+    return u0, v0, mask
+
+
+@pytest.mark.parametrize(
+    ("steps", "boundary", "expected_sha256"),
+    [
+        (1, 0, "223724020648c7ce4e3f6fd4517fa5ea4883e5980969192d85466080eff7dd96"),
+        (1, 1, "9e8e133944121a810dbabc3e90f9aad5025d1013823d003a0693fdd3968200a1"),
+        (4, 0, "172b2af6b86a95f8aa79089d747bbe9ad8344e25afd3b512d3811f3ce2860ab6"),
+        (4, 1, "3434cd5388d64b8e5089906c711ca148189b1a41351c71d906b909622b97c73a"),
+    ],
+)
+def test_reaction_diffusion_kernels_match_frozen_iteration_snapshots(
+    steps: int,
+    boundary: int,
+    expected_sha256: str,
+) -> None:
+    import grafix.core.effects.reaction_diffusion as module
+
+    u0, v0, mask = _kernel_fixture()
+    input_bytes = (u0.tobytes(), v0.tobytes(), mask.tobytes())
+    kwargs = {
+        "steps": steps,
+        "du": 0.16,
+        "dv": 0.08,
+        "feed": 0.035,
+        "kill": 0.062,
+        "dt": 1.0,
+        "boundary": boundary,
+    }
+
+    serial = module._gray_scott_simulate_masked_serial(u0, v0, mask, **kwargs)
+    parallel = module._gray_scott_simulate_masked_parallel(u0, v0, mask, **kwargs)
+
+    assert hashlib.sha256(serial.tobytes()).hexdigest() == expected_sha256
+    assert parallel.tobytes() == serial.tobytes()
+    assert serial.dtype == parallel.dtype == np.float32
+    assert serial.shape == parallel.shape == v0.shape
+    assert serial.strides == parallel.strides == v0.strides
+    assert (u0.tobytes(), v0.tobytes(), mask.tobytes()) == input_bytes
+
+
+def test_reaction_diffusion_parallel_thread_counts_are_exact_when_available() -> None:
+    import grafix.core.effects.reaction_diffusion as module
+
+    u0, v0, mask = _kernel_fixture()
+    kwargs = {
+        "steps": 9,
+        "du": 0.16,
+        "dv": 0.08,
+        "feed": 0.035,
+        "kill": 0.062,
+        "dt": 1.0,
+        "boundary": 0,
+    }
+    expected = module._gray_scott_simulate_masked_serial(u0, v0, mask, **kwargs)
+    previous_threads = numba.get_num_threads()
+    maximum_threads = int(numba.config.NUMBA_NUM_THREADS)
+    try:
+        for thread_count in (1, 2, 4):
+            if thread_count > maximum_threads:
+                continue
+            numba.set_num_threads(thread_count)
+            actual = module._gray_scott_simulate_masked_parallel(
+                u0,
+                v0,
+                mask,
+                **kwargs,
+            )
+            assert actual.tobytes() == expected.tobytes()
+    finally:
+        numba.set_num_threads(previous_threads)
+
+
+def test_reaction_diffusion_kernel_dispatch_uses_safe_crossover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import grafix.core.effects.reaction_diffusion as module
+
+    calls: list[str] = []
+
+    def serial(*_args: object, **_kwargs: object) -> np.ndarray:
+        calls.append("serial")
+        return np.zeros((1, 1), dtype=np.float32)
+
+    def parallel(*_args: object, **_kwargs: object) -> np.ndarray:
+        calls.append("parallel")
+        return np.ones((1, 1), dtype=np.float32)
+
+    monkeypatch.setattr(module, "get_num_threads", lambda: 4)
+    monkeypatch.setattr(module, "_gray_scott_simulate_masked_serial", serial)
+    monkeypatch.setattr(module, "_gray_scott_simulate_masked_parallel", parallel)
+    kwargs = {
+        "du": 0.16,
+        "dv": 0.08,
+        "feed": 0.035,
+        "kill": 0.062,
+        "dt": 1.0,
+        "boundary": 0,
+    }
+    large = np.zeros((256, 256), dtype=np.float32)
+    mask = np.ones_like(large, dtype=np.uint8)
+
+    module._gray_scott_simulate_masked(large, large, mask, steps=8, **kwargs)
+    module._gray_scott_simulate_masked(large, large, mask, steps=7, **kwargs)
+    nonfinite = large.copy()
+    nonfinite[0, 0] = np.nan
+    module._gray_scott_simulate_masked(nonfinite, large, mask, steps=8, **kwargs)
+
+    assert calls == ["parallel", "serial", "serial"]
 
 
 def test_reaction_diffusion_contour_returns_closed_loops() -> None:

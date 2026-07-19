@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 ParamScale = Literal["linear", "log"]
@@ -100,4 +100,31 @@ class ParamMeta:
             object.__setattr__(self, "recommended_range", (lower, upper))
 
 
-__all__ = ["ParamMeta", "ParamScale"]
+def merge_code_description_with_stored_meta(
+    code_meta: ParamMeta,
+    stored_meta: ParamMeta,
+) -> ParamMeta:
+    """現在の description を互換な保存済み metadata へ反映する。
+
+    同じ ``kind`` / ``choices`` のときだけ、現在のコードが定義する
+    ``description`` を反映する。値解決へ影響する metadata と GUI が編集する
+    ``ui_min`` / ``ui_max`` は保存値を維持する。``kind`` が変わった場合は、
+    既存の direct merge 契約どおり現在の metadata 全体を返す。
+    """
+
+    if code_meta is stored_meta:
+        return stored_meta
+    if str(code_meta.kind) != str(stored_meta.kind):
+        return code_meta
+    if code_meta.choices != stored_meta.choices:
+        return stored_meta
+    if code_meta.description == stored_meta.description:
+        return stored_meta
+    return replace(stored_meta, description=code_meta.description)
+
+
+__all__ = [
+    "ParamMeta",
+    "ParamScale",
+    "merge_code_description_with_stored_meta",
+]

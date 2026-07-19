@@ -154,3 +154,35 @@ def test_asemic_cached_glyph_arrays_are_read_only() -> None:
 
     assert polylines
     assert all(polyline.flags.writeable is False for polyline in polylines)
+
+
+def test_asemic_raw_results_are_fresh_writable_and_non_sharing() -> None:
+    for value in ("ABBA", ""):
+        first_coords, first_offsets = asemic_impl(
+            text=value, seed=123, n_nodes=28
+        )
+        second_coords, second_offsets = asemic_impl(
+            text=value, seed=123, n_nodes=28
+        )
+
+        assert first_coords.flags.writeable
+        assert first_offsets.flags.writeable
+        assert second_coords.flags.writeable
+        assert second_offsets.flags.writeable
+        assert not np.shares_memory(first_coords, second_coords)
+        assert not np.shares_memory(first_offsets, second_offsets)
+        assert np.array_equal(first_coords, second_coords)
+        assert np.array_equal(first_offsets, second_offsets)
+
+
+def test_asemic_bezier_basis_cache_is_bounded_readonly_and_reused() -> None:
+    asemic_module._bezier_basis.cache_clear()
+
+    first = asemic_module._bezier_basis(12)
+    second = asemic_module._bezier_basis(12)
+    info = asemic_module._bezier_basis.cache_info()
+
+    assert first is second
+    assert info.hits == 1
+    assert info.currsize <= 64
+    assert all(values.flags.writeable is False for values in first)

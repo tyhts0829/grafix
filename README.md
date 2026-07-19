@@ -190,8 +190,22 @@ import numpy as np
 
 from grafix import effect, primitive
 
-prim_meta = {"r": {"kind": "float", "ui_min": 1.0, "ui_max": 100.0}}
-eff_meta = {"amount": {"kind": "float", "ui_min": 0.0, "ui_max": 2.0}}
+prim_meta = {
+    "r": {
+        "kind": "float",
+        "ui_min": 1.0,
+        "ui_max": 100.0,
+        "description": "生成する形状の基準半径。",
+    }
+}
+eff_meta = {
+    "amount": {
+        "kind": "float",
+        "ui_min": 0.0,
+        "ui_max": 2.0,
+        "description": "入力形状へ適用する変形量。",
+    }
+}
 
 @primitive(meta=prim_meta)
 def user_prim(*, r=10.0) -> tuple[np.ndarray, np.ndarray]:
@@ -212,6 +226,8 @@ Notes:
 - Built-in primitives/effects must provide `meta=...` (enforced).
 - User-defined primitives/effects use `(coords, offsets)` tuples (`coords` must be shape `(N,3)`).
 - For user-defined ops, `meta` is optional. If omitted, parameters are not shown in the Parameter GUI.
+- For user-defined ops, each `description` is also optional, but adding one makes the
+  argument's purpose available to Parameter GUI Help and generated stubs.
 - User-defined modules need to be imported once to register the ops.
 
 ## Presets (reusable components)
@@ -222,8 +238,18 @@ Use `@preset` to register a component, and call it via `P.<name>(...)`:
 from grafix import G, P, preset
 
 meta = {
-    "n_rows": {"kind": "int", "ui_min": 1, "ui_max": 20},
-    "n_cols": {"kind": "int", "ui_min": 1, "ui_max": 20},
+    "n_rows": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 20,
+        "description": "グリッドの縦方向の分割数。",
+    },
+    "n_cols": {
+        "kind": "int",
+        "ui_min": 1,
+        "ui_max": 20,
+        "description": "グリッドの横方向の分割数。",
+    },
 }
 
 @preset(meta=meta)

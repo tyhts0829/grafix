@@ -62,13 +62,11 @@ def xy_polyline(
             x64 * cos_theta - y64 * sin_theta,
             x64 * sin_theta + y64 * cos_theta,
         )
-    coords = np.column_stack(
-        (
-            x64 + cx,
-            y64 + cy,
-            np.full(x64.shape, cz, dtype=np.float64),
-        )
-    ).astype(np.float32)
+    coords64 = np.empty((x64.shape[0], 3), dtype=np.float64)
+    coords64[:, 0] = x64 + cx
+    coords64[:, 1] = y64 + cy
+    coords64[:, 2] = cz
+    coords = coords64.astype(np.float32)
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
     return coords, offsets
 

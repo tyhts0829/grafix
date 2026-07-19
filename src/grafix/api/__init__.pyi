@@ -30,6 +30,9 @@ class _G(Protocol):
             sweep: 開始角から終点までの符号付き回転量を度単位で指定します。, float, range [-360.0, 360.0]
             segments: 円弧を近似する直線セグメントの数を指定します。, int, range [1, 512]
             center: 円弧の中心となる XYZ 座標を指定します。, vec3, range [-300.0, 300.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def asemic(self, *, activate: bool = ..., text: str = ..., seed: int = ..., n_nodes: int = ..., candidates: int = ..., stroke_min: int = ..., stroke_max: int = ..., walk_min_steps: int = ..., walk_max_steps: int = ..., stroke_style: Literal['line', 'bezier'] = ..., bezier_samples: int = ..., bezier_tension: float = ..., text_align: Literal['left', 'center', 'right'] = ..., glyph_advance_em: float = ..., space_advance_em: float = ..., letter_spacing_em: float = ..., line_height: float = ..., use_bounding_box: bool = ..., box_width: float = ..., box_height: float = ..., show_bounding_box: bool = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -38,28 +41,31 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            text: 描画する文字列
-            seed: 全体 seed
-            n_nodes: ノード数（少なすぎるとストロークが生成できないことがある）
-            candidates: best-candidate の候補数（大きいほど均一になりやすい）
-            stroke_min: ストローク本数の最小値
-            stroke_max: ストローク本数の最大値
-            walk_min_steps: ランダムウォークの最小ステップ数
-            walk_max_steps: ランダムウォークの最大ステップ数
-            stroke_style: ストロークの描画スタイル
-            bezier_samples: `"bezier"` 時の 1 セグメントあたりのサンプル点数（2 以上）
-            bezier_tension: `"bezier"` 時の張り（0=曲がりやすい, 1=直線寄り）
-            text_align: 行揃え
-            glyph_advance_em: 空白以外の文字送り（em）
-            space_advance_em: 空白の文字送り（em）
-            letter_spacing_em: 追加の文字間スペーシング（em）
-            line_height: 行送り（em）
-            use_bounding_box: True のとき `box_width` による自動改行と、`show_bounding_box` による枠描画を有効にする
-            box_width: 幅による自動改行を行う際のボックス幅（出力座標系）
-            box_height: デバッグ用ボックス表示の高さ（出力座標系）
-            show_bounding_box: True のとき、`box_width/box_height` で指定されたボックス枠（4本の線分）を追加で描画する
-            center: 平行移動ベクトル (cx, cy, cz)
-            scale: 等方スケール倍率
+            text: 擬似字形で描画する文字列を指定し、改行で複数行に分けます。, str
+            seed: 文字ごとの字形を決定し、同じ文字を同じ形で再現できるようにします。, int, range [0, 999999]
+            n_nodes: 各字形の骨格グラフに配置するノード数を指定します。, int, range [3, 200]
+            candidates: ノード配置時に比較する候補点を増やし、分布の均一さを調整します。, int, range [1, 50]
+            stroke_min: 一つの字形を構成するストローク本数の下限を指定します。, int, range [0, 20]
+            stroke_max: 一つの字形を構成するストローク本数の上限を指定します。, int, range [0, 20]
+            walk_min_steps: 骨格グラフ上で一つのストロークが進む最小ステップ数を指定します。, int, range [1, 20]
+            walk_max_steps: 骨格グラフ上で一つのストロークが進む最大ステップ数を指定します。, int, range [1, 20]
+            stroke_style: 骨格を折れ線のまま描くか、Bézier 曲線で滑らかに描くか選択します。, choice, choices { 'line', 'bezier' }
+            bezier_samples: Bézier 化した各セグメントを構成するサンプリング点数を指定します。, int, range [2, 64]
+            bezier_tension: Bézier ストロークの張りを調整し、大きいほど直線に近づけます。, float, range [0.0, 1.0]
+            text_align: 各行の擬似字形を左揃え・中央揃え・右揃えのいずれで配置するか選択します。, choice, choices { 'left', 'center', 'right' }
+            glyph_advance_em: 空白以外の文字を一文字進める距離を em 単位で指定します。, float, range [0.0, 3.0]
+            space_advance_em: 空白文字で進める距離を em 単位で指定します。, float, range [0.0, 3.0]
+            letter_spacing_em: 各文字送りへ追加する間隔を em 単位で指定します。, float, range [0.0, 2.0]
+            line_height: 複数行のベースライン間隔を em 単位で指定します。, float, range [0.8, 3.0]
+            use_bounding_box: 指定幅での自動改行と任意のボックス枠描画を有効にします。, bool
+            box_width: 自動改行と枠描画に使うボックス幅を出力座標単位で指定します。, float, range [0.0, 300.0]
+            box_height: 枠描画に使うボックス高さを出力座標単位で指定します。, float, range [0.0, 300.0]
+            show_bounding_box: 指定した幅と高さのボックス枠を擬似字形へ追加します。, bool
+            center: 生成した擬似文字列全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            scale: 1 em を基準に生成した擬似字形へ適用する等方スケールを指定します。, float, range [0.0, 200.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def bezier(self, *, activate: bool = ..., p0: Sequence[float] = ..., p1: Sequence[float] = ..., p2: Sequence[float] = ..., p3: Sequence[float] = ..., segments: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -68,7 +74,14 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
+            p0: 曲線の始点となる 2 次元または 3 次元座標
+            p1: 始点側の接線方向と曲がり方を定める第 1 制御点
+            p2: 終点側の接線方向と曲がり方を定める第 2 制御点
+            p3: 曲線の終点となる 2 次元または 3 次元座標
             segments: 4 制御点で定まる曲線を近似する直線セグメントの数を指定します。, int, range [1, 512]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def circle(self, *, activate: bool = ..., radius: float = ..., segments: int = ..., center: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -77,9 +90,12 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            radius: 半径
-            segments: 周上の線分数
-            center: 円の中心
+            radius: 円の中心から輪郭までの半径を指定します。, float, range [0.0, 200.0]
+            segments: 円周を近似する直線セグメントの数を指定します。, int, range [3, 512]
+            center: 円の中心となる XYZ 座標を指定します。, vec3, range [-300.0, 300.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def ellipse(self, *, activate: bool = ..., radius_x: float = ..., radius_y: float = ..., angle: float = ..., segments: int = ..., center: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -93,6 +109,9 @@ class _G(Protocol):
             angle: 楕円を中心まわりに回転させる角度を度単位で指定します。, float, range [-180.0, 180.0]
             segments: 楕円周を近似する直線セグメントの数を指定します。, int, range [3, 512]
             center: 楕円の中心となる XYZ 座標を指定します。, vec3, range [-300.0, 300.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def grid(self, *, activate: bool = ..., nx: int = ..., ny: int = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -101,10 +120,13 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            nx: 縦線の本数
-            ny: 横線の本数
-            center: 平行移動ベクトル (cx, cy, cz)
-            scale: 等方スケール倍率 s
+            nx: 正方形領域に等間隔で配置する縦線の本数を指定します。, int, range [1, 500]
+            ny: 正方形領域に等間隔で配置する横線の本数を指定します。, int, range [1, 500]
+            center: グリッド全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            scale: 一辺 1 のグリッド全体に適用する等方スケールを指定します。, float, range [0.0, 200.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def laplace_field_grid(self, *, activate: bool = ..., preset: Literal['cylinder_uniform', 'mobius', 'exp'] = ..., u_min: float = ..., u_max: float = ..., v_min: float = ..., v_max: float = ..., n_u: int = ..., n_v: int = ..., samples: int = ..., center: Vec3 = ..., scale: float = ..., rotate: float = ..., clip: bool = ..., clip_xmin: float = ..., clip_xmax: float = ..., clip_ymin: float = ..., clip_ymax: float = ..., a: float = ..., U: float = ..., gap: float = ..., draw_boundary: bool = ..., boundary_samples: int = ..., alpha_re: float = ..., alpha_im: float = ..., beta_re: float = ..., beta_im: float = ..., gamma_re: float = ..., gamma_im: float = ..., delta_re: float = ..., delta_im: float = ..., k_re: float = ..., k_im: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -113,18 +135,18 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            preset: `"cylinder_uniform" | "mobius" | "exp"`
+            preset: W 平面の直交格子へ適用する解析写像の種類を選択します。, choice, choices { 'cylinder_uniform', 'mobius', 'exp' }
             u_min: 写像元 W=u+iv 平面で描画する u 座標の下限を指定します。, float, range [-10.0, 10.0]
             u_max: 写像元 W=u+iv 平面で描画する u 座標の上限を指定します。, float, range [-10.0, 10.0]
             v_min: 写像元 W=u+iv 平面で描画する v 座標の下限を指定します。, float, range [-10.0, 10.0]
             v_max: 写像元 W=u+iv 平面で描画する v 座標の上限を指定します。, float, range [-10.0, 10.0]
             n_u: u を固定して v 方向へたどる格子線の本数を指定します。, int, range [0, 200]
             n_v: v を固定して u 方向へたどる格子線の本数を指定します。, int, range [0, 200]
-            samples: 1 本あたりのサンプル点数（2 以上）
-            center: 平行移動ベクトル (cx, cy, cz)
-            scale: 等方スケール倍率
-            rotate: 回転角 [deg]（XY 平面、origin 回り）
-            clip: True のとき矩形クリップ（AABB）で線を分割する
+            samples: 写像前の各格子線を構成するサンプリング点数を指定します。, int, range [2, 4000]
+            center: 写像後の格子全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            scale: 写像後の格子全体に適用する等方スケールを指定します。, float, range [0.0, 200.0]
+            rotate: 写像後の格子を原点まわりに回転させる角度を度単位で指定します。, float, range [0.0, 360.0]
+            clip: 変換後の点を指定した XY 矩形内に限定し、連続区間へ分割します。, bool
             clip_xmin: 変換後の座標でクリップ矩形の X 下限を指定します。, float, range [-200.0, 200.0]
             clip_xmax: 変換後の座標でクリップ矩形の X 上限を指定します。, float, range [-200.0, 200.0]
             clip_ymin: 変換後の座標でクリップ矩形の Y 下限を指定します。, float, range [-200.0, 200.0]
@@ -132,8 +154,8 @@ class _G(Protocol):
             a: 円柱一様流写像で障害物となる境界円の半径を指定します。, float, range [0.0, 50.0]
             U: 円柱一様流写像で W 座標を除算する流速スケールを指定します。, float, range [0.0, 5.0]
             gap: 格子線を境界円から離すため、半径に加える相対的な隙間を指定します。, float, range [0.0, 0.05]
-            draw_boundary: `preset="cylinder_uniform"` で境界円を追加する
-            boundary_samples: 境界円のサンプル数（3 以上）
+            draw_boundary: 円柱一様流の格子線に障害物の境界円を追加します。, bool
+            boundary_samples: 障害物の境界円を構成するサンプリング点数を指定します。, int, range [3, 4000]
             alpha_re: Möbius 写像 (αW+β)/(γW+δ) における α の実部を指定します。, float, range [-5.0, 5.0]
             alpha_im: Möbius 写像 (αW+β)/(γW+δ) における α の虚部を指定します。, float, range [-5.0, 5.0]
             beta_re: Möbius 写像 (αW+β)/(γW+δ) における β の実部を指定します。, float, range [-5.0, 5.0]
@@ -144,6 +166,9 @@ class _G(Protocol):
             delta_im: Möbius 写像 (αW+β)/(γW+δ) における δ の虚部を指定します。, float, range [-5.0, 5.0]
             k_re: 指数写像 exp(kW) で W に掛ける複素係数 k の実部を指定します。, float, range [-5.0, 5.0]
             k_im: 指数写像 exp(kW) で W に掛ける複素係数 k の虚部を指定します。, float, range [-5.0, 5.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def line(self, *, activate: bool = ..., center: Vec3 = ..., anchor: Literal['center', 'left', 'right'] = ..., length: float = ..., angle: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -152,10 +177,13 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            center: `anchor` で指定した基準点の座標 (cx, cy, cz)
-            anchor: `center` の基準点
-            length: 線分の長さ
-            angle: 回転角 [deg]
+            center: 選択した基準点を配置する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            anchor: 指定座標を線分の中心・始点・終点のどこに合わせるか選択します。, choice, choices { 'center', 'left', 'right' }
+            length: 線分の始点から終点までの長さを指定します。, float, range [0.0, 200.0]
+            angle: +X 軸を基準とする線分の向きを度単位で指定します。, float, range [0.0, 360.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def lissajous(self, *, activate: bool = ..., a: int = ..., b: int = ..., phase: float = ..., samples: int = ..., turns: float = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -164,13 +192,16 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            a: X 方向の角周波数係数
-            b: Y 方向の角周波数係数
-            phase: X 方向の位相 [deg]
-            samples: サンプリング点数
-            turns: `t` 範囲の周回数
-            center: 平行移動ベクトル (cx, cy, cz)
-            scale: 等方スケール倍率 s
+            a: X 方向の振動回数を決める角周波数係数を指定します。, int, range [0, 20]
+            b: Y 方向の振動回数を決める角周波数係数を指定します。, int, range [0, 20]
+            phase: Y 振動に対する X 振動の位相差を度単位で指定します。, float, range [0.0, 360.0]
+            samples: 曲線全体を構成するサンプリング点の数を指定します。, int, range [2, 8000]
+            turns: パラメータ t が 2π を周回する回数を指定します。, float, range [0.0, 20.0]
+            center: 生成した曲線全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            scale: 幅と高さが 1 の曲線全体に適用する等方スケールを指定します。, float, range [0.0, 200.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def lsystem(self, *, activate: bool = ..., kind: Literal['plant', 'circuit', 'custom'] = ..., iters: int = ..., center: Vec3 = ..., heading: float = ..., angle: float = ..., step: float = ..., jitter: float = ..., seed: int = ..., axiom: str = ..., rules: str = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -179,16 +210,19 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            kind: プリセット種別
-            iters: 展開回数（0 で axiom をそのまま解釈する）
-            center: 開始点の座標 (cx, cy, cz)
-            heading: 初期向き [deg]
-            angle: 回転角 [deg]（`+/-`）
-            step: 前進距離（`F/f`）
-            jitter: 角度/距離の相対ゆらぎ（0 以上）
-            seed: 乱数 seed（決定性）
-            axiom: 初期文字列（展開の出発点）
-            rules: 置換規則（行ごとに `A=...` 形式）
+            kind: 使用する植物・回路プリセット、または独自の書き換え規則を選択します。, choice, choices { 'plant', 'circuit', 'custom' }
+            iters: 公理へ書き換え規則を繰り返し適用する世代数を指定します。, int, range [0, 8]
+            center: タートルが描画を開始する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            heading: +X 軸を基準とするタートルの初期方向を度単位で指定します。, float, range [0.0, 360.0]
+            angle: プログラム中の + と - がタートルを回転させる角度を指定します。, float, range [0.0, 180.0]
+            step: プログラム中の F と f が一回で前進する距離を指定します。, float, range [0.1, 50.0]
+            jitter: 各前進距離と回転角へ加える再現可能な相対ゆらぎの幅を指定します。, float, range [0.0, 0.25]
+            seed: ゆらぎの乱数列を決定し、同じ形を再現できるようにします。, int, range [0, 9999]
+            axiom: 独自規則を展開するときの出発点となる初期文字列を指定します。, str
+            rules: 独自 L-system の一文字ごとの置換を A=... 形式で指定します。, str
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def polygon(self, *, activate: bool = ..., n_sides: int = ..., phase: float = ..., sweep: float = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -197,11 +231,14 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            n_sides: 辺の数
-            phase: 頂点開始角 [deg]
-            sweep: 描画する周回角 [deg]
-            center: 平行移動ベクトル (cx, cy, cz)
-            scale: 等方スケール倍率 s
+            n_sides: 正多角形の頂点と辺の数を指定します。, int, range [3, 128]
+            phase: +X 軸を基準とする最初の頂点の角度を度単位で指定します。, float, range [0.0, 360.0]
+            sweep: 外周のうち描画する角度を指定し、欠けた区間は弦で閉じます。, float, range [0.0, 360.0]
+            center: 正多角形全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            scale: 直径 1 の正多角形全体に適用する等方スケールを指定します。, float, range [0.0, 200.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def polyhedron(self, *, activate: bool = ..., kind: Literal['tetrahedron', 'hexahedron', 'octahedron', 'dodecahedron', 'icosahedron', 'cuboctahedron', 'icosidodecahedron', 'truncated_tetrahedron', 'truncated_cube', 'truncated_octahedron', 'truncated_dodecahedron', 'truncated_icosahedron', 'rhombicuboctahedron', 'snub_cube_left', 'snub_cube_right', 'snub_dodecahedron_left', 'snub_dodecahedron_right', 'truncated_cuboctahedron', 'rhombicosidodecahedron', 'truncated_icosidodecahedron'] = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -210,9 +247,12 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            kind: 多面体の名前
-            center: 平行移動ベクトル (cx, cy, cz)
-            scale: 等方スケール倍率 s
+            kind: ワイヤーフレームとして生成する正多面体または半正多面体を選択します。, choice, choices { 'tetrahedron', 'hexahedron', 'octahedron', 'dodecahedron', 'icosahedron', 'cuboctahedron' … }
+            center: 多面体全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            scale: 同梱頂点データから生成した多面体に適用する等方スケールを指定します。, float, range [0.0, 200.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def polyline(self, *, activate: bool = ..., points: Sequence[Sequence[float]] = ..., closed: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -221,7 +261,11 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
+            points: 入力順に単一ポリラインを構成する 2 次元または 3 次元点列
             closed: 終点が始点と異なる場合に始点を末尾へ追加して線を閉じます。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def rect(self, *, activate: bool = ..., width: float = ..., height: float = ..., angle: float = ..., center: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -234,6 +278,9 @@ class _G(Protocol):
             height: 回転前の Y 軸方向における長方形の高さを指定します。, float, range [0.0, 200.0]
             angle: 長方形を中心まわりに回転させる角度を度単位で指定します。, float, range [-180.0, 180.0]
             center: 長方形の中心となる XYZ 座標を指定します。, vec3, range [-300.0, 300.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def sphere(self, *, activate: bool = ..., subdivisions: int = ..., style: Literal['latlon', 'zigzag', 'icosphere', 'rings'] = ..., line_mode: Literal['horizontal', 'vertical', 'both'] = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -242,11 +289,14 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            subdivisions: 細分化レベル（0..5 にクランプ）
-            style: 生成方式
-            line_mode: ``latlon`` / ``rings`` の線種
-            center: 平行移動ベクトル (cx, cy, cz)
-            scale: 等方スケール倍率 s
+            subdivisions: 球面を構成する線や面の細分化レベルを指定します。, int, range [0, 5]
+            style: 緯経線・螺旋・三角面・リングからワイヤーフレームの生成方式を選択します。, choice, choices { 'latlon', 'zigzag', 'icosphere', 'rings' }
+            line_mode: 緯経線またはリング方式で横線・縦線のどちらを描くか選択します。, choice, choices { 'horizontal', 'vertical', 'both' }
+            center: 球全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            scale: 直径 1 の球全体に適用する等方スケールを指定します。, float, range [0.0, 200.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def text(self, *, activate: bool = ..., text: str = ..., font: str = ..., font_index: int = ..., text_align: Literal['left', 'center', 'right'] = ..., letter_spacing_em: float = ..., line_height: float = ..., use_bounding_box: bool = ..., box_width: float = ..., box_height: float = ..., show_bounding_box: bool = ..., quality: float = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -255,19 +305,22 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            text: 描画する文字列
-            font: フォント指定（実在パス / ファイル名 / ステム / 部分一致）
-            font_index: `.ttc` の subfont 番号（0 以上）
-            text_align: 行揃え（`left|center|right`）
-            letter_spacing_em: 文字間の追加スペーシング（em 比）
-            line_height: 行送り（em 比）
-            use_bounding_box: True のとき `box_width` による自動改行と、`show_bounding_box` による枠描画を有効にする
-            box_width: 幅による自動改行を行う際のボックス幅（出力座標系）
-            box_height: デバッグ用ボックス表示の高さ（出力座標系）
-            show_bounding_box: True のとき、`box_width/box_height` で指定されたボックス枠（4本の線分）を追加で描画する
-            quality: 平坦化品質（0..1）
-            center: 平行移動ベクトル (cx, cy, cz)
-            scale: 等方スケール倍率 s
+            text: フォントの輪郭線で描画する文字列を指定し、改行で複数行に分けます。, str
+            font: 輪郭の取得に使うフォントファイルまたは登録済みフォント名を指定します。, font
+            font_index: TTC コレクション内で使用するサブフォントの番号を指定します。, int, range [0, 32]
+            text_align: 各行の輪郭を左揃え・中央揃え・右揃えのいずれで配置するか選択します。, choice, choices { 'left', 'center', 'right' }
+            letter_spacing_em: フォント固有の文字送りへ追加する文字間隔を em 単位で指定します。, float, range [0.0, 2.0]
+            line_height: 複数行のベースライン間隔を em 単位で指定します。, float, range [0.8, 3.0]
+            use_bounding_box: 指定幅での自動改行と任意のボックス枠描画を有効にします。, bool
+            box_width: 自動改行と枠描画に使うボックス幅を出力座標単位で指定します。, float, range [0.0, 300.0]
+            box_height: 枠描画に使うボックス高さを出力座標単位で指定します。, float, range [0.0, 300.0]
+            show_bounding_box: 指定した幅と高さのボックス枠を文字輪郭へ追加します。, bool
+            quality: 曲線輪郭の平坦化精度を指定し、大きいほど頂点数を増やします。, float, range [0.0, 1.0]
+            center: 生成した文字輪郭全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            scale: 1 em を基準に生成した文字輪郭へ適用する等方スケールを指定します。, float, range [0.0, 50.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def torus(self, *, activate: bool = ..., major_radius: float = ..., minor_radius: float = ..., major_segments: int = ..., minor_segments: int = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -276,12 +329,15 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            major_radius: 大半径
-            minor_radius: 小半径
-            major_segments: major 方向の分割数
-            minor_segments: minor 方向の分割数
-            center: 平行移動ベクトル (cx, cy, cz)
-            scale: 等方スケール倍率 s
+            major_radius: トーラス中心から管の中心線までの大半径を指定します。, float, range [-100.0, 100.0]
+            minor_radius: 管の中心線から表面までの小半径を指定します。, float, range [-100.0, 100.0]
+            major_segments: 大円方向の分割数と子午線の本数を指定します。, int, range [3, 256]
+            minor_segments: 管断面方向の分割数と緯線の本数を指定します。, int, range [3, 256]
+            center: トーラス全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
+            scale: 指定した二つの半径で生成した形状に適用する等方スケールを指定します。, float, range [0.0, 200.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
 
@@ -295,11 +351,14 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            auto_center: True なら頂点の平均座標を中心に使用する
-            pivot: `auto_center=False` のときの変換中心
-            rotation: 各軸の回転角 [deg]（rx, ry, rz）
-            scale: 各軸の倍率（sx, sy, sz）
-            delta: 最後に適用する平行移動量 [mm]（dx, dy, dz）
+            auto_center: 入力頂点の平均座標を変換中心として使用する。, bool
+            pivot: 自動中心が無効な場合に使用する変換中心。, vec3, range [-100.0, 100.0]
+            rotation: 各軸まわりに適用する回転角を度単位で指定する。, vec3, range [-180.0, 180.0]
+            scale: 変換中心を基準に適用する各軸の倍率。, vec3, range [0.25, 4.0]
+            delta: スケールと回転の後に適用する各軸の平行移動量。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def bold(self, *, activate: bool = ..., count: int = ..., radius: float = ..., seed: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -308,9 +367,12 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            count: 出力ストローク数（元の線を 1 本含む）
-            radius: ずらし量の最大半径 [mm] 相当（XY のみ）
-            seed: ずらし量生成の乱数シード（決定性のため）
+            count: 元の線を含めて出力するストロークの本数。, int, range [1, 10]
+            radius: 複製ストロークを XY 平面でずらす最大半径。, float, range [0.0, 1.0]
+            seed: ストロークのずれを再現可能にする乱数シード。, int, range [0, 2147483647]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def buffer(self, *, activate: bool = ..., join: Literal['mitre', 'round', 'bevel'] = ..., quad_segs: int = ..., distance: float = ..., union: bool = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -319,11 +381,14 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            join: 角の処理
-            quad_segs: 円弧近似分割数（Shapely の `quad_segs` 相当）
-            distance: buffer 距離 [mm]
-            union: True のとき、入力内の複数ポリラインを同一平面へ射影して統合し、 1回の buffer で重なりをまとめた輪郭を返す
-            keep_original: True のとき buffer 結果に加えて元のポリラインも出力に含める
+            join: 輪郭をオフセットしたときの角の接続形状を選ぶ。, choice, choices { 'mitre', 'round', 'bevel' }
+            quad_segs: 丸い角や端を近似する四分円あたりの分割数。, int, range [1, 100]
+            distance: 輪郭を膨張または収縮させる距離で、正なら外側、負なら内側へ動かす。, float, range [-25.0, 25.0]
+            union: 複数の入力ポリラインを統合してから一度に輪郭を生成する。, bool
+            keep_original: 生成した輪郭に元のポリラインを加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def clip(self, *, activate: bool = ..., mode: Literal['inside', 'outside'] = ..., draw_outline: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -332,8 +397,11 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: `"inside"` はマスク内側だけ残す
-            draw_outline: True のとき、マスク輪郭を追加で出力に含める
+            mode: マスクの内側と外側のどちらを残すか選ぶ。, choice, choices { 'inside', 'outside' }
+            draw_outline: クリップ結果にマスク輪郭を加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def collapse(self, *, activate: bool = ..., intensity: float = ..., subdivisions: int = ..., intensity_mask_base: Vec3 = ..., intensity_mask_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -342,12 +410,15 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            intensity: 変位量（長さ単位は座標系に従う）
-            subdivisions: 細分回数
-            intensity_mask_base: ジオメトリ bbox の中心（正規化座標 t=0）における intensity 乗算係数（軸別）
-            intensity_mask_slope: 正規化座標 t∈[-1,+1] に対する係数勾配（軸別）
-            auto_center: True のとき `pivot` を無視し、入力 bbox の中心を pivot として扱う
-            pivot: auto_center=False のときの pivot（ワールド座標）
+            intensity: 細分した線分に垂直なランダム変位の基本量。, float, range [0.0, 10.0]
+            subdivisions: 変形前に各線分へ適用する細分回数。, int, range [0, 10]
+            intensity_mask_base: 勾配の基準点における変位倍率を軸ごとに指定する。, vec3, range [0.0, 1.0]
+            intensity_mask_slope: 正規化した各軸位置に対する変位倍率の勾配。, vec3, range [-1.0, 1.0]
+            auto_center: 入力のバウンディングボックス中心を変位強度勾配の基準点にする。, bool
+            pivot: 自動中心が無効な場合に変位強度勾配の基準とする点。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def dash(self, *, activate: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -356,10 +427,13 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            dash_length: ダッシュ（描画区間）の長さ [mm]
-            gap_length: ギャップ（非描画区間）の長さ [mm]
-            offset: パターン位相オフセット [mm]
-            offset_jitter: ポリラインごとに offset に加えるジッター量 [mm]
+            dash_length: 破線パターンで描画する区間の長さ。, float, range [0.0, 100.0]
+            gap_length: 破線パターンで描画しない区間の長さ。, float, range [0.0, 100.0]
+            offset: 各ポリライン上で破線パターンの開始位相をずらす距離。, float, range [0.0, 100.0]
+            offset_jitter: ポリラインごとに開始位相へ加える一様乱数の最大振幅。, float, range [0.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def displace(self, *, activate: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., gradient_profile: Literal['linear', 'radial'] = ..., gradient_radius: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -368,16 +442,19 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            amplitude: 変位量 [mm]（各軸別）
-            spatial_freq: 空間周波数（各軸別）
-            amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
-            frequency_gradient: 周波数の軸方向グラデーション係数（各軸別）
-            gradient_center_offset: 勾配計算の中心オフセット（bbox 正規化座標、各軸別）
-            gradient_profile: 勾配の形状
-            gradient_radius: `"radial"` の距離 `d` を作るための半径（bbox 正規化座標、各軸別）
-            min_gradient_factor: 勾配適用時の最小係数（0.0–1.0）
-            max_gradient_factor: 勾配適用時の最大係数（1.0–4.0）
-            t: 時間オフセット（位相）
+            amplitude: ノイズによる変位の最大量を軸ごとに指定する。, vec3, range [0.0, 50.0]
+            spatial_freq: 変位ノイズの空間周波数を軸ごとに指定する。, vec3, range [0.0, 0.1]
+            amplitude_gradient: 位置に応じて変位振幅を変化させる勾配を軸ごとに指定する。, vec3, range [-4.0, 4.0]
+            frequency_gradient: 位置に応じて空間周波数を変化させる勾配を軸ごとに指定する。, vec3, range [-4.0, 4.0]
+            gradient_center_offset: 勾配の中心をバウンディングボックス正規化座標でずらす。, vec3, range [-1.0, 1.0]
+            gradient_profile: 勾配を軸方向の線形変化と中心からの放射変化から選ぶ。, choice, choices { 'linear', 'radial' }
+            gradient_radius: 放射勾配の正規化距離を定める半径を軸ごとに指定する。, vec3, range [0.05, 1.0]
+            min_gradient_factor: 勾配から得る振幅と周波数の倍率を下限で制限する。, float, range [0.0, 0.5]
+            max_gradient_factor: 勾配から得る振幅と周波数の倍率を上限で制限する。, float, range [1.0, 4.0]
+            t: ノイズの位相を時間方向へ進めて変位を流動させる。, float, range [0.0, 1.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def drop(self, *, activate: bool = ..., interval: int = ..., index_offset: int = ..., min_length: float = ..., max_length: float = ..., probability_base: Vec3 = ..., probability_slope: Vec3 = ..., by: Literal['line', 'face'] = ..., seed: int = ..., keep_mode: Literal['drop', 'keep'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -386,15 +463,18 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            interval: 線インデックスに対する間引きステップ
-            index_offset: interval 判定の開始オフセット
-            min_length: この長さ以下の線を対象とする
-            max_length: この長さ以上の線を対象とする
-            probability_base: ジオメトリ bbox の中心（正規化座標 t=0）における drop 確率（軸別）
-            probability_slope: 正規化座標 t∈[-1,+1] に対する確率勾配（軸別）
-            by: 判定単位
-            seed: probability_* 使用時の乱数シード
-            keep_mode: "drop": 条件に一致した線を捨てる
+            interval: 線または面をインデックス順に一定間隔で対象にする。1 以上で有効、0 以下で無効。, int, range [0, 100]
+            index_offset: インデックスによる間引き判定の開始位置をずらす。, int, range [0, 100]
+            min_length: 0 以上のとき、この長さ以下の線または面を対象にする。負値で無効。, float, range [-1.0, 200.0]
+            max_length: 0 以上のとき、この長さ以上の線または面を対象にする。負値で無効。, float, range [-1.0, 200.0]
+            probability_base: バウンディングボックス中心での選択確率を軸ごとに指定する。, vec3, range [0.0, 1.0]
+            probability_slope: 正規化した各軸位置に対する選択確率の勾配。, vec3, range [-1.0, 1.0]
+            by: 選択と除去をポリライン単位または閉じた面単位で行う。, choice, choices { 'line', 'face' }
+            seed: 確率による選択結果を再現可能にする乱数シード。, int, range [0, 2147483647]
+            keep_mode: 条件に一致した要素を除去するか、一致した要素だけ残すか選ぶ。, choice, choices { 'drop', 'keep' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def extrude(self, *, activate: bool = ..., delta: Vec3 = ..., scale: float = ..., subdivisions: int = ..., center_mode: Literal['origin', 'auto'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -403,10 +483,13 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            delta: 押し出し量（dx, dy, dz）[mm]（長さは 0–200 にクランプ）
-            scale: 複製線に適用するスケール係数（0–3 にクランプ）
-            subdivisions: 中点挿入の細分回数（0–8 にクランプ）
-            center_mode: "auto" のとき複製線の重心中心でスケールし、それ以外は原点中心でスケールする
+            delta: 複製線を押し出す各軸の移動量。, vec3, range [-200.0, 200.0]
+            scale: 押し出して生成する複製線へ適用する倍率。, float, range [0.0, 3.0]
+            subdivisions: 押し出し前に各線分へ適用する中点細分の回数。, int, range [0, 8]
+            center_mode: 複製線を原点または各線の重心のどちらを中心に拡縮するか選ぶ。, choice, choices { 'origin', 'auto' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def fill(self, *, activate: bool = ..., angle_sets: int | Sequence[int] = ..., angle: float | Sequence[float] = ..., density: float | Sequence[float] = ..., spacing_gradient: float | Sequence[float] = ..., remove_boundary: bool | Sequence[bool] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -415,11 +498,14 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            angle_sets: 方向本数（シーケンス指定時はグループごとにサイクル適用）
-            angle: 基準角 [deg]（シーケンス指定時はグループごとにサイクル適用）
-            density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
-            spacing_gradient: スキャン方向に沿った線間隔勾配（シーケンス指定時はグループごとにサイクル適用）
-            remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
+            angle_sets: 180 度を等分して重ねるハッチング方向の数。, int, range [1, 6]
+            angle: ハッチング方向群の基準角を度単位で指定する。, float, range [0.0, 180.0]
+            density: 領域を埋めるハッチング線の密度を指定する。, float, range [0.0, 1000.0]
+            spacing_gradient: スキャン方向に沿ってハッチング線の間隔を変化させる。, float, range [-5.0, 5.0]
+            remove_boundary: 塗り線だけを残し、入力された境界線を出力から除く。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def growth(self, *, activate: bool = ..., seed_count: int = ..., target_spacing: float = ..., boundary_avoid: float = ..., boundary_mode: Literal['slide', 'bounce'] = ..., iters: int = ..., seed: int = ..., show_mask: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -428,13 +514,16 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            seed_count: マスク内へ配置する seed（初期ループ）数
-            target_spacing: 目標点間隔 [mm]
-            boundary_avoid: 境界近傍で内側へ押し戻す強さ（0 で無効）
-            boundary_mode: `"slide"` は境界で外向き成分を除去し、沿って流れる
-            iters: 反復回数
-            seed: 乱数 seed（seed 配置の再現性のため）
-            show_mask: True のとき、出力に入力 mask を追加で含める
+            seed_count: マスク内に初期配置して成長させるループの数。, int, range [0, 64]
+            target_spacing: 成長中の再分割と反発力の基準にする目標点間隔。, float, range [0.25, 10.0]
+            boundary_avoid: マスク境界に近づいた点を内側へ押し戻す強さ。, float, range [0.0, 4.0]
+            boundary_mode: 境界へ達した点を境界沿いに流すか、内側へ反射させるか選ぶ。, choice, choices { 'slide', 'bounce' }
+            iters: ループの成長シミュレーションを更新する反復回数。, int, range [0, 2000]
+            seed: 初期ループの配置を再現可能にする乱数シード。, int, range [0, 9999]
+            show_mask: 成長結果に入力マスクを加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def highpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., gain: float = ..., closed: Literal['auto', 'open', 'closed'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -443,10 +532,13 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            step: 再サンプル間隔（弧長）
-            sigma: 低域成分を作るガウス平滑半径（`sigma/step` が実効的なスケール）
-            gain: 高周波強調係数
-            closed: 境界条件
+            step: 高周波成分を計算する前に線を再サンプルする弧長間隔。, float, range [0.0, 20.0]
+            sigma: 差し引く低周波成分を作るガウス平滑の半径。, float, range [0.0, 20.0]
+            gain: 抽出した高周波成分を元の線へ加える強調係数。, float, range [0.0, 5.0]
+            closed: 端点の平滑境界条件を開曲線、閉曲線、端点距離による自動判定から選ぶ。, choice, choices { 'auto', 'open', 'closed' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def isocontour(self, *, activate: bool = ..., spacing: float = ..., phase: float = ..., max_dist: float = ..., mode: Literal['inside', 'outside', 'both'] = ..., grid_pitch: float = ..., gamma: float = ..., level_step: int = ..., auto_close_threshold: float = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -455,15 +547,18 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            spacing: レベル間隔
-            phase: レベルの位相（`0` だと境界 `SDF=0` が含まれる）
-            max_dist: 抽出範囲（`|SDF| <= max_dist`）
-            mode: `"inside"` は内側のみ、`"outside"` は外側のみ、`"both"` は両側を抽出する
-            grid_pitch: SDF 評価グリッドのピッチ
-            gamma: 距離の非線形（`1.0` は線形）
-            level_step: レベルの間引き
-            auto_close_threshold: 閉曲線とみなす端点距離閾値
-            keep_original: True のとき、生成結果に加えて元の入力も出力に含める
+            spacing: 隣り合う符号付き距離の等値線どうしの間隔。, float, range [0.2, 10.0]
+            phase: 等値線レベル全体を距離方向へずらす位相。, float, range [-10.0, 10.0]
+            max_dist: 入力境界から等値線を抽出する最大距離。, float, range [0.0, 200.0]
+            mode: 入力境界の内側、外側、または両側のどこから等値線を抽出するか選ぶ。, choice, choices { 'inside', 'outside', 'both' }
+            grid_pitch: 符号付き距離場を評価する二次元グリッドの間隔。, float, range [0.1, 5.0]
+            gamma: 抽出範囲を保ったまま等値線の距離分布を非線形に変形する指数。, float, range [0.3, 3.0]
+            level_step: 生成した等値線を何本ごとに一つ残すか指定する。, int, range [1, 20]
+            auto_close_threshold: 入力線の端点を自動的に閉じるとみなす最大距離。, float, range [0.0, 5.0]
+            keep_original: 生成した等値線に元の入力線を加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def lowpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., closed: Literal['auto', 'open', 'closed'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -472,9 +567,12 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            step: 再サンプル間隔（弧長）
-            sigma: ガウス平滑半径
-            closed: 境界条件
+            step: 平滑化の前に線を再サンプルする弧長間隔。, float, range [0.1, 20.0]
+            sigma: 線の細かな変化をならすガウス平滑の半径。, float, range [0.0, 20.0]
+            closed: 端点の平滑境界条件を開曲線、閉曲線、端点距離による自動判定から選ぶ。, choice, choices { 'auto', 'open', 'closed' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., output: Literal['exterior', 'both'] = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -483,12 +581,15 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            radius: 接続の届く距離（falloff 半径）[mm]
-            threshold: 等値線レベル
-            grid_pitch: 距離場を評価する 2D グリッドのピッチ [mm]
-            auto_close_threshold: 端点距離がこの値以下なら閉曲線扱いとして自動で閉じる [mm]
-            output: 出力輪郭の選択
-            keep_original: True のとき、生成結果に加えて元のポリラインも出力に含める
+            radius: 離れた入力輪郭どうしを滑らかにつなぐ影響半径。, float, range [0.0, 50.0]
+            threshold: 合成した距離場から出力輪郭を取り出す等値レベル。, float, range [0.0, 5.0]
+            grid_pitch: 距離場を評価する二次元グリッドの間隔。, float, range [0.1, 10.0]
+            auto_close_threshold: 入力線の端点を自動的に閉じるとみなす最大距離。, float, range [0.0, 5.0]
+            output: 生成した形状の外周だけ、または外周と穴の両方を出力する。, choice, choices { 'exterior', 'both' }
+            keep_original: 生成した輪郭に元の入力線を加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def mirror(self, *, activate: bool = ..., n_mirror: int = ..., cx: float = ..., cy: float = ..., source_positive_x: bool = ..., source_positive_y: bool = ..., show_planes: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -497,12 +598,15 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            n_mirror: 1: x=cx による半空間ミラー
+            n_mirror: 1 は x=cx を境に 2 方向へ、2 は x=cx と y=cy を境に 4 象限へ、3 以上は中心角 180 / n_mirror 度のくさびを 2 × n_mirror 個へ複製する。, int, range [1, 12]
             cx: 対称軸または放射対称中心の X 座標。, float, range [-100.0, 100.0]
             cy: 対称軸または放射対称中心の Y 座標。, float, range [-100.0, 100.0]
-            source_positive_x: n_mirror=1/2 のときの x 側ソース選択
-            source_positive_y: n_mirror=2 のときの y 側ソース選択
-            show_planes: 対称面（または放射状境界）を可視化用ラインとして出力へ追加する
+            source_positive_x: 軸対称または象限対称で中心より X 座標が大きい側を複製元にする。, bool
+            source_positive_y: 象限対称で中心より Y 座標が大きい側を複製元にする。, bool
+            show_planes: 対称軸または放射状の境界を確認用ラインとして出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def mirror3d(self, *, activate: bool = ..., mode: Literal['azimuth', 'polyhedral'] = ..., n_azimuth: int = ..., center: Vec3 = ..., axis: Vec3 = ..., phi0: float = ..., mirror_equator: bool = ..., source_side: bool = ..., group: Literal['T', 'O', 'I'] = ..., use_reflection: bool = ..., show_planes: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -511,16 +615,19 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: "azimuth" は回転軸を含む 2 平面でくさびを作り、回転と反射で複製する
-            n_azimuth: "azimuth" の等分数
-            center: 回転/反射の中心
-            axis: "azimuth" の回転軸
-            phi0: くさびの開始角 [deg]（"azimuth" のみ）
-            mirror_equator: 赤道面（axis ⟂）でさらにミラーする（"azimuth" のみ）
-            source_side: mirror_equator=True のときのソース側
-            group: "polyhedral" の回転群（T=12, O=24, I=60）
-            use_reflection: "polyhedral" で代表反射（y=0）を追加して倍化する
-            show_planes: 対称面を可視化用の十字線として出力に追加する
+            mode: 任意軸まわりの放射対称と正多面体の回転対称から複製方式を選ぶ。, choice, choices { 'azimuth', 'polyhedral' }
+            n_azimuth: 回転軸まわりの等分数。180 / n_azimuth 度のくさびを回転・反射し、通常は最大 2 × n_azimuth 個、赤道面反射時は最大 4 × n_azimuth 個へ複製する。, int, range [1, 64]
+            center: 三次元の回転および反射に使用する中心点。, vec3, range [-300.0, 300.0]
+            axis: 放射対称で使用する回転軸の方向ベクトル。, vec3, range [-1.0, 1.0]
+            phi0: 放射対称の複製元となるくさびの開始角を度単位で指定する。, float, range [-180.0, 180.0]
+            mirror_equator: 放射対称の結果を回転軸に直交する赤道面でも反射する。, bool
+            source_side: 赤道面反射で回転軸方向の正側を複製元にする。, bool
+            group: 正多面体対称に使う四面体、八面体、二十面体の回転群を選ぶ。, choice, choices { 'T', 'O', 'I' }
+            use_reflection: 正多面体の回転対称へ代表反射を追加して複製数を倍にする。, bool
+            show_planes: 対称面を確認用の十字ラインとして出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def partition(self, *, activate: bool = ..., mode: Literal['merge', 'group', 'ring'] = ..., site_count: int = ..., seed: int = ..., site_density_base: Vec3 = ..., site_density_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -529,13 +636,16 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: 入力リングの扱い
-            site_count: Voronoi のサイト数
-            seed: 乱数シード（再現性）
-            site_density_base: サイト密度（採用確率）の中心値（軸別）
-            site_density_slope: 正規化座標 t∈[-1,+1] に対する密度勾配（軸別）
-            auto_center: True のとき `pivot` を無視し、入力 bbox の中心を pivot として扱う
-            pivot: auto_center=False のときの pivot（ワールド座標）
+            mode: 入力リングを統合、穴を含む領域単位、または個別リングとして分割する。, choice, choices { 'merge', 'group', 'ring' }
+            site_count: 領域をボロノイ分割するために配置するサイトの数。, int, range [1, 500]
+            seed: ボロノイサイトの配置を再現可能にする乱数シード。, int, range [0, 1073741823]
+            site_density_base: 基準点におけるサイト採用確率を軸ごとに指定する。勾配も含めた全成分が 0 なら密度制御を無効にする。, vec3, range [0.0, 1.0]
+            site_density_slope: 正規化した各軸位置に対するサイト採用確率の勾配。基準確率も含めた全成分が 0 なら密度制御を無効にする。, vec3, range [-1.0, 1.0]
+            auto_center: 入力のバウンディングボックス中心を密度勾配の基準点にする。, bool
+            pivot: 自動中心が無効な場合に密度勾配の基準とする点。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def pixelate(self, *, activate: bool = ..., step: Vec3 = ..., corner: Literal['auto', 'xy', 'yx'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -544,8 +654,11 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            step: 各軸の格子間隔 (sx, sy, sz)
-            corner: 対角（x と y が同時に動く）を 2 手へ分解するときの順序
+            step: 頂点を吸着させる格子の間隔を軸ごとに指定する。, vec3, range [0.0, 10.0]
+            corner: X と Y が同時に変わる格子移動を直角の二線分へ分解する順序。, choice, choices { 'auto', 'xy', 'yx' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def quantize(self, *, activate: bool = ..., step: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -554,7 +667,10 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            step: 各軸の格子間隔 (sx, sy, sz)
+            step: 各頂点を丸めて吸着させる格子の間隔を軸ごとに指定する。, vec3, range [0.0, 10.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def reaction_diffusion(self, *, activate: bool = ..., grid_pitch: float = ..., steps: int = ..., du: float = ..., dv: float = ..., feed: float = ..., kill: float = ..., dt: float = ..., seed: int = ..., seed_radius: float = ..., noise: float = ..., level: float = ..., min_points: int = ..., boundary: Literal['noflux', 'dirichlet'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -563,19 +679,22 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            grid_pitch: 計算グリッドのピッチ（出力座標系の長さ単位）
-            steps: Gray-Scott の反復回数
+            grid_pitch: 反応拡散を計算する二次元グリッドの間隔。, float, range [0.2, 2.0]
+            steps: Gray-Scott 反応拡散モデルを更新する反復回数。, int, range [0, 10000]
             du: Gray-Scott モデルの U 成分に適用する拡散係数。, float, range [0.0, 1.0]
             dv: Gray-Scott モデルの V 成分に適用する拡散係数。, float, range [0.0, 1.0]
             feed: Gray-Scott モデルへ U 成分を供給する反応係数。, float, range [0.0, 0.1]
             kill: Gray-Scott モデルから V 成分を除去する反応係数。, float, range [0.0, 0.1]
-            dt: 時間刻み
-            seed: 乱数シード（初期条件用）
-            seed_radius: 中心ブロブの半径（0 ならブロブ無し）
-            noise: 初期ノイズ量（V に一様ノイズを加える）
-            level: 等値線の閾値
-            min_points: 出力するポリラインの最小点数
-            boundary: マスク境界の扱い
+            dt: 反応と拡散を数値積分するときの時間刻み。, float, range [0.1, 2.0]
+            seed: 初期濃度分布を再現可能にする乱数シード。, int, range [0, 9999]
+            seed_radius: 初期状態で中心に配置する V 成分ブロブの半径。, float, range [0.0, 200.0]
+            noise: 初期状態の V 成分へ加える一様ノイズの最大量。, float, range [0.0, 0.1]
+            level: 計算後の V 成分から輪郭を抽出する等値レベル。, float, range [0.0, 1.0]
+            min_points: 抽出した輪郭を出力対象とする最小頂点数。, int, range [4, 200]
+            boundary: マスク境界を濃度勾配なし、または外側濃度固定として扱う。, choice, choices { 'noflux', 'dirichlet' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def relax(self, *, activate: bool = ..., relaxation_iterations: int = ..., step: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -584,8 +703,11 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            relaxation_iterations: 反復回数（0–50 にクランプ）
-            step: 1 ステップの移動係数（0.0–0.5 にクランプ）
+            relaxation_iterations: 点列のばらつきをならす弾性緩和の反復回数。, int, range [0, 50]
+            step: 各緩和ステップで頂点を移動させる係数。, float, range [0.0, 0.5]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def repeat(self, *, activate: bool = ..., layout: Literal['grid', 'radial'] = ..., count: int = ..., radius: float = ..., theta: float = ..., n_theta: int = ..., n_radius: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -594,21 +716,24 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            layout: `"grid"` は `count/offset` による直交配置（現状維持）
-            count: 複製回数
-            radius: `layout="radial"` の外周半径 [mm]
-            theta: `layout="radial"` の開始角 [deg]
-            n_theta: `layout="radial"` の周方向配置数
-            n_radius: `layout="radial"` の半径方向配置数
-            cumulative_scale: True のときスケール補間にカーブ（t' = t**curve）を用いる
-            cumulative_offset: True のときオフセット補間にカーブ（t' = t**curve）を用いる
-            cumulative_rotate: True のとき回転補間にカーブ（t' = t**curve）を用いる
-            offset: 終点オフセット [mm]
-            rotation_step: 終点回転角 [deg]（rx, ry, rz）
-            scale: 終点スケール倍率（sx, sy, sz）
-            curve: カーブ係数
-            auto_center: True なら平均座標を中心に使用
-            pivot: `auto_center=False` のときの変換中心 [mm]
+            layout: 複製を直線状に並べるか、同心円状に並べるか選ぶ。, choice, choices { 'grid', 'radial' }
+            count: 直線配置で元の入力に追加する複製の数。, int, range [0, 100]
+            radius: 放射配置で複製を並べる最外周の半径。, float, range [0.0, 300.0]
+            theta: 放射配置を開始する角度を度単位で指定する。, float, range [-180.0, 180.0]
+            n_theta: 放射配置の各リングに並べる周方向の複製数。, int, range [1, 64]
+            n_radius: 放射配置で中心から外周までに作る半径方向の配置数。, int, range [1, 64]
+            cumulative_scale: 複製ごとのスケール補間に指定したカーブを適用する。, bool
+            cumulative_offset: 直線配置のオフセット補間に指定したカーブを適用する。, bool
+            cumulative_rotate: 複製ごとの回転補間に指定したカーブを適用する。, bool
+            offset: 直線配置で最後の複製に到達する各軸の移動量。, vec3, range [-100.0, 100.0]
+            rotation_step: 最後の複製へ到達するまでに補間する各軸の回転角を度単位で指定する。, vec3, range [-180.0, 180.0]
+            scale: 最後の複製へ到達するまでに補間する各軸の倍率。, vec3, range [0.25, 4.0]
+            curve: 有効にした累積変換の補間速度を決める指数。, float, range [0.1, 5.0]
+            auto_center: 入力頂点の平均座標を複製変換の中心として使用する。, bool
+            pivot: 自動中心が無効な場合に複製変換の中心とする点。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def rotate(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -617,9 +742,12 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            auto_center: True なら頂点の平均座標を中心に使用
-            pivot: 回転の中心（`auto_center=False` のとき有効）
-            rotation: 各軸の回転角 [deg]（rx, ry, rz）
+            auto_center: 入力頂点の平均座標を回転中心として使用する。, bool
+            pivot: 自動中心が無効な場合に使用する回転中心。, vec3, range [-100.0, 100.0]
+            rotation: 各軸まわりに適用する回転角を度単位で指定する。, vec3, range [-180.0, 180.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def scale(self, *, activate: bool = ..., mode: Literal['all', 'by_line', 'by_face'] = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -628,10 +756,13 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: `"all"` は入力全体を 1 つの中心でスケールする
-            auto_center: True なら平均座標を中心に使用
-            pivot: 変換の中心（`mode="all"` かつ `auto_center=False` のとき有効）
-            scale: 各軸の倍率
+            mode: 入力全体、開いた線ごと、または閉じた面ごとのどの単位で拡縮するか選ぶ。, choice, choices { 'all', 'by_line', 'by_face' }
+            auto_center: 入力全体を拡縮するときに頂点の平均座標を中心として使用する。, bool
+            pivot: 入力全体を拡縮するとき、自動中心が無効な場合に使用する中心点。, vec3, range [-100.0, 100.0]
+            scale: 選択した中心を基準に適用する各軸の倍率。, vec3, range [0.0, 10.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def subdivide(self, *, activate: bool = ..., subdivisions: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -640,7 +771,10 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            subdivisions: 細分回数
+            subdivisions: 各線分へ中点を挿入して細分する反復回数。, int, range [0, 10]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def translate(self, *, activate: bool = ..., delta: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -649,7 +783,10 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            delta: 平行移動量（dx, dy, dz）
+            delta: 入力全体へ加える各軸の平行移動量。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def trim(self, *, activate: bool = ..., start_param: float = ..., end_param: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -658,8 +795,11 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            start_param: 開始位置（0.0–1.0）
-            end_param: 終了位置（0.0–1.0）
+            start_param: 各ポリラインの全長を 0 から 1 としたときに残す区間の開始位置。, float, range [0.0, 1.0]
+            end_param: 各ポリラインの全長を 0 から 1 としたときに残す区間の終了位置。, float, range [0.0, 1.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def twist(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., angle: float = ..., axis_dir: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -668,10 +808,13 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            auto_center: True なら平均座標を回転中心に使用
-            pivot: ねじり軸（`axis_dir` に平行な直線）の通過点（`auto_center=False` のとき有効）
-            angle: 最大ねじれ角 [deg]
-            axis_dir: ねじり軸方向（ベクトル）
+            auto_center: 入力頂点の平均座標をねじり軸の通過点として使用する。, bool
+            pivot: 自動中心が無効な場合にねじり軸を通す点。, vec3, range [-100.0, 100.0]
+            angle: ねじり軸方向の両端で負から正へ変化する最大回転角を度単位で指定する。, float, range [0.0, 360.0]
+            axis_dir: ねじりの基準となる軸の方向ベクトル。, vec3, range [-1.0, 1.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def warp(self, *, activate: bool = ..., mode: Literal['lens', 'attract'] = ..., strength: float = ..., kind: Literal['scale', 'rotate', 'shear', 'swirl'] = ..., profile: Literal['band', 'ramp'] = ..., band: float = ..., inside_only: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: float = ..., angle: float = ..., shear: Vec3 = ..., direction: Literal['attract', 'repel'] = ..., bias: float = ..., snap_band: float = ..., falloff: float = ..., show_mask: bool = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -680,23 +823,26 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: `"lens"` は座標変換をブレンドして歪ませる
-            strength: 変形の強さ（0..2 を想定）
-            kind: `mode="lens"` のときの座標変換種別
-            profile: `mode="lens"` の距離プロファイル
-            band: `mode="lens"` の距離スケール [mm]
-            inside_only: `mode="lens"` で mask 内側だけに効かせるか
-            auto_center: `mode="lens"` の中心を mask AABB center にする
-            pivot: `auto_center=False` のときの中心
-            scale: `kind="scale"` の倍率
-            angle: `kind in {"rotate","swirl"}` の角度 [deg]
-            shear: `kind="shear"` の shear 係数（x,y を使用）
-            direction: `mode="attract"` の向き（吸着/反発）
-            bias: `mode="attract"` の目標 signed distance [mm]（0 で境界）
-            snap_band: `mode="attract"` で変形対象にする `|d-bias|` の上限（0 で無制限）
-            falloff: `mode="attract"` の距離減衰スケール [mm]（0 でフラット）
-            show_mask: True のとき、mask 入力も出力に含める（位置確認用）
-            keep_original: True のとき、元の base も出力に含める（比較用）
+            mode: マスク近傍で座標変換をブレンドするか、境界へ吸着または反発させるか選ぶ。, choice, choices { 'lens', 'attract' }
+            strength: 選択したワープ変形を元の座標へブレンドする強さ。, float, range [0.0, 2.0]
+            kind: レンズモードでマスク領域へブレンドする座標変換の種類。, choice, choices { 'scale', 'rotate', 'shear', 'swirl' }
+            profile: 距離幅が正のときに使うレンズ強度の形状。band は境界と遷移幅の両端で 0、中間で最大となり、ramp は境界から離れるほど増加する。, choice, choices { 'band', 'ramp' }
+            band: レンズ強度をマスク境界から遷移させる距離幅。0 以下では距離遷移を使わず対象全体へ一様に適用する。, float, range [0.0, 200.0]
+            inside_only: レンズ変形をマスクの内側にある頂点だけへ適用する。, bool
+            auto_center: マスクのバウンディングボックス中心をレンズ変換の中心にする。, bool
+            pivot: 自動中心が無効な場合にレンズ変換の中心とする点。, vec3, range [-100.0, 100.0]
+            scale: レンズのスケール変換で中心からの距離へ適用する倍率。, float, range [0.5, 3.0]
+            angle: レンズの回転または渦巻き変換で適用する角度を度単位で指定する。, float, range [-180.0, 180.0]
+            shear: レンズのシアー変換で X と Y 方向へ適用する係数。, vec3, range [-1.0, 1.0]
+            direction: 頂点をマスク境界へ引き寄せるか、境界から遠ざけるか選ぶ。, choice, choices { 'attract', 'repel' }
+            bias: 吸着または反発の目標位置をマスク境界からずらす符号付き距離。, float, range [-50.0, 50.0]
+            snap_band: 吸着または反発の対象とする目標距離からの最大差。0 以下で制限なし。, float, range [0.0, 200.0]
+            falloff: 吸着または反発の強さを目標位置からの距離で減衰させる尺度。0 以下で減衰なし。, float, range [0.0, 200.0]
+            show_mask: 変形結果に位置確認用のマスク輪郭を加えて出力する。, bool
+            keep_original: 変形結果に比較用の元の入力線を加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def weave(self, *, activate: bool = ..., num_candidate_lines: int = ..., relaxation_iterations: int = ..., step: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -705,9 +851,12 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            num_candidate_lines: 候補線本数（0–500 にクランプ）
-            relaxation_iterations: 弾性緩和の反復回数（0–50 にクランプ）
-            step: 1 ステップの移動係数（0.0–0.5 にクランプ）
+            num_candidate_lines: 閉じた入力線の境界上にある二点を結ぶ候補線の本数。, int, range [0, 500]
+            relaxation_iterations: 候補線の交差とばらつきをならす弾性緩和の反復回数。, int, range [0, 50]
+            step: 各緩和ステップで候補線の頂点を移動させる係数。, float, range [0.0, 0.5]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def wobble(self, *, activate: bool = ..., amplitude: Vec3 = ..., frequency: Vec3 = ..., phase: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -716,9 +865,12 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            amplitude: 変位量 [mm] 相当（各軸別）
-            frequency: 空間周波数（各軸別）
-            phase: 位相 [deg]
+            amplitude: 正弦波による変位の最大量を軸ごとに指定する。, vec3, range [0.0, 20.0]
+            frequency: 位置に対する正弦波の空間周波数を軸ごとに指定する。, vec3, range [0.0, 0.2]
+            phase: すべての変位波形へ加える位相を度単位で指定する。, float, range [0.0, 360.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
 
@@ -732,11 +884,14 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            auto_center: True なら頂点の平均座標を中心に使用する
-            pivot: `auto_center=False` のときの変換中心
-            rotation: 各軸の回転角 [deg]（rx, ry, rz）
-            scale: 各軸の倍率（sx, sy, sz）
-            delta: 最後に適用する平行移動量 [mm]（dx, dy, dz）
+            auto_center: 入力頂点の平均座標を変換中心として使用する。, bool
+            pivot: 自動中心が無効な場合に使用する変換中心。, vec3, range [-100.0, 100.0]
+            rotation: 各軸まわりに適用する回転角を度単位で指定する。, vec3, range [-180.0, 180.0]
+            scale: 変換中心を基準に適用する各軸の倍率。, vec3, range [0.25, 4.0]
+            delta: スケールと回転の後に適用する各軸の平行移動量。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def bold(self, *, activate: bool = ..., count: int = ..., radius: float = ..., seed: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -745,9 +900,12 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            count: 出力ストローク数（元の線を 1 本含む）
-            radius: ずらし量の最大半径 [mm] 相当（XY のみ）
-            seed: ずらし量生成の乱数シード（決定性のため）
+            count: 元の線を含めて出力するストロークの本数。, int, range [1, 10]
+            radius: 複製ストロークを XY 平面でずらす最大半径。, float, range [0.0, 1.0]
+            seed: ストロークのずれを再現可能にする乱数シード。, int, range [0, 2147483647]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def buffer(self, *, activate: bool = ..., join: Literal['mitre', 'round', 'bevel'] = ..., quad_segs: int = ..., distance: float = ..., union: bool = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -756,11 +914,14 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            join: 角の処理
-            quad_segs: 円弧近似分割数（Shapely の `quad_segs` 相当）
-            distance: buffer 距離 [mm]
-            union: True のとき、入力内の複数ポリラインを同一平面へ射影して統合し、 1回の buffer で重なりをまとめた輪郭を返す
-            keep_original: True のとき buffer 結果に加えて元のポリラインも出力に含める
+            join: 輪郭をオフセットしたときの角の接続形状を選ぶ。, choice, choices { 'mitre', 'round', 'bevel' }
+            quad_segs: 丸い角や端を近似する四分円あたりの分割数。, int, range [1, 100]
+            distance: 輪郭を膨張または収縮させる距離で、正なら外側、負なら内側へ動かす。, float, range [-25.0, 25.0]
+            union: 複数の入力ポリラインを統合してから一度に輪郭を生成する。, bool
+            keep_original: 生成した輪郭に元のポリラインを加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def clip(self, *, activate: bool = ..., mode: Literal['inside', 'outside'] = ..., draw_outline: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -769,8 +930,11 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: `"inside"` はマスク内側だけ残す
-            draw_outline: True のとき、マスク輪郭を追加で出力に含める
+            mode: マスクの内側と外側のどちらを残すか選ぶ。, choice, choices { 'inside', 'outside' }
+            draw_outline: クリップ結果にマスク輪郭を加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def collapse(self, *, activate: bool = ..., intensity: float = ..., subdivisions: int = ..., intensity_mask_base: Vec3 = ..., intensity_mask_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -779,12 +943,15 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            intensity: 変位量（長さ単位は座標系に従う）
-            subdivisions: 細分回数
-            intensity_mask_base: ジオメトリ bbox の中心（正規化座標 t=0）における intensity 乗算係数（軸別）
-            intensity_mask_slope: 正規化座標 t∈[-1,+1] に対する係数勾配（軸別）
-            auto_center: True のとき `pivot` を無視し、入力 bbox の中心を pivot として扱う
-            pivot: auto_center=False のときの pivot（ワールド座標）
+            intensity: 細分した線分に垂直なランダム変位の基本量。, float, range [0.0, 10.0]
+            subdivisions: 変形前に各線分へ適用する細分回数。, int, range [0, 10]
+            intensity_mask_base: 勾配の基準点における変位倍率を軸ごとに指定する。, vec3, range [0.0, 1.0]
+            intensity_mask_slope: 正規化した各軸位置に対する変位倍率の勾配。, vec3, range [-1.0, 1.0]
+            auto_center: 入力のバウンディングボックス中心を変位強度勾配の基準点にする。, bool
+            pivot: 自動中心が無効な場合に変位強度勾配の基準とする点。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def dash(self, *, activate: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -793,10 +960,13 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            dash_length: ダッシュ（描画区間）の長さ [mm]
-            gap_length: ギャップ（非描画区間）の長さ [mm]
-            offset: パターン位相オフセット [mm]
-            offset_jitter: ポリラインごとに offset に加えるジッター量 [mm]
+            dash_length: 破線パターンで描画する区間の長さ。, float, range [0.0, 100.0]
+            gap_length: 破線パターンで描画しない区間の長さ。, float, range [0.0, 100.0]
+            offset: 各ポリライン上で破線パターンの開始位相をずらす距離。, float, range [0.0, 100.0]
+            offset_jitter: ポリラインごとに開始位相へ加える一様乱数の最大振幅。, float, range [0.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def displace(self, *, activate: bool = ..., amplitude: Vec3 = ..., spatial_freq: Vec3 = ..., amplitude_gradient: Vec3 = ..., frequency_gradient: Vec3 = ..., gradient_center_offset: Vec3 = ..., gradient_profile: Literal['linear', 'radial'] = ..., gradient_radius: Vec3 = ..., min_gradient_factor: float = ..., max_gradient_factor: float = ..., t: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -805,16 +975,19 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            amplitude: 変位量 [mm]（各軸別）
-            spatial_freq: 空間周波数（各軸別）
-            amplitude_gradient: 振幅の軸方向グラデーション係数（各軸別）
-            frequency_gradient: 周波数の軸方向グラデーション係数（各軸別）
-            gradient_center_offset: 勾配計算の中心オフセット（bbox 正規化座標、各軸別）
-            gradient_profile: 勾配の形状
-            gradient_radius: `"radial"` の距離 `d` を作るための半径（bbox 正規化座標、各軸別）
-            min_gradient_factor: 勾配適用時の最小係数（0.0–1.0）
-            max_gradient_factor: 勾配適用時の最大係数（1.0–4.0）
-            t: 時間オフセット（位相）
+            amplitude: ノイズによる変位の最大量を軸ごとに指定する。, vec3, range [0.0, 50.0]
+            spatial_freq: 変位ノイズの空間周波数を軸ごとに指定する。, vec3, range [0.0, 0.1]
+            amplitude_gradient: 位置に応じて変位振幅を変化させる勾配を軸ごとに指定する。, vec3, range [-4.0, 4.0]
+            frequency_gradient: 位置に応じて空間周波数を変化させる勾配を軸ごとに指定する。, vec3, range [-4.0, 4.0]
+            gradient_center_offset: 勾配の中心をバウンディングボックス正規化座標でずらす。, vec3, range [-1.0, 1.0]
+            gradient_profile: 勾配を軸方向の線形変化と中心からの放射変化から選ぶ。, choice, choices { 'linear', 'radial' }
+            gradient_radius: 放射勾配の正規化距離を定める半径を軸ごとに指定する。, vec3, range [0.05, 1.0]
+            min_gradient_factor: 勾配から得る振幅と周波数の倍率を下限で制限する。, float, range [0.0, 0.5]
+            max_gradient_factor: 勾配から得る振幅と周波数の倍率を上限で制限する。, float, range [1.0, 4.0]
+            t: ノイズの位相を時間方向へ進めて変位を流動させる。, float, range [0.0, 1.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def drop(self, *, activate: bool = ..., interval: int = ..., index_offset: int = ..., min_length: float = ..., max_length: float = ..., probability_base: Vec3 = ..., probability_slope: Vec3 = ..., by: Literal['line', 'face'] = ..., seed: int = ..., keep_mode: Literal['drop', 'keep'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -823,15 +996,18 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            interval: 線インデックスに対する間引きステップ
-            index_offset: interval 判定の開始オフセット
-            min_length: この長さ以下の線を対象とする
-            max_length: この長さ以上の線を対象とする
-            probability_base: ジオメトリ bbox の中心（正規化座標 t=0）における drop 確率（軸別）
-            probability_slope: 正規化座標 t∈[-1,+1] に対する確率勾配（軸別）
-            by: 判定単位
-            seed: probability_* 使用時の乱数シード
-            keep_mode: "drop": 条件に一致した線を捨てる
+            interval: 線または面をインデックス順に一定間隔で対象にする。1 以上で有効、0 以下で無効。, int, range [0, 100]
+            index_offset: インデックスによる間引き判定の開始位置をずらす。, int, range [0, 100]
+            min_length: 0 以上のとき、この長さ以下の線または面を対象にする。負値で無効。, float, range [-1.0, 200.0]
+            max_length: 0 以上のとき、この長さ以上の線または面を対象にする。負値で無効。, float, range [-1.0, 200.0]
+            probability_base: バウンディングボックス中心での選択確率を軸ごとに指定する。, vec3, range [0.0, 1.0]
+            probability_slope: 正規化した各軸位置に対する選択確率の勾配。, vec3, range [-1.0, 1.0]
+            by: 選択と除去をポリライン単位または閉じた面単位で行う。, choice, choices { 'line', 'face' }
+            seed: 確率による選択結果を再現可能にする乱数シード。, int, range [0, 2147483647]
+            keep_mode: 条件に一致した要素を除去するか、一致した要素だけ残すか選ぶ。, choice, choices { 'drop', 'keep' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def extrude(self, *, activate: bool = ..., delta: Vec3 = ..., scale: float = ..., subdivisions: int = ..., center_mode: Literal['origin', 'auto'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -840,10 +1016,13 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            delta: 押し出し量（dx, dy, dz）[mm]（長さは 0–200 にクランプ）
-            scale: 複製線に適用するスケール係数（0–3 にクランプ）
-            subdivisions: 中点挿入の細分回数（0–8 にクランプ）
-            center_mode: "auto" のとき複製線の重心中心でスケールし、それ以外は原点中心でスケールする
+            delta: 複製線を押し出す各軸の移動量。, vec3, range [-200.0, 200.0]
+            scale: 押し出して生成する複製線へ適用する倍率。, float, range [0.0, 3.0]
+            subdivisions: 押し出し前に各線分へ適用する中点細分の回数。, int, range [0, 8]
+            center_mode: 複製線を原点または各線の重心のどちらを中心に拡縮するか選ぶ。, choice, choices { 'origin', 'auto' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def fill(self, *, activate: bool = ..., angle_sets: int | Sequence[int] = ..., angle: float | Sequence[float] = ..., density: float | Sequence[float] = ..., spacing_gradient: float | Sequence[float] = ..., remove_boundary: bool | Sequence[bool] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -852,11 +1031,14 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            angle_sets: 方向本数（シーケンス指定時はグループごとにサイクル適用）
-            angle: 基準角 [deg]（シーケンス指定時はグループごとにサイクル適用）
-            density: 旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）
-            spacing_gradient: スキャン方向に沿った線間隔勾配（シーケンス指定時はグループごとにサイクル適用）
-            remove_boundary: True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）
+            angle_sets: 180 度を等分して重ねるハッチング方向の数。, int, range [1, 6]
+            angle: ハッチング方向群の基準角を度単位で指定する。, float, range [0.0, 180.0]
+            density: 領域を埋めるハッチング線の密度を指定する。, float, range [0.0, 1000.0]
+            spacing_gradient: スキャン方向に沿ってハッチング線の間隔を変化させる。, float, range [-5.0, 5.0]
+            remove_boundary: 塗り線だけを残し、入力された境界線を出力から除く。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def growth(self, *, activate: bool = ..., seed_count: int = ..., target_spacing: float = ..., boundary_avoid: float = ..., boundary_mode: Literal['slide', 'bounce'] = ..., iters: int = ..., seed: int = ..., show_mask: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -865,13 +1047,16 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            seed_count: マスク内へ配置する seed（初期ループ）数
-            target_spacing: 目標点間隔 [mm]
-            boundary_avoid: 境界近傍で内側へ押し戻す強さ（0 で無効）
-            boundary_mode: `"slide"` は境界で外向き成分を除去し、沿って流れる
-            iters: 反復回数
-            seed: 乱数 seed（seed 配置の再現性のため）
-            show_mask: True のとき、出力に入力 mask を追加で含める
+            seed_count: マスク内に初期配置して成長させるループの数。, int, range [0, 64]
+            target_spacing: 成長中の再分割と反発力の基準にする目標点間隔。, float, range [0.25, 10.0]
+            boundary_avoid: マスク境界に近づいた点を内側へ押し戻す強さ。, float, range [0.0, 4.0]
+            boundary_mode: 境界へ達した点を境界沿いに流すか、内側へ反射させるか選ぶ。, choice, choices { 'slide', 'bounce' }
+            iters: ループの成長シミュレーションを更新する反復回数。, int, range [0, 2000]
+            seed: 初期ループの配置を再現可能にする乱数シード。, int, range [0, 9999]
+            show_mask: 成長結果に入力マスクを加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def highpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., gain: float = ..., closed: Literal['auto', 'open', 'closed'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -880,10 +1065,13 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            step: 再サンプル間隔（弧長）
-            sigma: 低域成分を作るガウス平滑半径（`sigma/step` が実効的なスケール）
-            gain: 高周波強調係数
-            closed: 境界条件
+            step: 高周波成分を計算する前に線を再サンプルする弧長間隔。, float, range [0.0, 20.0]
+            sigma: 差し引く低周波成分を作るガウス平滑の半径。, float, range [0.0, 20.0]
+            gain: 抽出した高周波成分を元の線へ加える強調係数。, float, range [0.0, 5.0]
+            closed: 端点の平滑境界条件を開曲線、閉曲線、端点距離による自動判定から選ぶ。, choice, choices { 'auto', 'open', 'closed' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def isocontour(self, *, activate: bool = ..., spacing: float = ..., phase: float = ..., max_dist: float = ..., mode: Literal['inside', 'outside', 'both'] = ..., grid_pitch: float = ..., gamma: float = ..., level_step: int = ..., auto_close_threshold: float = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -892,15 +1080,18 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            spacing: レベル間隔
-            phase: レベルの位相（`0` だと境界 `SDF=0` が含まれる）
-            max_dist: 抽出範囲（`|SDF| <= max_dist`）
-            mode: `"inside"` は内側のみ、`"outside"` は外側のみ、`"both"` は両側を抽出する
-            grid_pitch: SDF 評価グリッドのピッチ
-            gamma: 距離の非線形（`1.0` は線形）
-            level_step: レベルの間引き
-            auto_close_threshold: 閉曲線とみなす端点距離閾値
-            keep_original: True のとき、生成結果に加えて元の入力も出力に含める
+            spacing: 隣り合う符号付き距離の等値線どうしの間隔。, float, range [0.2, 10.0]
+            phase: 等値線レベル全体を距離方向へずらす位相。, float, range [-10.0, 10.0]
+            max_dist: 入力境界から等値線を抽出する最大距離。, float, range [0.0, 200.0]
+            mode: 入力境界の内側、外側、または両側のどこから等値線を抽出するか選ぶ。, choice, choices { 'inside', 'outside', 'both' }
+            grid_pitch: 符号付き距離場を評価する二次元グリッドの間隔。, float, range [0.1, 5.0]
+            gamma: 抽出範囲を保ったまま等値線の距離分布を非線形に変形する指数。, float, range [0.3, 3.0]
+            level_step: 生成した等値線を何本ごとに一つ残すか指定する。, int, range [1, 20]
+            auto_close_threshold: 入力線の端点を自動的に閉じるとみなす最大距離。, float, range [0.0, 5.0]
+            keep_original: 生成した等値線に元の入力線を加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def lowpass(self, *, activate: bool = ..., step: float = ..., sigma: float = ..., closed: Literal['auto', 'open', 'closed'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -909,9 +1100,12 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            step: 再サンプル間隔（弧長）
-            sigma: ガウス平滑半径
-            closed: 境界条件
+            step: 平滑化の前に線を再サンプルする弧長間隔。, float, range [0.1, 20.0]
+            sigma: 線の細かな変化をならすガウス平滑の半径。, float, range [0.0, 20.0]
+            closed: 端点の平滑境界条件を開曲線、閉曲線、端点距離による自動判定から選ぶ。, choice, choices { 'auto', 'open', 'closed' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def metaball(self, *, activate: bool = ..., radius: float = ..., threshold: float = ..., grid_pitch: float = ..., auto_close_threshold: float = ..., output: Literal['exterior', 'both'] = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -920,12 +1114,15 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            radius: 接続の届く距離（falloff 半径）[mm]
-            threshold: 等値線レベル
-            grid_pitch: 距離場を評価する 2D グリッドのピッチ [mm]
-            auto_close_threshold: 端点距離がこの値以下なら閉曲線扱いとして自動で閉じる [mm]
-            output: 出力輪郭の選択
-            keep_original: True のとき、生成結果に加えて元のポリラインも出力に含める
+            radius: 離れた入力輪郭どうしを滑らかにつなぐ影響半径。, float, range [0.0, 50.0]
+            threshold: 合成した距離場から出力輪郭を取り出す等値レベル。, float, range [0.0, 5.0]
+            grid_pitch: 距離場を評価する二次元グリッドの間隔。, float, range [0.1, 10.0]
+            auto_close_threshold: 入力線の端点を自動的に閉じるとみなす最大距離。, float, range [0.0, 5.0]
+            output: 生成した形状の外周だけ、または外周と穴の両方を出力する。, choice, choices { 'exterior', 'both' }
+            keep_original: 生成した輪郭に元の入力線を加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def mirror(self, *, activate: bool = ..., n_mirror: int = ..., cx: float = ..., cy: float = ..., source_positive_x: bool = ..., source_positive_y: bool = ..., show_planes: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -934,12 +1131,15 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            n_mirror: 1: x=cx による半空間ミラー
+            n_mirror: 1 は x=cx を境に 2 方向へ、2 は x=cx と y=cy を境に 4 象限へ、3 以上は中心角 180 / n_mirror 度のくさびを 2 × n_mirror 個へ複製する。, int, range [1, 12]
             cx: 対称軸または放射対称中心の X 座標。, float, range [-100.0, 100.0]
             cy: 対称軸または放射対称中心の Y 座標。, float, range [-100.0, 100.0]
-            source_positive_x: n_mirror=1/2 のときの x 側ソース選択
-            source_positive_y: n_mirror=2 のときの y 側ソース選択
-            show_planes: 対称面（または放射状境界）を可視化用ラインとして出力へ追加する
+            source_positive_x: 軸対称または象限対称で中心より X 座標が大きい側を複製元にする。, bool
+            source_positive_y: 象限対称で中心より Y 座標が大きい側を複製元にする。, bool
+            show_planes: 対称軸または放射状の境界を確認用ラインとして出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def mirror3d(self, *, activate: bool = ..., mode: Literal['azimuth', 'polyhedral'] = ..., n_azimuth: int = ..., center: Vec3 = ..., axis: Vec3 = ..., phi0: float = ..., mirror_equator: bool = ..., source_side: bool = ..., group: Literal['T', 'O', 'I'] = ..., use_reflection: bool = ..., show_planes: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -948,16 +1148,19 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: "azimuth" は回転軸を含む 2 平面でくさびを作り、回転と反射で複製する
-            n_azimuth: "azimuth" の等分数
-            center: 回転/反射の中心
-            axis: "azimuth" の回転軸
-            phi0: くさびの開始角 [deg]（"azimuth" のみ）
-            mirror_equator: 赤道面（axis ⟂）でさらにミラーする（"azimuth" のみ）
-            source_side: mirror_equator=True のときのソース側
-            group: "polyhedral" の回転群（T=12, O=24, I=60）
-            use_reflection: "polyhedral" で代表反射（y=0）を追加して倍化する
-            show_planes: 対称面を可視化用の十字線として出力に追加する
+            mode: 任意軸まわりの放射対称と正多面体の回転対称から複製方式を選ぶ。, choice, choices { 'azimuth', 'polyhedral' }
+            n_azimuth: 回転軸まわりの等分数。180 / n_azimuth 度のくさびを回転・反射し、通常は最大 2 × n_azimuth 個、赤道面反射時は最大 4 × n_azimuth 個へ複製する。, int, range [1, 64]
+            center: 三次元の回転および反射に使用する中心点。, vec3, range [-300.0, 300.0]
+            axis: 放射対称で使用する回転軸の方向ベクトル。, vec3, range [-1.0, 1.0]
+            phi0: 放射対称の複製元となるくさびの開始角を度単位で指定する。, float, range [-180.0, 180.0]
+            mirror_equator: 放射対称の結果を回転軸に直交する赤道面でも反射する。, bool
+            source_side: 赤道面反射で回転軸方向の正側を複製元にする。, bool
+            group: 正多面体対称に使う四面体、八面体、二十面体の回転群を選ぶ。, choice, choices { 'T', 'O', 'I' }
+            use_reflection: 正多面体の回転対称へ代表反射を追加して複製数を倍にする。, bool
+            show_planes: 対称面を確認用の十字ラインとして出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def partition(self, *, activate: bool = ..., mode: Literal['merge', 'group', 'ring'] = ..., site_count: int = ..., seed: int = ..., site_density_base: Vec3 = ..., site_density_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -966,13 +1169,16 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: 入力リングの扱い
-            site_count: Voronoi のサイト数
-            seed: 乱数シード（再現性）
-            site_density_base: サイト密度（採用確率）の中心値（軸別）
-            site_density_slope: 正規化座標 t∈[-1,+1] に対する密度勾配（軸別）
-            auto_center: True のとき `pivot` を無視し、入力 bbox の中心を pivot として扱う
-            pivot: auto_center=False のときの pivot（ワールド座標）
+            mode: 入力リングを統合、穴を含む領域単位、または個別リングとして分割する。, choice, choices { 'merge', 'group', 'ring' }
+            site_count: 領域をボロノイ分割するために配置するサイトの数。, int, range [1, 500]
+            seed: ボロノイサイトの配置を再現可能にする乱数シード。, int, range [0, 1073741823]
+            site_density_base: 基準点におけるサイト採用確率を軸ごとに指定する。勾配も含めた全成分が 0 なら密度制御を無効にする。, vec3, range [0.0, 1.0]
+            site_density_slope: 正規化した各軸位置に対するサイト採用確率の勾配。基準確率も含めた全成分が 0 なら密度制御を無効にする。, vec3, range [-1.0, 1.0]
+            auto_center: 入力のバウンディングボックス中心を密度勾配の基準点にする。, bool
+            pivot: 自動中心が無効な場合に密度勾配の基準とする点。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def pixelate(self, *, activate: bool = ..., step: Vec3 = ..., corner: Literal['auto', 'xy', 'yx'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -981,8 +1187,11 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            step: 各軸の格子間隔 (sx, sy, sz)
-            corner: 対角（x と y が同時に動く）を 2 手へ分解するときの順序
+            step: 頂点を吸着させる格子の間隔を軸ごとに指定する。, vec3, range [0.0, 10.0]
+            corner: X と Y が同時に変わる格子移動を直角の二線分へ分解する順序。, choice, choices { 'auto', 'xy', 'yx' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def quantize(self, *, activate: bool = ..., step: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -991,7 +1200,10 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            step: 各軸の格子間隔 (sx, sy, sz)
+            step: 各頂点を丸めて吸着させる格子の間隔を軸ごとに指定する。, vec3, range [0.0, 10.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def reaction_diffusion(self, *, activate: bool = ..., grid_pitch: float = ..., steps: int = ..., du: float = ..., dv: float = ..., feed: float = ..., kill: float = ..., dt: float = ..., seed: int = ..., seed_radius: float = ..., noise: float = ..., level: float = ..., min_points: int = ..., boundary: Literal['noflux', 'dirichlet'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1000,19 +1212,22 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            grid_pitch: 計算グリッドのピッチ（出力座標系の長さ単位）
-            steps: Gray-Scott の反復回数
+            grid_pitch: 反応拡散を計算する二次元グリッドの間隔。, float, range [0.2, 2.0]
+            steps: Gray-Scott 反応拡散モデルを更新する反復回数。, int, range [0, 10000]
             du: Gray-Scott モデルの U 成分に適用する拡散係数。, float, range [0.0, 1.0]
             dv: Gray-Scott モデルの V 成分に適用する拡散係数。, float, range [0.0, 1.0]
             feed: Gray-Scott モデルへ U 成分を供給する反応係数。, float, range [0.0, 0.1]
             kill: Gray-Scott モデルから V 成分を除去する反応係数。, float, range [0.0, 0.1]
-            dt: 時間刻み
-            seed: 乱数シード（初期条件用）
-            seed_radius: 中心ブロブの半径（0 ならブロブ無し）
-            noise: 初期ノイズ量（V に一様ノイズを加える）
-            level: 等値線の閾値
-            min_points: 出力するポリラインの最小点数
-            boundary: マスク境界の扱い
+            dt: 反応と拡散を数値積分するときの時間刻み。, float, range [0.1, 2.0]
+            seed: 初期濃度分布を再現可能にする乱数シード。, int, range [0, 9999]
+            seed_radius: 初期状態で中心に配置する V 成分ブロブの半径。, float, range [0.0, 200.0]
+            noise: 初期状態の V 成分へ加える一様ノイズの最大量。, float, range [0.0, 0.1]
+            level: 計算後の V 成分から輪郭を抽出する等値レベル。, float, range [0.0, 1.0]
+            min_points: 抽出した輪郭を出力対象とする最小頂点数。, int, range [4, 200]
+            boundary: マスク境界を濃度勾配なし、または外側濃度固定として扱う。, choice, choices { 'noflux', 'dirichlet' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def relax(self, *, activate: bool = ..., relaxation_iterations: int = ..., step: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1021,8 +1236,11 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            relaxation_iterations: 反復回数（0–50 にクランプ）
-            step: 1 ステップの移動係数（0.0–0.5 にクランプ）
+            relaxation_iterations: 点列のばらつきをならす弾性緩和の反復回数。, int, range [0, 50]
+            step: 各緩和ステップで頂点を移動させる係数。, float, range [0.0, 0.5]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def repeat(self, *, activate: bool = ..., layout: Literal['grid', 'radial'] = ..., count: int = ..., radius: float = ..., theta: float = ..., n_theta: int = ..., n_radius: int = ..., cumulative_scale: bool = ..., cumulative_offset: bool = ..., cumulative_rotate: bool = ..., offset: Vec3 = ..., rotation_step: Vec3 = ..., scale: Vec3 = ..., curve: float = ..., auto_center: bool = ..., pivot: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1031,21 +1249,24 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            layout: `"grid"` は `count/offset` による直交配置（現状維持）
-            count: 複製回数
-            radius: `layout="radial"` の外周半径 [mm]
-            theta: `layout="radial"` の開始角 [deg]
-            n_theta: `layout="radial"` の周方向配置数
-            n_radius: `layout="radial"` の半径方向配置数
-            cumulative_scale: True のときスケール補間にカーブ（t' = t**curve）を用いる
-            cumulative_offset: True のときオフセット補間にカーブ（t' = t**curve）を用いる
-            cumulative_rotate: True のとき回転補間にカーブ（t' = t**curve）を用いる
-            offset: 終点オフセット [mm]
-            rotation_step: 終点回転角 [deg]（rx, ry, rz）
-            scale: 終点スケール倍率（sx, sy, sz）
-            curve: カーブ係数
-            auto_center: True なら平均座標を中心に使用
-            pivot: `auto_center=False` のときの変換中心 [mm]
+            layout: 複製を直線状に並べるか、同心円状に並べるか選ぶ。, choice, choices { 'grid', 'radial' }
+            count: 直線配置で元の入力に追加する複製の数。, int, range [0, 100]
+            radius: 放射配置で複製を並べる最外周の半径。, float, range [0.0, 300.0]
+            theta: 放射配置を開始する角度を度単位で指定する。, float, range [-180.0, 180.0]
+            n_theta: 放射配置の各リングに並べる周方向の複製数。, int, range [1, 64]
+            n_radius: 放射配置で中心から外周までに作る半径方向の配置数。, int, range [1, 64]
+            cumulative_scale: 複製ごとのスケール補間に指定したカーブを適用する。, bool
+            cumulative_offset: 直線配置のオフセット補間に指定したカーブを適用する。, bool
+            cumulative_rotate: 複製ごとの回転補間に指定したカーブを適用する。, bool
+            offset: 直線配置で最後の複製に到達する各軸の移動量。, vec3, range [-100.0, 100.0]
+            rotation_step: 最後の複製へ到達するまでに補間する各軸の回転角を度単位で指定する。, vec3, range [-180.0, 180.0]
+            scale: 最後の複製へ到達するまでに補間する各軸の倍率。, vec3, range [0.25, 4.0]
+            curve: 有効にした累積変換の補間速度を決める指数。, float, range [0.1, 5.0]
+            auto_center: 入力頂点の平均座標を複製変換の中心として使用する。, bool
+            pivot: 自動中心が無効な場合に複製変換の中心とする点。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def rotate(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1054,9 +1275,12 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            auto_center: True なら頂点の平均座標を中心に使用
-            pivot: 回転の中心（`auto_center=False` のとき有効）
-            rotation: 各軸の回転角 [deg]（rx, ry, rz）
+            auto_center: 入力頂点の平均座標を回転中心として使用する。, bool
+            pivot: 自動中心が無効な場合に使用する回転中心。, vec3, range [-100.0, 100.0]
+            rotation: 各軸まわりに適用する回転角を度単位で指定する。, vec3, range [-180.0, 180.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def scale(self, *, activate: bool = ..., mode: Literal['all', 'by_line', 'by_face'] = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1065,10 +1289,13 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: `"all"` は入力全体を 1 つの中心でスケールする
-            auto_center: True なら平均座標を中心に使用
-            pivot: 変換の中心（`mode="all"` かつ `auto_center=False` のとき有効）
-            scale: 各軸の倍率
+            mode: 入力全体、開いた線ごと、または閉じた面ごとのどの単位で拡縮するか選ぶ。, choice, choices { 'all', 'by_line', 'by_face' }
+            auto_center: 入力全体を拡縮するときに頂点の平均座標を中心として使用する。, bool
+            pivot: 入力全体を拡縮するとき、自動中心が無効な場合に使用する中心点。, vec3, range [-100.0, 100.0]
+            scale: 選択した中心を基準に適用する各軸の倍率。, vec3, range [0.0, 10.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def subdivide(self, *, activate: bool = ..., subdivisions: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1077,7 +1304,10 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            subdivisions: 細分回数
+            subdivisions: 各線分へ中点を挿入して細分する反復回数。, int, range [0, 10]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def translate(self, *, activate: bool = ..., delta: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1086,7 +1316,10 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            delta: 平行移動量（dx, dy, dz）
+            delta: 入力全体へ加える各軸の平行移動量。, vec3, range [-100.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def trim(self, *, activate: bool = ..., start_param: float = ..., end_param: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1095,8 +1328,11 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            start_param: 開始位置（0.0–1.0）
-            end_param: 終了位置（0.0–1.0）
+            start_param: 各ポリラインの全長を 0 から 1 としたときに残す区間の開始位置。, float, range [0.0, 1.0]
+            end_param: 各ポリラインの全長を 0 から 1 としたときに残す区間の終了位置。, float, range [0.0, 1.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def twist(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., angle: float = ..., axis_dir: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1105,10 +1341,13 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            auto_center: True なら平均座標を回転中心に使用
-            pivot: ねじり軸（`axis_dir` に平行な直線）の通過点（`auto_center=False` のとき有効）
-            angle: 最大ねじれ角 [deg]
-            axis_dir: ねじり軸方向（ベクトル）
+            auto_center: 入力頂点の平均座標をねじり軸の通過点として使用する。, bool
+            pivot: 自動中心が無効な場合にねじり軸を通す点。, vec3, range [-100.0, 100.0]
+            angle: ねじり軸方向の両端で負から正へ変化する最大回転角を度単位で指定する。, float, range [0.0, 360.0]
+            axis_dir: ねじりの基準となる軸の方向ベクトル。, vec3, range [-1.0, 1.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def warp(self, *, activate: bool = ..., mode: Literal['lens', 'attract'] = ..., strength: float = ..., kind: Literal['scale', 'rotate', 'shear', 'swirl'] = ..., profile: Literal['band', 'ramp'] = ..., band: float = ..., inside_only: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., scale: float = ..., angle: float = ..., shear: Vec3 = ..., direction: Literal['attract', 'repel'] = ..., bias: float = ..., snap_band: float = ..., falloff: float = ..., show_mask: bool = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1117,23 +1356,26 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            mode: `"lens"` は座標変換をブレンドして歪ませる
-            strength: 変形の強さ（0..2 を想定）
-            kind: `mode="lens"` のときの座標変換種別
-            profile: `mode="lens"` の距離プロファイル
-            band: `mode="lens"` の距離スケール [mm]
-            inside_only: `mode="lens"` で mask 内側だけに効かせるか
-            auto_center: `mode="lens"` の中心を mask AABB center にする
-            pivot: `auto_center=False` のときの中心
-            scale: `kind="scale"` の倍率
-            angle: `kind in {"rotate","swirl"}` の角度 [deg]
-            shear: `kind="shear"` の shear 係数（x,y を使用）
-            direction: `mode="attract"` の向き（吸着/反発）
-            bias: `mode="attract"` の目標 signed distance [mm]（0 で境界）
-            snap_band: `mode="attract"` で変形対象にする `|d-bias|` の上限（0 で無制限）
-            falloff: `mode="attract"` の距離減衰スケール [mm]（0 でフラット）
-            show_mask: True のとき、mask 入力も出力に含める（位置確認用）
-            keep_original: True のとき、元の base も出力に含める（比較用）
+            mode: マスク近傍で座標変換をブレンドするか、境界へ吸着または反発させるか選ぶ。, choice, choices { 'lens', 'attract' }
+            strength: 選択したワープ変形を元の座標へブレンドする強さ。, float, range [0.0, 2.0]
+            kind: レンズモードでマスク領域へブレンドする座標変換の種類。, choice, choices { 'scale', 'rotate', 'shear', 'swirl' }
+            profile: 距離幅が正のときに使うレンズ強度の形状。band は境界と遷移幅の両端で 0、中間で最大となり、ramp は境界から離れるほど増加する。, choice, choices { 'band', 'ramp' }
+            band: レンズ強度をマスク境界から遷移させる距離幅。0 以下では距離遷移を使わず対象全体へ一様に適用する。, float, range [0.0, 200.0]
+            inside_only: レンズ変形をマスクの内側にある頂点だけへ適用する。, bool
+            auto_center: マスクのバウンディングボックス中心をレンズ変換の中心にする。, bool
+            pivot: 自動中心が無効な場合にレンズ変換の中心とする点。, vec3, range [-100.0, 100.0]
+            scale: レンズのスケール変換で中心からの距離へ適用する倍率。, float, range [0.5, 3.0]
+            angle: レンズの回転または渦巻き変換で適用する角度を度単位で指定する。, float, range [-180.0, 180.0]
+            shear: レンズのシアー変換で X と Y 方向へ適用する係数。, vec3, range [-1.0, 1.0]
+            direction: 頂点をマスク境界へ引き寄せるか、境界から遠ざけるか選ぶ。, choice, choices { 'attract', 'repel' }
+            bias: 吸着または反発の目標位置をマスク境界からずらす符号付き距離。, float, range [-50.0, 50.0]
+            snap_band: 吸着または反発の対象とする目標距離からの最大差。0 以下で制限なし。, float, range [0.0, 200.0]
+            falloff: 吸着または反発の強さを目標位置からの距離で減衰させる尺度。0 以下で減衰なし。, float, range [0.0, 200.0]
+            show_mask: 変形結果に位置確認用のマスク輪郭を加えて出力する。, bool
+            keep_original: 変形結果に比較用の元の入力線を加えて出力する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def weave(self, *, activate: bool = ..., num_candidate_lines: int = ..., relaxation_iterations: int = ..., step: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1142,9 +1384,12 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            num_candidate_lines: 候補線本数（0–500 にクランプ）
-            relaxation_iterations: 弾性緩和の反復回数（0–50 にクランプ）
-            step: 1 ステップの移動係数（0.0–0.5 にクランプ）
+            num_candidate_lines: 閉じた入力線の境界上にある二点を結ぶ候補線の本数。, int, range [0, 500]
+            relaxation_iterations: 候補線の交差とばらつきをならす弾性緩和の反復回数。, int, range [0, 50]
+            step: 各緩和ステップで候補線の頂点を移動させる係数。, float, range [0.0, 0.5]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
     def wobble(self, *, activate: bool = ..., amplitude: Vec3 = ..., frequency: Vec3 = ..., phase: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1153,9 +1398,12 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            amplitude: 変位量 [mm] 相当（各軸別）
-            frequency: 空間周波数（各軸別）
-            phase: 位相 [deg]
+            amplitude: 正弦波による変位の最大量を軸ごとに指定する。, vec3, range [0.0, 20.0]
+            frequency: 位置に対する正弦波の空間周波数を軸ごとに指定する。, vec3, range [0.0, 0.2]
+            phase: すべての変位波形へ加える位相を度単位で指定する。, float, range [0.0, 360.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
 

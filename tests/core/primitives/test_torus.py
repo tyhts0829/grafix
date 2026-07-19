@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from grafix.core.geometry import Geometry
+from grafix.core.primitives.torus import torus
 from grafix.core.realize import realize
 from grafix.core.primitives import torus as _torus_module  # noqa: F401
 
@@ -100,3 +101,25 @@ def test_torus_clamps_segments_lt_3() -> None:
     assert realized.coords.shape == (expected_coords_n, 3)
     assert realized.offsets.tolist() == [0, 4, 8, 12, 16, 20, 24]
     _assert_polylines_closed(realized.coords, realized.offsets)
+
+
+def test_torus_raw_arrays_are_fresh_writable_and_non_sharing() -> None:
+    """direct pack後もraw primitive APIの所有権契約を維持する。"""
+
+    params = {"major_segments": 12, "minor_segments": 9}
+    coords_a, offsets_a = torus(**params)
+    coords_b, offsets_b = torus(**params)
+
+    assert coords_a.flags.writeable
+    assert offsets_a.flags.writeable
+    assert coords_b.flags.writeable
+    assert offsets_b.flags.writeable
+    assert not np.shares_memory(coords_a, coords_b)
+    assert not np.shares_memory(offsets_a, offsets_b)
+
+    expected_coords = coords_b.copy()
+    expected_offsets = offsets_b.copy()
+    coords_a[0, 0] = np.float32(123.0)
+    offsets_a[0] = np.int32(1)
+    np.testing.assert_array_equal(coords_b, expected_coords)
+    np.testing.assert_array_equal(offsets_b, expected_offsets)

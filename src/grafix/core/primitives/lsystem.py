@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from functools import lru_cache
 
 import numpy as np
 
@@ -16,7 +17,6 @@ from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import (
     GeomTuple,
     empty_geom_tuple,
-    lines_to_geom_tuple,
 )
 
 _MAX_EXPANDED_CHARS = 500_000
@@ -152,7 +152,15 @@ def _expand_lsystem(axiom: str, rules: dict[str, str], *, iters: int) -> str:
     return s
 
 
-def _turtle_to_polylines(
+@lru_cache(maxsize=16)
+def _expand_preset(kind: str, iters: int) -> str:
+    """組み込みpresetの展開結果を、変更不能な文字列として再利用する。"""
+
+    axiom, rules = _PRESETS[kind]
+    return _expand_lsystem(axiom, rules, iters=iters)
+
+
+def _turtle_to_geom_tuple(
     program: str,
     *,
     start_xy: tuple[float, float],
@@ -162,8 +170,9 @@ def _turtle_to_polylines(
     jitter: float,
     seed: int,
     z: float,
-) -> list[np.ndarray]:
-    """タートル解釈で開ポリライン列（(N,3) float32 配列の list）を返す。"""
+    batch_random: bool,
+) -> GeomTuple:
+    """タートル解釈し、開ポリライン列をpacked geometryとして返す。"""
     x, y = float(start_xy[0]), float(start_xy[1])
     heading = math.radians(float(heading_deg))
     angle_base = math.radians(float(angle_deg))
@@ -174,26 +183,65 @@ def _turtle_to_polylines(
         jitter_f = 0.0
 
     rng = np.random.default_rng(int(seed))
+    random_values: np.ndarray | None = None
+    random_at = 0
+    if (
+        batch_random
+        and 0.0 < jitter_f <= 0.25
+        and math.isfinite(x)
+        and math.isfinite(y)
+        and math.isfinite(heading)
+        and math.isfinite(angle_base)
+        and math.isfinite(step_base)
+        and abs(heading) <= 20.0 * math.pi
+        and abs(angle_base) <= 2.0 * math.pi
+    ):
+        random_count = sum(program.count(symbol) for symbol in "Ff+-")
+        if random_count:
+            random_values = rng.uniform(
+                -jitter_f,
+                jitter_f,
+                size=random_count,
+            )
 
     lines_xy: list[list[tuple[float, float]]] = []
     current: list[tuple[float, float]] = [(x, y)]
     stack: list[tuple[float, float, float, list[tuple[float, float]]]] = []
+    direction_cache: dict[object, tuple[float, float]] = {}
 
     def finish_current() -> None:
         nonlocal current
         if len(current) >= 2:
             lines_xy.append(current)
 
-    def jitter_scale() -> float:
-        if jitter_f <= 0.0:
-            return 1.0
-        return 1.0 + float(rng.uniform(-jitter_f, jitter_f))
-
     for ch in program:
         if ch == "F" or ch == "f":
-            dist = step_base * jitter_scale()
-            x += dist * math.cos(heading)
-            y += dist * math.sin(heading)
+            if jitter_f <= 0.0:
+                dist = step_base
+                direction_key: object = (
+                    heading
+                    if heading != 0.0
+                    else (0.0, math.copysign(1.0, heading))
+                )
+                direction = direction_cache.get(direction_key)
+                if direction is None:
+                    direction = (math.cos(heading), math.sin(heading))
+                    if len(direction_cache) < 256:
+                        direction_cache[direction_key] = direction
+                cos_heading, sin_heading = direction
+            else:
+                if random_values is None:
+                    random_value = float(rng.uniform(-jitter_f, jitter_f))
+                else:
+                    random_value = float(random_values[random_at])
+                    random_at += 1
+                dist = step_base * (
+                    1.0 + random_value
+                )
+                cos_heading = math.cos(heading)
+                sin_heading = math.sin(heading)
+            x += dist * cos_heading
+            y += dist * sin_heading
             if ch == "F":
                 current.append((x, y))
             else:
@@ -202,7 +250,17 @@ def _turtle_to_polylines(
             continue
 
         if ch == "+" or ch == "-":
-            d = angle_base * jitter_scale()
+            if jitter_f <= 0.0:
+                d = angle_base
+            else:
+                if random_values is None:
+                    random_value = float(rng.uniform(-jitter_f, jitter_f))
+                else:
+                    random_value = float(random_values[random_at])
+                    random_at += 1
+                d = angle_base * (
+                    1.0 + random_value
+                )
             heading = heading + d if ch == "+" else heading - d
             continue
 
@@ -238,17 +296,23 @@ def _turtle_to_polylines(
         if len(prev) >= 2:
             lines_xy.append(prev)
 
-    out: list[np.ndarray] = []
     zf = float(z)
-    for poly in lines_xy:
+    if not lines_xy:
+        return empty_geom_tuple()
+
+    total_vertices = sum(len(poly) for poly in lines_xy)
+    coords = np.empty((total_vertices, 3), dtype=np.float32)
+    offsets = np.empty((len(lines_xy) + 1,), dtype=np.int32)
+    offsets[0] = 0
+    cursor = 0
+    for index, poly in enumerate(lines_xy, start=1):
         xy = np.asarray(poly, dtype=np.float32)
-        if int(xy.shape[0]) < 2:
-            continue
-        arr3 = np.zeros((xy.shape[0], 3), dtype=np.float32)
-        arr3[:, :2] = xy
-        arr3[:, 2] = zf
-        out.append(arr3)
-    return out
+        next_cursor = cursor + int(xy.shape[0])
+        coords[cursor:next_cursor, :2] = xy
+        coords[cursor:next_cursor, 2] = zf
+        cursor = next_cursor
+        offsets[index] = cursor
+    return coords, offsets
 
 
 @primitive(meta=lsystem_meta, ui_visible=LSYSTEM_UI_VISIBLE)
@@ -353,16 +417,17 @@ def lsystem(
     if kind_s == "custom":
         ax = str(axiom)
         rules_map = _parse_rules_text(str(rules))
+        program = _expand_lsystem(ax, rules_map, iters=int(iters))
+        batch_random = False
     else:
         if kind_s not in _PRESETS:
             kind_s = "plant"
-        ax, rules_map = _PRESETS[kind_s]
-
-    program = _expand_lsystem(ax, rules_map, iters=int(iters))
+        program = _expand_preset(kind_s, int(iters))
+        batch_random = True
     if not program:
         return empty_geom_tuple()
 
-    lines = _turtle_to_polylines(
+    return _turtle_to_geom_tuple(
         program,
         start_xy=(float(cx), float(cy)),
         heading_deg=float(heading),
@@ -371,5 +436,5 @@ def lsystem(
         jitter=float(jitter),
         seed=int(seed),
         z=float(cz),
+        batch_random=batch_random,
     )
-    return lines_to_geom_tuple(lines)

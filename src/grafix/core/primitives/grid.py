@@ -133,6 +133,8 @@ def grid(
     cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
     if (cx_f, cy_f, cz_f) != (0.0, 0.0, 0.0) or s_f != 1.0:
         center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
-        coords = coords * np.float32(s_f) + center_vec
+        coords = coords.copy()
+        coords *= np.float32(s_f)
+        coords += center_vec
 
     return coords, offsets

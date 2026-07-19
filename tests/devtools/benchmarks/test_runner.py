@@ -4,8 +4,10 @@ import json
 import os
 import signal
 import subprocess
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from collections.abc import Iterator
 
 import numpy as np
 import pytest
@@ -339,6 +341,65 @@ def test_warm_samples_preserve_an_earlier_hard_contract_failure() -> None:
 
     assert result.status == "contract-failure"
     assert result.contracts[0].passed is False
+
+
+def test_measurement_context_wraps_warmup_samples_and_postprocess() -> None:
+    definition = next(
+        definition
+        for definition in case_definitions()
+        if definition.case_id == "core.concat_recipe.parts_10"
+    )
+    events: list[str] = []
+    state = {"inside": False}
+
+    @contextmanager
+    def measurement_context(_state: object) -> Iterator[None]:
+        events.append("enter")
+        state["inside"] = True
+        try:
+            yield
+        finally:
+            state["inside"] = False
+            events.append("exit")
+
+    def workload(_state: object) -> object:
+        assert state["inside"] is True
+        events.append("workload")
+        return {"stable": True}
+
+    def postprocess(_state: object, output: object) -> runner._CaseOutput:
+        assert state["inside"] is True
+        events.append("postprocess")
+        return runner._CaseOutput(value=output)
+
+    result = runner._measure_in_process(
+        replace(
+            definition,
+            setup=lambda _parameters, _seed: state,
+            workload=workload,
+            postprocess=postprocess,
+            measurement_context=measurement_context,
+        ),
+        spec=definition.spec(seed=0),
+        seed=0,
+        mode="warm",
+        samples=2,
+        warmup=1,
+        target_ns=0,
+        disable_gc=False,
+    )
+
+    assert result.status == "ok", result.error
+    assert events == [
+        "enter",
+        "workload",
+        "workload",
+        "postprocess",
+        "workload",
+        "postprocess",
+        "exit",
+    ]
+    assert state["inside"] is False
 
 
 def test_warm_samples_reject_semantic_or_typed_metric_drift() -> None:

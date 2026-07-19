@@ -211,6 +211,23 @@ def _split_by_mask(points: np.ndarray, mask: np.ndarray) -> list[np.ndarray]:
     if points.shape[0] < 2:
         return []
 
+    if type(mask) is np.ndarray and mask.ndim == 1 and mask.dtype == np.bool_:
+        if bool(mask.all()):
+            return [points]
+        if not bool(mask.any()):
+            return []
+
+        padded = np.empty((mask.shape[0] + 2,), dtype=np.bool_)
+        padded[0] = False
+        padded[1:-1] = mask
+        padded[-1] = False
+        boundaries = np.flatnonzero(padded[1:] != padded[:-1])
+        return [
+            points[int(start) : int(stop)]
+            for start, stop in boundaries.reshape((-1, 2))
+            if int(stop) - int(start) >= 2
+        ]
+
     out: list[np.ndarray] = []
     n = int(points.shape[0])
     start = -1
@@ -495,23 +512,26 @@ def laplace_field_grid(
 
         radius_min = a_f * (1.0 + gap_f)
 
-        for u in u_line_values:
-            W = np.complex128(float(u)) + np.complex128(1j) * v_samples.astype(
-                np.complex128, copy=False
-            )
-            z = _map_cylinder_uniform(W, a=a_f, U=U_f)
-            finite = np.isfinite(z.real) & np.isfinite(z.imag)
-            base_mask = finite & (np.abs(z) >= radius_min)
-            emit_line_from_z(z, base_mask=base_mask)
+        if n_u_i > 0:
+            v_samples_complex = v_samples.astype(np.complex128, copy=False)
+            for u in u_line_values:
+                W = (
+                    np.complex128(float(u))
+                    + np.complex128(1j) * v_samples_complex
+                )
+                z = _map_cylinder_uniform(W, a=a_f, U=U_f)
+                finite = np.isfinite(z.real) & np.isfinite(z.imag)
+                base_mask = finite & (np.abs(z) >= radius_min)
+                emit_line_from_z(z, base_mask=base_mask)
 
-        for v in v_line_values:
-            W = u_samples.astype(np.complex128, copy=False) + np.complex128(1j) * float(
-                v
-            )
-            z = _map_cylinder_uniform(W, a=a_f, U=U_f)
-            finite = np.isfinite(z.real) & np.isfinite(z.imag)
-            base_mask = finite & (np.abs(z) >= radius_min)
-            emit_line_from_z(z, base_mask=base_mask)
+        if n_v_i > 0:
+            u_samples_complex = u_samples.astype(np.complex128, copy=False)
+            for v in v_line_values:
+                W = u_samples_complex + np.complex128(1j) * float(v)
+                z = _map_cylinder_uniform(W, a=a_f, U=U_f)
+                finite = np.isfinite(z.real) & np.isfinite(z.imag)
+                base_mask = finite & (np.abs(z) >= radius_min)
+                emit_line_from_z(z, base_mask=base_mask)
 
         if bool(draw_boundary) and a_f > 0.0:
             boundary_n = int(boundary_samples)
@@ -531,39 +551,45 @@ def laplace_field_grid(
         if abs(det) < 1e-12:
             raise ValueError("laplace_field_grid の mobius 係数が不正（alpha*delta - beta*gamma ≈ 0）")
 
-        for u in u_line_values:
-            W = np.complex128(float(u)) + np.complex128(1j) * v_samples.astype(
-                np.complex128, copy=False
-            )
-            z = _map_mobius(W, alpha=alpha, beta=beta, gamma=gamma, delta=delta)
-            base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
-            emit_line_from_z(z, base_mask=base_mask)
+        if n_u_i > 0:
+            v_samples_complex = v_samples.astype(np.complex128, copy=False)
+            for u in u_line_values:
+                W = (
+                    np.complex128(float(u))
+                    + np.complex128(1j) * v_samples_complex
+                )
+                z = _map_mobius(W, alpha=alpha, beta=beta, gamma=gamma, delta=delta)
+                base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
+                emit_line_from_z(z, base_mask=base_mask)
 
-        for v in v_line_values:
-            W = u_samples.astype(np.complex128, copy=False) + np.complex128(1j) * float(
-                v
-            )
-            z = _map_mobius(W, alpha=alpha, beta=beta, gamma=gamma, delta=delta)
-            base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
-            emit_line_from_z(z, base_mask=base_mask)
+        if n_v_i > 0:
+            u_samples_complex = u_samples.astype(np.complex128, copy=False)
+            for v in v_line_values:
+                W = u_samples_complex + np.complex128(1j) * float(v)
+                z = _map_mobius(W, alpha=alpha, beta=beta, gamma=gamma, delta=delta)
+                base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
+                emit_line_from_z(z, base_mask=base_mask)
 
     elif preset_s == "exp":
         k = complex(float(k_re), float(k_im))
-        for u in u_line_values:
-            W = np.complex128(float(u)) + np.complex128(1j) * v_samples.astype(
-                np.complex128, copy=False
-            )
-            z = _map_exp(W, k=k)
-            base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
-            emit_line_from_z(z, base_mask=base_mask)
+        if n_u_i > 0:
+            v_samples_complex = v_samples.astype(np.complex128, copy=False)
+            for u in u_line_values:
+                W = (
+                    np.complex128(float(u))
+                    + np.complex128(1j) * v_samples_complex
+                )
+                z = _map_exp(W, k=k)
+                base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
+                emit_line_from_z(z, base_mask=base_mask)
 
-        for v in v_line_values:
-            W = u_samples.astype(np.complex128, copy=False) + np.complex128(1j) * float(
-                v
-            )
-            z = _map_exp(W, k=k)
-            base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
-            emit_line_from_z(z, base_mask=base_mask)
+        if n_v_i > 0:
+            u_samples_complex = u_samples.astype(np.complex128, copy=False)
+            for v in v_line_values:
+                W = u_samples_complex + np.complex128(1j) * float(v)
+                z = _map_exp(W, k=k)
+                base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
+                emit_line_from_z(z, base_mask=base_mask)
 
     else:
         raise ValueError(f"laplace_field_grid の preset が不明: {preset_s!r}")

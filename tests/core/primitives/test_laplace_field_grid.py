@@ -6,6 +6,10 @@ import numpy as np
 import pytest
 
 from grafix.core.geometry import Geometry
+from grafix.core.primitives.laplace_field_grid import (
+    _split_by_mask,
+    laplace_field_grid as raw_laplace_field_grid,
+)
 from grafix.core.realize import RealizeError, realize
 from grafix.core.primitives import laplace_field_grid as _laplace_field_grid_module  # noqa: F401
 
@@ -218,3 +222,54 @@ def test_laplace_field_grid_presets_are_distinct() -> None:
     assert not np.allclose(b_cyl, b_mob)
     assert not np.allclose(b_cyl, b_exp)
     assert not np.allclose(b_mob, b_exp)
+
+
+@pytest.mark.parametrize(
+    "mask",
+    [
+        np.ones(12, dtype=np.bool_),
+        np.zeros(12, dtype=np.bool_),
+        np.array(
+            [False, True, True, False, True, False, True, True, True, False],
+            dtype=np.bool_,
+        ),
+    ],
+)
+def test_split_by_mask_fast_paths_preserve_runs(mask: np.ndarray) -> None:
+    """all/none/mixedの各経路が2点以上のTrue runだけを順番に返す。"""
+
+    points = np.arange(mask.size * 3, dtype=np.float64).reshape((-1, 3))
+    expected: list[np.ndarray] = []
+    start = -1
+    for index, keep in enumerate(mask):
+        if bool(keep) and start < 0:
+            start = index
+        elif not bool(keep) and start >= 0:
+            if index - start >= 2:
+                expected.append(points[start:index])
+            start = -1
+    if start >= 0 and mask.size - start >= 2:
+        expected.append(points[start:])
+
+    actual = _split_by_mask(points, mask)
+    assert len(actual) == len(expected)
+    for actual_piece, expected_piece in zip(actual, expected, strict=True):
+        np.testing.assert_array_equal(actual_piece, expected_piece)
+        assert np.shares_memory(actual_piece, points)
+
+
+def test_laplace_empty_output_keeps_transform_parameters_lazy() -> None:
+    """線が無い場合は従来どおりcenter/scale/rotateを評価しない。"""
+
+    coords, offsets = raw_laplace_field_grid(
+        preset="exp",
+        n_u=0,
+        n_v=0,
+        samples=2,
+        center=object(),  # type: ignore[arg-type]
+        scale=object(),  # type: ignore[arg-type]
+        rotate=object(),  # type: ignore[arg-type]
+    )
+
+    assert coords.shape == (0, 3)
+    assert offsets.tolist() == [0]

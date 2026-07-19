@@ -22,7 +22,15 @@ from grafix.devtools.benchmarks.schema import (
     environment_compatibility_key,
 )
 
-_DEPENDENCIES = ("grafix", "numpy", "numba", "moderngl", "pyglet")
+_DEPENDENCIES = (
+    "grafix",
+    "numpy",
+    "numba",
+    "moderngl",
+    "pyglet",
+    "shapely",
+    "pyclipper",
+)
 _ENVIRONMENT_VARIABLES = (
     "GRAFIX_CONFIG",
     "GRAFIX_PERF",
@@ -147,6 +155,9 @@ def collect_environment_fingerprint(
             "gpu": gpu,
         },
         "dependencies": dependency_versions,
+        "backends": {
+            "geos": _geos_version(unavailable),
+        },
         "environment": {
             name: (
                 overrides[name]
@@ -162,6 +173,30 @@ def collect_environment_fingerprint(
         values=values,
         unavailable=unavailable,
     )
+
+
+def _geos_version(unavailable: dict[str, str]) -> str | None:
+    """Shapely が実際に使用する GEOS version を返す。"""
+
+    try:
+        import shapely  # type: ignore[import-not-found, import-untyped]
+    except (ImportError, OSError) as exc:
+        unavailable["backend.geos"] = f"{type(exc).__name__}: {exc}"
+        return None
+
+    value = getattr(shapely, "geos_version_string", None)
+    if value is None:
+        try:
+            from shapely import geos  # type: ignore[attr-defined]
+        except (ImportError, OSError) as exc:
+            unavailable["backend.geos"] = f"{type(exc).__name__}: {exc}"
+            return None
+        value = getattr(geos, "geos_version_string", None)
+
+    if value is None:
+        unavailable["backend.geos"] = "GEOS version is unavailable"
+        return None
+    return str(value)
 
 
 def make_case_spec(

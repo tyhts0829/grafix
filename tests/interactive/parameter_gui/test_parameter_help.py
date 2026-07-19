@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import pytest
 
+from grafix import E, G
+from grafix.core.parameters.codec import decode_param_store, encode_param_store
+from grafix.core.parameters.context import parameter_context
+from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.view import ParameterRow
 from grafix.interactive.parameter_gui.help_pane import (
     NO_DESCRIPTION,
     NOT_SPECIFIED,
     parameter_help_content,
+)
+from grafix.interactive.parameter_gui.store_bridge import (
+    parameter_table_view_for_store,
 )
 from grafix.interactive.parameter_gui.table import _notify_parameter_help
 
@@ -84,3 +91,48 @@ def test_selected_hovered_and_focused_rows_feed_help_pane(state: str) -> None:
     )
 
     assert seen == [(row, state == "selected")]
+
+
+def test_loaded_builtin_meta_is_upgraded_before_gui_help() -> None:
+    store = ParamStore()
+    with parameter_context(store):
+        line = G.line(key="description-upgrade-line")
+        E.scale(key="description-upgrade-scale")(line)
+
+    payload = encode_param_store(store)
+    for item in payload["meta"]:
+        item.pop("description", None)
+        if item["op"] == "line" and item["arg"] == "length":
+            item["ui_min"] = -10.0
+            item["ui_max"] = 10.0
+    loaded = decode_param_store(payload)
+    stale_view = parameter_table_view_for_store(
+        loaded,
+        show_inactive_params=True,
+    )
+    stale_rows = [
+        row for row in stale_view.model.rows if row.op in {"line", "scale"}
+    ]
+    assert stale_rows
+    assert all(row.description is None for row in stale_rows)
+
+    with parameter_context(loaded):
+        line = G.line(key="description-upgrade-line")
+        E.scale(key="description-upgrade-scale")(line)
+
+    current_view = parameter_table_view_for_store(
+        loaded,
+        show_inactive_params=True,
+    )
+    rows = [
+        row
+        for row in current_view.model.rows
+        if row.op in {"line", "scale"}
+    ]
+    assert current_view.model is not stale_view.model
+    assert rows
+    assert all(row.description and row.description.strip() for row in rows)
+    assert all(parameter_help_content(row).description != NO_DESCRIPTION for row in rows)
+
+    length_row = next(row for row in rows if row.op == "line" and row.arg == "length")
+    assert (length_row.ui_min, length_row.ui_max) == (-10.0, 10.0)

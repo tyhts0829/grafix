@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from grafix.core.builtins import ensure_builtin_ops_registered
+from grafix.core.builtins import (
+    _BUILTIN_EFFECT_MODULES,
+    _BUILTIN_PRIMITIVE_MODULES,
+    ensure_builtin_ops_registered,
+)
 from grafix.core.effect_registry import effect_registry
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.layer_style import (
@@ -29,6 +33,12 @@ from grafix.core.parameters.style import (
 from grafix.core.parameters.style_ops import ensure_style_entries
 from grafix.core.preset_registry import PresetRegistry
 from grafix.core.primitive_registry import primitive_registry
+from grafix.devtools.generate_stub import _parse_numpy_doc
+
+_CODE_OWNED_OPERATION_ARGS = {
+    ("primitive", "bezier"): frozenset({"p0", "p1", "p2", "p3"}),
+    ("primitive", "polyline"): frozenset({"points"}),
+}
 
 
 def _has_description(meta: ParamMeta | None) -> bool:
@@ -38,35 +48,73 @@ def _has_description(meta: ParamMeta | None) -> bool:
 
 
 def test_builtin_operation_parameter_descriptions_are_complete() -> None:
-    """組み込み primitive/effect は activate を含む全行に説明を持つ。"""
+    """組み込み operation の全公開引数が metadata または docstring に説明を持つ。"""
 
     ensure_builtin_ops_registered()
     registry_specs = (
         (
+            "primitive",
             primitive_registry,
             "grafix.core.primitives.",
+            frozenset(_BUILTIN_PRIMITIVE_MODULES),
         ),
         (
+            "effect",
             effect_registry,
             "grafix.core.effects.",
+            frozenset(_BUILTIN_EFFECT_MODULES),
         ),
     )
 
     missing: list[str] = []
-    first_party_count = 0
-    for registry, provenance_prefix in registry_specs:
-        for operation, spec in registry.items():
-            if not spec.provenance.startswith(provenance_prefix):
-                continue
-            first_party_count += 1
-            if "activate" not in spec.meta:
-                missing.append(f"{operation}.activate (metadata missing)")
+    for kind, registry, provenance_prefix, manifest_names in registry_specs:
+        first_party_specs = {
+            operation: spec
+            for operation, spec in registry.items()
+            if spec.provenance.startswith(provenance_prefix)
+        }
+        if set(first_party_specs) != set(manifest_names):
+            missing_names = sorted(set(manifest_names) - set(first_party_specs))
+            extra_names = sorted(set(first_party_specs) - set(manifest_names))
+            missing.append(
+                f"{kind} manifest/registry mismatch "
+                f"(missing={missing_names}, extra={extra_names})"
+            )
+
+        for operation, spec in sorted(first_party_specs.items()):
+            code_owned = _CODE_OWNED_OPERATION_ARGS.get(
+                (kind, operation),
+                frozenset(),
+            )
+            accepted_args = set(spec.accepted_args)
+            unknown_code_owned = set(code_owned) - accepted_args
+            if unknown_code_owned:
+                missing.append(
+                    f"{operation} code-owned args are not accepted: "
+                    f"{sorted(unknown_code_owned)}"
+                )
+
+            expected_meta = {"activate", *(accepted_args - set(code_owned))}
+            actual_meta = set(spec.meta)
+            if actual_meta != expected_meta:
+                missing.append(
+                    f"{operation} metadata mismatch "
+                    f"(missing={sorted(expected_meta - actual_meta)}, "
+                    f"extra={sorted(actual_meta - expected_meta)})"
+                )
+
+            if not spec.description.strip():
+                missing.append(f"{operation} (operation description)")
             for arg, meta in spec.meta.items():
                 if not _has_description(meta):
                     missing.append(f"{operation}.{arg}")
 
-    assert first_party_count > 0, "first-party operation が registry にありません"
-    assert not missing, "Description が空の operation.arg: " + ", ".join(missing)
+            _, parameter_docs = _parse_numpy_doc(spec.doc)
+            for arg in sorted(code_owned):
+                if not parameter_docs.get(arg, "").strip():
+                    missing.append(f"{operation}.{arg} (docstring)")
+
+    assert not missing, "Operation description completeness error: " + ", ".join(missing)
 
 
 def test_global_style_parameter_descriptions_are_complete() -> None:

@@ -18,6 +18,16 @@
 - docstring は日本語の事実記述（主語省略・終止形、絵文字不可）で書く。
 - 目的・設計意図・既知のトレードオフのみを短く記し、逐語説明や重複は避ける。
 
+## Operation 引数の説明
+
+- first-party の Parameter GUI 対象引数は、対応する `ParamMeta.description` に
+  空でない具体的な説明を書く。GUI Help と生成 stub はこれを説明の
+  source of truth とする。
+- `ParamMeta` を持たない code-owned の公開引数は、公開 callable の NumPy スタイル
+  docstring に `Parameters` 節を設け、各引数を具体的に説明する。
+- ユーザー定義 primitive / effect / preset の `description` は任意とする。
+  互換性のため必須にはしないが、GUI Help と生成 stub へ用途を伝えるため記述を推奨する。
+
 ## 型ヒント
 
 - `dict[str, Any]` 等の組込みジェネリックで統一する。

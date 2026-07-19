@@ -61,15 +61,27 @@ def _reflect_index(i: int, n: int) -> int:
     return int(j)
 
 
-@njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _highpass_reflect_nb(points: np.ndarray, kernel: np.ndarray, gain: float) -> np.ndarray:
-    n = int(points.shape[0])
+@njit(cache=True, fastmath=True, inline="always")  # type: ignore[misc]
+def _highpass_reflect_line_into_nb(
+    points: np.ndarray,
+    start: int,
+    stop: int,
+    kernel: np.ndarray,
+    gain: float,
+    out: np.ndarray,
+) -> None:
+    source = points[start:stop]
+    target = out[start:stop]
+    n = int(source.shape[0])
     if n <= 1:
-        return points
+        if n == 1:
+            target[0, 0] = source[0, 0]
+            target[0, 1] = source[0, 1]
+            target[0, 2] = source[0, 2]
+        return
 
     g = float(gain)
     r = int(kernel.shape[0] // 2)
-    out = np.empty_like(points)
     for i in range(n):
         ax = 0.0
         ay = 0.0
@@ -77,27 +89,34 @@ def _highpass_reflect_nb(points: np.ndarray, kernel: np.ndarray, gain: float) ->
         for k in range(-r, r + 1):
             j = _reflect_index(i + k, n)
             w = float(kernel[k + r])
-            ax += w * float(points[j, 0])
-            ay += w * float(points[j, 1])
-            az += w * float(points[j, 2])
-        bx = float(points[i, 0])
-        by = float(points[i, 1])
-        bz = float(points[i, 2])
-        out[i, 0] = np.float32(bx + g * (bx - ax))
-        out[i, 1] = np.float32(by + g * (by - ay))
-        out[i, 2] = np.float32(bz + g * (bz - az))
-    return out
+            ax += w * float(source[j, 0])
+            ay += w * float(source[j, 1])
+            az += w * float(source[j, 2])
+        bx = float(source[i, 0])
+        by = float(source[i, 1])
+        bz = float(source[i, 2])
+        target[i, 0] = np.float32(bx + g * (bx - ax))
+        target[i, 1] = np.float32(by + g * (by - ay))
+        target[i, 2] = np.float32(bz + g * (bz - az))
 
 
-@njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _highpass_wrap_nb(points: np.ndarray, kernel: np.ndarray, gain: float) -> np.ndarray:
-    n = int(points.shape[0])
+@njit(cache=True, fastmath=True, inline="always")  # type: ignore[misc]
+def _highpass_wrap_line_into_nb(
+    points: np.ndarray,
+    start: int,
+    stop: int,
+    kernel: np.ndarray,
+    gain: float,
+    out: np.ndarray,
+) -> None:
+    source = points[start : stop - 1]
+    target = out[start:stop]
+    n = int(source.shape[0])
     if n <= 0:
-        return points
+        return
 
     g = float(gain)
     r = int(kernel.shape[0] // 2)
-    out = np.empty_like(points)
     for i in range(n):
         ax = 0.0
         ay = 0.0
@@ -105,16 +124,40 @@ def _highpass_wrap_nb(points: np.ndarray, kernel: np.ndarray, gain: float) -> np
         for k in range(-r, r + 1):
             j = (i + k) % n
             w = float(kernel[k + r])
-            ax += w * float(points[j, 0])
-            ay += w * float(points[j, 1])
-            az += w * float(points[j, 2])
-        bx = float(points[i, 0])
-        by = float(points[i, 1])
-        bz = float(points[i, 2])
-        out[i, 0] = np.float32(bx + g * (bx - ax))
-        out[i, 1] = np.float32(by + g * (by - ay))
-        out[i, 2] = np.float32(bz + g * (bz - az))
-    return out
+            ax += w * float(source[j, 0])
+            ay += w * float(source[j, 1])
+            az += w * float(source[j, 2])
+        bx = float(source[i, 0])
+        by = float(source[i, 1])
+        bz = float(source[i, 2])
+        target[i, 0] = np.float32(bx + g * (bx - ax))
+        target[i, 1] = np.float32(by + g * (by - ay))
+        target[i, 2] = np.float32(bz + g * (bz - az))
+
+    # 閉曲線は末尾を畳み込み対象から外し、highpass 後の先頭を複写する。
+    target[n, 0] = target[0, 0]
+    target[n, 1] = target[0, 1]
+    target[n, 2] = target[0, 2]
+
+
+@njit(cache=True, fastmath=True)  # type: ignore[misc]
+def _highpass_packed_into_nb(
+    points: np.ndarray,
+    offsets: np.ndarray,
+    closed_flags: np.ndarray,
+    kernel: np.ndarray,
+    gain: float,
+    out: np.ndarray,
+) -> None:
+    """packed line 全体を一度の JIT 呼び出しで highpass して ``out`` へ書く。"""
+
+    for line_index in range(int(offsets.shape[0]) - 1):
+        start = int(offsets[line_index])
+        stop = int(offsets[line_index + 1])
+        if closed_flags[line_index]:
+            _highpass_wrap_line_into_nb(points, start, stop, kernel, gain, out)
+        else:
+            _highpass_reflect_line_into_nb(points, start, stop, kernel, gain, out)
 
 
 @effect(meta=highpass_meta)
@@ -191,16 +234,20 @@ def highpass(
         sigma_in_samples=float(sigma_in_samples), max_radius=MAX_KERNEL_RADIUS
     )
     resampled, offsets_out = resample_polylines(coords, plan)
+    closed_flags = np.fromiter(
+        (line.closed for line in plan.lines),
+        dtype=np.bool_,
+        count=n_lines,
+    )
     coords_out = np.empty_like(resampled)
-    for line in plan.lines:
-        source = resampled[line.output_start : line.output_stop]
-        target = coords_out[line.output_start : line.output_stop]
-        if line.closed:
-            filtered = _highpass_wrap_nb(source[:-1], kernel, float(gain_size))
-            target[:-1] = filtered
-            target[-1] = filtered[0]
-        else:
-            target[:] = _highpass_reflect_nb(source, kernel, float(gain_size))
+    _highpass_packed_into_nb(
+        resampled,
+        offsets_out,
+        closed_flags,
+        kernel,
+        float(gain_size),
+        coords_out,
+    )
     return coords_out, offsets_out
 
 

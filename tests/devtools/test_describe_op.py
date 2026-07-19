@@ -18,6 +18,7 @@ def test_describe_cli_prints_registry_metadata(capsys) -> None:
     assert "  length: 1.0\n" in output
     assert "meta:\n" in output
     assert "  length: kind='float'" in output
+    assert "description='線分の始点から終点までの長さを指定します。'" in output
     assert "doc:\n" in output
     assert "正規化済み引数から線分を生成する。" in output
 

@@ -37,13 +37,19 @@ partition_meta = {
         kind="vec3",
         ui_min=0.0,
         ui_max=1.0,
-        description="基準点におけるサイトの採用確率を軸ごとに指定する。",
+        description=(
+            "基準点におけるサイト採用確率を軸ごとに指定する。"
+            "勾配も含めた全成分が 0 なら密度制御を無効にする。"
+        ),
     ),
     "site_density_slope": ParamMeta(
         kind="vec3",
         ui_min=-1.0,
         ui_max=1.0,
-        description="正規化した各軸位置に対するサイト採用確率の勾配。",
+        description=(
+            "正規化した各軸位置に対するサイト採用確率の勾配。"
+            "基準確率も含めた全成分が 0 なら密度制御を無効にする。"
+        ),
     ),
     "auto_center": ParamMeta(
         kind="bool",

@@ -20,7 +20,10 @@ mirror_meta = {
         kind="int",
         ui_min=1,
         ui_max=12,
-        description="軸対称、象限対称、または放射対称を決めるミラー分割数。",
+        description=(
+            "1 は x=cx を境に 2 方向へ、2 は x=cx と y=cy を境に 4 象限へ、"
+            "3 以上は中心角 180 / n_mirror 度のくさびを 2 × n_mirror 個へ複製する。"
+        ),
     ),
     "cx": ParamMeta(
         kind="float",
@@ -156,33 +159,33 @@ def mirror(
         wedge_pieces: list[np.ndarray] = []
         need_dedup = False
 
-        for li in range(int(offsets.size) - 1):
-            v = coords[int(offsets[li]) : int(offsets[li + 1])]
-            if v.shape[0] == 0:
+        c0_coords, c0_offsets = _clip_polylines_halfplane_nb(
+            coords,
+            offsets,
+            cx_f,
+            cy_f,
+            n0x,
+            n0y,
+        )
+        c1_coords, c1_offsets = _clip_polylines_halfplane_nb(
+            c0_coords,
+            c0_offsets,
+            cx_f,
+            cy_f,
+            -n1x,
+            -n1y,
+        )
+        for i1 in range(int(c1_offsets.size) - 1):
+            s1 = int(c1_offsets[i1])
+            e1 = int(c1_offsets[i1 + 1])
+            p1 = c1_coords[s1:e1]
+            if p1.shape[0] == 0:
                 continue
-
-            c0_coords, c0_offsets = _clip_polyline_halfplane_nb(v, cx_f, cy_f, n0x, n0y)
-            for i0 in range(int(c0_offsets.size) - 1):
-                s0 = int(c0_offsets[i0])
-                e0 = int(c0_offsets[i0 + 1])
-                p0 = c0_coords[s0:e0]
-                if p0.shape[0] == 0:
-                    continue
-
-                c1_coords, c1_offsets = _clip_polyline_halfplane_nb(
-                    p0, cx_f, cy_f, -n1x, -n1y
-                )
-                for i1 in range(int(c1_offsets.size) - 1):
-                    s1 = int(c1_offsets[i1])
-                    e1 = int(c1_offsets[i1 + 1])
-                    p1 = c1_coords[s1:e1]
-                    if p1.shape[0] == 0:
-                        continue
-                    wedge_pieces.append(p1)
-                    if (not need_dedup) and _has_wedge_boundary_segment(
-                        p1, cx=cx_f, cy=cy_f, n1x=n1x, n1y=n1y
-                    ):
-                        need_dedup = True
+            wedge_pieces.append(p1)
+            if (not need_dedup) and _has_wedge_boundary_segment(
+                p1, cx=cx_f, cy=cy_f, n1x=n1x, n1y=n1y
+            ):
+                need_dedup = True
 
         if not wedge_pieces:
             return empty_geom()
@@ -444,124 +447,128 @@ def _has_wedge_boundary_segment(
 
 
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _clip_polyline_halfplane_nb(
+def _clip_polylines_halfplane_nb(
     vertices: np.ndarray,
+    offsets: np.ndarray,
     cx: float,
     cy: float,
     nx: float,
     ny: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    npts = int(vertices.shape[0])
-    if npts == 0:
+    n_vertices = int(vertices.shape[0])
+    if n_vertices == 0:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((1,), dtype=np.int32)
 
+    n_lines = int(offsets.shape[0]) - 1
     eps = float(EPS)
     thr = -eps if INCLUDE_BOUNDARY else eps
-
-    if npts == 1:
-        s0 = (float(vertices[0, 0]) - float(cx)) * float(nx) + (
-            float(vertices[0, 1]) - float(cy)
-        ) * float(ny)
-        if s0 >= thr:
-            out1 = np.empty((1, 3), dtype=np.float32)
-            out1[0, 0] = float(vertices[0, 0])
-            out1[0, 1] = float(vertices[0, 1])
-            out1[0, 2] = float(vertices[0, 2])
-            offs1 = np.empty((2,), dtype=np.int32)
-            offs1[0] = 0
-            offs1[1] = 1
-            return out1, offs1
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((1,), dtype=np.int32)
-
-    # 半平面クリップで点数は高々 2*n 程度になる（交点の挿入分）。
-    out_coords = np.empty((2 * npts + 2, 3), dtype=np.float32)
-    out_offsets = np.empty((npts + 1,), dtype=np.int32)
+    out_coords = np.empty(
+        (2 * n_vertices + 2 * max(0, n_lines), 3),
+        dtype=np.float32,
+    )
+    out_offsets = np.empty((n_vertices + 1,), dtype=np.int32)
     out_offsets[0] = 0
 
     out_n = 0
     out_lines = 0
 
-    ax = float(vertices[0, 0])
-    ay = float(vertices[0, 1])
-    az = float(vertices[0, 2])
-    s_a = (ax - float(cx)) * float(nx) + (ay - float(cy)) * float(ny)
-    in_a = s_a >= thr
-    cur_open = in_a
-    if in_a:
-        out_coords[out_n, 0] = ax
-        out_coords[out_n, 1] = ay
-        out_coords[out_n, 2] = az
-        out_n += 1
+    for li in range(n_lines):
+        start = int(offsets[li])
+        stop = int(offsets[li + 1])
+        npts = stop - start
+        if npts <= 0:
+            continue
 
-    for i in range(1, npts):
-        bx = float(vertices[i, 0])
-        by = float(vertices[i, 1])
-        bz = float(vertices[i, 2])
-        s_b = (bx - float(cx)) * float(nx) + (by - float(cy)) * float(ny)
-        in_b = s_b >= thr
+        if npts == 1:
+            s0 = (float(vertices[start, 0]) - float(cx)) * float(nx) + (
+                float(vertices[start, 1]) - float(cy)
+            ) * float(ny)
+            if s0 >= thr:
+                out_coords[out_n, 0] = float(vertices[start, 0])
+                out_coords[out_n, 1] = float(vertices[start, 1])
+                out_coords[out_n, 2] = float(vertices[start, 2])
+                out_n += 1
+                out_lines += 1
+                out_offsets[out_lines] = out_n
+            continue
 
-        if in_a and in_b:
-            out_coords[out_n, 0] = bx
-            out_coords[out_n, 1] = by
-            out_coords[out_n, 2] = bz
+        ax = float(vertices[start, 0])
+        ay = float(vertices[start, 1])
+        az = float(vertices[start, 2])
+        s_a = (ax - float(cx)) * float(nx) + (ay - float(cy)) * float(ny)
+        in_a = s_a >= thr
+        cur_open = in_a
+        if in_a:
+            out_coords[out_n, 0] = ax
+            out_coords[out_n, 1] = ay
+            out_coords[out_n, 2] = az
             out_n += 1
-            cur_open = True
-        elif in_a and (not in_b):
-            denom = s_a - s_b
-            t = 0.0 if abs(denom) < 1e-20 else s_a / denom
-            if t < 0.0:
-                t = 0.0
-            elif t > 1.0:
-                t = 1.0
-            px = ax + (bx - ax) * t
-            py = ay + (by - ay) * t
-            pz = az + (bz - az) * t
-            if out_n == 0 or (
-                abs(float(out_coords[out_n - 1, 0]) - px) > eps
-                or abs(float(out_coords[out_n - 1, 1]) - py) > eps
-                or abs(float(out_coords[out_n - 1, 2]) - pz) > eps
-            ):
+
+        for i in range(start + 1, stop):
+            bx = float(vertices[i, 0])
+            by = float(vertices[i, 1])
+            bz = float(vertices[i, 2])
+            s_b = (bx - float(cx)) * float(nx) + (by - float(cy)) * float(ny)
+            in_b = s_b >= thr
+
+            if in_a and in_b:
+                out_coords[out_n, 0] = bx
+                out_coords[out_n, 1] = by
+                out_coords[out_n, 2] = bz
+                out_n += 1
+                cur_open = True
+            elif in_a and (not in_b):
+                denom = s_a - s_b
+                t = 0.0 if abs(denom) < 1e-20 else s_a / denom
+                if t < 0.0:
+                    t = 0.0
+                elif t > 1.0:
+                    t = 1.0
+                px = ax + (bx - ax) * t
+                py = ay + (by - ay) * t
+                pz = az + (bz - az) * t
+                if out_n == 0 or (
+                    abs(float(out_coords[out_n - 1, 0]) - px) > eps
+                    or abs(float(out_coords[out_n - 1, 1]) - py) > eps
+                    or abs(float(out_coords[out_n - 1, 2]) - pz) > eps
+                ):
+                    out_coords[out_n, 0] = px
+                    out_coords[out_n, 1] = py
+                    out_coords[out_n, 2] = pz
+                    out_n += 1
+                if cur_open:
+                    out_lines += 1
+                    out_offsets[out_lines] = out_n
+                cur_open = False
+            elif (not in_a) and in_b:
+                denom = s_a - s_b
+                t = 0.0 if abs(denom) < 1e-20 else s_a / denom
+                if t < 0.0:
+                    t = 0.0
+                elif t > 1.0:
+                    t = 1.0
+                px = ax + (bx - ax) * t
+                py = ay + (by - ay) * t
+                pz = az + (bz - az) * t
                 out_coords[out_n, 0] = px
                 out_coords[out_n, 1] = py
                 out_coords[out_n, 2] = pz
                 out_n += 1
-            if cur_open:
-                out_lines += 1
-                out_offsets[out_lines] = out_n
-            cur_open = False
-        elif (not in_a) and in_b:
-            denom = s_a - s_b
-            t = 0.0 if abs(denom) < 1e-20 else s_a / denom
-            if t < 0.0:
-                t = 0.0
-            elif t > 1.0:
-                t = 1.0
-            px = ax + (bx - ax) * t
-            py = ay + (by - ay) * t
-            pz = az + (bz - az) * t
-            out_coords[out_n, 0] = px
-            out_coords[out_n, 1] = py
-            out_coords[out_n, 2] = pz
-            out_n += 1
-            out_coords[out_n, 0] = bx
-            out_coords[out_n, 1] = by
-            out_coords[out_n, 2] = bz
-            out_n += 1
-            cur_open = True
-        else:
-            # 外→外
-            pass
+                out_coords[out_n, 0] = bx
+                out_coords[out_n, 1] = by
+                out_coords[out_n, 2] = bz
+                out_n += 1
+                cur_open = True
 
-        ax, ay, az = bx, by, bz
-        s_a, in_a = s_b, in_b
+            ax, ay, az = bx, by, bz
+            s_a, in_a = s_b, in_b
 
-    if cur_open:
-        out_lines += 1
-        out_offsets[out_lines] = out_n
+        if cur_open:
+            out_lines += 1
+            out_offsets[out_lines] = out_n
 
     if out_lines <= 0 or out_n <= 0:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((1,), dtype=np.int32)
-
     return out_coords[:out_n], out_offsets[: out_lines + 1]
 
 

@@ -27,23 +27,37 @@ relax_meta = {
 
 MAX_RELAXATION_ITERATIONS = 50
 MAX_STEP = 0.5
+_PYTHON_LIST_SCRATCH_BUDGET_BYTES = 8 * 1024 * 1024
+# CPython の scalar object、list slot、allocator の端数を合わせた保守的な見積もり。
+_PYTHON_SCALAR_LIST_ITEM_BYTES = 40
+# ``ndarray.tolist()`` が作る外側 slot、2 要素 list、Python int 2 個の見積もり。
+_PYTHON_EDGE_LIST_ROW_BYTES = 160
+_PYTHON_SCALAR_LIST_ITEM_LIMIT = (
+    _PYTHON_LIST_SCRATCH_BUDGET_BYTES // _PYTHON_SCALAR_LIST_ITEM_BYTES
+)
+_PYTHON_EDGE_LIST_ROW_LIMIT = (
+    _PYTHON_LIST_SCRATCH_BUDGET_BYTES // _PYTHON_EDGE_LIST_ROW_BYTES
+)
+_PYTHON_VISITED_LIST_NODE_LIMIT = (
+    (_PYTHON_LIST_SCRATCH_BUDGET_BYTES - 64) // 8
+)
 
 
-def _iter_ranges(offsets: np.ndarray):
-    for i in range(int(offsets.size) - 1):
-        s = int(offsets[i])
-        e = int(offsets[i + 1])
-        yield s, e
+def _build_nodes_array_scan(
+    coords: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """baseline と同じ ndarray scalar 走査で node 対応を作る。"""
 
-
-def _build_nodes(coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """座標配列からユニークノードと頂点→ノード対応を作る（完全一致のみ）。"""
     index_by_xyz: dict[tuple[float, float, float], int] = {}
     vertex_to_node = np.empty((coords.shape[0],), dtype=np.int64)
     nodes: list[tuple[float, float, float]] = []
 
     for i in range(int(coords.shape[0])):
-        key = (float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2]))
+        key = (
+            float(coords[i, 0]),
+            float(coords[i, 1]),
+            float(coords[i, 2]),
+        )
         idx = index_by_xyz.get(key)
         if idx is None:
             idx = len(nodes)
@@ -55,10 +69,52 @@ def _build_nodes(coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return nodes_arr, vertex_to_node
 
 
-def _build_edges(offsets: np.ndarray, vertex_to_node: np.ndarray) -> np.ndarray:
+def _build_nodes_list_scan(
+    coords: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """小入力を Python scalar list へ一括変換して node 対応を作る。"""
+
+    index_by_xyz: dict[tuple[float, float, float], int] = {}
+    vertex_to_node = np.empty((coords.shape[0],), dtype=np.int64)
+    nodes: list[tuple[float, float, float]] = []
+
+    coordinate_rows = zip(
+        coords[:, 0].tolist(),
+        coords[:, 1].tolist(),
+        coords[:, 2].tolist(),
+    )
+    for i, key in enumerate(coordinate_rows):
+        idx = index_by_xyz.get(key)
+        if idx is None:
+            idx = len(nodes)
+            index_by_xyz[key] = idx
+            nodes.append(key)
+        vertex_to_node[i] = int(idx)
+
+    nodes_arr = np.asarray(nodes, dtype=np.float64)
+    return nodes_arr, vertex_to_node
+
+
+def _build_nodes(coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """座標配列からユニークノードと頂点→ノード対応を作る（完全一致のみ）。"""
+
+    scalar_items = 3 * int(coords.shape[0])
+    if scalar_items <= _PYTHON_SCALAR_LIST_ITEM_LIMIT:
+        return _build_nodes_list_scan(coords)
+    return _build_nodes_array_scan(coords)
+
+
+def _build_edges_array_scan(
+    offsets: np.ndarray,
+    vertex_to_node: np.ndarray,
+) -> np.ndarray:
+    """baseline と同じ ndarray scalar 走査で edge 集合を作る。"""
+
     edges: set[tuple[int, int]] = set()
-    for s, e in _iter_ranges(offsets):
-        for i in range(int(s), int(e) - 1):
+    for line_index in range(int(offsets.size) - 1):
+        start = int(offsets[line_index])
+        stop = int(offsets[line_index + 1])
+        for i in range(start, stop - 1):
             a = int(vertex_to_node[i])
             b = int(vertex_to_node[i + 1])
             if a == b:
@@ -73,28 +129,90 @@ def _build_edges(offsets: np.ndarray, vertex_to_node: np.ndarray) -> np.ndarray:
     return np.asarray(sorted(edges), dtype=np.int64)
 
 
-def _build_adjacency(num_nodes: int, edges: np.ndarray) -> list[list[int]]:
+def _build_edges_list_scan(
+    offsets: np.ndarray,
+    vertex_to_node: np.ndarray,
+) -> np.ndarray:
+    """小入力を Python int list へ一括変換して edge 集合を作る。"""
+
+    edges: set[tuple[int, int]] = set()
+    offset_values = offsets.tolist()
+    node_values = vertex_to_node.tolist()
+    for line_index in range(len(offset_values) - 1):
+        start = offset_values[line_index]
+        stop = offset_values[line_index + 1]
+        for i in range(start, stop - 1):
+            a = node_values[i]
+            b = node_values[i + 1]
+            if a == b:
+                continue
+            if a < b:
+                edges.add((a, b))
+            else:
+                edges.add((b, a))
+
+    if not edges:
+        return np.zeros((0, 2), dtype=np.int64)
+    return np.asarray(sorted(edges), dtype=np.int64)
+
+
+def _build_edges(offsets: np.ndarray, vertex_to_node: np.ndarray) -> np.ndarray:
+    scalar_items = int(offsets.size) + int(vertex_to_node.size)
+    if scalar_items <= _PYTHON_SCALAR_LIST_ITEM_LIMIT:
+        return _build_edges_list_scan(offsets, vertex_to_node)
+    return _build_edges_array_scan(offsets, vertex_to_node)
+
+
+def _build_adjacency_array_scan(
+    num_nodes: int,
+    edges: np.ndarray,
+) -> list[list[int]]:
+    """baseline と同じ ndarray scalar 走査で隣接 list を作る。"""
+
     adjacency: list[list[int]] = [[] for _ in range(int(num_nodes))]
-    for k in range(int(edges.shape[0])):
-        a = int(edges[k, 0])
-        b = int(edges[k, 1])
+    for edge_index in range(int(edges.shape[0])):
+        a = int(edges[edge_index, 0])
+        b = int(edges[edge_index, 1])
         adjacency[a].append(b)
         adjacency[b].append(a)
     return adjacency
 
 
+def _build_adjacency_list_scan(
+    num_nodes: int,
+    edges: np.ndarray,
+) -> list[list[int]]:
+    """小入力の edge を Python nested list 化して隣接 list を作る。"""
+
+    adjacency: list[list[int]] = [[] for _ in range(int(num_nodes))]
+    for a, b in edges.tolist():
+        adjacency[a].append(b)
+        adjacency[b].append(a)
+    return adjacency
+
+
+def _build_adjacency(num_nodes: int, edges: np.ndarray) -> list[list[int]]:
+    if int(edges.shape[0]) <= _PYTHON_EDGE_LIST_ROW_LIMIT:
+        return _build_adjacency_list_scan(num_nodes, edges)
+    return _build_adjacency_array_scan(num_nodes, edges)
+
+
+def _build_visited(num_nodes: int) -> list[bool] | np.ndarray:
+    """小入力だけ Python bool list、大入力は baseline の ndarray を使う。"""
+
+    if num_nodes <= _PYTHON_VISITED_LIST_NODE_LIMIT:
+        return [False] * num_nodes
+    return np.zeros((num_nodes,), dtype=np.bool_)
+
+
 def _compute_fixed(nodes: np.ndarray, edges: np.ndarray) -> np.ndarray:
     """固定点マスクを作る（次数!=2 + 連結成分の min/max）。"""
     num_nodes = int(nodes.shape[0])
-    degrees = np.zeros((num_nodes,), dtype=np.int64)
-    for k in range(int(edges.shape[0])):
-        degrees[int(edges[k, 0])] += 1
-        degrees[int(edges[k, 1])] += 1
-
+    degrees = np.bincount(edges.reshape(-1), minlength=num_nodes)
     fixed = degrees != 2
 
     adjacency = _build_adjacency(num_nodes, edges)
-    visited = np.zeros((num_nodes,), dtype=np.bool_)
+    visited = _build_visited(num_nodes)
     stack: list[int] = []
 
     for start in range(num_nodes):

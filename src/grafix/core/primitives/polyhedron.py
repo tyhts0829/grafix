@@ -42,7 +42,7 @@ _TYPE_ORDER = (
 )
 
 _DATA_DIR = resources.files("grafix").joinpath("resource", "regular_polyhedron")
-_POLYHEDRON_CACHE: dict[str, tuple[np.ndarray, ...]] = {}
+_POLYHEDRON_CACHE: dict[str, GeomTuple] = {}
 
 polyhedron_meta = {
     "kind": ParamMeta(
@@ -65,8 +65,8 @@ polyhedron_meta = {
 }
 
 
-def _load_face_polylines(kind: str) -> tuple[np.ndarray, ...]:
-    """データファイルから「面ポリライン列」を読み込んで返す。"""
+def _load_packed_polyhedron(kind: str) -> GeomTuple:
+    """データファイルを一度だけ読み込み、immutable な packed geometry を返す。"""
     cached = _POLYHEDRON_CACHE.get(kind)
     if cached is not None:
         return cached
@@ -101,22 +101,36 @@ def _load_face_polylines(kind: str) -> tuple[np.ndarray, ...]:
             arr = np.concatenate([arr, z], axis=1)
         polylines.append(arr.astype(np.float32, copy=False))
 
-    cached = tuple(polylines)
+    if polylines:
+        coords = np.concatenate(polylines, axis=0).astype(np.float32, copy=False)
+        offsets = np.empty(len(polylines) + 1, dtype=np.int32)
+        offsets[0] = 0
+        acc = 0
+        for i, line in enumerate(polylines):
+            acc += int(line.shape[0])
+            offsets[i + 1] = acc
+    else:
+        coords = np.zeros((0, 3), dtype=np.float32)
+        offsets = np.zeros((1,), dtype=np.int32)
+
+    # cache は直接返さず、呼び出しごとに copy する。誤変更による後続結果の汚染を防ぐ。
+    coords.setflags(write=False)
+    offsets.setflags(write=False)
+    cached = (coords, offsets)
     _POLYHEDRON_CACHE[kind] = cached
     return cached
 
 
-def _polylines_to_realized(
-    polylines: tuple[np.ndarray, ...],
+def _copy_and_place_polyhedron(
+    packed: GeomTuple,
     *,
     center: tuple[float, float, float],
     scale: float,
 ) -> GeomTuple:
-    """面ポリライン列を (coords, offsets) に変換する。"""
-    if not polylines:
-        coords = np.zeros((0, 3), dtype=np.float32)
-        offsets = np.zeros((1,), dtype=np.int32)
-        return coords, offsets
+    """cached packed geometry を fresh な writable 配列として返す。"""
+    base_coords, base_offsets = packed
+    if base_coords.shape[0] == 0:
+        return base_coords.copy(), base_offsets.copy()
 
     try:
         cx, cy, cz = center
@@ -129,13 +143,8 @@ def _polylines_to_realized(
     except Exception as exc:
         raise ValueError("polyhedron の scale は float である必要がある") from exc
 
-    coords = np.concatenate(polylines, axis=0).astype(np.float32, copy=False)
-
-    offsets = np.zeros(len(polylines) + 1, dtype=np.int32)
-    acc = 0
-    for i, line in enumerate(polylines):
-        acc += int(line.shape[0])
-        offsets[i + 1] = acc
+    coords = base_coords.copy()
+    offsets = base_offsets.copy()
 
     cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
     if (cx_f, cy_f, cz_f) != (0.0, 0.0, 0.0) or s_f != 1.0:
@@ -178,5 +187,5 @@ def polyhedron(
     if kind not in _TYPE_ORDER:
         choices = ", ".join(_TYPE_ORDER)
         raise ValueError(f"polyhedron.kind must be one of: {choices}; got {kind!r}")
-    polylines = _load_face_polylines(kind)
-    return _polylines_to_realized(polylines, center=center, scale=scale)
+    packed = _load_packed_polyhedron(kind)
+    return _copy_and_place_polyhedron(packed, center=center, scale=scale)

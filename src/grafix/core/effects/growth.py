@@ -436,6 +436,8 @@ def _insert_points_ring_xy(points: np.ndarray, target_spacing: float) -> np.ndar
     desired = np.maximum(desired, 1)
 
     total = int(np.sum(desired))
+    if total == n:
+        return points
     if total > _MAX_POINTS_PER_RING:
         extra_allowed = _MAX_POINTS_PER_RING - n
         segments = np.ones((n,), dtype=np.int64)
@@ -750,18 +752,15 @@ def _apply_boundary_constraints_numba(
 
 
 def _build_prev_next(n_points: int, ring_offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    prev_idx = np.empty((n_points,), dtype=np.int32)
-    next_idx = np.empty((n_points,), dtype=np.int32)
+    prev_idx = np.arange(-1, n_points - 1, dtype=np.int32)
+    next_idx = np.arange(1, n_points + 1, dtype=np.int32)
     for ri in range(int(ring_offsets.shape[0]) - 1):
         s = int(ring_offsets[ri])
         e = int(ring_offsets[ri + 1])
         if e - s < 3:
             continue
-        for i in range(s, e):
-            prev_i = i - 1 if i > s else e - 1
-            next_i = i + 1 if (i + 1) < e else s
-            prev_idx[i] = np.int32(prev_i)
-            next_idx[i] = np.int32(next_i)
+        prev_idx[s] = np.int32(e - 1)
+        next_idx[e - 1] = np.int32(s)
     return prev_idx, next_idx
 
 

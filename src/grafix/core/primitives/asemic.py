@@ -9,14 +9,18 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from functools import lru_cache
 
 import numpy as np
-from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple, empty_geom_tuple
+
+_NUMPY_RNG_MAX_NODES = 32
+_MAX_CACHED_BEZIER_SAMPLES = 64
+_NUMBA_RNG_KERNEL: Callable[[np.ndarray], np.ndarray] | None = None
 
 asemic_meta = {
     "text": ParamMeta(
@@ -191,19 +195,47 @@ def _best_candidate_points(
     return pts
 
 
-def _build_rng_adjacency(points: np.ndarray) -> list[set[int]]:
+def _build_rng_adjacency(
+    points: np.ndarray,
+    *,
+    use_numpy: bool = True,
+) -> list[set[int]]:
     """Relative Neighborhood Graph (RNG) を構築し、隣接集合を返す。"""
     n = int(points.shape[0])
     if n <= 0:
         return []
 
-    matrix = _build_rng_adjacency_matrix(np.asarray(points, dtype=np.float64))
+    points64 = np.asarray(points, dtype=np.float64)
+    if use_numpy and n <= _NUMPY_RNG_MAX_NODES:
+        matrix = _build_rng_adjacency_matrix_numpy(points64)
+    else:
+        matrix = _build_rng_adjacency_matrix(points64)
     return [set(np.flatnonzero(matrix[i]).tolist()) for i in range(n)]
 
 
-@njit(cache=True)
-def _build_rng_adjacency_matrix(points: np.ndarray) -> np.ndarray:
-    """一時 mask を作らず compiled loop で RNG adjacency を返す。"""
+def _build_rng_adjacency_matrix_numpy(points: np.ndarray) -> np.ndarray:
+    """小規模glyph用にRNG adjacencyを一括計算する。"""
+
+    dx = points[:, None, 0] - points[None, :, 0]
+    dy = points[:, None, 1] - points[None, :, 1]
+    distance_sq = dx * dx + dy * dy
+    edge_distance = distance_sq[:, :, None]
+    blocked = np.any(
+        (distance_sq[:, None, :] < edge_distance)
+        & (distance_sq[None, :, :] < edge_distance),
+        axis=2,
+    )
+    adjacency = (
+        np.isfinite(distance_sq)
+        & (distance_sq > 0.0)
+        & ~blocked
+    )
+    np.fill_diagonal(adjacency, False)
+    return adjacency
+
+
+def _build_rng_adjacency_matrix_impl(points: np.ndarray) -> np.ndarray:
+    """Numba compile対象となる大規模glyph用RNG loop。"""
 
     n = points.shape[0]
     distance_sq = np.empty((n, n), dtype=np.float64)
@@ -230,6 +262,19 @@ def _build_rng_adjacency_matrix(points: np.ndarray) -> np.ndarray:
                 adjacency[i, j] = True
                 adjacency[j, i] = True
     return adjacency
+
+
+def _build_rng_adjacency_matrix(points: np.ndarray) -> np.ndarray:
+    """大規模glyphでだけNumba kernelを遅延作成して実行する。"""
+
+    global _NUMBA_RNG_KERNEL
+    kernel = _NUMBA_RNG_KERNEL
+    if kernel is None:
+        from numba import njit  # type: ignore[attr-defined, import-untyped]
+
+        kernel = njit(cache=True)(_build_rng_adjacency_matrix_impl)
+        _NUMBA_RNG_KERNEL = kernel
+    return kernel(points)
 
 
 def _random_walk_strokes(
@@ -323,6 +368,34 @@ def _polylines_to_realized(
     return coords, offsets
 
 
+def _make_bezier_basis(
+    samples_per_segment: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """cubic Bézier係数を生成する。"""
+
+    samples = max(2, int(samples_per_segment))
+    ts = np.linspace(0.0, 1.0, num=samples, dtype=np.float64)
+    u = 1.0 - ts
+    basis = (
+        u**3,
+        3.0 * (u**2) * ts,
+        3.0 * u * (ts**2),
+        ts**3,
+    )
+    for values in basis:
+        values.setflags(write=False)
+    return basis
+
+
+@lru_cache(maxsize=64)
+def _bezier_basis(
+    samples_per_segment: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """通常範囲の同一sample数で共有するcubic Bézier係数を返す。"""
+
+    return _make_bezier_basis(samples_per_segment)
+
+
 def _sample_bezier(points: np.ndarray, *, samples_per_segment: int, tension: float) -> np.ndarray:
     """折れ線を Catmull-Rom 風の合成 Bézier としてサンプル点列化する。"""
     n = int(points.shape[0])
@@ -351,6 +424,10 @@ def _sample_bezier(points: np.ndarray, *, samples_per_segment: int, tension: flo
     # tension=1 で直線化、tension=0 で通常の Catmull-Rom。
     m *= 1.0 - t
 
+    if samples <= _MAX_CACHED_BEZIER_SAMPLES:
+        b0, b1, b2, b3 = _bezier_basis(samples)
+    else:
+        b0, b1, b2, b3 = _make_bezier_basis(samples)
     segs: list[np.ndarray] = []
     for i in range(n - 1):
         p0 = points[i]
@@ -358,15 +435,12 @@ def _sample_bezier(points: np.ndarray, *, samples_per_segment: int, tension: flo
         c1 = p0 + m[i] / 3.0
         c2 = p1 - m[i + 1] / 3.0
 
-        ts = np.linspace(0.0, 1.0, num=samples, dtype=np.float64)
-        if i > 0:
-            ts = ts[1:]
-        u = 1.0 - ts
+        sample_slice = slice(1, None) if i > 0 else slice(None)
         curve = (
-            (u**3)[:, None] * p0
-            + (3.0 * (u**2) * ts)[:, None] * c1
-            + (3.0 * u * (ts**2))[:, None] * c2
-            + (ts**3)[:, None] * p1
+            b0[sample_slice, None] * p0
+            + b1[sample_slice, None] * c1
+            + b2[sample_slice, None] * c2
+            + b3[sample_slice, None] * p1
         )
         segs.append(curve)
 
@@ -488,7 +562,10 @@ def _generate_asemic_glyph(
     rng = np.random.default_rng(int(seed))
 
     pts = _best_candidate_points(rng, n=nodes, candidates=int(candidates))
-    adjacency = _build_rng_adjacency(pts)
+    adjacency = _build_rng_adjacency(
+        pts,
+        use_numpy=str(stroke_style) != "line",
+    )
     strokes = _random_walk_strokes(
         rng,
         adjacency=adjacency,
