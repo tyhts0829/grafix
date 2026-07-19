@@ -299,6 +299,38 @@ class _G(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
+    def spiral(self, *, activate: bool = ..., inner_radius: float = ..., outer_radius: float = ..., turns: float = ..., phase: float = ..., samples: int = ..., center: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
+        """
+        半径を線形補間するArchimedean spiralを生成する。
+
+        引数:
+            activate: このプリミティブによる形状生成を有効にする。, bool
+            inner_radius: 曲線の始点における中心からの半径を指定します。, float, range [0.0, 200.0]
+            outer_radius: 曲線の終点における中心からの半径を指定します。, float, range [0.0, 200.0]
+            turns: 螺旋の符号付き周回数を指定します。負値は時計回りになります。, float, range [-20.0, 20.0]
+            phase: +X 軸を基準とする始点の角度を度単位で指定します。, float, range [-360.0, 360.0]
+            samples: 始点と終点を含む曲線の頂点数を指定します。, int, range [2, 8000]
+            center: 螺旋の中心となる XYZ 座標を指定します。, vec3, range [-300.0, 300.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
+    def spline(self, *, activate: bool = ..., points: Sequence[Sequence[float]] = ..., closed: bool = ..., tension: float = ..., segments_per_span: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
+        """
+        anchor点列を通るcentripetal Catmull–Rom曲線を生成する。
+
+        引数:
+            activate: このプリミティブによる形状生成を有効にする。, bool
+            points: 入力順に並べたfloat32範囲内の有限な2次元または3次元anchor座標
+            closed: 最後のanchorから最初のanchorまでを補間し、曲線を閉じます。, bool
+            tension: 0を標準形、1をanchor間の直線形とする接線の張力を指定します。, float, range [0.0, 1.0]
+            segments_per_span: 隣り合うanchor間を近似する直線セグメントの数を指定します。, int, range [1, 512]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
     def text(self, *, activate: bool = ..., text: str = ..., font: str = ..., font_index: int = ..., text_align: Literal['left', 'center', 'right'] = ..., letter_spacing_em: float = ..., line_height: float = ..., use_bounding_box: bool = ..., box_width: float = ..., box_height: float = ..., show_bounding_box: bool = ..., quality: float = ..., center: Vec3 = ..., scale: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
         """
         フォントアウトラインからテキストのポリライン列を生成する。
@@ -340,6 +372,25 @@ class _G(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
+    def wave(self, *, activate: bool = ..., kind: Literal['sine', 'triangle'] = ..., length: float = ..., amplitude: float = ..., cycles: float = ..., phase: float = ..., samples: int = ..., angle: float = ..., center: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
+        """
+        単調な局所X座標に沿う周期波形を1本の開ポリラインとして生成する。
+
+        引数:
+            activate: このプリミティブによる形状生成を有効にする。, bool
+            kind: 滑らかな正弦波または区分線形の三角波を選択します。, choice, choices { 'sine', 'triangle' }
+            length: 回転前の局所 X 軸に沿う始点から終点までの長さを指定します。, float, range [0.0, 200.0]
+            amplitude: 局所 Y 軸方向の符号付き振幅を指定します。, float, range [-200.0, 200.0]
+            cycles: 始点から終点までに進む符号付き周期数を指定します。, float, range [-20.0, 20.0]
+            phase: 始点における波形の位相を度単位で指定します。, float, range [-360.0, 360.0]
+            samples: 始点と終点を含むポリラインの頂点数を指定します。, int, range [2, 8000]
+            angle: 局所波形を XY 平面内で反時計回りに回転する角度を指定します。, float, range [-180.0, 180.0]
+            center: 回転と平行移動の基準となる波形中央の XYZ 座標を指定します。, vec3, range [-300.0, 300.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
 
 class _EffectBuilder(Protocol):
     def __call__(self, geometry: Geometry, *more_geometries: Geometry) -> Geometry:
@@ -370,6 +421,18 @@ class _EffectBuilder(Protocol):
             count: 元の線を含めて出力するストロークの本数。, int, range [1, 10]
             radius: 複製ストロークを XY 平面でずらす最大半径。, float, range [0.0, 1.0]
             seed: ストロークのずれを再現可能にする乱数シード。, int, range [0, 2147483647]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
+    def boolean(self, *, activate: bool = ..., mode: Literal['union', 'intersection', 'difference', 'xor'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        同一平面上の閉曲線群へ even-odd 規則の Boolean 演算を適用する。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            mode: 二つの閉曲線領域へ適用する集合演算を選ぶ。, choice, choices { 'union', 'intersection', 'difference', 'xor' }
             key: コード移動後も同じパラメータグループとして扱うための semantic identity。
             instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
@@ -431,6 +494,19 @@ class _EffectBuilder(Protocol):
             gap_length: 破線パターンで描画しない区間の長さ。, float, range [0.0, 100.0]
             offset: 各ポリライン上で破線パターンの開始位相をずらす距離。, float, range [0.0, 100.0]
             offset_jitter: ポリラインごとに開始位相へ加える一様乱数の最大振幅。, float, range [0.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
+    def deduplicate(self, *, activate: bool = ..., tolerance: float = ..., merge_chains: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        同一の無向線分を一つにまとめる。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            tolerance: 線分端点を同一視する XYZ 格子の間隔。0 は座標の完全一致。, float, range [0.0, 0.1]
+            merge_chains: 次数 2 の端点を通る連続線分を一本のポリラインへ結合する。, bool
             key: コード移動後も同じパラメータグループとして扱うための semantic identity。
             instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
@@ -630,6 +706,22 @@ class _EffectBuilder(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
+    def offset_curve(self, *, activate: bool = ..., distance: float = ..., side: Literal['left', 'right', 'both'] = ..., count: int = ..., join: Literal['round', 'mitre', 'bevel'] = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        平面ポリラインの入力方向を基準に平行曲線を生成する。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            distance: 隣り合う平行曲線どうしの距離。, float, range [0.0, 25.0]
+            side: 入力ポリラインの進行方向を基準に生成する側を選ぶ。, choice, choices { 'left', 'right', 'both' }
+            count: 各側へ距離の整数倍で生成する平行曲線の本数。, int, range [1, 20]
+            join: 平行曲線の角を接続する形状を選ぶ。, choice, choices { 'round', 'mitre', 'bevel' }
+            keep_original: 生成した平行曲線の後ろへ元のポリラインを追加する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
     def partition(self, *, activate: bool = ..., mode: Literal['merge', 'group', 'ring'] = ..., site_count: int = ..., seed: int = ..., site_density_base: Vec3 = ..., site_density_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
         偶奇規則の平面領域を Voronoi 分割し、閉ループ群を返す。
@@ -736,6 +828,19 @@ class _EffectBuilder(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
+    def resample(self, *, activate: bool = ..., step: float = ..., closed: Literal['auto', 'open', 'closed'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        ポリライン列を XYZ 弧長に沿って再標本化する。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            step: 再標本化後の隣接頂点間で目標とする弧長間隔。, float, range [0.01, 20.0]
+            closed: 開曲線、閉曲線、端点距離による自動判定から再標本化方式を選ぶ。, choice, choices { 'auto', 'open', 'closed' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
     def rotate(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
         回転（auto_center / pivot 対応、degree 入力）。
@@ -760,6 +865,19 @@ class _EffectBuilder(Protocol):
             auto_center: 入力全体を拡縮するときに頂点の平均座標を中心として使用する。, bool
             pivot: 入力全体を拡縮するとき、自動中心が無効な場合に使用する中心点。, vec3, range [-100.0, 100.0]
             scale: 選択した中心を基準に適用する各軸の倍率。, vec3, range [0.0, 10.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
+    def simplify(self, *, activate: bool = ..., tolerance: float = ..., closed: Literal['auto', 'open', 'closed'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        許容誤差内でポリラインの頂点数を減らす。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            tolerance: 元の線からこの XYZ 距離以内に収まる範囲で頂点を削減する。, float, range [0.0, 10.0]
+            closed: 開曲線、閉曲線、端点距離による自動判定から簡略化方式を選ぶ。, choice, choices { 'auto', 'open', 'closed' }
             key: コード移動後も同じパラメータグループとして扱うための semantic identity。
             instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
@@ -908,6 +1026,18 @@ class _E(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
+    def boolean(self, *, activate: bool = ..., mode: Literal['union', 'intersection', 'difference', 'xor'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        同一平面上の閉曲線群へ even-odd 規則の Boolean 演算を適用する。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            mode: 二つの閉曲線領域へ適用する集合演算を選ぶ。, choice, choices { 'union', 'intersection', 'difference', 'xor' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
     def buffer(self, *, activate: bool = ..., join: Literal['mitre', 'round', 'bevel'] = ..., quad_segs: int = ..., distance: float = ..., union: bool = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
         Shapely の buffer を用いて輪郭を生成する。
@@ -964,6 +1094,19 @@ class _E(Protocol):
             gap_length: 破線パターンで描画しない区間の長さ。, float, range [0.0, 100.0]
             offset: 各ポリライン上で破線パターンの開始位相をずらす距離。, float, range [0.0, 100.0]
             offset_jitter: ポリラインごとに開始位相へ加える一様乱数の最大振幅。, float, range [0.0, 100.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
+    def deduplicate(self, *, activate: bool = ..., tolerance: float = ..., merge_chains: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        同一の無向線分を一つにまとめる。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            tolerance: 線分端点を同一視する XYZ 格子の間隔。0 は座標の完全一致。, float, range [0.0, 0.1]
+            merge_chains: 次数 2 の端点を通る連続線分を一本のポリラインへ結合する。, bool
             key: コード移動後も同じパラメータグループとして扱うための semantic identity。
             instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
@@ -1163,6 +1306,22 @@ class _E(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
+    def offset_curve(self, *, activate: bool = ..., distance: float = ..., side: Literal['left', 'right', 'both'] = ..., count: int = ..., join: Literal['round', 'mitre', 'bevel'] = ..., keep_original: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        平面ポリラインの入力方向を基準に平行曲線を生成する。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            distance: 隣り合う平行曲線どうしの距離。, float, range [0.0, 25.0]
+            side: 入力ポリラインの進行方向を基準に生成する側を選ぶ。, choice, choices { 'left', 'right', 'both' }
+            count: 各側へ距離の整数倍で生成する平行曲線の本数。, int, range [1, 20]
+            join: 平行曲線の角を接続する形状を選ぶ。, choice, choices { 'round', 'mitre', 'bevel' }
+            keep_original: 生成した平行曲線の後ろへ元のポリラインを追加する。, bool
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
     def partition(self, *, activate: bool = ..., mode: Literal['merge', 'group', 'ring'] = ..., site_count: int = ..., seed: int = ..., site_density_base: Vec3 = ..., site_density_slope: Vec3 = ..., auto_center: bool = ..., pivot: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
         偶奇規則の平面領域を Voronoi 分割し、閉ループ群を返す。
@@ -1269,6 +1428,19 @@ class _E(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
+    def resample(self, *, activate: bool = ..., step: float = ..., closed: Literal['auto', 'open', 'closed'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        ポリライン列を XYZ 弧長に沿って再標本化する。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            step: 再標本化後の隣接頂点間で目標とする弧長間隔。, float, range [0.01, 20.0]
+            closed: 開曲線、閉曲線、端点距離による自動判定から再標本化方式を選ぶ。, choice, choices { 'auto', 'open', 'closed' }
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
     def rotate(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
         回転（auto_center / pivot 対応、degree 入力）。
@@ -1293,6 +1465,19 @@ class _E(Protocol):
             auto_center: 入力全体を拡縮するときに頂点の平均座標を中心として使用する。, bool
             pivot: 入力全体を拡縮するとき、自動中心が無効な場合に使用する中心点。, vec3, range [-100.0, 100.0]
             scale: 選択した中心を基準に適用する各軸の倍率。, vec3, range [0.0, 10.0]
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
+        ...
+    def simplify(self, *, activate: bool = ..., tolerance: float = ..., closed: Literal['auto', 'open', 'closed'] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        許容誤差内でポリラインの頂点数を減らす。
+
+        引数:
+            activate: このエフェクトによる形状変換を有効にする。, bool
+            tolerance: 元の線からこの XYZ 距離以内に収まる範囲で頂点を削減する。, float, range [0.0, 10.0]
+            closed: 開曲線、閉曲線、端点距離による自動判定から簡略化方式を選ぶ。, choice, choices { 'auto', 'open', 'closed' }
             key: コード移動後も同じパラメータグループとして扱うための semantic identity。
             instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。

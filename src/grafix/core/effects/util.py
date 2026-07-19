@@ -545,6 +545,32 @@ def _canonicalize_direction(vector: np.ndarray) -> np.ndarray:
     return result
 
 
+def _stable_argmax(values: np.ndarray) -> int:
+    """丸め誤差内の同率候補を小さい index 優先で選ぶ。"""
+
+    array = np.asarray(values, dtype=np.float64)
+    maximum = float(np.max(array))
+    tolerance = max(
+        1e-15,
+        abs(maximum) * 1e-12,
+        float(np.finfo(np.float64).eps) * 64.0,
+    )
+    for index, value in enumerate(array):
+        if maximum - float(value) <= tolerance:
+            return int(index)
+    return int(np.argmax(array))
+
+
+def _stable_canonicalize_direction(vector: np.ndarray) -> np.ndarray:
+    """最大成分が丸め同率でも符号を決定的に固定する。"""
+
+    result = np.asarray(vector, dtype=np.float64)
+    index = _stable_argmax(np.abs(result))
+    if float(result[index]) < 0.0:
+        result = -result
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class PlanarFrame:
     """全点から推定した、world座標と局所XY平面を結ぶ直交frame。"""
@@ -754,6 +780,146 @@ class PlanarFrame:
             rank=rank,
             status=status,
         )
+
+
+def canonical_planar_frame(
+    points: np.ndarray,
+    offsets: np.ndarray | None = None,
+    *,
+    allow_linear: bool = False,
+) -> PlanarFrame:
+    """入力順に依存しない world 基準の平面 frame を返す。
+
+    ``PlanarFrame.from_points`` が推定した平面と残差を保ちながら、法線の符号と
+    平面内の軸を固定 world axis から決め直す。ring の winding、seam、line 順を
+    変えても同じ局所座標系が必要な平面演算で使う。
+
+    ``allow_linear=True`` の場合は、rank 1 の点群に world axis を基準とする
+    principal plane を補い、有効な rank 2 frame として返す。純粋な 3D 直線には
+    平面が一意に定まらないため、この補完規則を明示的に選ぶ effect だけが使う。
+
+    Parameters
+    ----------
+    points : np.ndarray
+        shape ``(N, 3)`` の world 座標。
+    offsets : np.ndarray or None, default None
+        packed polyline の境界。省略時は全点を一本の線として扱う。
+    allow_linear : bool, default False
+        rank 1 の点群へ決定的な principal plane を補うか。
+
+    Returns
+    -------
+    PlanarFrame
+        world 基準へ canonicalize した frame。補完できない入力は
+        ``PlanarFrame.from_points`` と同じ無効 frame を返す。
+    """
+
+    values = np.asarray(points, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != 3:
+        raise ValueError("points は shape (N,3) である必要がある")
+
+    source = PlanarFrame.from_points(values, offsets)
+    if source.valid:
+        normal = _stable_canonicalize_direction(source.normal.copy())
+        world_axes = np.eye(3, dtype=np.float64)
+        projected = world_axes - np.outer(world_axes @ normal, normal)
+        lengths = np.linalg.norm(projected, axis=1)
+        axis_index = _stable_argmax(lengths)
+        axis_length = float(lengths[axis_index])
+        if not math.isfinite(axis_length) or axis_length <= 1e-14:
+            return source
+
+        x_axis = projected[axis_index] / axis_length
+        if float(np.dot(x_axis, world_axes[axis_index])) < 0.0:
+            x_axis = -x_axis
+        y_axis = np.cross(normal, x_axis)
+        y_length = float(np.linalg.norm(y_axis))
+        if not math.isfinite(y_length) or y_length <= 1e-14:
+            return source
+        y_axis /= y_length
+        x_axis = np.cross(y_axis, normal)
+        x_axis /= float(np.linalg.norm(x_axis))
+
+        # world 原点から推定平面へ下ろした垂線の足を使うことで、入力の seam や
+        # line 順が変わっても平面内原点を動かさない。
+        origin = normal * float(np.dot(source.origin, normal))
+        basis = np.stack([x_axis, y_axis, normal], axis=0)
+        return PlanarFrame(
+            origin=origin,
+            basis=basis,
+            inverse=basis.T,
+            residual=source.residual,
+            rank=source.rank,
+            status=source.status,
+        )
+
+    if not bool(allow_linear) or source.status != "linear":
+        return source
+
+    tolerance = _frame_close_tolerance(values)
+    lines = _clean_frame_lines(values, offsets, tolerance=tolerance)
+    if not lines:
+        return source
+    samples = np.concatenate(lines, axis=0)
+    center = np.mean(samples, axis=0)
+    centered = samples - center
+    covariance = centered.T @ centered
+    try:
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    except np.linalg.LinAlgError:
+        return source
+    if not bool(np.all(np.isfinite(eigenvalues))) or not bool(
+        np.all(np.isfinite(eigenvectors))
+    ):
+        return source
+    if float(eigenvalues[-1]) <= float(tolerance) * float(tolerance):
+        return source
+
+    x_axis = _stable_canonicalize_direction(
+        eigenvectors[:, -1].astype(np.float64, copy=True)
+    )
+    x_length = float(np.linalg.norm(x_axis))
+    if not math.isfinite(x_length) or x_length <= 1e-14:
+        return source
+    x_axis /= x_length
+
+    # 直線に最も直交する world axis を選ぶ。同率時は Z, Y, X の順とし、
+    # 入力頂点の向きを反転しても同じ principal plane を得る。
+    world_axes = np.asarray(
+        (
+            (0.0, 0.0, 1.0),
+            (0.0, 1.0, 0.0),
+            (1.0, 0.0, 0.0),
+        ),
+        dtype=np.float64,
+    )
+    projected = world_axes - np.outer(world_axes @ x_axis, x_axis)
+    lengths = np.linalg.norm(projected, axis=1)
+    axis_index = _stable_argmax(lengths)
+    normal_length = float(lengths[axis_index])
+    if not math.isfinite(normal_length) or normal_length <= 1e-14:
+        return source
+    normal = _stable_canonicalize_direction(projected[axis_index] / normal_length)
+
+    y_axis = np.cross(normal, x_axis)
+    y_length = float(np.linalg.norm(y_axis))
+    if not math.isfinite(y_length) or y_length <= 1e-14:
+        return source
+    y_axis /= y_length
+    x_axis = np.cross(y_axis, normal)
+    x_axis /= float(np.linalg.norm(x_axis))
+
+    origin = normal * float(np.dot(center, normal))
+    residual = float(np.max(np.abs((values - origin) @ normal)))
+    basis = np.stack([x_axis, y_axis, normal], axis=0)
+    return PlanarFrame(
+        origin=origin,
+        basis=basis,
+        inverse=basis.T,
+        residual=residual,
+        rank=2,
+        status="planar",
+    )
 
 
 _EDT_INF = 1e20
@@ -1783,9 +1949,16 @@ class ResamplePlan:
 
 
 def _endpoints_within_distance(vertices: np.ndarray, distance_sq: float) -> bool:
-    dx = float(vertices[-1, 0] - vertices[0, 0])
-    dy = float(vertices[-1, 1] - vertices[0, 1])
-    dz = float(vertices[-1, 2] - vertices[0, 2])
+    with np.errstate(over="ignore", invalid="ignore"):
+        dx = float(vertices[-1, 0] - vertices[0, 0])
+        dy = float(vertices[-1, 1] - vertices[0, 1])
+        dz = float(vertices[-1, 2] - vertices[0, 2])
+    if not math.isfinite(dx):
+        dx = float(vertices[-1, 0]) - float(vertices[0, 0])
+    if not math.isfinite(dy):
+        dy = float(vertices[-1, 1]) - float(vertices[0, 1])
+    if not math.isfinite(dz):
+        dz = float(vertices[-1, 2]) - float(vertices[0, 2])
     return dx * dx + dy * dy + dz * dz <= float(distance_sq)
 
 
@@ -1827,8 +2000,27 @@ def build_gaussian_kernel(*, sigma_in_samples: float, max_radius: int) -> np.nda
     return weights.astype(np.float64, copy=False)
 
 
+@njit(cache=True)
+def _resample_needs_float64_nb(vertices: np.ndarray, closed: bool) -> bool:
+    """従来のfloat32距離計算がoverflowする入力ならTrueを返す。"""
+
+    count = int(vertices.shape[0])
+    edge_count = count if closed and count >= 2 else max(0, count - 1)
+    for index in range(edge_count):
+        following = index + 1
+        if following >= count:
+            following = 0
+        dx = vertices[following, 0] - vertices[index, 0]
+        dy = vertices[following, 1] - vertices[index, 1]
+        dz = vertices[following, 2] - vertices[index, 2]
+        distance_sq = dx * dx + dy * dy + dz * dz
+        if not np.isfinite(distance_sq):
+            return True
+    return False
+
+
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _total_length_open_nb(vertices: np.ndarray) -> float:
+def _total_length_open_fast_nb(vertices: np.ndarray) -> float:
     total = 0.0
     for index in range(vertices.shape[0] - 1):
         dx = float(vertices[index + 1, 0] - vertices[index, 0])
@@ -1838,9 +2030,27 @@ def _total_length_open_nb(vertices: np.ndarray) -> float:
     return float(total)
 
 
+@njit(cache=True)
+def _total_length_open_wide_nb(vertices: np.ndarray) -> float:
+    total = 0.0
+    for index in range(vertices.shape[0] - 1):
+        dx = np.float64(vertices[index + 1, 0]) - np.float64(vertices[index, 0])
+        dy = np.float64(vertices[index + 1, 1]) - np.float64(vertices[index, 1])
+        dz = np.float64(vertices[index + 1, 2]) - np.float64(vertices[index, 2])
+        total += np.sqrt(dx * dx + dy * dy + dz * dz)
+    return float(total)
+
+
+@njit(cache=True)
+def _total_length_open_nb(vertices: np.ndarray) -> float:
+    if _resample_needs_float64_nb(vertices, False):
+        return _total_length_open_wide_nb(vertices)
+    return _total_length_open_fast_nb(vertices)
+
+
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _total_length_closed_nb(vertices: np.ndarray) -> float:
-    total = _total_length_open_nb(vertices)
+def _total_length_closed_fast_nb(vertices: np.ndarray) -> float:
+    total = _total_length_open_fast_nb(vertices)
     count = int(vertices.shape[0])
     if count >= 2:
         dx = float(vertices[0, 0] - vertices[count - 1, 0])
@@ -1850,11 +2060,34 @@ def _total_length_closed_nb(vertices: np.ndarray) -> float:
     return float(total)
 
 
+@njit(cache=True)
+def _total_length_closed_wide_nb(vertices: np.ndarray) -> float:
+    total = _total_length_open_wide_nb(vertices)
+    count = int(vertices.shape[0])
+    if count >= 2:
+        dx = np.float64(vertices[0, 0]) - np.float64(vertices[count - 1, 0])
+        dy = np.float64(vertices[0, 1]) - np.float64(vertices[count - 1, 1])
+        dz = np.float64(vertices[0, 2]) - np.float64(vertices[count - 1, 2])
+        total += np.sqrt(dx * dx + dy * dy + dz * dz)
+    return float(total)
+
+
+@njit(cache=True)
+def _total_length_closed_nb(vertices: np.ndarray) -> float:
+    if _resample_needs_float64_nb(vertices, True):
+        return _total_length_closed_wide_nb(vertices)
+    return _total_length_closed_fast_nb(vertices)
+
+
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _resample_open_into_nb(vertices: np.ndarray, step: float, out: np.ndarray) -> None:
+def _resample_open_fast_into_nb(
+    vertices: np.ndarray,
+    step: float,
+    out: np.ndarray,
+) -> None:
     count = int(out.shape[0])
     source_count = int(vertices.shape[0])
-    if source_count < 2 or _total_length_open_nb(vertices) <= 0.0:
+    if source_count < 2 or _total_length_open_fast_nb(vertices) <= 0.0:
         out[:] = vertices
         return
 
@@ -1917,12 +2150,261 @@ def _resample_open_into_nb(vertices: np.ndarray, step: float, out: np.ndarray) -
 
 
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _resample_closed_into_nb(vertices: np.ndarray, step: float, out: np.ndarray) -> None:
+def _resample_open_matches_source_fast_nb(
+    vertices: np.ndarray,
+    step: float,
+) -> bool:
+    """通常kernelの各内部標本が入力頂点とbyte等価か確保せず判定する。"""
+
+    count = int(vertices.shape[0])
+    if count < 3:
+        return True
+
+    segment_index = 0
+    distance_acc = 0.0
+    sx = float(vertices[0, 0])
+    sy = float(vertices[0, 1])
+    sz = float(vertices[0, 2])
+    ex = float(vertices[1, 0])
+    ey = float(vertices[1, 1])
+    ez = float(vertices[1, 2])
+    dx = ex - sx
+    dy = ey - sy
+    dz = ez - sz
+    segment_length = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+    target = float(step)
+    output_index = 1
+
+    while output_index < count - 1:
+        if segment_length <= 0.0:
+            segment_index += 1
+            if segment_index >= count - 1:
+                return False
+            sx = float(vertices[segment_index, 0])
+            sy = float(vertices[segment_index, 1])
+            sz = float(vertices[segment_index, 2])
+            ex = float(vertices[segment_index + 1, 0])
+            ey = float(vertices[segment_index + 1, 1])
+            ez = float(vertices[segment_index + 1, 2])
+            dx = ex - sx
+            dy = ey - sy
+            dz = ez - sz
+            segment_length = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+            continue
+
+        if distance_acc + segment_length >= target:
+            t = (target - distance_acc) / segment_length
+            x = np.float32(sx + t * dx)
+            y = np.float32(sy + t * dy)
+            z = np.float32(sz + t * dz)
+            expected_x = vertices[output_index, 0]
+            expected_y = vertices[output_index, 1]
+            expected_z = vertices[output_index, 2]
+            if x != expected_x or y != expected_y or z != expected_z:
+                return False
+            if x == 0.0 and np.signbit(x) != np.signbit(expected_x):
+                return False
+            if y == 0.0 and np.signbit(y) != np.signbit(expected_y):
+                return False
+            if z == 0.0 and np.signbit(z) != np.signbit(expected_z):
+                return False
+            output_index += 1
+            target += float(step)
+        else:
+            distance_acc += segment_length
+            segment_index += 1
+            if segment_index >= count - 1:
+                return False
+            sx = ex
+            sy = ey
+            sz = ez
+            ex = float(vertices[segment_index + 1, 0])
+            ey = float(vertices[segment_index + 1, 1])
+            ez = float(vertices[segment_index + 1, 2])
+            dx = ex - sx
+            dy = ey - sy
+            dz = ez - sz
+            segment_length = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+    return True
+
+
+@njit(cache=True)
+def _resample_open_wide_into_nb(
+    vertices: np.ndarray,
+    step: float,
+    out: np.ndarray,
+) -> None:
     count = int(out.shape[0])
     source_count = int(vertices.shape[0])
-    if _total_length_closed_nb(vertices) <= 0.0:
+    if source_count < 2 or _total_length_open_wide_nb(vertices) <= 0.0:
         out[:] = vertices
         return
+
+    out[0] = vertices[0]
+    out[count - 1] = vertices[source_count - 1]
+    segment_index = 0
+    distance_acc = 0.0
+    sx = np.float64(vertices[0, 0])
+    sy = np.float64(vertices[0, 1])
+    sz = np.float64(vertices[0, 2])
+    ex = np.float64(vertices[1, 0])
+    ey = np.float64(vertices[1, 1])
+    ez = np.float64(vertices[1, 2])
+    dx = ex - sx
+    dy = ey - sy
+    dz = ez - sz
+    segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+    target = float(step)
+    output_index = 1
+
+    while output_index < count - 1:
+        if segment_length <= 0.0:
+            segment_index += 1
+            if segment_index >= source_count - 1:
+                break
+            sx = np.float64(vertices[segment_index, 0])
+            sy = np.float64(vertices[segment_index, 1])
+            sz = np.float64(vertices[segment_index, 2])
+            ex = np.float64(vertices[segment_index + 1, 0])
+            ey = np.float64(vertices[segment_index + 1, 1])
+            ez = np.float64(vertices[segment_index + 1, 2])
+            dx = ex - sx
+            dy = ey - sy
+            dz = ez - sz
+            segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+            continue
+
+        if distance_acc + segment_length >= target:
+            t = (target - distance_acc) / segment_length
+            out[output_index, 0] = np.float32(sx + t * dx)
+            out[output_index, 1] = np.float32(sy + t * dy)
+            out[output_index, 2] = np.float32(sz + t * dz)
+            output_index += 1
+            target += float(step)
+        else:
+            distance_acc += segment_length
+            segment_index += 1
+            if segment_index >= source_count - 1:
+                break
+            sx = ex
+            sy = ey
+            sz = ez
+            ex = np.float64(vertices[segment_index + 1, 0])
+            ey = np.float64(vertices[segment_index + 1, 1])
+            ez = np.float64(vertices[segment_index + 1, 2])
+            dx = ex - sx
+            dy = ey - sy
+            dz = ez - sz
+            segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+
+@njit(cache=True)
+def _resample_open_matches_source_wide_nb(
+    vertices: np.ndarray,
+    step: float,
+) -> bool:
+    """float64退避kernelの各内部標本が入力頂点とbyte等価か判定する。"""
+
+    count = int(vertices.shape[0])
+    if count < 3:
+        return True
+
+    segment_index = 0
+    distance_acc = 0.0
+    sx = np.float64(vertices[0, 0])
+    sy = np.float64(vertices[0, 1])
+    sz = np.float64(vertices[0, 2])
+    ex = np.float64(vertices[1, 0])
+    ey = np.float64(vertices[1, 1])
+    ez = np.float64(vertices[1, 2])
+    dx = ex - sx
+    dy = ey - sy
+    dz = ez - sz
+    segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+    target = float(step)
+    output_index = 1
+
+    while output_index < count - 1:
+        if segment_length <= 0.0:
+            segment_index += 1
+            if segment_index >= count - 1:
+                return False
+            sx = np.float64(vertices[segment_index, 0])
+            sy = np.float64(vertices[segment_index, 1])
+            sz = np.float64(vertices[segment_index, 2])
+            ex = np.float64(vertices[segment_index + 1, 0])
+            ey = np.float64(vertices[segment_index + 1, 1])
+            ez = np.float64(vertices[segment_index + 1, 2])
+            dx = ex - sx
+            dy = ey - sy
+            dz = ez - sz
+            segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+            continue
+
+        if distance_acc + segment_length >= target:
+            t = (target - distance_acc) / segment_length
+            x = np.float32(sx + t * dx)
+            y = np.float32(sy + t * dy)
+            z = np.float32(sz + t * dz)
+            expected_x = vertices[output_index, 0]
+            expected_y = vertices[output_index, 1]
+            expected_z = vertices[output_index, 2]
+            if x != expected_x or y != expected_y or z != expected_z:
+                return False
+            if x == 0.0 and np.signbit(x) != np.signbit(expected_x):
+                return False
+            if y == 0.0 and np.signbit(y) != np.signbit(expected_y):
+                return False
+            if z == 0.0 and np.signbit(z) != np.signbit(expected_z):
+                return False
+            output_index += 1
+            target += float(step)
+        else:
+            distance_acc += segment_length
+            segment_index += 1
+            if segment_index >= count - 1:
+                return False
+            sx = ex
+            sy = ey
+            sz = ez
+            ex = np.float64(vertices[segment_index + 1, 0])
+            ey = np.float64(vertices[segment_index + 1, 1])
+            ez = np.float64(vertices[segment_index + 1, 2])
+            dx = ex - sx
+            dy = ey - sy
+            dz = ez - sz
+            segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+    return True
+
+
+@njit(cache=True)
+def _resample_open_into_nb(
+    vertices: np.ndarray,
+    step: float,
+    out: np.ndarray,
+) -> None:
+    if _resample_needs_float64_nb(vertices, False):
+        _resample_open_wide_into_nb(vertices, step, out)
+    else:
+        _resample_open_fast_into_nb(vertices, step, out)
+
+
+@njit(cache=True, fastmath=True)  # type: ignore[misc]
+def _resample_closed_fast_into_nb(
+    vertices: np.ndarray,
+    step: float,
+    out: np.ndarray,
+) -> None:
+    count = int(out.shape[0])
+    source_count = int(vertices.shape[0])
+    total_length = _total_length_closed_fast_nb(vertices)
+    if total_length <= 0.0:
+        out[:] = vertices
+        return
+
+    effective_step = float(step)
+    if float(count - 1) * effective_step >= total_length:
+        effective_step = total_length / float(count)
 
     out[0] = vertices[0]
     segment_index = 0
@@ -1939,9 +2421,10 @@ def _resample_closed_into_nb(vertices: np.ndarray, step: float, out: np.ndarray)
     segment_length = float(np.sqrt(dx * dx + dy * dy + dz * dz))
 
     for output_index in range(1, count):
-        target = float(output_index) * float(step)
-        while distance_acc + segment_length < target and segment_length > 0.0:
-            distance_acc += segment_length
+        target = float(output_index) * effective_step
+        while segment_length <= 0.0 or distance_acc + segment_length < target:
+            if segment_length > 0.0:
+                distance_acc += segment_length
             segment_index += 1
             if segment_index >= source_count:
                 segment_index = 0
@@ -1969,6 +2452,252 @@ def _resample_closed_into_nb(vertices: np.ndarray, step: float, out: np.ndarray)
         out[output_index, 0] = np.float32(sx + t * dx)
         out[output_index, 1] = np.float32(sy + t * dy)
         out[output_index, 2] = np.float32(sz + t * dz)
+
+
+@njit(cache=True, fastmath=True)  # type: ignore[misc]
+def _resample_closed_matches_source_fast_nb(
+    vertices: np.ndarray,
+    step: float,
+) -> bool:
+    """通常の閉曲線kernelが入力頂点列を再現するか確保せず判定する。"""
+
+    count = int(vertices.shape[0])
+    total_length = _total_length_closed_fast_nb(vertices)
+    if count < 3 or total_length <= 0.0:
+        return True
+
+    effective_step = float(step)
+    if float(count - 1) * effective_step >= total_length:
+        effective_step = total_length / float(count)
+
+    segment_index = 0
+    distance_acc = 0.0
+    sx = float(vertices[0, 0])
+    sy = float(vertices[0, 1])
+    sz = float(vertices[0, 2])
+    ex = float(vertices[1, 0])
+    ey = float(vertices[1, 1])
+    ez = float(vertices[1, 2])
+    dx = ex - sx
+    dy = ey - sy
+    dz = ez - sz
+    segment_length = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+
+    for output_index in range(1, count):
+        target = float(output_index) * effective_step
+        while segment_length <= 0.0 or distance_acc + segment_length < target:
+            if segment_length > 0.0:
+                distance_acc += segment_length
+            segment_index += 1
+            if segment_index >= count:
+                segment_index = 0
+            sx = ex
+            sy = ey
+            sz = ez
+            next_index = segment_index + 1
+            if next_index >= count:
+                next_index = 0
+            ex = float(vertices[next_index, 0])
+            ey = float(vertices[next_index, 1])
+            ez = float(vertices[next_index, 2])
+            dx = ex - sx
+            dy = ey - sy
+            dz = ez - sz
+            segment_length = float(np.sqrt(dx * dx + dy * dy + dz * dz))
+
+        if segment_length <= 0.0:
+            x = np.float32(sx)
+            y = np.float32(sy)
+            z = np.float32(sz)
+        else:
+            t = (target - distance_acc) / segment_length
+            x = np.float32(sx + t * dx)
+            y = np.float32(sy + t * dy)
+            z = np.float32(sz + t * dz)
+
+        expected_x = vertices[output_index, 0]
+        expected_y = vertices[output_index, 1]
+        expected_z = vertices[output_index, 2]
+        if x != expected_x or y != expected_y or z != expected_z:
+            return False
+        if x == 0.0 and np.signbit(x) != np.signbit(expected_x):
+            return False
+        if y == 0.0 and np.signbit(y) != np.signbit(expected_y):
+            return False
+        if z == 0.0 and np.signbit(z) != np.signbit(expected_z):
+            return False
+    return True
+
+
+@njit(cache=True)
+def _resample_closed_wide_into_nb(
+    vertices: np.ndarray,
+    step: float,
+    out: np.ndarray,
+) -> None:
+    count = int(out.shape[0])
+    source_count = int(vertices.shape[0])
+    total_length = _total_length_closed_wide_nb(vertices)
+    if total_length <= 0.0:
+        out[:] = vertices
+        return
+
+    effective_step = float(step)
+    # closed の最小標本数は 3 なので、requested step が周長の半分以上では
+    # 最後の標本位置が周長へ到達または超過する。その場合だけ周長を 3 等分以上
+    # する実効間隔へ切り替え、seam への重複と巨大 step による多重周回を防ぐ。
+    if float(count - 1) * effective_step >= total_length:
+        effective_step = total_length / float(count)
+
+    out[0] = vertices[0]
+    segment_index = 0
+    distance_acc = 0.0
+    sx = np.float64(vertices[0, 0])
+    sy = np.float64(vertices[0, 1])
+    sz = np.float64(vertices[0, 2])
+    ex = np.float64(vertices[1, 0])
+    ey = np.float64(vertices[1, 1])
+    ez = np.float64(vertices[1, 2])
+    dx = ex - sx
+    dy = ey - sy
+    dz = ez - sz
+    segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+    for output_index in range(1, count):
+        target = float(output_index) * effective_step
+        while segment_length <= 0.0 or distance_acc + segment_length < target:
+            if segment_length > 0.0:
+                distance_acc += segment_length
+            segment_index += 1
+            if segment_index >= source_count:
+                segment_index = 0
+            sx = ex
+            sy = ey
+            sz = ez
+            next_index = segment_index + 1
+            if next_index >= source_count:
+                next_index = 0
+            ex = np.float64(vertices[next_index, 0])
+            ey = np.float64(vertices[next_index, 1])
+            ez = np.float64(vertices[next_index, 2])
+            dx = ex - sx
+            dy = ey - sy
+            dz = ez - sz
+            segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+        if segment_length <= 0.0:
+            out[output_index, 0] = np.float32(sx)
+            out[output_index, 1] = np.float32(sy)
+            out[output_index, 2] = np.float32(sz)
+            continue
+
+        t = (target - distance_acc) / segment_length
+        out[output_index, 0] = np.float32(sx + t * dx)
+        out[output_index, 1] = np.float32(sy + t * dy)
+        out[output_index, 2] = np.float32(sz + t * dz)
+
+
+@njit(cache=True)
+def _resample_closed_matches_source_wide_nb(
+    vertices: np.ndarray,
+    step: float,
+) -> bool:
+    """float64退避の閉曲線kernelが入力頂点列を再現するか判定する。"""
+
+    count = int(vertices.shape[0])
+    total_length = _total_length_closed_wide_nb(vertices)
+    if count < 3 or total_length <= 0.0:
+        return True
+
+    effective_step = float(step)
+    if float(count - 1) * effective_step >= total_length:
+        effective_step = total_length / float(count)
+
+    segment_index = 0
+    distance_acc = 0.0
+    sx = np.float64(vertices[0, 0])
+    sy = np.float64(vertices[0, 1])
+    sz = np.float64(vertices[0, 2])
+    ex = np.float64(vertices[1, 0])
+    ey = np.float64(vertices[1, 1])
+    ez = np.float64(vertices[1, 2])
+    dx = ex - sx
+    dy = ey - sy
+    dz = ez - sz
+    segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+    for output_index in range(1, count):
+        target = float(output_index) * effective_step
+        while segment_length <= 0.0 or distance_acc + segment_length < target:
+            if segment_length > 0.0:
+                distance_acc += segment_length
+            segment_index += 1
+            if segment_index >= count:
+                segment_index = 0
+            sx = ex
+            sy = ey
+            sz = ez
+            next_index = segment_index + 1
+            if next_index >= count:
+                next_index = 0
+            ex = np.float64(vertices[next_index, 0])
+            ey = np.float64(vertices[next_index, 1])
+            ez = np.float64(vertices[next_index, 2])
+            dx = ex - sx
+            dy = ey - sy
+            dz = ez - sz
+            segment_length = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+        if segment_length <= 0.0:
+            x = np.float32(sx)
+            y = np.float32(sy)
+            z = np.float32(sz)
+        else:
+            t = (target - distance_acc) / segment_length
+            x = np.float32(sx + t * dx)
+            y = np.float32(sy + t * dy)
+            z = np.float32(sz + t * dz)
+
+        expected_x = vertices[output_index, 0]
+        expected_y = vertices[output_index, 1]
+        expected_z = vertices[output_index, 2]
+        if x != expected_x or y != expected_y or z != expected_z:
+            return False
+        if x == 0.0 and np.signbit(x) != np.signbit(expected_x):
+            return False
+        if y == 0.0 and np.signbit(y) != np.signbit(expected_y):
+            return False
+        if z == 0.0 and np.signbit(z) != np.signbit(expected_z):
+            return False
+    return True
+
+
+@njit(cache=True)
+def _resample_closed_into_nb(
+    vertices: np.ndarray,
+    step: float,
+    out: np.ndarray,
+) -> None:
+    if _resample_needs_float64_nb(vertices, True):
+        _resample_closed_wide_into_nb(vertices, step, out)
+    else:
+        _resample_closed_fast_into_nb(vertices, step, out)
+
+
+def resample_open_matches_source(vertices: np.ndarray, *, step: float) -> bool:
+    """開曲線kernelが入力頂点列をbyte単位で再現するならTrueを返す。"""
+
+    if bool(_resample_needs_float64_nb(vertices, False)):
+        return bool(_resample_open_matches_source_wide_nb(vertices, float(step)))
+    return bool(_resample_open_matches_source_fast_nb(vertices, float(step)))
+
+
+def resample_closed_matches_source(vertices: np.ndarray, *, step: float) -> bool:
+    """閉曲線kernelが入力頂点列をbyte単位で再現するならTrueを返す。"""
+
+    if bool(_resample_needs_float64_nb(vertices, True)):
+        return bool(_resample_closed_matches_source_wide_nb(vertices, float(step)))
+    return bool(_resample_closed_matches_source_fast_nb(vertices, float(step)))
 
 
 def resample_polylines(coords: np.ndarray, plan: ResamplePlan) -> tuple[np.ndarray, np.ndarray]:

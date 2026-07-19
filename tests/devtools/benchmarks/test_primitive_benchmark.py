@@ -29,8 +29,11 @@ _BUILTIN_PRIMITIVES = {
     "polyline",
     "rect",
     "sphere",
+    "spiral",
+    "spline",
     "text",
     "torus",
+    "wave",
 }
 _COMMON_METRICS = {
     "primitive",
@@ -49,7 +52,7 @@ def test_primitive_suite_covers_every_builtin_with_direct_actual_work() -> None:
     assert {definition.parameters["primitive"] for definition in definitions} == (
         _BUILTIN_PRIMITIVES
     )
-    assert len(definitions) == 22
+    assert len(definitions) == 25
     for definition in definitions:
         assert definition.category == "primitive"
         assert definition.suite == "primitives"

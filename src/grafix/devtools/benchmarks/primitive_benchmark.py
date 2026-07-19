@@ -82,7 +82,7 @@ class PrimitiveObservation:
 
 
 def primitive_benchmark_cases() -> tuple[PrimitiveBenchmarkCase, ...]:
-    """全17組み込み primitive の actual-work case を返す。"""
+    """全20組み込み primitive の actual-work case を返す。"""
 
     center = [7.0, -11.0, 3.0]
     primary = (
@@ -392,6 +392,32 @@ def primitive_benchmark_cases() -> tuple[PrimitiveBenchmarkCase, ...]:
             },
         ),
         PrimitiveBenchmarkCase(
+            "primitive.spiral.samples_32000",
+            "spiral / 32,000 samples",
+            "spiral",
+            "samples_32000",
+            {
+                "inner_radius": 5.0,
+                "outer_radius": 120.0,
+                "turns": -17.25,
+                "phase": 37.0,
+                "samples": 32_000,
+                "center": center,
+            },
+        ),
+        PrimitiveBenchmarkCase(
+            "primitive.spline.3d_256x64_closed",
+            "spline / 3D / 256 anchors x 64 samples / closed",
+            "spline",
+            "3d_256x64_closed",
+            {
+                "closed": True,
+                "tension": 0.15,
+                "segments_per_span": 64,
+            },
+            input_fixture="spline_3d_float64_256",
+        ),
+        PrimitiveBenchmarkCase(
             "primitive.text.warm_wrapped_mixed",
             "text / warm wrapped mixed glyphs",
             "text",
@@ -428,6 +454,22 @@ def primitive_benchmark_cases() -> tuple[PrimitiveBenchmarkCase, ...]:
                 "minor_segments": 256,
                 "center": center,
                 "scale": 1.25,
+            },
+        ),
+        PrimitiveBenchmarkCase(
+            "primitive.wave.triangle_rotated_32000",
+            "wave / triangle / rotated / 32,000 samples",
+            "wave",
+            "triangle_rotated_32000",
+            {
+                "kind": "triangle",
+                "length": 240.0,
+                "amplitude": 45.0,
+                "cycles": -19.25,
+                "phase": 37.0,
+                "samples": 32_000,
+                "angle": -23.0,
+                "center": center,
             },
         ),
     )
@@ -509,9 +551,12 @@ def setup_primitive_benchmark(
     input_sha256: str | None = None
     input_fixture = parameters.get("input_fixture")
     if input_fixture is not None:
-        if input_fixture != "wave_3d_float64_50k":
+        if input_fixture == "wave_3d_float64_50k":
+            points = _wave_points_3d(n_points=50_000)
+        elif input_fixture == "spline_3d_float64_256":
+            points = _spline_points_3d(n_points=256)
+        else:
             raise ValueError(f"unknown primitive input fixture: {input_fixture!r}")
-        points = _wave_points_3d(n_points=50_000)
         arguments["points"] = points
         input_points = int(points.shape[0])
         input_sha256 = _array_sha256(points)
@@ -744,6 +789,17 @@ def _wave_points_3d(*, n_points: int) -> np.ndarray:
     return points
 
 
+def _spline_points_3d(*, n_points: int) -> np.ndarray:
+    count = max(2, int(n_points))
+    t = np.linspace(0.0, 16.0 * np.pi, num=count, endpoint=False, dtype=np.float64)
+    points = np.empty((count, 3), dtype=np.float64)
+    radius = 80.0 + 12.0 * np.sin(0.37 * t)
+    points[:, 0] = radius * np.cos(t)
+    points[:, 1] = radius * np.sin(t)
+    points[:, 2] = 20.0 * np.sin(0.11 * t)
+    return points
+
+
 def _array_sha256(array: np.ndarray) -> str:
     contiguous = np.ascontiguousarray(array)
     digest = hashlib.sha256()
@@ -830,6 +886,22 @@ def _specific_metrics(
         gauge("work.samples.requested", requested, unit="count")
         gauge("work.samples.effective", max(2, requested), unit="count")
         gauge("work.turns", float(args["turns"]), unit="turns")
+    elif primitive in {"spiral", "wave"}:
+        requested = int(args["samples"])
+        gauge("work.samples.requested", requested, unit="count")
+        gauge("work.samples.effective", requested, unit="count")
+        if primitive == "spiral":
+            gauge("work.turns", float(args["turns"]), unit="turns")
+        else:
+            gauge("work.kind", str(args["kind"]), unit="text")
+            gauge("work.cycles", float(args["cycles"]), unit="cycles")
+    elif primitive == "spline":
+        input_points = int(state.input_points or 0)
+        segments_per_span = int(args["segments_per_span"])
+        counter("work.input_points", input_points)
+        gauge("work.closed", bool(args["closed"]), unit="boolean")
+        gauge("work.segments_per_span", segments_per_span, unit="count")
+        gauge("work.tension", float(args["tension"]))
     elif primitive == "polygon":
         requested_sides = int(args["n_sides"])
         requested_sweep = float(args["sweep"])

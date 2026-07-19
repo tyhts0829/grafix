@@ -45,22 +45,27 @@ _JIT_EFFECTS = frozenset(
         "reaction_diffusion",
         "relax",
         "repeat",
+        "resample",
         "trim",
         "warp",
         "weave",
     }
 )
 _PROCESS_COLD_EFFECTS = frozenset(
-    {"buffer", "clip", "mirror3d", "partition"}
+    {"boolean", "buffer", "clip", "mirror3d", "offset_curve", "partition"}
 )
 
-# Phase 0 の immutable baseline から固定した値。候補実装自身を期待値にしない。
+# 既存 effect は Phase 0 の immutable baseline から固定した値。今回新設した effect は
+# semantic test と公開契約を確定した初期実装の出力を、今後の変更検出用 baseline とする。
 _EXPECTED_CHECKSUMS = {
     "effect.remaining.affine.polyline_long": (
         "ebb0862ac419b5b1b2bd2d1f65c136ad68cc3e52b1c97f0af452e2a24383105f"
     ),
     "effect.remaining.bold.many_lines": (
         "789cac989ad773c11b4f88e2fb291dbf758ae8d72214cbcb0bbd61771421bd4b"
+    ),
+    "effect.remaining.boolean.binary_regions": (
+        "fa1154e8c00e4ceb0f0518f13a8037791bf6fe656e8ed0fa2defab8880c483ba"
     ),
     "effect.remaining.buffer.ring_big": (
         "12b6e76184c63a7b258099099d6e8cda2a23e127def92531f6f66804675dd195"
@@ -76,6 +81,9 @@ _EXPECTED_CHECKSUMS = {
     ),
     "effect.remaining.dash.many_lines_jitter": (
         "b36992ea340e9518def16219211a6113048ee3b98a183f23a3f8c07485704e89"
+    ),
+    "effect.remaining.deduplicate.dedup_duplicates": (
+        "cbf1986f9218f0850dd3a671604f1b312a5044587958ac7c54e22bae4ab8e89c"
     ),
     "effect.remaining.displace.polyline_long": (
         "96b2d7e87a0c720e9ad0017b04643806e119cc56f630b03a28c7e407421cacd5"
@@ -119,6 +127,12 @@ _EXPECTED_CHECKSUMS = {
     "effect.remaining.mirror3d.many_lines": (
         "727b1131d0aeb8a9e14cfd9d0a0ae83ec26c1f810cab5a63f927b99867f5d0a3"
     ),
+    "effect.remaining.offset_curve.many_lines": (
+        "fcd0869f490b3c3f7e34198b9346eed1c4ed367401b388c8561edbd3b89a6dd7"
+    ),
+    "effect.remaining.offset_curve.polyline_long": (
+        "f45660b4d376bb6242dc7fdaa457168c1dbfd8136c06072fde96c0962872cdd1"
+    ),
     "effect.remaining.partition.rings_medium": (
         "f9ff86344ae1d1ac921dc593b495219549ec440913c8613aa9d42dc52985c2e6"
     ),
@@ -139,6 +153,15 @@ _EXPECTED_CHECKSUMS = {
     ),
     "effect.remaining.repeat.many_lines": (
         "5dbd95b936798a3b8e55ecb64db5b2f278cd9173312741d0ff01fa95eade07ca"
+    ),
+    "effect.remaining.resample.polyline_spaced_long": (
+        "784df695614ea144de053e9799b0beaf4e6b0ab2983b24886c7cee7a5244b687"
+    ),
+    "effect.remaining.resample.upsample.polyline_spaced_long": (
+        "edbeb5fab137fc8f9104052a02336219def887cb704bfa505f6b80b16426b0c5"
+    ),
+    "effect.remaining.simplify.polyline_long": (
+        "f28215cc209c53710c2165972d876db29c094a783be6e85b57d45b4db310f9d4"
     ),
     "effect.remaining.trim.polyline_long": (
         "c62484b95b1b0f85419cded7d48c4f1408436b0fb18d4ba64bf0012866b8bff4"
@@ -357,7 +380,7 @@ class RemainingEffectObservation:
 
 
 def remaining_effect_benchmark_cases() -> tuple[RemainingEffectBenchmarkCase, ...]:
-    """対象 27 effect の final actual-work と heavy draft case を返す。"""
+    """対象 32 effect の final actual-work と heavy draft case を返す。"""
 
     cases = (
         RemainingEffectBenchmarkCase(
@@ -381,6 +404,15 @@ def remaining_effect_benchmark_cases() -> tuple[RemainingEffectBenchmarkCase, ..
             {"count": 10, "radius": 0.75, "seed": 20260719},
             "more_vertices",
             tags=("copy", "many-short-lines", "rng"),
+        ),
+        RemainingEffectBenchmarkCase(
+            "effect.remaining.boolean.binary_regions",
+            "boolean / outer+hole against overlapping 2k-side region / xor",
+            "boolean",
+            "binary_regions",
+            {"mode": "xor"},
+            "topology_changed",
+            tags=("binary", "external-backend", "ring"),
         ),
         RemainingEffectBenchmarkCase(
             "effect.remaining.buffer.ring_big",
@@ -436,6 +468,15 @@ def remaining_effect_benchmark_cases() -> tuple[RemainingEffectBenchmarkCase, ..
             },
             "topology_changed",
             tags=("topology-changing", "many-short-lines", "rng"),
+        ),
+        RemainingEffectBenchmarkCase(
+            "effect.remaining.deduplicate.dedup_duplicates",
+            "deduplicate / 12k segments / four exact copies",
+            "deduplicate",
+            "dedup_duplicates",
+            {"tolerance": 0.0, "merge_chains": True},
+            "fewer_vertices",
+            tags=("graph", "duplicate-segments", "large"),
         ),
         RemainingEffectBenchmarkCase(
             "effect.remaining.displace.polyline_long",
@@ -606,6 +647,36 @@ def remaining_effect_benchmark_cases() -> tuple[RemainingEffectBenchmarkCase, ..
             tags=("symmetry", "many-short-lines", "cache-sensitive"),
         ),
         RemainingEffectBenchmarkCase(
+            "effect.remaining.offset_curve.many_lines",
+            "offset_curve / 5k open lines / both sides",
+            "offset_curve",
+            "many_lines",
+            {
+                "distance": 2.0,
+                "side": "both",
+                "count": 1,
+                "join": "round",
+                "keep_original": False,
+            },
+            "more_lines",
+            tags=("external-backend", "many-short-lines", "topology-changing"),
+        ),
+        RemainingEffectBenchmarkCase(
+            "effect.remaining.offset_curve.polyline_long",
+            "offset_curve / 50k-vertex open line / both sides",
+            "offset_curve",
+            "polyline_long",
+            {
+                "distance": 2.0,
+                "side": "both",
+                "count": 1,
+                "join": "round",
+                "keep_original": False,
+            },
+            "more_lines",
+            tags=("external-backend", "large", "topology-changing"),
+        ),
+        RemainingEffectBenchmarkCase(
             "effect.remaining.partition.rings_medium",
             "partition / medium rings / 64 sites",
             "partition",
@@ -688,6 +759,33 @@ def remaining_effect_benchmark_cases() -> tuple[RemainingEffectBenchmarkCase, ..
             },
             "more_vertices",
             tags=("copy", "many-short-lines"),
+        ),
+        RemainingEffectBenchmarkCase(
+            "effect.remaining.resample.polyline_spaced_long",
+            "resample / spaced 50k vertices / step 0.5",
+            "resample",
+            "polyline_spaced_long",
+            {"step": 0.5, "closed": "open"},
+            "fewer_vertices",
+            tags=("topology-changing", "large"),
+        ),
+        RemainingEffectBenchmarkCase(
+            "effect.remaining.resample.upsample.polyline_spaced_long",
+            "resample / spaced 50k vertices / step 0.1",
+            "resample",
+            "polyline_spaced_long",
+            {"step": 0.1, "closed": "open"},
+            "more_vertices",
+            tags=("topology-changing", "large"),
+        ),
+        RemainingEffectBenchmarkCase(
+            "effect.remaining.simplify.polyline_long",
+            "simplify / 50k vertices / tolerance 0.05",
+            "simplify",
+            "polyline_long",
+            {"tolerance": 0.05, "closed": "open"},
+            "fewer_vertices",
+            tags=("topology-changing", "large"),
         ),
         RemainingEffectBenchmarkCase(
             "effect.remaining.trim.polyline_long",
@@ -1103,6 +1201,15 @@ def _build_inputs(*, fixture: str, seed: int) -> tuple[RealizedGeometry, ...]:
         return (_shared_grid_network(nx=50, ny=50),)
     if fixture == "binary_long_mask":
         return (defaults["polyline_long"][0], _two_rings(256, 128))
+    if fixture == "binary_regions":
+        return _binary_regions_with_hole()
+    if fixture == "dedup_duplicates":
+        return (
+            _duplicated_segment_chain(
+                n_segments=12_000,
+                copies=4,
+            ),
+        )
     raise ValueError(f"unknown remaining effect fixture: {fixture!r}")
 
 
@@ -1162,6 +1269,54 @@ def _shared_grid_network(*, nx: int, ny: int) -> RealizedGeometry:
     for edge_index, (start, stop) in enumerate(edges):
         coords[2 * edge_index] = points[start]
         coords[2 * edge_index + 1] = points[stop]
+    offsets = np.arange(0, coords.shape[0] + 1, 2, dtype=np.int32)
+    return RealizedGeometry(coords=coords, offsets=offsets)
+
+
+def _binary_regions_with_hole() -> tuple[RealizedGeometry, RealizedGeometry]:
+    """hole を持つ領域と一部だけ重なる正多角形領域を返す。"""
+
+    first = _two_rings(outer_sides=2_048, inner_sides=1_024)
+    second = _regular_polygon_ring(n_sides=2_048, radius=120.0)
+    second_coords = second.coords.copy()
+    second_coords[:, 0] += np.float32(150.0)
+    return (
+        first,
+        RealizedGeometry(coords=second_coords, offsets=second.offsets.copy()),
+    )
+
+
+def _duplicated_segment_chain(
+    *,
+    n_segments: int,
+    copies: int,
+) -> RealizedGeometry:
+    """各 edge を正逆交互に複製した一本の波状 segment chain を返す。"""
+
+    segment_count = max(1, int(n_segments))
+    copy_count = max(2, int(copies))
+    x = np.arange(segment_count + 1, dtype=np.float32) * np.float32(0.125)
+    y = (8.0 * np.sin(x * np.float32(0.025))).astype(
+        np.float32,
+        copy=False,
+    )
+    points = np.zeros((segment_count + 1, 3), dtype=np.float32)
+    points[:, 0] = x
+    points[:, 1] = y
+
+    segments = np.empty(
+        (segment_count, copy_count, 2, 3),
+        dtype=np.float32,
+    )
+    for copy_index in range(copy_count):
+        if copy_index % 2 == 0:
+            segments[:, copy_index, 0] = points[:-1]
+            segments[:, copy_index, 1] = points[1:]
+        else:
+            segments[:, copy_index, 0] = points[1:]
+            segments[:, copy_index, 1] = points[:-1]
+
+    coords = segments.reshape(segment_count * copy_count * 2, 3)
     offsets = np.arange(0, coords.shape[0] + 1, 2, dtype=np.int32)
     return RealizedGeometry(coords=coords, offsets=offsets)
 
@@ -1357,6 +1512,77 @@ def _specific_metrics(
         gauge("work.step", float(args["step"]), unit="geometry_units")
         gauge("work.sigma", float(args["sigma"]), unit="geometry_units")
         counter("work.resampled_vertices", int(geometry.coords.shape[0]))
+    elif state.effect == "resample":
+        gauge("work.step", float(args["step"]), unit="geometry_units")
+        gauge("work.closed", str(args["closed"]), unit="text")
+        counter("work.resampled_vertices", int(geometry.coords.shape[0]))
+    elif state.effect == "simplify":
+        input_vertices = sum(
+            int(value.coords.shape[0]) for value in state.inputs
+        )
+        gauge(
+            "work.tolerance",
+            float(args["tolerance"]),
+            unit="geometry_units",
+        )
+        gauge("work.closed", str(args["closed"]), unit="text")
+        counter("work.removed_vertices", input_vertices - int(geometry.coords.shape[0]))
+    elif state.effect == "deduplicate":
+        input_segments = sum(
+            max(0, int(stop) - int(start) - 1)
+            for value in state.inputs
+            for start, stop in zip(
+                value.offsets[:-1],
+                value.offsets[1:],
+                strict=True,
+            )
+        )
+        output_segments = sum(
+            max(0, int(stop) - int(start) - 1)
+            for start, stop in zip(
+                geometry.offsets[:-1],
+                geometry.offsets[1:],
+                strict=True,
+            )
+        )
+        gauge(
+            "work.tolerance",
+            float(args["tolerance"]),
+            unit="geometry_units",
+        )
+        gauge("work.merge_chains", bool(args["merge_chains"]), unit="boolean")
+        counter("work.input_segments", input_segments)
+        counter("work.output_segments", output_segments)
+        counter("work.removed_segments", input_segments - output_segments)
+    elif state.effect == "boolean":
+        gauge("work.mode", str(args["mode"]), unit="text")
+        counter(
+            "work.input_rings",
+            sum(int(value.offsets.size - 1) for value in state.inputs),
+        )
+        counter("work.output_rings", int(geometry.offsets.size - 1))
+    elif state.effect == "offset_curve":
+        input_paths = sum(
+            int(value.offsets.size - 1) for value in state.inputs
+        )
+        retained_paths = input_paths if bool(args["keep_original"]) else 0
+        gauge(
+            "work.distance",
+            float(args["distance"]),
+            unit="geometry_units",
+        )
+        gauge("work.side", str(args["side"]), unit="text")
+        counter("work.levels", int(args["count"]))
+        gauge("work.join", str(args["join"]), unit="text")
+        gauge(
+            "work.keep_original",
+            bool(args["keep_original"]),
+            unit="boolean",
+        )
+        counter(
+            "work.generated_paths",
+            max(0, int(geometry.offsets.size - 1) - retained_paths),
+        )
     elif state.effect == "dash":
         gauge("work.dash_length", float(args["dash_length"]), unit="geometry_units")
         gauge("work.gap_length", float(args["gap_length"]), unit="geometry_units")
@@ -1455,7 +1681,13 @@ def _specific_metrics(
             int(args["relaxation_iterations"]),
         )
 
-    if state.effect in {"buffer", "clip", "partition"}:
+    if state.effect in {
+        "boolean",
+        "buffer",
+        "clip",
+        "offset_curve",
+        "partition",
+    }:
         counter(
             "work.input_paths",
             sum(int(value.offsets.size - 1) for value in state.inputs),

@@ -103,6 +103,47 @@ def test_filter_cap_boundary_keeps_every_line(
     assert np.all(np.isfinite(out_coords))
 
 
+@pytest.mark.parametrize(
+    ("module_name", "effect_name", "extra_kwargs"),
+    [
+        ("grafix.core.effects.lowpass", "lowpass", {}),
+        ("grafix.core.effects.highpass", "highpass", {"gain": 1.0}),
+    ],
+)
+def test_closed_filter_skips_consecutive_duplicate_segments(
+    module_name: str,
+    effect_name: str,
+    extra_kwargs: dict[str, float],
+) -> None:
+    module = importlib.import_module(module_name)
+    coords = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    offsets = np.asarray([0, coords.shape[0]], dtype=np.int32)
+
+    effect = getattr(module, effect_name)
+    out_coords, out_offsets = effect(
+        (coords, offsets),
+        step=1.0,
+        sigma=0.5,
+        closed="closed",
+        **extra_kwargs,
+    )
+
+    assert out_offsets.tolist() == [0, 9]
+    assert np.all(np.isfinite(out_coords))
+    np.testing.assert_array_equal(out_coords[0], out_coords[-1])
+    assert np.unique(out_coords[:-1, :2], axis=0).shape[0] > 1
+
+
 def _fail_if_called(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("grid allocation/evaluation must not run")
 

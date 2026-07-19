@@ -26,8 +26,11 @@ _BUILTIN_PRIMITIVE_MODULES = {
         "polyhedron",
         "rect",
         "sphere",
+        "spiral",
+        "spline",
         "text",
         "torus",
+        "wave",
     )
 }
 
@@ -66,6 +69,11 @@ _BUILTIN_EFFECT_MODULES = {
         "relax",
         "reaction_diffusion",
         "warp",
+        "resample",
+        "simplify",
+        "deduplicate",
+        "boolean",
+        "offset_curve",
     )
 }
 

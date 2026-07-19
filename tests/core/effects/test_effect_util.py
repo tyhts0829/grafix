@@ -8,6 +8,7 @@ from grafix.core.effects.util import (
     PlanarFrame,
     PlanarRing,
     ResamplePlan,
+    canonical_planar_frame,
     close_curve,
     empty_geom,
     extract_planar_rings,
@@ -211,6 +212,79 @@ def test_resample_plan_counts_all_lines_before_allocation_at_cap_boundary() -> N
     )
 
 
+def test_closed_resample_skips_consecutive_zero_length_segments() -> None:
+    coords = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    offsets = np.asarray([0, coords.shape[0]], dtype=np.int32)
+    plan = ResamplePlan.from_geometry(
+        coords,
+        offsets,
+        step=1.0,
+        closed="closed",
+        max_vertices=100,
+    )
+
+    sampled, sampled_offsets = resample_polylines(coords, plan)
+
+    assert sampled_offsets.tolist() == [0, 9]
+    np.testing.assert_array_equal(
+        sampled,
+        np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [1.0, 2.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+@pytest.mark.parametrize("step", [2.0, 4.0, 1e100])
+def test_closed_resample_large_step_keeps_three_distinct_ring_samples(
+    step: float,
+) -> None:
+    coords = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    offsets = np.asarray([0, coords.shape[0]], dtype=np.int32)
+    plan = ResamplePlan.from_geometry(
+        coords,
+        offsets,
+        step=step,
+        closed="closed",
+        max_vertices=100,
+    )
+
+    sampled, sampled_offsets = resample_polylines(coords, plan)
+
+    assert sampled_offsets.tolist() == [0, 4]
+    assert np.unique(sampled[:-1], axis=0).shape[0] == 3
+    np.testing.assert_array_equal(sampled[0], sampled[-1])
+
+
 def test_grid_spec_rejects_first_cell_over_cap() -> None:
     fitting = GridSpec.from_bbox(
         (0.0, 0.0),
@@ -405,6 +479,144 @@ def test_planar_frame_reports_spatial_residual() -> None:
     assert frame.status == "spatial"
     assert frame.rank == 3
     assert frame.residual > 0.1
+    assert not frame.is_planar(1e-3)
+
+
+def test_canonical_planar_frame_is_winding_and_seam_independent() -> None:
+    ring = np.asarray(
+        [
+            [1.0, 2.0, 3.0],
+            [5.0, 2.0, 3.0],
+            [5.0, 6.0, 3.0],
+            [1.0, 6.0, 3.0],
+            [1.0, 2.0, 3.0],
+        ],
+        dtype=np.float64,
+    )
+    reversed_ring = ring[::-1].copy()
+    unique = ring[:-1]
+    shifted_unique = np.concatenate([unique[2:], unique[:2]], axis=0)
+    shifted_ring = np.concatenate([shifted_unique, shifted_unique[:1]], axis=0)
+
+    expected = canonical_planar_frame(ring)
+    reversed_frame = canonical_planar_frame(reversed_ring)
+    shifted_frame = canonical_planar_frame(shifted_ring)
+
+    assert expected.is_planar(1e-12)
+    np.testing.assert_array_equal(expected.origin, reversed_frame.origin)
+    np.testing.assert_array_equal(expected.basis, reversed_frame.basis)
+    np.testing.assert_array_equal(expected.origin, shifted_frame.origin)
+    np.testing.assert_array_equal(expected.basis, shifted_frame.basis)
+    np.testing.assert_array_equal(expected.normal, np.asarray([0.0, 0.0, 1.0]))
+
+
+def test_canonical_planar_frame_adds_direction_independent_linear_plane() -> None:
+    points = np.asarray(
+        [[1.0, 2.0, 3.0], [4.0, 2.0, 3.0], [8.0, 2.0, 3.0]],
+        dtype=np.float64,
+    )
+
+    forward = canonical_planar_frame(points, allow_linear=True)
+    backward = canonical_planar_frame(points[::-1], allow_linear=True)
+
+    assert (forward.status, forward.rank, forward.valid) == ("planar", 2, True)
+    assert forward.is_planar(1e-12)
+    np.testing.assert_array_equal(forward.origin, backward.origin)
+    np.testing.assert_array_equal(forward.basis, backward.basis)
+    np.testing.assert_array_equal(forward.normal, np.asarray([0.0, 0.0, 1.0]))
+    np.testing.assert_allclose(forward.to_local(points)[:, 2], 0.0, atol=1e-12)
+    np.testing.assert_allclose(forward.to_world(forward.to_local(points)), points, atol=1e-12)
+
+
+def test_canonical_planar_frame_oblique_ties_ignore_line_order_and_winding() -> None:
+    outer = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [2.0, 2.0, 2.0],
+            [0.0, 0.0, 2.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    inner = np.asarray(
+        [
+            [0.5, 0.5, 0.5],
+            [1.5, 1.5, 0.5],
+            [1.5, 1.5, 1.5],
+            [0.5, 0.5, 1.5],
+            [0.5, 0.5, 0.5],
+        ],
+        dtype=np.float64,
+    )
+    first_points = np.concatenate((outer, inner), axis=0)
+    first_offsets = np.asarray([0, outer.shape[0], first_points.shape[0]], dtype=np.int32)
+    second_points = np.concatenate((inner[::-1], outer[::-1]), axis=0)
+    second_offsets = np.asarray([0, inner.shape[0], second_points.shape[0]], dtype=np.int32)
+
+    first = canonical_planar_frame(first_points, first_offsets)
+    second = canonical_planar_frame(second_points, second_offsets)
+
+    assert first.is_planar(1e-12)
+    assert second.is_planar(1e-12)
+    np.testing.assert_allclose(first.origin, second.origin, rtol=0.0, atol=1e-15)
+    np.testing.assert_allclose(first.basis, second.basis, rtol=0.0, atol=1e-15)
+    assert first.normal[0] > 0.0
+    assert first.normal[1] < 0.0
+
+
+def test_canonical_planar_frame_three_way_axis_tie_uses_world_x_priority() -> None:
+    u = np.asarray([1.0, -1.0, 0.0], dtype=np.float64)
+    v = np.asarray([1.0, 1.0, -2.0], dtype=np.float64)
+
+    def ring(origin: np.ndarray, scale: float) -> np.ndarray:
+        return np.stack(
+            (
+                origin,
+                origin + scale * u,
+                origin + scale * (u + v),
+                origin + scale * v,
+                origin,
+            ),
+            axis=0,
+        )
+
+    outer = ring(np.zeros((3,), dtype=np.float64), 4.0)
+    inner = ring(0.75 * (u + v), 1.0)
+    first_points = np.concatenate((outer, inner), axis=0)
+    first_offsets = np.asarray([0, 5, 10], dtype=np.int32)
+    second_points = np.concatenate((inner[::-1], outer[::-1]), axis=0)
+    second_offsets = np.asarray([0, 5, 10], dtype=np.int32)
+
+    first = canonical_planar_frame(first_points, first_offsets)
+    second = canonical_planar_frame(second_points, second_offsets)
+
+    np.testing.assert_allclose(first.origin, second.origin, rtol=0.0, atol=1e-15)
+    np.testing.assert_allclose(first.basis, second.basis, rtol=0.0, atol=1e-15)
+    np.testing.assert_allclose(
+        first.normal,
+        np.full((3,), 1.0 / np.sqrt(3.0)),
+        rtol=0.0,
+        atol=1e-15,
+    )
+    projected_world_x = np.asarray([2.0, -1.0, -1.0]) / np.sqrt(6.0)
+    np.testing.assert_allclose(
+        first.basis[0],
+        projected_world_x,
+        rtol=0.0,
+        atol=1e-15,
+    )
+
+
+def test_canonical_planar_frame_does_not_hide_spatial_residual() -> None:
+    points = np.asarray(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    )
+
+    frame = canonical_planar_frame(points, allow_linear=True)
+
+    assert frame.status == "spatial"
+    assert frame.rank == 3
     assert not frame.is_planar(1e-3)
 
 

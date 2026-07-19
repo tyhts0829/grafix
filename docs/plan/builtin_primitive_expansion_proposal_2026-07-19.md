@@ -2,8 +2,8 @@
 
 - 作成日: 2026-07-19
 - 調査時 HEAD: `cc484fa`
-- 状態: 提案（未実装）
-- 対象: 現行17件の組み込み primitive と32件の組み込み effect
+- 状態: Wave A 実装完了（Wave B以降は未着手）
+- 対象: 調査時点の17件の組み込み primitive と32件の組み込み effect
 - 目的: Grafixの表現力を増やしつつ、既存機能との重複とAPI肥大化を避ける
 
 ## 1. 結論
@@ -598,11 +598,23 @@ G.torus_knot(
 
 ### Wave A: quick win
 
-1. `spiral`
-2. `wave`
-3. `spline`
+- [x] `spiral`本体・公開API・テスト・benchmark
+- [x] `wave`本体・公開API・テスト・benchmark
+- [x] `spline`本体・公開API・テスト・benchmark
+- [x] 代表effect chainとresource budget境界の横断検証
+- [x] Ruff・mypy・pytest・benchmarkの最終検証
 
 各primitiveを独立した変更単位にし、catalog/test/benchmarkまで完結させる。
+
+実装結果:
+
+- 組み込みprimitiveは17件から20件になった。
+- primitive benchmarkは全20件を25 actual-work caseで網羅する。
+- 新3件を含む25 case smoke runは全件 `status=ok`、175 hard contractが通過した。
+- Wave A対象の公開API・resource・stub・benchmarkテスト158件が通過した。
+- repository全体ではpytest 2,083件が通過し、1件をskipした。
+- 独立property/fuzzでは通常・極端値を含む11,000件以上を検証し、
+  未解決の数値差分や非有限出力はない。
 
 ### Wave B: authoring基盤の判断
 

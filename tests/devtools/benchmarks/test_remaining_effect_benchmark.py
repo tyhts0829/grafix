@@ -74,8 +74,8 @@ def test_remaining_effect_suite_covers_exact_builtin_target_set() -> None:
 
     assert target_remaining_effect_names() == expected
     assert {definition.parameters["effect"] for definition in definitions} == expected
-    assert len(definitions) == 33
-    assert len({definition.case_id for definition in definitions}) == 33
+    assert len(definitions) == 40
+    assert len({definition.case_id for definition in definitions}) == 40
     for definition in definitions:
         assert definition.category == "effect"
         assert definition.suite == "effects-remaining"
@@ -114,7 +114,14 @@ def test_remaining_effect_suite_covers_exact_builtin_target_set() -> None:
             suites=("effects-remaining-cold",)
         )
     }
-    assert cold_effects == {"buffer", "clip", "mirror3d", "partition"}
+    assert cold_effects == {
+        "boolean",
+        "buffer",
+        "clip",
+        "mirror3d",
+        "offset_curve",
+        "partition",
+    }
     jit_effects = {
         definition.parameters["effect"]
         for definition in select_case_definitions(
@@ -135,10 +142,151 @@ def test_remaining_effect_suite_covers_exact_builtin_target_set() -> None:
         "reaction_diffusion",
         "relax",
         "repeat",
+        "resample",
         "trim",
         "warp",
         "weave",
     } == jit_effects
+
+
+def test_foundational_effect_fixtures_are_exact_and_deterministic() -> None:
+    first_regions = remaining_benchmark._build_inputs(
+        fixture="binary_regions",
+        seed=20260719,
+    )
+    second_regions = remaining_benchmark._build_inputs(
+        fixture="binary_regions",
+        seed=0,
+    )
+    assert len(first_regions) == 2
+    assert [value.coords.shape for value in first_regions] == [
+        (3_074, 3),
+        (2_049, 3),
+    ]
+    assert [value.offsets.tolist() for value in first_regions] == [
+        [0, 2_049, 3_074],
+        [0, 2_049],
+    ]
+    assert [geometry_checksum(value) for value in first_regions] == [
+        geometry_checksum(value) for value in second_regions
+    ]
+    assert geometry_checksum(first_regions[0]) != geometry_checksum(
+        first_regions[1]
+    )
+
+    first_duplicates = remaining_benchmark._build_inputs(
+        fixture="dedup_duplicates",
+        seed=20260719,
+    )[0]
+    second_duplicates = remaining_benchmark._build_inputs(
+        fixture="dedup_duplicates",
+        seed=0,
+    )[0]
+    assert first_duplicates.coords.shape == (96_000, 3)
+    assert first_duplicates.offsets.shape == (48_001,)
+    assert geometry_checksum(first_duplicates) == geometry_checksum(
+        second_duplicates
+    )
+    first_group = first_duplicates.coords[:8]
+    assert np.all(first_group[[0, 3, 4, 7]] == first_group[0])
+    assert np.all(first_group[[1, 2, 5, 6]] == first_group[1])
+
+
+@pytest.mark.parametrize(
+    ("case_id", "expected_metrics"),
+    (
+        (
+            "effect.remaining.boolean.binary_regions",
+            {
+                "work.mode": "xor",
+                "work.input_rings": 3,
+                "work.output_rings": 3,
+                "work.input_paths": 3,
+                "work.output_paths": 3,
+                "n_vertices": 4_819,
+            },
+        ),
+        (
+            "effect.remaining.deduplicate.dedup_duplicates",
+            {
+                "work.input_segments": 48_000,
+                "work.output_segments": 12_000,
+                "work.removed_segments": 36_000,
+            },
+        ),
+        (
+            "effect.remaining.offset_curve.many_lines",
+            {
+                "work.levels": 1,
+                "work.generated_paths": 10_000,
+                "work.input_paths": 5_000,
+                "work.output_paths": 10_000,
+                "n_vertices": 20_000,
+                "n_lines": 10_000,
+            },
+        ),
+        (
+            "effect.remaining.offset_curve.polyline_long",
+            {
+                "work.levels": 1,
+                "work.generated_paths": 2,
+                "work.input_paths": 1,
+                "work.output_paths": 2,
+                "n_vertices": 57_078,
+                "n_lines": 2,
+            },
+        ),
+        (
+            "effect.remaining.resample.polyline_spaced_long",
+            {
+                "work.step": 0.5,
+                "work.resampled_vertices": 12_532,
+                "n_vertices": 12_532,
+                "n_lines": 1,
+            },
+        ),
+        (
+            "effect.remaining.resample.upsample.polyline_spaced_long",
+            {
+                "work.step": 0.1,
+                "work.resampled_vertices": 62_656,
+                "n_vertices": 62_656,
+                "n_lines": 1,
+            },
+        ),
+        (
+            "effect.remaining.simplify.polyline_long",
+            {
+                "work.tolerance": 0.05,
+                "work.removed_vertices": 49_897,
+            },
+        ),
+    ),
+)
+def test_foundational_effect_direct_cases_pass_frozen_contracts(
+    case_id: str,
+    expected_metrics: dict[str, object],
+) -> None:
+    definition = next(
+        value
+        for value in select_case_definitions(suites=("effects-remaining",))
+        if value.case_id == case_id
+    )
+    state = definition.setup(dict(definition.parameters), 20260719)
+    assert isinstance(state, RemainingEffectBenchmarkState)
+    assert definition.measurement_context is not None
+    assert definition.postprocess is not None
+
+    with definition.measurement_context(state):
+        raw_output = definition.workload(state)
+        output = definition.postprocess(state, raw_output)
+
+    metrics = {metric.name: metric.value for metric in output.metrics}
+    assert metrics["actual_work"] is True
+    assert {name: metrics[name] for name in expected_metrics} == expected_metrics
+    assert output.contracts
+    assert all(contract.severity == "hard" for contract in output.contracts)
+    assert all(contract.passed for contract in output.contracts)
 
 
 @pytest.mark.parametrize(

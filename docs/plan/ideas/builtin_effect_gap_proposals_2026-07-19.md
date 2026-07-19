@@ -6,9 +6,11 @@
 
 # 現行 built-in effect を踏まえた追加候補（2026-07-19）
 
-- ステータス: 提案。実装未着手
+- ステータス: Phase A / B の 5 effect は実装・検証済み。Phase C / D は未着手
 - 調査時 HEAD: `cc484fa`
 - 調査基準: 2026-07-19 の current working tree
+- 実装計画:
+  `docs/plan/five_foundational_effects_implementation_plan_2026-07-19.md`
 - 対象:
   - `src/grafix/core/builtins.py`
   - `src/grafix/core/effects/*.py`
@@ -32,9 +34,21 @@
 `conformal_map`、場の積分変形である `advect`、ガイド曲線へ沿わせる
 `path_deform` を追加すると、現在薄い「大域的な非線形変形」を補える。
 
+## 実装記録（2026-07-19）
+
+Phase A / B の `resample`、`simplify`、`deduplicate`、`boolean`、
+`offset_curve` を built-in として追加し、公開 stub、metadata、代表デモ、
+benchmark、focused / full test を更新した。詳細な契約、実装上の判断、検証結果は
+上記の実装計画に記録している。
+
+この追加により built-in effect は 37 件、二入力 effect は `clip`、`warp`、
+`boolean` の 3 件になった。以下の「32 件、二入力 2 件」という記述は、
+追加前に不足領域を判断した**調査時スナップショット**として残す。
+Phase C / D の候補は今回実装していない。
+
 ## 1. 現状の棚卸し
 
-組み込み effect は 32 件ある。30 件が単一入力で、二入力は
+調査時点の組み込み effect は 32 件ある。30 件が単一入力で、二入力は
 `clip(base, mask)` と `warp(base, mask)` の 2 件だけである。
 
 | 領域 | 現行 effect | 現状の強み |

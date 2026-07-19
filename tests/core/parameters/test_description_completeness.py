@@ -38,6 +38,7 @@ from grafix.devtools.generate_stub import _parse_numpy_doc
 _CODE_OWNED_OPERATION_ARGS = {
     ("primitive", "bezier"): frozenset({"p0", "p1", "p2", "p3"}),
     ("primitive", "polyline"): frozenset({"points"}),
+    ("primitive", "spline"): frozenset({"points"}),
 }
 
 
