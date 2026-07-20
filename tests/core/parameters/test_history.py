@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from grafix.core.parameters import history as history_module
+from grafix.core.parameters.effects import EffectStepTopology
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.history import ParamSnapshotSlots, ParamStoreHistory
 from grafix.core.parameters.key import ParameterKey
@@ -15,6 +16,27 @@ from grafix.core.parameters.ui_ops import update_state_from_ui
 
 
 FLOAT_META = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
+EFFECT_CODE_ORDER = (("scale", "scale-site"), ("rotate", "rotate-site"))
+EFFECT_UI_ORDER = tuple(reversed(EFFECT_CODE_ORDER))
+
+
+def _add_effect_chain(store: ParamStore) -> None:
+    assert store._effects_ref().record_chain(
+        chain_id="chain-order",
+        steps=(
+            EffectStepTopology("scale", "scale-site", 1, 0),
+            EffectStepTopology("rotate", "rotate-site", 1, 1),
+        ),
+    )
+    store._touch()
+
+
+def _set_effect_order(
+    store: ParamStore,
+    order: tuple[tuple[str, str], ...],
+) -> None:
+    assert store._effects_ref().set_order_override("chain-order", order)
+    store._touch()
 
 
 def _add_parameter(
@@ -299,6 +321,29 @@ def test_history_validates_configuration() -> None:
         ParamStoreHistory(ParamStore(), capacity=0)
     with pytest.raises(ValueError, match="coalesce"):
         ParamStoreHistory(ParamStore(), coalesce_seconds=-0.1)
+
+
+def test_effect_order_is_one_full_history_operation_and_ab_state() -> None:
+    store = ParamStore()
+    _add_effect_chain(store)
+    history = ParamStoreHistory(store)
+    slots = ParamSnapshotSlots(store)
+    slots.capture("A")
+
+    with history.transaction(source=("effect-reorder", "chain-order")):
+        _set_effect_order(store, EFFECT_UI_ORDER)
+    slots.capture("B")
+
+    assert history.undo_depth == 1
+    assert history.undo() is True
+    assert store._effects_ref().effective_order("chain-order") == EFFECT_CODE_ORDER
+    assert history.redo() is True
+    assert store._effects_ref().effective_order("chain-order") == EFFECT_UI_ORDER
+
+    assert slots.restore("A") is True
+    assert store._effects_ref().effective_order("chain-order") == EFFECT_CODE_ORDER
+    assert slots.restore("B") is True
+    assert store._effects_ref().effective_order("chain-order") == EFFECT_UI_ORDER
 
 
 def test_synchronize_is_noop_without_external_changes() -> None:

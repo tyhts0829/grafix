@@ -29,6 +29,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from .effects import EffectChainIndex, EffectStepTopology
 from .key import ParameterKey
 from .meta_spec import meta_from_record, meta_to_spec
 from .state import ParamState
@@ -36,7 +37,7 @@ from .store import ParamStore
 from .variations import _decode_variation, _encode_variation
 from .view import canonicalize_ui_value
 
-PARAM_STORE_SCHEMA_VERSION = 1
+PARAM_STORE_SCHEMA_VERSION = 2
 
 
 class ParamStoreSchemaError(ValueError):
@@ -104,6 +105,38 @@ def encode_param_store(
     labels = store._labels_ref().as_dict()
     ordinals = store._ordinals_ref().as_dict()
     effects = store._effects_ref()
+    topology_keys = {
+        step.key
+        for steps in effects.topologies().values()
+        for step in steps
+    }
+    effect_steps = [
+        {
+            "op": step.op,
+            "site_id": step.site_id,
+            "chain_id": chain_id,
+            "step_index": step.code_index,
+            "n_inputs": step.n_inputs,
+        }
+        for chain_id, steps in effects.topologies().items()
+        for step in steps
+    ]
+    # topology観測導入前と同じくparameter recordだけで作られたstepや、
+    # 移行途中にtopologyと混在するlegacy stepも落とさず保存する。
+    effect_steps.extend(
+        {
+            "op": op,
+            "site_id": site_id,
+            "chain_id": chain_id,
+            "step_index": step_index,
+            "n_inputs": 1,
+        }
+        for (op, site_id), (
+            chain_id,
+            step_index,
+        ) in effects.step_info_by_site().items()
+        if (op, site_id) not in topology_keys
+    )
 
     return {
         "schema_version": PARAM_STORE_SCHEMA_VERSION,
@@ -146,15 +179,7 @@ def encode_param_store(
             for (op, site_id), label in labels.items()
         ],
         "ordinals": ordinals,
-        "effect_steps": [
-            {
-                "op": op,
-                "site_id": site_id,
-                "chain_id": chain_id,
-                "step_index": step_index,
-            }
-            for (op, site_id), (chain_id, step_index) in effects.step_info_by_site().items()
-        ],
+        "effect_steps": effect_steps,
         "chain_ordinals": effects.chain_ordinals(),
         "explicit": [
             {
@@ -167,6 +192,19 @@ def encode_param_store(
         ],
         "ui": {
             "collapsed_headers": sorted(store._collapsed_headers_ref()),
+            "effect_order_overrides": [
+                {
+                    "chain_id": chain_id,
+                    "steps": [
+                        {"op": op, "site_id": site_id}
+                        for op, site_id in step_keys
+                    ],
+                }
+                for chain_id, step_keys in sorted(
+                    effects.order_overrides().items(),
+                    key=lambda item: item[0],
+                )
+            ],
             "locked_parameters": [
                 {"op": key.op, "site_id": key.site_id, "arg": key.arg}
                 for key in sorted(
@@ -344,6 +382,11 @@ def _decode_param_store_current(
 
     ui_obj = obj.get("ui")
     if isinstance(ui_obj, dict):
+        store._effects_ref().replace_order_overrides_from_json(
+            _valid_effect_order_override_entries(
+                ui_obj.get("effect_order_overrides", [])
+            )
+        )
         collapsed = ui_obj.get("collapsed_headers", [])
         if isinstance(collapsed, list):
             for item in collapsed:
@@ -433,7 +476,7 @@ def param_store_schema_version(obj: object) -> int | None:
         raise ParamStoreSchemaError("schema_version must be an int")
     if raw_version > PARAM_STORE_SCHEMA_VERSION:
         raise UnsupportedParamStoreSchemaError(raw_version)
-    if raw_version != PARAM_STORE_SCHEMA_VERSION:
+    if raw_version not in {1, PARAM_STORE_SCHEMA_VERSION}:
         raise ParamStoreSchemaError(
             f"unsupported ParamStore schema_version: {raw_version}"
         )
@@ -445,11 +488,142 @@ def _migrate_param_store_payload(obj: object) -> tuple[dict[str, Any], bool]:
 
     version = param_store_schema_version(obj)
     assert isinstance(obj, dict)
-    if version is None:
+    if version is None or version == 1:
         migrated = dict(obj)
+        ui_obj = migrated.get("ui")
+        if isinstance(ui_obj, dict):
+            migrated_ui = dict(ui_obj)
+            migrated_ui.setdefault("effect_order_overrides", [])
+            migrated["ui"] = migrated_ui
         migrated["schema_version"] = PARAM_STORE_SCHEMA_VERSION
-        return migrated, True
+        return migrated, version is None
     return obj, False
+
+
+def _effect_order_override_entry_error(
+    item: object,
+    *,
+    seen_chain_ids: set[str],
+    allow_code_order: bool = False,
+    require_topology_signature: bool = False,
+) -> str | None:
+    """effect 順序 entry の破損理由を返し、有効なら None を返す。"""
+
+    if not isinstance(item, dict):
+        return "expected an object"
+    chain_id = item.get("chain_id")
+    steps_obj = item.get("steps")
+    if not isinstance(chain_id, str) or not chain_id.strip():
+        return "chain_id must be a non-empty string"
+    if chain_id in seen_chain_ids:
+        return "duplicate chain_id"
+    if require_topology_signature:
+        topology_obj = item.get("topology")
+        if not isinstance(topology_obj, list) or not topology_obj:
+            return "topology must be a non-empty list"
+        for step in topology_obj:
+            if not isinstance(step, dict):
+                return "each topology step must be an object"
+            op = step.get("op")
+            site_id = step.get("site_id")
+            n_inputs = step.get("n_inputs")
+            if not isinstance(op, str) or not op.strip():
+                return "topology step op must be a non-empty string"
+            if not isinstance(site_id, str) or not site_id.strip():
+                return "topology step site_id must be a non-empty string"
+            if (
+                isinstance(n_inputs, bool)
+                or not isinstance(n_inputs, int)
+                or n_inputs < 1
+            ):
+                return "topology step n_inputs must be an int >= 1"
+    if steps_obj is None and allow_code_order:
+        return None
+    if not isinstance(steps_obj, list) or not steps_obj:
+        return "steps must be a non-empty list"
+
+    seen_steps: set[tuple[str, str]] = set()
+    for step in steps_obj:
+        if not isinstance(step, dict):
+            return "each step must be an object"
+        op = step.get("op")
+        site_id = step.get("site_id")
+        if not isinstance(op, str) or not op.strip():
+            return "step op must be a non-empty string"
+        if not isinstance(site_id, str) or not site_id.strip():
+            return "step site_id must be a non-empty string"
+        key = (op, site_id)
+        if key in seen_steps:
+            return "duplicate step"
+        seen_steps.add(key)
+    return None
+
+
+def _valid_effect_order_override_entries(obj: object) -> list[dict[str, Any]]:
+    """有効な effect 順序 entry だけを正規化して返す。"""
+
+    if not isinstance(obj, list):
+        return []
+
+    valid: list[dict[str, Any]] = []
+    seen_chain_ids: set[str] = set()
+    for item in obj:
+        error = _effect_order_override_entry_error(
+            item,
+            seen_chain_ids=seen_chain_ids,
+        )
+        if error is not None:
+            continue
+        assert isinstance(item, dict)
+        chain_id = item["chain_id"]
+        steps_obj = item["steps"]
+        assert isinstance(chain_id, str)
+        assert isinstance(steps_obj, list)
+        steps = [
+            {"op": step["op"], "site_id": step["site_id"]}
+            for step in steps_obj
+            if isinstance(step, dict)
+        ]
+        seen_chain_ids.add(chain_id)
+        valid.append({"chain_id": chain_id, "steps": steps})
+    return valid
+
+
+def _effect_order_topology_error(
+    item: dict[str, Any],
+    topologies: dict[str, tuple[EffectStepTopology, ...]],
+) -> str | None:
+    """同じpayload内のtopologyに対するorder不整合理由を返す。"""
+
+    chain_id = str(item["chain_id"])
+    topology = topologies.get(chain_id)
+    if topology is None:
+        # topology未保存のoverrideは、最初の成功frameで検証する。
+        return None
+    code_order = tuple(step.key for step in topology)
+    if len(set(code_order)) != len(code_order):
+        return "effect topology has duplicate step identity"
+
+    raw_steps = item["steps"]
+    assert isinstance(raw_steps, list)
+    order = tuple(
+        (str(step["op"]), str(step["site_id"]))
+        for step in raw_steps
+        if isinstance(step, dict)
+    )
+    if len(order) != len(code_order) or set(order) != set(code_order):
+        return "steps must be an exact permutation of the effect topology"
+
+    n_inputs_by_step = {
+        step.key: int(step.n_inputs)
+        for step in topology
+    }
+    if any(
+        n_inputs_by_step[step] > 1 and index != 0
+        for index, step in enumerate(order)
+    ):
+        return "multi-input effect must remain at the start of its chain"
+    return None
 
 
 def _find_decode_issues(obj: dict[str, Any]) -> tuple[ParamStoreDecodeIssue, ...]:
@@ -526,6 +700,37 @@ def _find_decode_issues(obj: dict[str, Any]) -> tuple[ParamStoreDecodeIssue, ...
                                 "must be an object",
                             )
                         )
+                    raw_order_state = snapshot.get("effect_order_state", [])
+                    if not isinstance(raw_order_state, list):
+                        issues.append(
+                            ParamStoreDecodeIssue(
+                                section,
+                                index,
+                                "parameter_snapshot.effect_order_state "
+                                "must be a list",
+                            )
+                        )
+                    else:
+                        variation_seen_chain_ids: set[str] = set()
+                        for order_index, order_item in enumerate(raw_order_state):
+                            reason = _effect_order_override_entry_error(
+                                order_item,
+                                seen_chain_ids=variation_seen_chain_ids,
+                                allow_code_order=True,
+                                require_topology_signature=True,
+                            )
+                            if reason is not None:
+                                issues.append(
+                                    ParamStoreDecodeIssue(
+                                        section,
+                                        index,
+                                        "parameter_snapshot.effect_order_state"
+                                        f"[{order_index}]: {reason}",
+                                    )
+                                )
+                                continue
+                            assert isinstance(order_item, dict)
+                            variation_seen_chain_ids.add(str(order_item["chain_id"]))
             except Exception:
                 issues.append(
                     ParamStoreDecodeIssue(section, index, "invalid entry")
@@ -579,6 +784,13 @@ def _find_decode_issues(obj: dict[str, Any]) -> tuple[ParamStoreDecodeIssue, ...
                     ParamStoreDecodeIssue(section, index, "ordinal must be an int")
                 )
 
+    effect_index = EffectChainIndex()
+    effect_index.replace_from_json(
+        effect_steps=entries_by_section["effect_steps"],
+        chain_ordinals=obj.get("chain_ordinals", {}),
+    )
+    effect_topologies = effect_index.topologies()
+
     ui_obj = obj.get("ui", {})
     if not isinstance(ui_obj, dict):
         issues.append(ParamStoreDecodeIssue("ui", None, "expected an object"))
@@ -591,6 +803,45 @@ def _find_decode_issues(obj: dict[str, Any]) -> tuple[ParamStoreDecodeIssue, ...
                     "expected a list",
                 )
             )
+        effect_order_overrides = ui_obj.get("effect_order_overrides", [])
+        if not isinstance(effect_order_overrides, list):
+            issues.append(
+                ParamStoreDecodeIssue(
+                    "ui.effect_order_overrides",
+                    None,
+                    "expected a list",
+                )
+            )
+        else:
+            ui_seen_chain_ids: set[str] = set()
+            for index, item in enumerate(effect_order_overrides):
+                reason = _effect_order_override_entry_error(
+                    item,
+                    seen_chain_ids=ui_seen_chain_ids,
+                )
+                if reason is not None:
+                    issues.append(
+                        ParamStoreDecodeIssue(
+                            "ui.effect_order_overrides",
+                            index,
+                            reason,
+                        )
+                    )
+                    continue
+                assert isinstance(item, dict)
+                topology_reason = _effect_order_topology_error(
+                    item,
+                    effect_topologies,
+                )
+                if topology_reason is not None:
+                    issues.append(
+                        ParamStoreDecodeIssue(
+                            "ui.effect_order_overrides",
+                            index,
+                            topology_reason,
+                        )
+                    )
+                ui_seen_chain_ids.add(str(item["chain_id"]))
         for field in ("locked_parameters", "favorite_parameters"):
             entries = ui_obj.get(field, [])
             section = f"ui.{field}"

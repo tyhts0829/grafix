@@ -6,6 +6,7 @@ import pytest
 
 from grafix.core.parameters.autosave import ParamStoreAutosave
 from grafix.core.parameters.codec import dumps_param_store, loads_param_store
+from grafix.core.parameters.effects import EffectStepTopology
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.history import ParamStoreHistory
 from grafix.core.parameters.key import ParameterKey
@@ -30,6 +31,23 @@ from grafix.core.parameters.variations import (
 
 
 FLOAT_META = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
+EFFECT_CODE_ORDER = (("scale", "scale-site"), ("rotate", "rotate-site"))
+EFFECT_UI_ORDER = tuple(reversed(EFFECT_CODE_ORDER))
+
+
+def _add_reordered_effect_chain(store: ParamStore) -> None:
+    assert store._effects_ref().record_chain(
+        chain_id="chain-order",
+        steps=(
+            EffectStepTopology("scale", "scale-site", 1, 0),
+            EffectStepTopology("rotate", "rotate-site", 1, 1),
+        ),
+    )
+    assert store._effects_ref().set_order_override(
+        "chain-order",
+        EFFECT_UI_ORDER,
+    )
+    store._touch()
 
 
 def _add_parameter(
@@ -243,6 +261,61 @@ def test_codec_roundtrip_keeps_variation_metadata_and_snapshot() -> None:
     assert variations[0].thumbnail_path == "thumb.png"
     assert restore_variation(loaded, "saved") is True
     assert _value(loaded, key) == pytest.approx(0.25)
+
+
+def test_variation_codec_and_restore_include_effect_order_but_diff_does_not() -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    _add_reordered_effect_chain(store)
+    create_variation(store, "reordered", created_at=100.0)
+
+    assert store._effects_ref().reset_order("chain-order")
+    store._touch()
+    assert diff_variation(store, "reordered") == ()
+
+    loaded = loads_param_store(dumps_param_store(store))
+    assert loaded._effects_ref().effective_order("chain-order") == EFFECT_CODE_ORDER
+    assert restore_variation(loaded, "reordered") is True
+    assert loaded._effects_ref().effective_order("chain-order") == EFFECT_UI_ORDER
+    assert diff_variation(loaded, "reordered") == ()
+
+
+def test_loaded_variation_does_not_restore_order_after_effect_arity_change() -> None:
+    store = ParamStore()
+    topology = (
+        EffectStepTopology("first", "first-site", 1, 0),
+        EffectStepTopology("second", "second-site", 1, 1),
+        EffectStepTopology("third", "third-site", 1, 2),
+    )
+    assert store._effects_ref().record_chain(
+        chain_id="arity-chain",
+        steps=topology,
+    )
+    assert store._effects_ref().set_order_override(
+        "arity-chain",
+        (
+            ("first", "first-site"),
+            ("third", "third-site"),
+            ("second", "second-site"),
+        ),
+    )
+    create_variation(store, "old-arity", created_at=100.0)
+    loaded = loads_param_store(dumps_param_store(store))
+
+    assert loaded._effects_ref().record_chain(
+        chain_id="arity-chain",
+        steps=(
+            EffectStepTopology("first", "first-site", 2, 0),
+            EffectStepTopology("second", "second-site", 1, 1),
+            EffectStepTopology("third", "third-site", 1, 2),
+        ),
+    )
+    loaded._touch()
+    revision = loaded.revision
+
+    assert restore_variation(loaded, "old-arity") is False
+    assert loaded.revision == revision
+    assert loaded.effect_order_overrides() == {}
 
 
 def test_variation_change_is_seen_by_autosave(tmp_path: Path) -> None:

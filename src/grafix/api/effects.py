@@ -20,7 +20,17 @@ from grafix.core.builtins import ensure_builtin_effect_registered, ensure_builti
 from grafix.core.effect_registry import EffectFunc
 from grafix.core.geometry import Geometry
 from grafix.core.op_registry import OpCatalogEntry
-from grafix.core.parameters import caller_site_id
+from grafix.core.operation_selector import effect_selector_op
+from grafix.core.parameters import (
+    caller_site_id,
+    current_effect_order_snapshot,
+    current_frame_params,
+)
+from grafix.core.parameters.context import current_param_recording_enabled
+from grafix.core.parameters.effects import (
+    EffectStepTopology,
+    resolve_effective_steps,
+)
 
 # parameters package の初期化後に読み、prune_ops 経由の循環 import を避ける。
 import grafix.core.effect_registry as effect_registry_module
@@ -115,9 +125,42 @@ class EffectBuilder:
         # effect チェーンは「入力 Geometry に対して、steps を順番に wrap していく」だけの処理。
         # ここでは実体変換は行わず、あくまで Geometry DAG（レシピ）を構築する。
         registry = effect_registry_module.effect_registry
+        code_topology: list[EffectStepTopology] = []
+        for code_index, step in enumerate(self.steps):
+            if isinstance(step, _EffectSelectorStep):
+                parameter_op = effect_selector_op(step.n_inputs)
+                n_inputs = int(step.n_inputs)
+                site_id = step.site_id
+            else:
+                parameter_op, _params, site_id = step
+                n_inputs = int(registry[parameter_op].n_inputs)
+            code_topology.append(
+                EffectStepTopology(
+                    op=parameter_op,
+                    site_id=site_id,
+                    n_inputs=n_inputs,
+                    code_index=code_index,
+                )
+            )
+
+        recording_enabled = current_param_recording_enabled()
+        topology = tuple(code_topology)
+        order_snapshot = current_effect_order_snapshot() if recording_enabled else {}
+        effective_topology = resolve_effective_steps(
+            topology,
+            order_snapshot.get(self.chain_id),
+        )
+        frame_params = current_frame_params()
+        if recording_enabled and frame_params is not None:
+            frame_params.record_effect_chain(
+                chain_id=self.chain_id,
+                steps=topology,
+            )
+
         first_inputs = (geometry, *more_geometries)
         result = geometry
-        for step_index, step in enumerate(self.steps):
+        for step_index, topology_step in enumerate(effective_topology):
+            step = self.steps[topology_step.code_index]
             if isinstance(step, _EffectSelectorStep):
                 selected = resolve_effect_selection(
                     target=step.target,

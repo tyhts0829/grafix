@@ -64,15 +64,18 @@ from .parameter_filter import (
     parameter_static_search_corpus,
 )
 from .table import (
+    EffectOrderCommand,
     parameter_group_collapse_keys,
     render_parameter_table,
     source_badge_for_row,
 )
 from .table_model import (
+    EffectChainTableState,
     ParameterTableCacheKey,
     ParameterTableModel,
     ParameterTableModelCache,
     RegistryRevision,
+    effect_chain_table_states,
 )
 from .visibility import active_mask_for_rows
 
@@ -144,6 +147,7 @@ class ParameterTableView:
     favorite_keys: frozenset[ParameterKey]
     filtered_count: int
     total_count: int
+    effect_chain_state_by_id: Mapping[str, EffectChainTableState]
 
     @property
     def hidden_count(self) -> int:
@@ -526,6 +530,20 @@ def _build_parameter_table_model(
         display_order_by_group=runtime.display_order_by_group,
     )
 
+    gui_steps_by_chain: dict[str, set[tuple[str, str]]] = {}
+    for row in rows:
+        step_key = (str(row.op), str(row.site_id))
+        step_info = step_info_by_site.get(step_key)
+        if step_info is None:
+            continue
+        gui_steps_by_chain.setdefault(str(step_info[0]), set()).add(step_key)
+    effect_chain_state_by_id = effect_chain_table_states(
+        topologies=store.effect_chain_topologies(),
+        step_info_by_site=step_info_by_site,
+        order_overrides=store.effect_order_overrides(),
+        gui_steps_by_chain=gui_steps_by_chain,
+    )
+
     layer_style_name_by_site_id: dict[str, str] = {}
     for key, (_meta, _state, _ordinal, label) in snapshot.items():
         if key.op != LAYER_STYLE_OP:
@@ -600,6 +618,7 @@ def _build_parameter_table_model(
         effect_chain_header_by_id=MappingProxyType(effect_chain_header_by_id),
         step_info_by_site=MappingProxyType(step_info_by_site),
         effect_step_ordinal_by_site=MappingProxyType(effect_step_ordinal_by_site),
+        effect_chain_state_by_id=MappingProxyType(dict(effect_chain_state_by_id)),
     )
 
 
@@ -793,6 +812,22 @@ def _parameter_table_view_from_mask(
     visible_row_indices = tuple(
         index for index, visible in enumerate(normalized_mask) if visible
     )
+    visible_steps_by_chain: dict[str, set[tuple[str, str]]] = {}
+    for index in visible_row_indices:
+        row = model.rows[index]
+        step_key = (str(row.op), str(row.site_id))
+        step_info = model.step_info_by_site.get(step_key)
+        if step_info is None:
+            continue
+        visible_steps_by_chain.setdefault(str(step_info[0]), set()).add(step_key)
+    effect_chain_state_by_id = MappingProxyType(
+        {
+            chain_id: state.for_visible_steps(
+                visible_steps_by_chain.get(chain_id, frozenset())
+            )
+            for chain_id, state in model.effect_chain_state_by_id.items()
+        }
+    )
     return ParameterTableView(
         model=model,
         visible_mask=normalized_mask,
@@ -801,6 +836,7 @@ def _parameter_table_view_from_mask(
         favorite_keys=favorite_keys,
         filtered_count=len(visible_row_indices),
         total_count=len(normalized_mask),
+        effect_chain_state_by_id=effect_chain_state_by_id,
     )
 
 
@@ -1322,6 +1358,7 @@ def render_store_parameter_table(
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
     on_help_row: Callable[[ParameterRow, bool], None] | None = None,
+    on_effect_order_command: Callable[[EffectOrderCommand], None] | None = None,
 ) -> bool:
     """ParamStore を 4 列テーブルとして描画し、変更を store に反映する。"""
 
@@ -1365,6 +1402,7 @@ def render_store_parameter_table(
         effect_chain_header_by_id=model.effect_chain_header_by_id,
         step_info_by_site=model.step_info_by_site,
         effect_step_ordinal_by_site=model.effect_step_ordinal_by_site,
+        effect_chain_state_by_id=table_view.effect_chain_state_by_id,
         last_effective_by_key=runtime.last_effective_by_key,
         last_source_by_key=runtime.last_source_by_key,
         raw_label_by_site=model.raw_label_by_site,
@@ -1372,6 +1410,7 @@ def render_store_parameter_table(
         midi_last_cc_change=midi_last_cc_change,
         collapsed_headers=store._collapsed_headers_ref(),
         on_help_row=on_help_row,
+        on_effect_order_command=on_effect_order_command,
     )
     collapsed_changed = collapsed_before != store._collapsed_headers_ref()
     if collapsed_changed:

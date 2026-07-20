@@ -15,6 +15,11 @@ from grafix.core.operation_diagnostics import (
 
 from .frame_params import FrameParamsBuffer
 from .store import ParamStore
+from .effect_order_ops import (
+    EffectOrderSnapshot,
+    merge_frame_effect_chains,
+    store_effect_order_snapshot,
+)
 from .labels_ops import merge_frame_labels
 from .merge_ops import merge_frame_params
 from .snapshot_ops import ParamSnapshot, store_snapshot
@@ -23,6 +28,13 @@ from .source import MidiFrameSnapshot
 _EMPTY_SNAPSHOT: ParamSnapshot = {}
 _param_snapshot_var: contextvars.ContextVar[ParamSnapshot] = contextvars.ContextVar(
     "param_snapshot", default=_EMPTY_SNAPSHOT
+)
+_EMPTY_EFFECT_ORDER_SNAPSHOT: EffectOrderSnapshot = {}
+_effect_order_snapshot_var: contextvars.ContextVar[EffectOrderSnapshot] = (
+    contextvars.ContextVar(
+        "effect_order_snapshot",
+        default=_EMPTY_EFFECT_ORDER_SNAPSHOT,
+    )
 )
 _frame_params_var: contextvars.ContextVar[FrameParamsBuffer | None] = (
     contextvars.ContextVar("frame_params", default=None)
@@ -40,6 +52,13 @@ _param_recording_enabled_var: contextvars.ContextVar[bool] = contextvars.Context
 
 def current_param_snapshot() -> ParamSnapshot:
     snapshot = _param_snapshot_var.get(_EMPTY_SNAPSHOT)
+    return snapshot if snapshot else {}
+
+
+def current_effect_order_snapshot() -> EffectOrderSnapshot:
+    """現在frameに固定されたeffect order overrideを返す。"""
+
+    snapshot = _effect_order_snapshot_var.get(_EMPTY_EFFECT_ORDER_SNAPSHOT)
     return snapshot if snapshot else {}
 
 
@@ -80,10 +99,12 @@ def parameter_context(
     """フレーム境界で param_snapshot / frame_params を固定するコンテキストマネージャ。"""
 
     snapshot = store_snapshot(store)
+    effect_order_snapshot = store_effect_order_snapshot(store)
     frame_params = FrameParamsBuffer()
 
     with operation_diagnostic_context() as operation_diagnostics:
         t1 = _param_snapshot_var.set(snapshot)
+        t_effect = _effect_order_snapshot_var.set(effect_order_snapshot)
         t2 = _frame_params_var.set(frame_params)
         t3 = _cc_snapshot_var.set(cc_snapshot)
         t4 = _store_var.set(store)
@@ -95,6 +116,13 @@ def parameter_context(
             raise
         else:
             # yield が正常完了した frame の観測結果だけを commit する。
+            merge_frame_effect_chains(
+                store,
+                frame_params.effect_chains,
+                observation_complete=(
+                    frame_params.effect_chain_observation_complete
+                ),
+            )
             merge_frame_labels(store, frame_params.labels)
             merge_frame_params(store, frame_params.records)
         finally:
@@ -102,12 +130,16 @@ def parameter_context(
             _store_var.reset(t4)
             _cc_snapshot_var.reset(t3)
             _frame_params_var.reset(t2)
+            _effect_order_snapshot_var.reset(t_effect)
             _param_snapshot_var.reset(t1)
 
 
 @contextlib.contextmanager
 def parameter_context_from_snapshot(
-    snapshot: ParamSnapshot, cc_snapshot: MidiFrameSnapshot | None = None
+    snapshot: ParamSnapshot,
+    cc_snapshot: MidiFrameSnapshot | None = None,
+    *,
+    effect_order_snapshot: EffectOrderSnapshot | None = None,
 ) -> Iterator[FrameParamsBuffer]:
     """ParamStore を持たずに snapshot/frame_params を固定する（worker 用）。"""
 
@@ -115,6 +147,9 @@ def parameter_context_from_snapshot(
 
     with operation_diagnostic_context():
         t1 = _param_snapshot_var.set(snapshot)
+        t_effect = _effect_order_snapshot_var.set(
+            {} if effect_order_snapshot is None else effect_order_snapshot
+        )
         t2 = _frame_params_var.set(frame_params)
         t3 = _cc_snapshot_var.set(cc_snapshot)
         t4 = _store_var.set(None)
@@ -124,4 +159,5 @@ def parameter_context_from_snapshot(
             _store_var.reset(t4)
             _cc_snapshot_var.reset(t3)
             _frame_params_var.reset(t2)
+            _effect_order_snapshot_var.reset(t_effect)
             _param_snapshot_var.reset(t1)

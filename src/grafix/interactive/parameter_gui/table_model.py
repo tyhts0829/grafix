@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import TypeAlias
+from collections import Counter
+from collections.abc import Callable, Mapping, Set as AbstractSet
+from dataclasses import dataclass, replace
+from typing import Literal, TypeAlias
 from weakref import WeakKeyDictionary
 
+from grafix.core.parameters.effects import EffectStepKey, EffectStepTopology
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
 from grafix.core.parameters.store import ParamStore
@@ -16,6 +18,191 @@ from .group_blocks import GroupBlockLayout
 
 RegistryRevision: TypeAlias = tuple[int, int, int]
 ParameterTableCacheKey: TypeAlias = tuple[int, RegistryRevision]
+
+EFFECT_ORDER_DUPLICATE_REASON = (
+    "Effect step identity is duplicated; assign a unique key or instance_key."
+)
+EFFECT_ORDER_FILTERED_REASON = (
+    "Clear filters to reorder the complete effect chain."
+)
+EFFECT_ORDER_INCOMPLETE_REASON = (
+    "This chain includes effect steps that are not visible in the Parameter GUI."
+)
+EFFECT_ORDER_MULTI_INPUT_REASON = (
+    "A multi-input effect must remain the first step in its chain."
+)
+EFFECT_ORDER_SINGLE_STEP_REASON = (
+    "Add at least two effect steps to reorder this chain."
+)
+EFFECT_ORDER_TOPOLOGY_REASON = (
+    "Effect topology is incomplete; render a successful frame first."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class EffectChainTableState:
+    """Parameter table が必要とする、1 effect chain の並べ替え状態。"""
+
+    chain_id: str
+    steps: tuple[EffectStepKey, ...]
+    n_inputs: tuple[int, ...]
+    order_overridden: bool
+    disabled_reason: str | None = None
+
+    def step_index(self, step: EffectStepKey) -> int | None:
+        """effective order 内の index を返す。未登録または重複時は None。"""
+
+        normalized = (str(step[0]), str(step[1]))
+        matches = [
+            index for index, candidate in enumerate(self.steps) if candidate == normalized
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def is_pinned(self, step: EffectStepKey) -> bool:
+        """multi-input 制約により移動できないstepならTrueを返す。"""
+
+        index = self.step_index(step)
+        return index is not None and int(self.n_inputs[index]) > 1
+
+    def can_move(
+        self,
+        source: EffectStepKey,
+        target: EffectStepKey,
+        placement: str,
+    ) -> bool:
+        """source を target の前後へ移動できるか返す。"""
+
+        if self.disabled_reason is not None or placement not in {"before", "after"}:
+            return False
+        source_index = self.step_index(source)
+        target_index = self.step_index(target)
+        if source_index is None or target_index is None or source_index == target_index:
+            return False
+        if int(self.n_inputs[source_index]) > 1:
+            return False
+
+        order = list(self.steps)
+        moving = order.pop(source_index)
+        insertion_index = order.index(self.steps[target_index])
+        if placement == "after":
+            insertion_index += 1
+        order.insert(insertion_index, moving)
+        if tuple(order) == self.steps:
+            return False
+
+        n_inputs_by_step = {
+            step: int(n_inputs)
+            for step, n_inputs in zip(self.steps, self.n_inputs, strict=True)
+        }
+        return all(
+            n_inputs_by_step[step] <= 1 or index == 0
+            for index, step in enumerate(order)
+        )
+
+    def neighbor_move(
+        self,
+        source: EffectStepKey,
+        *,
+        direction: int,
+    ) -> tuple[EffectStepKey, Literal["before", "after"]] | None:
+        """Move Up/Down用の(target, placement)を返す。"""
+
+        source_index = self.step_index(source)
+        if source_index is None or direction not in {-1, 1}:
+            return None
+        target_index = source_index + int(direction)
+        if target_index < 0 or target_index >= len(self.steps):
+            return None
+        target = self.steps[target_index]
+        placement: Literal["before", "after"] = (
+            "before" if direction < 0 else "after"
+        )
+        if not self.can_move(source, target, placement):
+            return None
+        return target, placement
+
+    def for_visible_steps(
+        self,
+        visible_steps: AbstractSet[EffectStepKey],
+    ) -> EffectChainTableState:
+        """filter後にstepが欠けるchainを並べ替え不可にした状態を返す。"""
+
+        if self.disabled_reason is not None:
+            return self
+        normalized_visible = {
+            (str(op), str(site_id)) for op, site_id in visible_steps
+        }
+        if normalized_visible == set(self.steps):
+            return self
+        return replace(self, disabled_reason=EFFECT_ORDER_FILTERED_REASON)
+
+
+def effect_chain_table_states(
+    *,
+    topologies: Mapping[str, tuple[EffectStepTopology, ...]],
+    step_info_by_site: Mapping[EffectStepKey, tuple[str, int]],
+    order_overrides: Mapping[str, tuple[EffectStepKey, ...]],
+    gui_steps_by_chain: Mapping[str, AbstractSet[EffectStepKey]],
+) -> Mapping[str, EffectChainTableState]:
+    """core topologyとGUI-visible stepからchain描画状態を構築する。"""
+
+    states: dict[str, EffectChainTableState] = {}
+    for chain_id_raw, topology in topologies.items():
+        chain_id = str(chain_id_raw)
+        code_steps = tuple(
+            (str(step.op), str(step.site_id))
+            for step in topology
+        )
+        n_inputs_by_step = {
+            (str(step.op), str(step.site_id)): int(step.n_inputs)
+            for step in topology
+        }
+        duplicate = any(count > 1 for count in Counter(code_steps).values())
+
+        indexed_effective: list[tuple[int, int, EffectStepKey]] = []
+        for code_index, step in enumerate(code_steps):
+            info = step_info_by_site.get(step)
+            if info is None or str(info[0]) != chain_id:
+                indexed_effective = []
+                break
+            indexed_effective.append((int(info[1]), int(code_index), step))
+        if len(indexed_effective) == len(code_steps):
+            effective_steps = tuple(
+                step for _index, _code_index, step in sorted(indexed_effective)
+            )
+        else:
+            effective_steps = code_steps
+
+        disabled_reason: str | None = None
+        if duplicate:
+            disabled_reason = EFFECT_ORDER_DUPLICATE_REASON
+        elif len(effective_steps) < 2:
+            disabled_reason = EFFECT_ORDER_SINGLE_STEP_REASON
+        elif set(effective_steps) != set(code_steps):
+            disabled_reason = EFFECT_ORDER_TOPOLOGY_REASON
+        else:
+            gui_steps = {
+                (str(op), str(site_id))
+                for op, site_id in gui_steps_by_chain.get(chain_id, frozenset())
+            }
+            if gui_steps != set(code_steps):
+                disabled_reason = EFFECT_ORDER_INCOMPLETE_REASON
+
+        n_inputs = tuple(n_inputs_by_step.get(step, 1) for step in effective_steps)
+        if disabled_reason is None and any(
+            int(count) > 1 and index != 0
+            for index, count in enumerate(n_inputs)
+        ):
+            disabled_reason = EFFECT_ORDER_MULTI_INPUT_REASON
+
+        states[chain_id] = EffectChainTableState(
+            chain_id=chain_id,
+            steps=effective_steps,
+            n_inputs=n_inputs,
+            order_overridden=chain_id in order_overrides,
+            disabled_reason=disabled_reason,
+        )
+    return states
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +229,7 @@ class ParameterTableModel:
     effect_chain_header_by_id: Mapping[str, str]
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]]
     effect_step_ordinal_by_site: Mapping[tuple[str, str], int]
+    effect_chain_state_by_id: Mapping[str, EffectChainTableState]
 
 
 ModelBuilder: TypeAlias = Callable[
@@ -111,8 +299,16 @@ class ParameterTableModelCache:
 
 
 __all__ = [
+    "EFFECT_ORDER_DUPLICATE_REASON",
+    "EFFECT_ORDER_FILTERED_REASON",
+    "EFFECT_ORDER_INCOMPLETE_REASON",
+    "EFFECT_ORDER_MULTI_INPUT_REASON",
+    "EFFECT_ORDER_SINGLE_STEP_REASON",
+    "EFFECT_ORDER_TOPOLOGY_REASON",
+    "EffectChainTableState",
     "ParameterTableCacheKey",
     "ParameterTableModel",
     "ParameterTableModelCache",
     "RegistryRevision",
+    "effect_chain_table_states",
 ]

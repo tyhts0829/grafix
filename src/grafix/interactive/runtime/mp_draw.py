@@ -37,7 +37,7 @@ import queue
 import time
 import traceback
 from collections import OrderedDict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from math import isfinite
 from typing import Any, Callable, Protocol, cast
 
@@ -46,7 +46,12 @@ from grafix.core.operation_diagnostics import (
     OperationDiagnostic,
     current_operation_diagnostics,
 )
-from grafix.core.parameters import FrameLabelRecord, FrameParamRecord
+from grafix.core.parameters import (
+    EffectOrderSnapshot,
+    FrameEffectChainRecord,
+    FrameLabelRecord,
+    FrameParamRecord,
+)
 from grafix.core.parameters.context import parameter_context_from_snapshot
 from grafix.core.parameters.snapshot_ops import ParamSnapshot, materialize_snapshot
 from grafix.core.parameters.source import MidiFrameSnapshot
@@ -111,6 +116,7 @@ class _DrawTask:
     snapshot_revision: int
     cc_snapshot: MidiFrameSnapshot | None
     snapshot: ParamSnapshot | None = None
+    effect_order_snapshot: EffectOrderSnapshot | None = None
     epoch: int = 0
     generation: int = 0
     quality: PreviewQuality = "draft"
@@ -122,6 +128,7 @@ class _SnapshotUpdate:
 
     revision: int
     snapshot: ParamSnapshot
+    effect_order_snapshot: EffectOrderSnapshot = field(default_factory=dict)
     generation: int = 0
 
 
@@ -193,6 +200,7 @@ class DrawResult:
     diagnostics: tuple[OperationDiagnostic, ...] = ()
     worker_lag_ms: float | None = None
     snapshot_revision: int = 0
+    effect_chains: list[FrameEffectChainRecord] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,17 +244,19 @@ def _draw_worker_main(
     )
 
     snapshot: ParamSnapshot | None = None
+    effect_order_snapshot: EffectOrderSnapshot | None = None
     snapshot_revision: int | None = None
 
     def apply_snapshot(update: _SnapshotUpdate) -> None:
         """新しい snapshot だけを適用し、処理結果を必ず ack する。"""
 
-        nonlocal snapshot, snapshot_revision
+        nonlocal snapshot, effect_order_snapshot, snapshot_revision
         if int(update.generation) != worker_generation:
             return
         requested = int(update.revision)
         if snapshot_revision is None or requested > snapshot_revision:
             snapshot = update.snapshot
+            effect_order_snapshot = update.effect_order_snapshot
             snapshot_revision = requested
             status = "applied"
         elif requested == snapshot_revision:
@@ -287,6 +297,7 @@ def _draw_worker_main(
             drain_snapshot_updates()
             requested_revision = int(task.snapshot_revision)
             evaluation_snapshot = task.snapshot
+            evaluation_effect_order_snapshot = task.effect_order_snapshot
             if task.snapshot is not None:
                 # task と snapshot を同じ work item に束ねることで、slider drag 中に
                 # control ACK が 1 revision 遅れても、この task の評価を開始できる。
@@ -294,11 +305,17 @@ def _draw_worker_main(
                     _SnapshotUpdate(
                         revision=requested_revision,
                         snapshot=task.snapshot,
+                        effect_order_snapshot=(
+                            {}
+                            if task.effect_order_snapshot is None
+                            else task.effect_order_snapshot
+                        ),
                         generation=worker_generation,
                     )
                 )
             elif snapshot_revision == requested_revision:
                 evaluation_snapshot = snapshot
+                evaluation_effect_order_snapshot = effect_order_snapshot
             if evaluation_snapshot is None:
                 reason = (
                     "unknown"
@@ -331,7 +348,9 @@ def _draw_worker_main(
                 # GUI の状態（ParamStore）と独立に「このフレームで解決すべき値」を決定できる。
                 with preview_quality_context(task.quality):
                     with parameter_context_from_snapshot(
-                        evaluation_snapshot, cc_snapshot=task.cc_snapshot
+                        evaluation_snapshot,
+                        cc_snapshot=task.cc_snapshot,
+                        effect_order_snapshot=evaluation_effect_order_snapshot,
                     ) as frame_params:
                         try:
                             scene = draw(float(task.t))
@@ -347,6 +366,7 @@ def _draw_worker_main(
                         # frame_params は worker 内で作ったバッファなので、値だけをコピーして返す。
                         records=list(frame_params.records),
                         labels=list(frame_params.labels),
+                        effect_chains=list(frame_params.effect_chains),
                         error=None,
                         t=float(task.t),
                         epoch=int(task.epoch),
@@ -365,6 +385,7 @@ def _draw_worker_main(
                         layers=[],
                         records=[],
                         labels=[],
+                        effect_chains=[],
                         error=traceback.format_exc(),
                         t=float(task.t),
                         epoch=int(task.epoch),
@@ -516,6 +537,7 @@ class MpDraw:
         self._snapshot_broadcast_revision: int | None = None
         self._snapshot_payload_revision: int | None = None
         self._snapshot_payload: ParamSnapshot | None = None
+        self._effect_order_snapshot_payload: EffectOrderSnapshot | None = None
 
     def _start_generation(self, *, wait_ready: bool) -> None:
         """現在世代の worker を起動する。restart 時は ready を待たない。"""
@@ -820,8 +842,9 @@ class MpDraw:
         *,
         revision: int,
         snapshot: ParamSnapshot,
-    ) -> ParamSnapshot:
-        """同じ revision の queue 用 plain snapshot を 1 回だけ構築する。"""
+        effect_order_snapshot: EffectOrderSnapshot,
+    ) -> tuple[ParamSnapshot, EffectOrderSnapshot]:
+        """同じrevisionのqueue用parameter/order snapshotを一度だけ構築する。"""
 
         normalized_revision = int(revision)
         cached = self._snapshot_payload
@@ -829,22 +852,27 @@ class MpDraw:
             cached is not None
             and self._snapshot_payload_revision == normalized_revision
         ):
-            return cached
+            cached_order = self._effect_order_snapshot_payload
+            assert cached_order is not None
+            return cached, cached_order
         payload: ParamSnapshot = materialize_snapshot(snapshot)
+        order_payload: EffectOrderSnapshot = dict(effect_order_snapshot)
         self._snapshot_payload_revision = normalized_revision
         self._snapshot_payload = payload
+        self._effect_order_snapshot_payload = order_payload
         self._snapshot_payload_copy_count += 1
         self._record_event(
             "parameter_snapshot_built",
             revision=normalized_revision,
         )
-        return payload
+        return payload, order_payload
 
     def _broadcast_snapshot(
         self,
         *,
         revision: int,
         snapshot: ParamSnapshot,
+        effect_order_snapshot: EffectOrderSnapshot,
     ) -> None:
         """snapshot 本体を各 worker へ 1 回ずつ配信する。"""
 
@@ -853,6 +881,7 @@ class MpDraw:
         update = _SnapshotUpdate(
             revision=int(revision),
             snapshot=snapshot,
+            effect_order_snapshot=effect_order_snapshot,
             generation=int(getattr(self, "_generation", 0)),
         )
         # worker ごとに「queue 内 1 件 + 親側 latest 1 件」だけを保持する。
@@ -1002,6 +1031,7 @@ class MpDraw:
         t: float,
         snapshot_revision: int,
         snapshot: ParamSnapshot,
+        effect_order_snapshot: EffectOrderSnapshot | None = None,
         cc_snapshot: MidiFrameSnapshot | None = None,
         epoch: int | None = None,
         quality: PreviewQuality = "draft",
@@ -1051,14 +1081,26 @@ class MpDraw:
                 else self._plain_snapshot_for_revision(
                     revision=revision,
                     snapshot=snapshot,
+                    effect_order_snapshot=(
+                        {}
+                        if effect_order_snapshot is None
+                        else effect_order_snapshot
+                    ),
                 )
             )
+            parameter_payload = None if payload is None else payload[0]
+            order_payload = None if payload is None else payload[1]
             task = _DrawTask(
                 frame_id=self._next_frame_id,
                 t=float(t),
                 snapshot_revision=revision,
                 cc_snapshot=cc_snapshot,
-                snapshot=None if worker_snapshot_confirmed else payload,
+                snapshot=(
+                    None if worker_snapshot_confirmed else parameter_payload
+                ),
+                effect_order_snapshot=(
+                    None if worker_snapshot_confirmed else order_payload
+                ),
                 quality=quality,
                 epoch=int(requested_epoch),
                 generation=int(getattr(self, "_generation", 0)),
@@ -1081,7 +1123,8 @@ class MpDraw:
                 assert payload is not None
                 self._broadcast_snapshot(
                     revision=revision,
-                    snapshot=payload,
+                    snapshot=payload[0],
+                    effect_order_snapshot=payload[1],
                 )
             elif self._n_worker == 1:
                 # 1 worker では task-carried snapshot の apply ACK だけで全 worker が

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from grafix.core.parameters.frame_params import FrameParamRecord
+from grafix.core.parameters.effects import EffectStepTopology
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.labels_ops import set_label
 from grafix.core.parameters.memento import (
@@ -14,6 +15,22 @@ from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.style import STYLE_GLOBAL_THICKNESS, style_key
 from grafix.core.parameters.style_ops import ensure_style_entries
 from grafix.core.parameters.ui_ops import update_state_from_ui
+
+
+EFFECT_CODE_ORDER = (("scale", "scale-site"), ("rotate", "rotate-site"))
+EFFECT_UI_ORDER = tuple(reversed(EFFECT_CODE_ORDER))
+
+
+def _record_effect_chain(store: ParamStore) -> None:
+    changed = store._effects_ref().record_chain(
+        chain_id="chain-order",
+        steps=(
+            EffectStepTopology("scale", "scale-site", 1, 0),
+            EffectStepTopology("rotate", "rotate-site", 1, 1),
+        ),
+    )
+    if changed:
+        store._touch()
 
 
 def _populated_store() -> tuple[ParamStore, ParameterKey]:
@@ -231,3 +248,94 @@ def test_restoring_the_same_memento_is_a_revision_noop() -> None:
 
     assert restore_param_store_memento(store, memento) is False
     assert store.revision == revision_before
+
+
+def test_memento_restores_gui_effect_order_without_replacing_code_topology() -> None:
+    store = ParamStore()
+    _record_effect_chain(store)
+    assert store._effects_ref().set_order_override(
+        "chain-order",
+        EFFECT_UI_ORDER,
+    )
+    store._touch()
+    memento = capture_param_store_memento(store)
+    topology_before = store._effects_ref().topology("chain-order")
+
+    assert store._effects_ref().reset_order("chain-order")
+    store._touch()
+
+    assert restore_param_store_memento(store, memento) is True
+    assert store._effects_ref().effective_order("chain-order") == EFFECT_UI_ORDER
+    assert store._effects_ref().topology("chain-order") == topology_before
+
+
+def test_memento_can_restore_code_order_and_skips_incompatible_topology() -> None:
+    store = ParamStore()
+    _record_effect_chain(store)
+    code_order_memento = capture_param_store_memento(store)
+    assert store._effects_ref().set_order_override(
+        "chain-order",
+        EFFECT_UI_ORDER,
+    )
+    store._touch()
+
+    assert restore_param_store_memento(store, code_order_memento) is True
+    assert store._effects_ref().order_overrides() == {}
+    assert store._effects_ref().set_order_override(
+        "chain-order",
+        EFFECT_UI_ORDER,
+    )
+    store._touch()
+    reordered_memento = capture_param_store_memento(store)
+    assert store._effects_ref().record_chain(
+        chain_id="chain-order",
+        steps=(
+            EffectStepTopology("scale", "scale-site", 1, 0),
+            EffectStepTopology("rotate", "rotate-site", 1, 1),
+            EffectStepTopology("wobble", "wobble-site", 1, 2),
+        ),
+    )
+    store._touch()
+    revision_before = store.revision
+
+    assert restore_param_store_memento(store, reordered_memento) is False
+    assert store.revision == revision_before
+    assert store._effects_ref().order_overrides() == {}
+
+
+def test_memento_does_not_restore_order_after_effect_arity_change() -> None:
+    store = ParamStore()
+    initial_topology = (
+        EffectStepTopology("first", "first-site", 1, 0),
+        EffectStepTopology("second", "second-site", 1, 1),
+        EffectStepTopology("third", "third-site", 1, 2),
+    )
+    assert store._effects_ref().record_chain(
+        chain_id="arity-chain",
+        steps=initial_topology,
+    )
+    assert store._effects_ref().set_order_override(
+        "arity-chain",
+        (
+            ("first", "first-site"),
+            ("third", "third-site"),
+            ("second", "second-site"),
+        ),
+    )
+    store._touch()
+    memento = capture_param_store_memento(store)
+
+    assert store._effects_ref().record_chain(
+        chain_id="arity-chain",
+        steps=(
+            EffectStepTopology("first", "first-site", 2, 0),
+            EffectStepTopology("second", "second-site", 1, 1),
+            EffectStepTopology("third", "third-site", 1, 2),
+        ),
+    )
+    store._touch()
+    revision = store.revision
+
+    assert restore_param_store_memento(store, memento) is False
+    assert store.revision == revision
+    assert store.effect_order_overrides() == {}

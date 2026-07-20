@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Callable, TypeAlias, cast
 from pyglet.window import key
 
 from grafix.core.lifecycle import CleanupErrors
-from grafix.core.parameters import ParamStore
+from grafix.core.parameters import ParamStore, begin_effect_chain_generation
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.capture_provenance import (
@@ -1396,6 +1396,9 @@ class DrawWindowSystem:
             return False
 
         controller.accept_generation(result.generation)
+        # 次の「実際に成功した」evaluationだけを新source世代のcanonical
+        # effect topologyとする。MP result待ちや失敗frameでは確定しない。
+        begin_effect_chain_generation(self._store)
         if replacement_provenance is not None:
             self._provenance_builder = replacement_provenance
         monitor = self._monitor

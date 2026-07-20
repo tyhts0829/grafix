@@ -53,26 +53,42 @@ def prune_stale_loaded_groups(store: ParamStore) -> None:
     """
 
     runtime = store._runtime_ref()
-    if not runtime.loaded_groups:
+    effects = store._effects_ref()
+    if not runtime.loaded_groups and not effects.stale_loaded_chain_ids():
         # 今回の実行でロードされていないなら、比較対象がないので何もしない。
         return
 
-    # 保存直前にもう一度だけ再リンクを試みる（最後まで観測した集合で最善を尽くす）。
-    reconcile_loaded_groups_for_runtime(store)
+    if runtime.loaded_groups:
+        # 保存直前にもう一度だけ再リンクを試みる（最後まで観測した集合で最善を尽くす）。
+        reconcile_loaded_groups_for_runtime(store)
 
-    from .style import STYLE_OP
+        from .style import STYLE_OP
 
-    # STYLE は "常に存在する/特別扱い" の前提で、stale 判定から除外する。
-    # （STYLE を削除すると、UI 体験や既定スタイルの永続化に悪影響が出る可能性がある）
-    loaded_targets = {
-        (op, site_id) for op, site_id in runtime.loaded_groups if op not in {STYLE_OP}
-    }
-    observed_targets = {
-        (op, site_id) for op, site_id in runtime.observed_groups if op not in {STYLE_OP}
-    }
+        # STYLE は "常に存在する/特別扱い" の前提で、stale 判定から除外する。
+        # （STYLE を削除すると、UI 体験や既定スタイルに悪影響が出る可能性がある）
+        loaded_targets = {
+            (op, site_id)
+            for op, site_id in runtime.loaded_groups
+            if op not in {STYLE_OP}
+        }
+        observed_targets = {
+            (op, site_id)
+            for op, site_id in runtime.observed_groups
+            if op not in {STYLE_OP}
+        }
 
-    stale = loaded_targets - observed_targets
-    prune_groups(store, stale)
+        prune_groups(
+            store,
+            loaded_targets - observed_targets,
+            preserve_observed_effect_topology=True,
+        )
+
+    stale_chain_ids = effects.prune_stale_loaded_chains()
+    if stale_chain_ids:
+        collapsed = store._collapsed_headers_ref()
+        for chain_id in stale_chain_ids:
+            collapsed.discard(f"effect_chain:{chain_id}")
+        store._touch()
 
 
 def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
@@ -150,7 +166,12 @@ def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
     return removed
 
 
-def prune_groups(store: ParamStore, groups_to_remove: Iterable[GroupKey]) -> None:
+def prune_groups(
+    store: ParamStore,
+    groups_to_remove: Iterable[GroupKey],
+    *,
+    preserve_observed_effect_topology: bool = False,
+) -> None:
     """指定された `(op, site_id)` グループをストアから削除する。
 
     Parameters
@@ -159,6 +180,8 @@ def prune_groups(store: ParamStore, groups_to_remove: Iterable[GroupKey]) -> Non
         対象の `ParamStore`。
     groups_to_remove : Iterable[GroupKey]
         削除対象の `(op, site_id)` の反復可能。
+    preserve_observed_effect_topology : bool, optional
+        成功frameで観測済みのcode topologyはparameter groupと独立に保持する。
 
     Notes
     -----
@@ -208,7 +231,11 @@ def prune_groups(store: ParamStore, groups_to_remove: Iterable[GroupKey]) -> Non
     for op, site_id in groups:
         affected_ops.add(str(op))
         ordinals.delete(op, site_id)
-        effects.delete_step(op, site_id)
+        effects.delete_step(
+            op,
+            site_id,
+            preserve_observed_topology=preserve_observed_effect_topology,
+        )
         collapsed.discard(f"primitive:{op}:{site_id}")
         runtime.loaded_groups.discard((str(op), str(site_id)))
         runtime.observed_groups.discard((str(op), str(site_id)))

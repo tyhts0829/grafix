@@ -14,6 +14,7 @@ from grafix.core.parameters.codec import (
     loads_param_store_result,
 )
 from grafix.core.parameters.context import current_frame_params, parameter_context
+from grafix.core.parameters.effects import EffectStepTopology
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.invariants import assert_invariants
 from grafix.core.parameters.merge_ops import merge_frame_params
@@ -106,6 +107,23 @@ def _store_with_float_value(
     )
     assert ok and error is None
     return store, key
+
+
+def _store_with_effect_order() -> ParamStore:
+    store = ParamStore()
+    assert store._effects_ref().record_chain(
+        chain_id="chain-order",
+        steps=(
+            EffectStepTopology("scale", "scale-site", 1, 0),
+            EffectStepTopology("rotate", "rotate-site", 1, 1),
+        ),
+    )
+    assert store._effects_ref().set_order_override(
+        "chain-order",
+        (("rotate", "rotate-site"), ("scale", "scale-site")),
+    )
+    store._touch()
+    return store
 
 
 def _set_mtime(path: Path, value_ns: int) -> None:
@@ -230,6 +248,147 @@ def test_saved_param_store_declares_current_schema_version() -> None:
     payload = json.loads(dumps_param_store(ParamStore()))
 
     assert payload["schema_version"] == PARAM_STORE_SCHEMA_VERSION
+
+
+def test_schema_v2_roundtrip_preserves_effect_topology_and_gui_order(
+    tmp_path: Path,
+) -> None:
+    store = _store_with_effect_order()
+    primary = tmp_path / "effect-order.json"
+    recovery = param_store_recovery_path(primary)
+
+    save_param_store(store, primary)
+    save_param_store_recovery(store, recovery)
+
+    payload = json.loads(primary.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
+    assert payload["ui"]["effect_order_overrides"] == [
+        {
+            "chain_id": "chain-order",
+            "steps": [
+                {"op": "rotate", "site_id": "rotate-site"},
+                {"op": "scale", "site_id": "scale-site"},
+            ],
+        }
+    ]
+    assert [item["op"] for item in payload["effect_steps"]] == [
+        "scale",
+        "rotate",
+    ]
+
+    for loaded in (load_param_store(primary), load_param_store(recovery)):
+        assert loaded._effects_ref().code_order("chain-order") == (
+            ("scale", "scale-site"),
+            ("rotate", "rotate-site"),
+        )
+        assert loaded._effects_ref().effective_order("chain-order") == (
+            ("rotate", "rotate-site"),
+            ("scale", "scale-site"),
+        )
+
+
+def test_schema_v1_migrates_with_empty_effect_order_override() -> None:
+    payload = json.loads(dumps_param_store(_store_with_effect_order()))
+    payload["schema_version"] = 1
+    payload["ui"].pop("effect_order_overrides")
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert result.issues == ()
+    assert result.store._effects_ref().order_overrides() == {}
+    assert result.store._effects_ref().effective_order("chain-order") == (
+        ("scale", "scale-site"),
+        ("rotate", "rotate-site"),
+    )
+
+
+def test_malformed_effect_order_entry_is_diagnosed_and_dropped() -> None:
+    payload = json.loads(dumps_param_store(_store_with_effect_order()))
+    payload["ui"]["effect_order_overrides"].append(
+        {
+            "chain_id": "broken-chain",
+            "steps": [
+                {"op": "scale", "site_id": ""},
+                {"op": "scale", "site_id": ""},
+            ],
+        }
+    )
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert [issue.section for issue in result.issues] == [
+        "ui.effect_order_overrides"
+    ]
+    assert result.store._effects_ref().order_overrides() == {
+        "chain-order": (
+            ("rotate", "rotate-site"),
+            ("scale", "scale-site"),
+        )
+    }
+
+
+def test_order_without_saved_topology_is_validated_on_first_observation() -> None:
+    payload = json.loads(dumps_param_store(ParamStore()))
+    payload["ui"]["effect_order_overrides"] = [
+        {
+            "chain_id": "late-chain",
+            "steps": [
+                {"op": "rotate", "site_id": "rotate-site"},
+                {"op": "scale", "site_id": "scale-site"},
+            ],
+        }
+    ]
+    loaded = loads_param_store_result(json.dumps(payload)).store
+
+    assert loaded._effects_ref().order_overrides()["late-chain"] == (
+        ("rotate", "rotate-site"),
+        ("scale", "scale-site"),
+    )
+
+    assert loaded._effects_ref().record_chain(
+        chain_id="late-chain",
+        steps=(
+            EffectStepTopology("scale", "scale-site", 1, 0),
+            EffectStepTopology("rotate", "rotate-site", 1, 1),
+        ),
+    )
+
+    assert loaded._effects_ref().effective_order("late-chain") == (
+        ("rotate", "rotate-site"),
+        ("scale", "scale-site"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("corruption", "reason_fragment"),
+    [
+        ("incomplete", "exact permutation"),
+        ("duplicate_topology", "duplicate step identity"),
+        ("multi_input", "multi-input"),
+    ],
+)
+def test_effect_order_incompatible_with_saved_topology_is_diagnosed_and_dropped(
+    corruption: str,
+    reason_fragment: str,
+) -> None:
+    payload = json.loads(dumps_param_store(_store_with_effect_order()))
+    if corruption == "incomplete":
+        payload["ui"]["effect_order_overrides"][0]["steps"].pop()
+    elif corruption == "duplicate_topology":
+        payload["effect_steps"][1]["op"] = payload["effect_steps"][0]["op"]
+        payload["effect_steps"][1]["site_id"] = payload["effect_steps"][0][
+            "site_id"
+        ]
+    else:
+        payload["effect_steps"][0]["n_inputs"] = 2
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert len(result.issues) == 1
+    assert result.issues[0].section == "ui.effect_order_overrides"
+    assert reason_fragment in result.issues[0].reason
+    assert result.store.effect_order_overrides() == {}
+    assert_invariants(result.store)
 
 
 def test_versionless_payload_uses_explicit_legacy_migration(tmp_path: Path) -> None:

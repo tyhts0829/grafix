@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from typing import Literal
 
 from grafix.core.operation_selector import selector_kind
+from grafix.core.parameters.effects import EffectStepKey
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.source import ValueSource
 from grafix.core.parameters.view import ParameterRow
@@ -28,11 +31,13 @@ from .labeling import (
 from .midi_learn import MidiLearnState
 from .rules import ui_rules_for_row
 from .snippet import snippet_for_block
+from .table_model import EffectChainTableState
 from .theme import PARAMETER_GUI_PALETTE, source_badge_color
 from .widgets import render_value_widget
 
 SNIPPET_POPUP_WINDOW_SIZE_PX = (960.0, 720.0)
 SNIPPET_POPUP_VIEWPORT_MARGIN_PX = 24.0
+EFFECT_STEP_DRAG_PAYLOAD_TYPE = "_GRAFIX_EFFECT_STEP"
 
 # CODE/UI の選択位置を全行で揃える。bool 行も同じ幅の固定 UI 表示にして、
 # parameter label の開始位置が kind によって揺れないようにする。
@@ -68,6 +73,87 @@ GROUP_HEADER_BASE_COLORS_RGBA: dict[str, tuple[int, int, int, int]] = {
     "preset": (170, 140, 255, 94),
     "effect": (107, 203, 149, 94),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class EffectOrderCommand:
+    """描画後にParameterGUIがcommitするeffect順序操作。"""
+
+    kind: Literal["move", "reset"]
+    chain_id: str
+    source: EffectStepKey | None = None
+    target: EffectStepKey | None = None
+    placement: Literal["before", "after"] | None = None
+
+    @classmethod
+    def move(
+        cls,
+        *,
+        chain_id: str,
+        source: EffectStepKey,
+        target: EffectStepKey,
+        placement: Literal["before", "after"],
+    ) -> EffectOrderCommand:
+        """step移動commandを返す。"""
+
+        return cls(
+            kind="move",
+            chain_id=str(chain_id),
+            source=(str(source[0]), str(source[1])),
+            target=(str(target[0]), str(target[1])),
+            placement=placement,
+        )
+
+    @classmethod
+    def reset(cls, *, chain_id: str) -> EffectOrderCommand:
+        """コード順へのreset commandを返す。"""
+
+        return cls(kind="reset", chain_id=str(chain_id))
+
+
+def _encode_effect_step_drag_payload(
+    chain_id: str,
+    step: EffectStepKey,
+) -> bytes:
+    """drag payloadを小さなUTF-8 JSONとして返す。"""
+
+    return json.dumps(
+        [str(chain_id), str(step[0]), str(step[1])],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _decode_effect_step_drag_payload(
+    payload: object,
+) -> tuple[str, EffectStepKey] | None:
+    """自分が生成したdrag payloadだけを正規化して返す。"""
+
+    if not isinstance(payload, (bytes, bytearray)):
+        return None
+    try:
+        decoded = json.loads(bytes(payload).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(decoded, list)
+        or len(decoded) != 3
+        or not all(isinstance(item, str) and item for item in decoded)
+    ):
+        return None
+    return str(decoded[0]), (str(decoded[1]), str(decoded[2]))
+
+
+def _effect_step_drop_placement(
+    *,
+    mouse_y: float,
+    item_top: float,
+    item_bottom: float,
+) -> Literal["before", "after"]:
+    """target見出しの上半分/下半分をbefore/afterへ変換する。"""
+
+    midpoint = (float(item_top) + float(item_bottom)) * 0.5
+    return "before" if float(mouse_y) < midpoint else "after"
 
 
 def _clamp01(x: float) -> float:
@@ -692,42 +778,381 @@ def _render_control_cell(imgui, row: ParameterRow) -> tuple[bool, object]:
     return render_value_widget(row)
 
 
-def _render_effect_step_heading(imgui, label: str) -> None:
-    """Effect chain 内で operation が切り替わる位置に小見出しを描く。"""
+def _draw_effect_step_insertion_line(
+    imgui,
+    *,
+    item_min: tuple[float, float],
+    item_max: tuple[float, float],
+    placement: Literal["before", "after"],
+) -> None:
+    """drop previewの水平挿入線を描画する。"""
+
+    get_draw_list = getattr(imgui, "get_window_draw_list", None)
+    get_color = getattr(imgui, "get_color_u32_rgba", None)
+    if not callable(get_draw_list) or not callable(get_color):
+        return
+    draw_list = get_draw_list()
+    add_line = getattr(draw_list, "add_line", None)
+    if not callable(add_line):
+        return
+    x_min = float(item_min[0])
+    x_max = float(item_max[0])
+    get_window_position = getattr(imgui, "get_window_position", None)
+    get_region_min = getattr(imgui, "get_window_content_region_min", None)
+    get_region_max = getattr(imgui, "get_window_content_region_max", None)
+    if (
+        callable(get_window_position)
+        and callable(get_region_min)
+        and callable(get_region_max)
+    ):
+        try:
+            window_position = get_window_position()
+            region_min = get_region_min()
+            region_max = get_region_max()
+            x_min = float(window_position[0]) + float(region_min[0])
+            x_max = float(window_position[0]) + float(region_max[0])
+        except (IndexError, TypeError, ValueError):
+            pass
+    y = float(item_min[1]) if placement == "before" else float(item_max[1])
+    color = get_color(*PARAMETER_GUI_PALETTE["success"])
+    # table column 内で取得した draw list のclip矩形は通常その列幅に限られる。
+    # 挿入線だけはtable全幅へ見せたいので、縦方向のclipを保ったまま横方向を
+    # window content領域へ広げる。
+    push_clip_rect = getattr(draw_list, "push_clip_rect", None)
+    pop_clip_rect = getattr(draw_list, "pop_clip_rect", None)
+    get_clip_min = getattr(draw_list, "get_clip_rect_min", None)
+    get_clip_max = getattr(draw_list, "get_clip_rect_max", None)
+    pushed_clip = False
+    if (
+        callable(push_clip_rect)
+        and callable(pop_clip_rect)
+        and callable(get_clip_min)
+        and callable(get_clip_max)
+    ):
+        try:
+            clip_min = get_clip_min()
+            clip_max = get_clip_max()
+            push_clip_rect(
+                x_min,
+                float(clip_min[1]),
+                x_max,
+                float(clip_max[1]),
+                False,
+            )
+            pushed_clip = True
+        except (IndexError, TypeError, ValueError):
+            pass
+    try:
+        add_line(
+            x_min,
+            y,
+            x_max,
+            y,
+            color,
+            max(1.0, 2.0 * _imgui_metric_scale(imgui)),
+        )
+    finally:
+        if pushed_clip and callable(pop_clip_rect):
+            pop_clip_rect()
+
+
+def _effect_step_item_rect(
+    imgui,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """直前itemのscreen-space矩形を返す。"""
+
+    get_min = getattr(imgui, "get_item_rect_min", None)
+    get_max = getattr(imgui, "get_item_rect_max", None)
+    if not callable(get_min) or not callable(get_max):
+        return None
+    try:
+        item_min_raw = get_min()
+        item_max_raw = get_max()
+        return (
+            (float(item_min_raw[0]), float(item_min_raw[1])),
+            (float(item_max_raw[0]), float(item_max_raw[1])),
+        )
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def _effect_step_mouse_y(imgui) -> float | None:
+    """現在のmouse yを返す。"""
+
+    get_mouse = getattr(imgui, "get_mouse_position", None)
+    if not callable(get_mouse):
+        get_mouse = getattr(imgui, "get_mouse_pos", None)
+    if not callable(get_mouse):
+        return None
+    try:
+        return float(get_mouse()[1])
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def _render_effect_step_context_menu(
+    imgui,
+    *,
+    state: EffectChainTableState | None,
+    step: EffectStepKey,
+) -> EffectOrderCommand | None:
+    """step見出しのMove Up/Down context menuを描画する。"""
+
+    begin_popup = getattr(imgui, "begin_popup_context_item", None)
+    end_popup = getattr(imgui, "end_popup", None)
+    menu_item = getattr(imgui, "menu_item", None)
+    if not callable(begin_popup) or not callable(end_popup) or not callable(menu_item):
+        return None
+
+    popup = begin_popup("Effect step actions##effect_step_actions")
+    opened = bool(getattr(popup, "opened", popup))
+    if not opened:
+        return None
+    try:
+        up = None if state is None else state.neighbor_move(step, direction=-1)
+        down = None if state is None else state.neighbor_move(step, direction=1)
+        clicked_up, _selected = menu_item(
+            "Move Up##effect_step_move_up",
+            None,
+            False,
+            up is not None,
+        )
+        clicked_down, _selected = menu_item(
+            "Move Down##effect_step_move_down",
+            None,
+            False,
+            down is not None,
+        )
+        if state is not None and state.disabled_reason is not None:
+            separator = getattr(imgui, "separator", None)
+            if callable(separator):
+                separator()
+            text_disabled = getattr(imgui, "text_disabled", None)
+            if callable(text_disabled):
+                text_disabled(state.disabled_reason)
+        if clicked_up and state is not None and up is not None:
+            target, placement = up
+            return EffectOrderCommand.move(
+                chain_id=state.chain_id,
+                source=step,
+                target=target,
+                placement=placement,
+            )
+        if clicked_down and state is not None and down is not None:
+            target, placement = down
+            return EffectOrderCommand.move(
+                chain_id=state.chain_id,
+                source=step,
+                target=target,
+                placement=placement,
+            )
+    finally:
+        end_popup()
+    return None
+
+
+def _render_effect_step_heading(
+    imgui,
+    label: str,
+    *,
+    step: EffectStepKey,
+    state: EffectChainTableState | None,
+) -> EffectOrderCommand | None:
+    """drag handle、drop target、補助menuを持つeffect小見出しを描画する。"""
 
     imgui.table_next_row()
     imgui.table_set_column_index(0)
-    text_colored = getattr(imgui, "text_colored", None)
-    if callable(text_colored):
-        text_colored(str(label), *PARAMETER_GUI_PALETTE["success"])
-    else:
-        imgui.text(str(label))
+    imgui.push_id(f"effect_step:{step[0]}:{step[1]}")
+    try:
+        if state is None:
+            disabled_reason = (
+                "Effect topology is unavailable; render a successful frame first."
+            )
+        elif state.disabled_reason is not None:
+            disabled_reason = state.disabled_reason
+        elif state.is_pinned(step):
+            disabled_reason = "This multi-input effect is fixed at the start."
+        else:
+            disabled_reason = None
+
+        # handleだけをsource、handle+label全体をtargetにする。labelだけを
+        # targetにすると、gripを掴んだx位置のまま縦へ動かす自然な操作では
+        # 別stepへdropできない。EndGroup後はgroup全体が直前itemになるため、
+        # sourceを覆うoverlayを置かずに広いtarget矩形を得られる。
+        begin_group = getattr(imgui, "begin_group", None)
+        end_group = getattr(imgui, "end_group", None)
+        grouped = callable(begin_group) and callable(end_group)
+        if grouped:
+            imgui.begin_group()
+        try:
+            if disabled_reason is None:
+                small_button = getattr(imgui, "small_button", None)
+                if callable(small_button):
+                    small_button("::##effect_step_drag_handle")
+                else:
+                    imgui.button("::##effect_step_drag_handle")
+                _set_item_tooltip(imgui, "Drag to reorder this effect step.")
+
+                begin_source = getattr(imgui, "begin_drag_drop_source", None)
+                end_source = getattr(imgui, "end_drag_drop_source", None)
+                if callable(begin_source) and callable(end_source) and state is not None:
+                    source = begin_source()
+                    if bool(getattr(source, "dragging", source)):
+                        try:
+                            set_payload = getattr(imgui, "set_drag_drop_payload", None)
+                            if callable(set_payload):
+                                set_payload(
+                                    EFFECT_STEP_DRAG_PAYLOAD_TYPE,
+                                    _encode_effect_step_drag_payload(
+                                        state.chain_id,
+                                        step,
+                                    ),
+                                )
+                            imgui.text(str(label))
+                        finally:
+                            end_source()
+            else:
+                text_disabled = getattr(imgui, "text_disabled", None)
+                if callable(text_disabled):
+                    text_disabled("::")
+                else:
+                    imgui.text("::")
+                _set_item_tooltip(imgui, disabled_reason)
+
+            imgui.same_line(0.0, 6.0 * _imgui_metric_scale(imgui))
+            selectable = getattr(imgui, "selectable", None)
+            color_text = getattr(imgui, "COLOR_TEXT", None)
+            pushed_color = False
+            if color_text is not None:
+                push_style_color = getattr(imgui, "push_style_color", None)
+                if callable(push_style_color):
+                    push_style_color(color_text, *PARAMETER_GUI_PALETTE["success"])
+                    pushed_color = True
+            try:
+                if callable(selectable):
+                    selectable(
+                        f"{label}##effect_step_drop_target",
+                        False,
+                        0,
+                    )
+                else:
+                    imgui.text(str(label))
+            finally:
+                if pushed_color:
+                    imgui.pop_style_color()
+        finally:
+            if grouped:
+                imgui.end_group()
+        if disabled_reason is not None:
+            _set_item_tooltip(imgui, disabled_reason)
+
+        item_rect = _effect_step_item_rect(imgui)
+        drop_command: EffectOrderCommand | None = None
+        begin_target = getattr(imgui, "begin_drag_drop_target", None)
+        end_target = getattr(imgui, "end_drag_drop_target", None)
+        accept_payload = getattr(imgui, "accept_drag_drop_payload", None)
+        if (
+            state is not None
+            and state.disabled_reason is None
+            and item_rect is not None
+            and callable(begin_target)
+            and callable(end_target)
+            and callable(accept_payload)
+        ):
+            target = begin_target()
+            if bool(getattr(target, "hovered", target)):
+                try:
+                    preview_payload = accept_payload(
+                        EFFECT_STEP_DRAG_PAYLOAD_TYPE,
+                        getattr(imgui, "DRAG_DROP_ACCEPT_PEEK_ONLY", 0),
+                    )
+                    decoded = _decode_effect_step_drag_payload(preview_payload)
+                    mouse_y = _effect_step_mouse_y(imgui)
+                    placement = (
+                        None
+                        if mouse_y is None
+                        else _effect_step_drop_placement(
+                            mouse_y=mouse_y,
+                            item_top=item_rect[0][1],
+                            item_bottom=item_rect[1][1],
+                        )
+                    )
+                    valid_preview = (
+                        decoded is not None
+                        and decoded[0] == state.chain_id
+                        and placement is not None
+                        and state.can_move(decoded[1], step, placement)
+                    )
+                    if valid_preview and placement is not None:
+                        _draw_effect_step_insertion_line(
+                            imgui,
+                            item_min=item_rect[0],
+                            item_max=item_rect[1],
+                            placement=placement,
+                        )
+
+                    delivered_payload = accept_payload(
+                        EFFECT_STEP_DRAG_PAYLOAD_TYPE,
+                        getattr(
+                            imgui,
+                            "DRAG_DROP_ACCEPT_NO_DRAW_DEFAULT_RECT",
+                            0,
+                        ),
+                    )
+                    delivered = _decode_effect_step_drag_payload(delivered_payload)
+                    if (
+                        delivered is not None
+                        and delivered[0] == state.chain_id
+                        and placement is not None
+                        and state.can_move(delivered[1], step, placement)
+                    ):
+                        drop_command = EffectOrderCommand.move(
+                            chain_id=state.chain_id,
+                            source=delivered[1],
+                            target=step,
+                            placement=placement,
+                        )
+                finally:
+                    end_target()
+
+        menu_command = _render_effect_step_context_menu(
+            imgui,
+            state=state,
+            step=step,
+        )
+        return drop_command if drop_command is not None else menu_command
+    finally:
+        imgui.pop_id()
 
 
-def _effect_step_heading_by_site(block: GroupBlock) -> dict[str, str]:
-    """Effect block の各 site_id に、短く一意な小見出しを割り当てる。"""
+def _effect_step_heading_by_step(block: GroupBlock) -> dict[EffectStepKey, str]:
+    """Effect block の各stepに、短く一意な小見出しを割り当てる。"""
 
     return _effect_step_heading_by_rows([item.row for item in block.items])
 
 
 def _effect_step_heading_by_rows(
     rows: Sequence[ParameterRow],
-) -> dict[str, str]:
-    """Effect rows の各 site_id に、短く一意な小見出しを割り当てる。"""
+) -> dict[EffectStepKey, str]:
+    """Effect rows の各(op, site_id)に、短く一意な小見出しを割り当てる。"""
 
-    sites_by_display_op: dict[str, list[str]] = {}
+    steps_by_display_op: dict[str, list[EffectStepKey]] = {}
     for row in rows:
         display_op = operation_display_name(str(row.op))
-        site_id = str(row.site_id)
-        op_sites = sites_by_display_op.setdefault(display_op, [])
-        if site_id not in op_sites:
-            op_sites.append(site_id)
+        step = (str(row.op), str(row.site_id))
+        op_steps = steps_by_display_op.setdefault(display_op, [])
+        if step not in op_steps:
+            op_steps.append(step)
 
-    out: dict[str, str] = {}
-    for display_op, sites in sites_by_display_op.items():
+    out: dict[EffectStepKey, str] = {}
+    for display_op, steps in steps_by_display_op.items():
         op_label = humanize_identifier(display_op)
-        for ordinal, site_id in enumerate(sites, start=1):
-            out[site_id] = op_label if len(sites) == 1 else f"{op_label} {int(ordinal)}"
+        for ordinal, step in enumerate(steps, start=1):
+            out[step] = (
+                op_label
+                if len(steps) == 1
+                else f"{op_label} {int(ordinal)}"
+            )
     return out
 
 
@@ -1299,6 +1724,7 @@ def render_parameter_table(
     effect_chain_header_by_id: Mapping[str, str] | None = None,
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
     effect_step_ordinal_by_site: Mapping[tuple[str, str], int] | None = None,
+    effect_chain_state_by_id: Mapping[str, EffectChainTableState] | None = None,
     last_effective_by_key: Mapping[ParameterKey, object] | None = None,
     last_source_by_key: Mapping[ParameterKey, ValueSource] | None = None,
     raw_label_by_site: Mapping[tuple[str, str], str] | None = None,
@@ -1306,6 +1732,7 @@ def render_parameter_table(
     midi_last_cc_change: tuple[int, int] | None = None,
     collapsed_headers: set[str] | None = None,
     on_help_row: Callable[[ParameterRow, bool], None] | None = None,
+    on_effect_order_command: Callable[[EffectOrderCommand], None] | None = None,
 ) -> tuple[bool, list[ParameterRow]]:
     """ParameterRow の列を 4 列テーブルとして描画し、更新後の rows を返す。"""
 
@@ -1409,16 +1836,51 @@ def render_parameter_table(
 
                 # ヘッダ行の右側に件数と Code ボタンを置く。
                 # collapsing_header は幅いっぱいを使うため、same_line(position=...) で明示配置する。
+                chain_state: EffectChainTableState | None = None
+                if (
+                    str(block.group_id[0]) == "effect_chain"
+                    and effect_chain_state_by_id is not None
+                ):
+                    chain_state = effect_chain_state_by_id.get(
+                        str(block.group_id[1])
+                    )
                 button_label = "Code"
                 text_w, _text_h = imgui.calc_text_size(button_label)
                 button_w = float(text_w) + 24.0
                 count_label = f"{len(block.items)} parameters"
                 count_w, _count_h = imgui.calc_text_size(count_label)
                 cluster_w = float(count_w) + 12.0 + float(button_w)
+                if chain_state is not None and chain_state.order_overridden:
+                    ui_order_w, _ui_order_h = imgui.calc_text_size("UI order")
+                    reset_w, _reset_h = imgui.calc_text_size("Reset")
+                    cluster_w += (
+                        float(ui_order_w)
+                        + float(reset_w)
+                        + 36.0
+                    )
                 pos_x = float(imgui.get_window_width()) - cluster_w - 16.0
                 if pos_x > 0.0:
                     imgui.same_line(position=pos_x)
                 else:
+                    imgui.same_line()
+                if chain_state is not None and chain_state.order_overridden:
+                    text_colored = getattr(imgui, "text_colored", None)
+                    if callable(text_colored):
+                        text_colored(
+                            "UI order",
+                            *PARAMETER_GUI_PALETTE["success"],
+                        )
+                    else:
+                        imgui.text("UI order")
+                    imgui.same_line()
+                    if imgui.small_button("Reset##effect_order_reset"):
+                        if on_effect_order_command is not None:
+                            on_effect_order_command(
+                                EffectOrderCommand.reset(
+                                    chain_id=chain_state.chain_id
+                                )
+                            )
+                    _set_item_tooltip(imgui, "Reset this chain to code order.")
                     imgui.same_line()
                 imgui.text_disabled(count_label)
                 imgui.same_line()
@@ -1484,23 +1946,36 @@ def render_parameter_table(
                     imgui.table_headers_row()
                     drew_column_headers = True
 
-                effect_heading_by_site = (
+                effect_heading_by_step = (
                     _effect_step_heading_by_rows(
                         [indexed_rows[item.row_index] for item in block.items]
                     )
                     if str(block.group_id[0]) == "effect_chain"
                     else {}
                 )
-                previous_effect_site: str | None = None
+                previous_effect_step: EffectStepKey | None = None
+                chain_state = (
+                    None
+                    if str(block.group_id[0]) != "effect_chain"
+                    or effect_chain_state_by_id is None
+                    else effect_chain_state_by_id.get(str(block.group_id[1]))
+                )
                 for item in block.items:
                     row = indexed_rows[item.row_index]
-                    item_site = str(row.site_id)
-                    if effect_heading_by_site and item_site != previous_effect_site:
-                        _render_effect_step_heading(
+                    item_step = (str(row.op), str(row.site_id))
+                    if (
+                        effect_heading_by_step
+                        and item_step != previous_effect_step
+                    ):
+                        command = _render_effect_step_heading(
                             imgui,
-                            effect_heading_by_site[item_site],
+                            effect_heading_by_step[item_step],
+                            step=item_step,
+                            state=chain_state,
                         )
-                        previous_effect_site = item_site
+                        if command is not None and on_effect_order_command is not None:
+                            on_effect_order_command(command)
+                        previous_effect_step = item_step
                     row_key = ParameterKey(
                         op=row.op,
                         site_id=row.site_id,

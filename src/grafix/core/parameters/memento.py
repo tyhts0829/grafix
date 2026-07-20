@@ -7,7 +7,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, replace
 
-from .effects import EffectChainIndex
+from .effects import EffectChainIndex, EffectTopologySignature
 from .key import ParameterKey
 from .labels import ParamLabels
 from .meta import ParamMeta
@@ -172,8 +172,8 @@ class ParamStoreMemento:
 
     保存対象は、各 parameter の ``override`` / ``ui_value`` /
     MIDI 割当、GUI が編集する ``ui_min`` / ``ui_max``、および
-    折りたたみ状態である。ラベル、ordinal、effect chain、explicit
-    フラグなど code-owned の構造は復元対象にしない。
+    折りたたみ状態、およびeffectのGUI順である。ラベル、ordinal、
+    effect topology、explicitフラグなどcode-ownedの構造は復元対象にしない。
 
     復元時は、現在も同じ ``ParameterKey`` と ``meta.kind`` で存在する
     parameter だけへ merge する。そのため、履歴作成後に draw が
@@ -186,7 +186,13 @@ class ParamStoreMemento:
     互換入力として受け取るだけで復元対象には含めない。
     """
 
-    __slots__ = ("_states", "_meta", "_collapsed_by_header")
+    __slots__ = (
+        "_states",
+        "_meta",
+        "_collapsed_by_header",
+        "_effect_order_state",
+        "_effect_topology_signatures",
+    )
 
     def __init__(
         self,
@@ -206,6 +212,8 @@ class ParamStoreMemento:
         self._collapsed_by_header = {
             header: header in collapsed_headers for header in known_headers
         }
+        self._effect_order_state = effects.order_state_by_chain()
+        self._effect_topology_signatures = effects.topology_signatures()
 
         # 従来コンストラクタ API は保つが、code-owned 値は保存しない。
         _ = explicit_by_key, labels, ordinals
@@ -217,6 +225,11 @@ class ParamStoreMemento:
         states: dict[ParameterKey, ParamState],
         meta: dict[ParameterKey, ParamMeta],
         collapsed_by_header: dict[str, bool],
+        effect_order_state: dict[
+            str,
+            tuple[tuple[str, str], ...] | None,
+        ],
+        effect_topology_signatures: dict[str, EffectTopologySignature],
     ) -> ParamStoreMemento:
         """永続化済み GUI-owned 部分から memento を再構築する。
 
@@ -233,6 +246,10 @@ class ParamStoreMemento:
             str(header): bool(collapsed)
             for header, collapsed in collapsed_by_header.items()
         }
+        memento._effect_order_state = deepcopy(effect_order_state)
+        memento._effect_topology_signatures = deepcopy(
+            effect_topology_signatures
+        )
         return memento
 
 
@@ -298,6 +315,12 @@ def param_store_memento_matches(
             continue
         if (header in collapsed) != bool(saved_collapsed):
             return False
+    candidate_effects = deepcopy(store._effects_ref())
+    if candidate_effects.restore_order_state(
+        memento._effect_order_state,
+        topology_signatures=memento._effect_topology_signatures,
+    ):
+        return False
     return True
 
 
@@ -354,6 +377,12 @@ def restore_param_store_memento(
         elif not saved_collapsed and header in collapsed:
             collapsed.discard(header)
             structure_changed = True
+
+    if store._effects_ref().restore_order_state(
+        memento._effect_order_state,
+        topology_signatures=memento._effect_topology_signatures,
+    ):
+        structure_changed = True
 
     changed = structure_changed or bool(changed_value_keys)
     if changed:

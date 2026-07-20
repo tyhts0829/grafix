@@ -8,7 +8,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Iterator, MutableSet
 from typing import TYPE_CHECKING, Any
 
-from .effects import EffectChainIndex
+from .effects import EffectChainIndex, EffectOrder, EffectStepTopology
 from .key import ParameterKey
 from .labels import ParamLabels
 from .meta import ParamMeta
@@ -189,9 +189,26 @@ class ParamStore:
         return self._effects.get_step(op, site_id)
 
     def effect_steps(self) -> dict[tuple[str, str], tuple[str, int]]:
-        """(op, site_id) -> (chain_id, step_index) のコピーを返す。"""
+        """(op, site_id) -> (chain_id, effective_index) のコピーを返す。"""
 
         return self._effects.step_info_by_site()
+
+    def effect_chain_topologies(
+        self,
+    ) -> dict[str, tuple[EffectStepTopology, ...]]:
+        """chain_id -> code topology のコピーを返す。"""
+
+        return self._effects.topologies()
+
+    def effect_order_overrides(self) -> dict[str, EffectOrder]:
+        """chain_id -> GUI-owned order override のコピーを返す。"""
+
+        return self._effects.order_overrides()
+
+    def effect_order_state_by_chain(self) -> dict[str, EffectOrder | None]:
+        """既知chainごとのGUI順状態を返す。"""
+
+        return self._effects.order_state_by_chain()
 
     def chain_ordinals(self) -> dict[str, int]:
         """chain_id -> ordinal のコピーを返す。"""

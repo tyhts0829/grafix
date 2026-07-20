@@ -4,7 +4,7 @@ from grafix.interactive.parameter_gui.group_blocks import (
     group_layout_from_rows,
     visible_group_layout,
 )
-from grafix.interactive.parameter_gui.table import _effect_step_heading_by_site
+from grafix.interactive.parameter_gui.table import _effect_step_heading_by_step
 from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.view import ParameterRow
 
@@ -96,10 +96,30 @@ def test_effect_step_headings_number_only_duplicate_operations():
         effect_chain_header_by_id={"chain:1": "xf"},
     )
 
-    assert _effect_step_heading_by_site(blocks[0]) == {
-        "e:1": "Scale 1",
-        "e:2": "Rotate",
-        "e:3": "Scale 2",
+    assert _effect_step_heading_by_step(blocks[0]) == {
+        ("scale", "e:1"): "Scale 1",
+        ("rotate", "e:2"): "Rotate",
+        ("scale", "e:3"): "Scale 2",
+    }
+
+
+def test_effect_step_headings_keep_different_ops_with_same_site_id() -> None:
+    rows = [
+        _row(op="scale", site_id="shared", ordinal=99, arg="x"),
+        _row(op="rotate", site_id="shared", ordinal=99, arg="deg"),
+    ]
+    blocks = group_blocks_from_rows(
+        rows,
+        step_info_by_site={
+            ("scale", "shared"): ("chain:1", 0),
+            ("rotate", "shared"): ("chain:1", 1),
+        },
+        effect_chain_header_by_id={"chain:1": "xf"},
+    )
+
+    assert _effect_step_heading_by_step(blocks[0]) == {
+        ("scale", "shared"): "Scale",
+        ("rotate", "shared"): "Rotate",
     }
 
 

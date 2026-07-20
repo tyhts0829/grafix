@@ -12,6 +12,10 @@ from typing import Any, Callable
 from grafix.core.font_resolver import default_font_path, resolve_font_path
 from grafix.core.lifecycle import CleanupErrors
 from grafix.core.parameters.key import ParameterKey
+from grafix.core.parameters.effect_order_ops import (
+    move_effect_step,
+    reset_effect_order,
+)
 from grafix.core.parameters.favorites import favorite_parameter_key_set
 from grafix.core.parameters.history import (
     ParamSnapshotSlots,
@@ -69,6 +73,7 @@ from .store_bridge import (
     render_store_parameter_table,
     set_all_parameter_groups_collapsed,
 )
+from .table import EffectOrderCommand
 from .theme import PARAMETER_GUI_PALETTE, apply_parameter_gui_theme
 from .variation_panel import (
     VariationPanelState,
@@ -86,6 +91,29 @@ _TOOLBAR_LABEL_WIDTH_PX = 64.0
 _BOTTOM_DRAWER_HEIGHT_PX = 176.0
 _BOTTOM_DRAWER_GAP_PX = 10.0
 _BOTTOM_DRAWER_HELP_RATIO = 0.58
+
+
+def apply_effect_order_command(
+    store: ParamStore,
+    command: EffectOrderCommand,
+) -> bool:
+    """GUI-local commandをcoreのeffect順序operationへ渡す。"""
+
+    if command.kind == "reset":
+        return reset_effect_order(store, chain_id=command.chain_id)
+    if (
+        command.source is None
+        or command.target is None
+        or command.placement is None
+    ):
+        raise ValueError("move command requires source, target, and placement")
+    return move_effect_step(
+        store,
+        chain_id=command.chain_id,
+        source=command.source,
+        target=command.target,
+        placement=command.placement,
+    )
 
 
 def _positive_coordinate_scale(value: float) -> float:
@@ -2031,6 +2059,7 @@ class ParameterGUI:
             if history is not None
             else nullcontext()
         )
+        effect_order_commands: list[EffectOrderCommand] = []
         with transaction:
             _section_separator(imgui)
 
@@ -2065,12 +2094,37 @@ class ParameterGUI:
                                 else self._midi_session.last_cc_change
                             ),
                             on_help_row=self._remember_parameter_help_row,
+                            on_effect_order_command=effect_order_commands.append,
                         )
                     )
                     or changed_any
                 )
             finally:
                 imgui.end_child()
+
+        # effect順序はparameter値用patch transactionへ混ぜない。drop/menu/resetの
+        # 一操作ごとにfull mementoを作り、Undo/RedoでもDAG順を一単位で戻す。
+        for command in effect_order_commands:
+            if history is not None:
+                history.break_coalescing()
+            effect_transaction = (
+                history.transaction(
+                    source=("effect_order", command.chain_id),
+                    patch=False,
+                )
+                if history is not None
+                else nullcontext()
+            )
+            with effect_transaction:
+                command_changed = apply_effect_order_command(
+                    self._store,
+                    command,
+                )
+            if command_changed:
+                self._parameter_table_view = None
+                changed_any = True
+            if history is not None:
+                history.break_coalescing()
         self._render_bottom_drawer(
             geometry=drawer_geometry,
             monitor_snapshot=monitor_snapshot,

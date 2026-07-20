@@ -15,6 +15,7 @@ from random import Random
 from typing import TYPE_CHECKING, Any
 from unicodedata import category
 
+from .effects import EffectTopologySignature
 from .key import ParameterKey
 from .memento import (
     ParamStoreMemento,
@@ -700,6 +701,34 @@ def _encode_variation(variation: Variation) -> dict[str, Any]:
                 for key, meta in snapshot._meta.items()
             ],
             "collapsed_by_header": dict(snapshot._collapsed_by_header),
+            "effect_order_state": [
+                {
+                    "chain_id": chain_id,
+                    "topology": [
+                        {
+                            "op": op,
+                            "site_id": site_id,
+                            "n_inputs": n_inputs,
+                        }
+                        for op, site_id, n_inputs in snapshot._effect_topology_signatures.get(
+                            chain_id,
+                            (),
+                        )
+                    ],
+                    "steps": (
+                        None
+                        if step_keys is None
+                        else [
+                            {"op": op, "site_id": site_id}
+                            for op, site_id in step_keys
+                        ]
+                    ),
+                }
+                for chain_id, step_keys in sorted(
+                    snapshot._effect_order_state.items(),
+                    key=lambda item: item[0],
+                )
+            ],
         },
     }
 
@@ -748,11 +777,19 @@ def _decode_variation(obj: object) -> Variation | None:
         if isinstance(raw_collapsed, dict)
         else {}
     )
+    (
+        effect_order_state,
+        effect_topology_signatures,
+    ) = _decode_effect_order_state(
+        snapshot_obj.get("effect_order_state", [])
+    )
     try:
         memento = ParamStoreMemento._from_gui_owned_parts(
             states=states,
             meta={key: meta_by_key[key] for key in states},
             collapsed_by_header=collapsed_by_header,
+            effect_order_state=effect_order_state,
+            effect_topology_signatures=effect_topology_signatures,
         )
         raw_seed = obj.get("seed")
         seed = raw_seed if isinstance(raw_seed, int) and not isinstance(raw_seed, bool) else None
@@ -769,6 +806,91 @@ def _decode_variation(obj: object) -> Variation | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _decode_effect_order_state(
+    obj: object,
+) -> tuple[
+    dict[str, tuple[tuple[str, str], ...] | None],
+    dict[str, EffectTopologySignature],
+]:
+    """variation 内の互換な effect 順序状態だけを復元する。"""
+
+    if not isinstance(obj, list):
+        return {}, {}
+
+    state: dict[str, tuple[tuple[str, str], ...] | None] = {}
+    signatures: dict[str, EffectTopologySignature] = {}
+    for item in obj:
+        if not isinstance(item, dict):
+            continue
+        chain_id = item.get("chain_id")
+        steps_obj = item.get("steps")
+        if (
+            not isinstance(chain_id, str)
+            or not chain_id.strip()
+            or chain_id in state
+        ):
+            continue
+        if steps_obj is None:
+            state[chain_id] = None
+        elif not isinstance(steps_obj, list) or not steps_obj:
+            continue
+        else:
+            steps: list[tuple[str, str]] = []
+            seen_steps: set[tuple[str, str]] = set()
+            malformed = False
+            for step in steps_obj:
+                if not isinstance(step, dict):
+                    malformed = True
+                    break
+                op = step.get("op")
+                site_id = step.get("site_id")
+                if (
+                    not isinstance(op, str)
+                    or not op.strip()
+                    or not isinstance(site_id, str)
+                    or not site_id.strip()
+                ):
+                    malformed = True
+                    break
+                key = (op, site_id)
+                if key in seen_steps:
+                    malformed = True
+                    break
+                seen_steps.add(key)
+                steps.append(key)
+            if malformed:
+                continue
+            state[chain_id] = tuple(steps)
+
+        topology_obj = item.get("topology")
+        if not isinstance(topology_obj, list) or not topology_obj:
+            continue
+        signature_items: list[tuple[str, str, int]] = []
+        malformed_topology = False
+        for topology_step in topology_obj:
+            if not isinstance(topology_step, dict):
+                malformed_topology = True
+                break
+            op = topology_step.get("op")
+            site_id = topology_step.get("site_id")
+            n_inputs = topology_step.get("n_inputs")
+            if (
+                not isinstance(op, str)
+                or not op.strip()
+                or not isinstance(site_id, str)
+                or not site_id.strip()
+                or isinstance(n_inputs, bool)
+                or not isinstance(n_inputs, int)
+                or n_inputs < 1
+            ):
+                malformed_topology = True
+                break
+            signature_items.append((op, site_id, n_inputs))
+        if not malformed_topology:
+            signatures[chain_id] = tuple(sorted(signature_items))
+    return state, signatures
 
 
 def _decode_key(item: dict[str, Any]) -> ParameterKey:

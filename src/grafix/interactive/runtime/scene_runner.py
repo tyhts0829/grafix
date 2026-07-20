@@ -15,6 +15,7 @@ from grafix.core.operation_diagnostics import (
 from grafix.core.parameters import (
     MidiFrameSnapshot,
     ParamStore,
+    current_effect_order_snapshot,
     current_frame_params,
     current_param_snapshot,
     parameter_context,
@@ -348,6 +349,9 @@ class SceneRunner:
                             defaults=defaults,
                             quality=effective_quality,
                         )
+                        frame_params = current_frame_params()
+                        if frame_params is not None:
+                            frame_params.complete_effect_chain_observation()
                         self._last_evaluation_succeeded = True
                         self._last_output_updated = True
                         self._last_evaluation_t = float(t)
@@ -545,6 +549,7 @@ class SceneRunner:
             t=t,
             snapshot_revision=int(snapshot_revision),
             snapshot=current_param_snapshot(),
+            effect_order_snapshot=current_effect_order_snapshot(),
             cc_snapshot=cc_snapshot,
             epoch=int(self._mp_epoch),
             quality=quality,
@@ -608,6 +613,9 @@ class SceneRunner:
             if frame_params is not None:
                 frame_params.records.extend(latest_successful.records)
                 frame_params.labels.extend(latest_successful.labels)
+                frame_params.effect_chains.extend(
+                    latest_successful.effect_chains
+                )
             extend_operation_diagnostics(latest_successful.diagnostics)
 
         # 2) realize（main 側）: 最新の layers を通常パイプラインへ流して表示/出力する。
@@ -640,6 +648,11 @@ class SceneRunner:
             # 再マージできないため、成功後にだけ frame id を進める。
             self._last_merged_mp_success_frame_id = latest_success_frame_id
             self._last_merged_mp_success_epoch = latest_success_epoch
+            frame_params = current_frame_params()
+            if frame_params is not None:
+                # chainが0件のworker resultも完全な成功観測であることを明示し、
+                # result待ちの空bufferとは区別する。
+                frame_params.complete_effect_chain_observation()
         self._last_realized_t = float(latest_successful.t)
         self._last_realized_snapshot_revision = int(
             latest_successful.snapshot_revision

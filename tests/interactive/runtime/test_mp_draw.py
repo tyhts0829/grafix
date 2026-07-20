@@ -15,13 +15,17 @@ from grafix.core.geometry import Geometry
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters import (
+    EffectStepTopology,
+    FrameEffectChainRecord,
     FrameParamRecord,
     MidiFrameSnapshot,
     ParameterKey,
     ParamMeta,
     ParamStore,
+    begin_effect_chain_generation,
     parameter_context,
 )
+from grafix.core.parameters.effect_order_ops import merge_frame_effect_chains
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.layer_style import (
     LAYER_STYLE_LINE_COLOR,
@@ -47,6 +51,29 @@ _WAIT_TIMEOUT_S = 8.0
 
 def _empty_draw(_t: float) -> Geometry:
     return Geometry.create(op="concat")
+
+
+def _failing_empty_draw(_t: float) -> Geometry:
+    raise RuntimeError("new source evaluation failed")
+
+
+def _seed_effect_chain(store: ParamStore, chain_id: str) -> None:
+    assert merge_frame_effect_chains(
+        store,
+        [
+            FrameEffectChainRecord(
+                chain_id=chain_id,
+                steps=(
+                    EffectStepTopology(
+                        op="scale",
+                        site_id=f"{chain_id}-site",
+                        n_inputs=1,
+                        code_index=0,
+                    ),
+                ),
+            )
+        ],
+    )
 
 
 def _system_exit_draw(_t: float) -> Geometry:
@@ -710,6 +737,113 @@ class _IdleMpDraw:
         self.close_calls += 1
 
 
+def test_scene_runner_sync_failure_keeps_generation_until_success() -> None:
+    runner = SceneRunner(
+        _failing_empty_draw,
+        perf=PerfCollector(enabled=False),
+        n_worker=0,
+    )
+    store = ParamStore()
+    _seed_effect_chain(store, "old-generation-chain")
+    begin_effect_chain_generation(store)
+    defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
+    try:
+        with pytest.raises(RuntimeError, match="new source evaluation failed"):
+            runner.run(
+                0.0,
+                store=store,
+                cc_snapshot=None,
+                defaults=defaults,
+                recording=False,
+            )
+        assert "old-generation-chain" in store.effect_chain_topologies()
+
+        runner.replace_draw(_empty_draw)
+        runner.run(
+            0.1,
+            store=store,
+            cc_snapshot=None,
+            defaults=defaults,
+            recording=False,
+        )
+        assert "old-generation-chain" not in store.effect_chain_topologies()
+    finally:
+        runner.close()
+
+
+def test_scene_runner_mp_wait_does_not_finish_effect_chain_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _IdleMpDraw.instances = []
+    monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
+    runner = SceneRunner(
+        _empty_draw,
+        perf=PerfCollector(enabled=False),
+        n_worker=1,
+    )
+    store = ParamStore()
+    _seed_effect_chain(store, "old-generation-chain")
+    begin_effect_chain_generation(store)
+    try:
+        runner.run(
+            0.0,
+            store=store,
+            cc_snapshot=None,
+            defaults=LayerStyleDefaults(
+                color=(0.0, 0.0, 0.0),
+                thickness=0.01,
+            ),
+            recording=False,
+        )
+        assert "old-generation-chain" in store.effect_chain_topologies()
+    finally:
+        runner.close()
+
+
+def test_scene_runner_mp_fresh_empty_topology_finishes_effect_chain_generation() -> None:
+    epoch_mp = _EpochMpDraw(None)
+    runner = SceneRunner(
+        _empty_draw,
+        perf=PerfCollector(enabled=False),
+        n_worker=0,
+    )
+    runner._mp_draw = cast(Any, epoch_mp)
+    store = ParamStore()
+    _seed_effect_chain(store, "old-generation-chain")
+    begin_effect_chain_generation(store)
+    defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
+    try:
+        runner.run(
+            0.0,
+            store=store,
+            cc_snapshot=None,
+            defaults=defaults,
+            recording=False,
+        )
+        assert "old-generation-chain" in store.effect_chain_topologies()
+
+        epoch_mp.result = DrawResult(
+            frame_id=1,
+            layers=normalize_scene(_empty_draw(0.1)),
+            records=[],
+            labels=[],
+            effect_chains=[],
+            t=0.1,
+            snapshot_revision=store.revision,
+        )
+        epoch_mp._published = False
+        runner.run(
+            0.1,
+            store=store,
+            cc_snapshot=None,
+            defaults=defaults,
+            recording=False,
+        )
+        assert "old-generation-chain" not in store.effect_chain_topologies()
+    finally:
+        runner.close()
+
+
 @pytest.mark.parametrize("n_worker", [1, 2])
 def test_scene_runner_uses_background_evaluation_for_positive_worker_count(
     monkeypatch: pytest.MonkeyPatch,
@@ -1247,6 +1381,19 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
         layers=batched.success.layers,
         records=[record],
         labels=[],
+        effect_chains=[
+            FrameEffectChainRecord(
+                chain_id="worker-chain",
+                steps=(
+                    EffectStepTopology(
+                        op="line",
+                        site_id="worker-site",
+                        n_inputs=1,
+                        code_index=0,
+                    ),
+                ),
+            )
+        ],
     )
 
     realize_calls = 0
@@ -1285,6 +1432,7 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
                 recording=False,
             )
         assert store.get_state(key) is None
+        assert "worker-chain" not in store.effect_chain_topologies()
         assert runner._last_merged_mp_success_frame_id is None
         assert runner.last_realized_t is None
 
@@ -1300,6 +1448,7 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
             == []
         )
         assert store.get_state(key) is not None
+        assert "worker-chain" in store.effect_chain_topologies()
         assert runner._last_merged_mp_success_frame_id == 10
         assert runner.last_realized_t == pytest.approx(0.25)
     finally:

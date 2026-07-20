@@ -19,7 +19,12 @@ from grafix.core.layer import LayerStyleDefaults
 from grafix.core.capture_manifest import RecordingManifest, capture_manifest_path_for
 from grafix.core.capture_provenance import CaptureProvenanceBuilder
 from grafix.core.output_paths import VersionedPathAllocator
-from grafix.core.parameters import ParamStore
+from grafix.core.parameters import (
+    EffectStepTopology,
+    FrameEffectChainRecord,
+    ParamStore,
+)
+from grafix.core.parameters.effect_order_ops import merge_frame_effect_chains
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.runtime_config import runtime_config
 from grafix.interactive.midi import MidiSession
@@ -110,6 +115,69 @@ def test_source_reload_rolls_back_when_worker_swap_fails() -> None:
         "open",
         "retry",
     }
+
+
+def test_successful_source_reload_begins_effect_chain_generation() -> None:
+    def replacement_draw(_t: float) -> list[object]:
+        return []
+
+    result = SourceReloadResult(
+        status="reloaded",
+        generation=4,
+        draw=replacement_draw,
+        source="/tmp/sketch.py",
+    )
+
+    class _Controller:
+        def __init__(self) -> None:
+            self.accepted: list[int] = []
+
+        def poll(self, *, force: bool, retain_rollback: bool) -> SourceReloadResult:
+            assert force is True
+            assert retain_rollback is True
+            return result
+
+        def accept_generation(self, generation: int) -> None:
+            self.accepted.append(int(generation))
+
+    class _Runner:
+        def replace_draw(self, draw: object) -> None:
+            assert draw is replacement_draw
+
+    store = ParamStore()
+    assert merge_frame_effect_chains(
+        store,
+        [
+            FrameEffectChainRecord(
+                chain_id="old-generation-chain",
+                steps=(
+                    EffectStepTopology(
+                        op="scale",
+                        site_id="old-generation-site",
+                        n_inputs=1,
+                        code_index=0,
+                    ),
+                ),
+            )
+        ],
+    )
+    controller = _Controller()
+    system = object.__new__(DrawWindowSystem)
+    system._source_reload = cast(Any, controller)
+    system._scene_runner = cast(Any, _Runner())
+    system._store = store
+    system._monitor = None
+
+    assert system._poll_source_reload(force=True) is True
+    assert controller.accepted == [4]
+    # reload自体ではlast-good GUI stateを保持し、最初の成功evaluationで確定する。
+    assert "old-generation-chain" in store.effect_chain_topologies()
+    assert merge_frame_effect_chains(
+        store,
+        [],
+        observation_complete=True,
+    )
+    assert "old-generation-chain" not in store.effect_chain_topologies()
 
 
 class _FakeMonitor:
