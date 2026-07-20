@@ -74,6 +74,44 @@ frame, parameters, and worker alive; the Inspector shows the traceback with Retr
 - `run(draw)`: interactive rendering + Parameter GUI
 - `ResourceBudget`: per-operation vertex/line/byte limits checked before large allocations
 
+`G.select` and `E.select` expose the registered operations as a Parameter GUI choice while
+keeping target-specific base arguments separate:
+
+```python
+source = G.select(
+    target="circle",
+    params_by_target={
+        "circle": {"radius": 30.0},
+        "rect": {"width": 60.0, "height": 40.0},
+    },
+)
+rotated = E.select(
+    target="rotate",
+    params_by_target={"rotate": {"rotation": (0.0, 0.0, 30.0)}},
+)(source)
+
+# A unary selector can also be inserted after a fixed effect.
+moved = E.rotate(rotation=(0.0, 0.0, 15.0)).select(
+    target="translate",
+    params_by_target={"translate": {"delta": (10.0, 0.0, 0.0)}},
+)(source)
+
+mask = G.circle(radius=20.0)
+difference = E.select(
+    target="boolean",
+    n_inputs=2,
+    params_by_target={"boolean": {"mode": "difference"}},
+)(source, mask)
+```
+
+`E.select` defaults to unary effects (`n_inputs=1`). Set `n_inputs` to the required fixed
+arity to select only effects with that input count; a multi-input selector must be the
+first step in an effect chain. Custom operations must be imported and registered before
+the selector call that should list them. Omitting `target` makes the Parameter GUI choice
+persistent (initially `circle` for `G.select` and `rotate` for `E.select`). Supplying
+`target` explicitly follows the normal explicit-parameter policy: code is authoritative
+on a normal startup, while recovery data can intentionally preserve an override.
+
 `run()` evaluates `draw(t)` in one background worker by default (`n_worker=1`) so the
 window stays responsive. Use `n_worker=0` only when synchronous evaluation is required,
 or increase the worker count for CPU-heavy `draw(t)` functions. Background evaluation

@@ -267,7 +267,7 @@ def _label(name: str, index: int):
         text_align="center",
         quality=0.1,
         center=(x, row_top + _LABEL_Y_OFFSET, z),
-        scale=3.4,
+        scale=4,
     )
 
 

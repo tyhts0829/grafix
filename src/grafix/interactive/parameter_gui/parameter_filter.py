@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from grafix.core.operation_selector import selector_kind, selector_search_terms
 from grafix.core.parameters.view import ParameterRow
 
 ParameterActivityFilter = Literal["all", "active", "inactive"]
@@ -77,12 +78,21 @@ def _search_corpus(record: ParameterFilterRecord) -> str:
 def parameter_static_search_corpus(row: ParameterRow, label: str) -> str:
     """structure revision 内で不変な検索文字列を casefold 済みで返す。"""
 
+    selector_terms = selector_search_terms(row.op, row.arg)
+    selector = selector_kind(row.op) is not None
+    row_label = (
+        f"{int(row.ordinal)}:{' '.join(selector_terms)}"
+        if selector
+        else str(row.label)
+    )
     return " ".join(
         (
             str(label),
-            str(row.label),
-            str(row.op),
-            str(row.arg),
+            row_label,
+            ("G.select" if selector_kind(row.op) == "primitive" else "E.select")
+            if selector
+            else str(row.op),
+            " ".join(selector_terms),
             str(row.site_id),
             str(row.display_name or ""),
             str(row.description or ""),

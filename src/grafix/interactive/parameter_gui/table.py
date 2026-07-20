@@ -8,6 +8,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 
+from grafix.core.operation_selector import selector_kind
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.source import ValueSource
 from grafix.core.parameters.view import ParameterRow
@@ -19,7 +20,11 @@ from .group_blocks import (
     GroupBlockLayout,
     group_layout_from_rows,
 )
-from .labeling import format_contextual_row_label, humanize_identifier
+from .labeling import (
+    format_contextual_row_label,
+    humanize_identifier,
+    operation_display_name,
+)
 from .midi_learn import MidiLearnState
 from .rules import ui_rules_for_row
 from .snippet import snippet_for_block
@@ -710,17 +715,17 @@ def _effect_step_heading_by_rows(
 ) -> dict[str, str]:
     """Effect rows の各 site_id に、短く一意な小見出しを割り当てる。"""
 
-    sites_by_op: dict[str, list[str]] = {}
+    sites_by_display_op: dict[str, list[str]] = {}
     for row in rows:
-        op = str(row.op)
+        display_op = operation_display_name(str(row.op))
         site_id = str(row.site_id)
-        op_sites = sites_by_op.setdefault(op, [])
+        op_sites = sites_by_display_op.setdefault(display_op, [])
         if site_id not in op_sites:
             op_sites.append(site_id)
 
     out: dict[str, str] = {}
-    for op, sites in sites_by_op.items():
-        op_label = humanize_identifier(op)
+    for display_op, sites in sites_by_display_op.items():
+        op_label = humanize_identifier(display_op)
         for ordinal, site_id in enumerate(sites, start=1):
             out[site_id] = op_label if len(sites) == 1 else f"{op_label} {int(ordinal)}"
     return out
@@ -742,6 +747,11 @@ def _should_auto_enable_override(
     - `kind=choice` は choices の変化などで ui_value が自動丸めされる場合がある。
       そのケースでは override を自動で立てず、base 優先を維持する。
     """
+
+    if selector_kind(row.op) is not None and str(row.arg) == "target":
+        # selector target の combo は候補を自動選択しない。changed=True は必ず
+        # ユーザーの明示選択なので、先頭候補を選んだ場合も UI を有効にする。
+        return True
 
     if row.kind == "choice":
         choices = list(row.choices) if row.choices is not None else []
@@ -1427,6 +1437,7 @@ def render_parameter_table(
                     )
                     snippet_popup_text_new = snippet_for_block(
                         snippet_block,
+                        all_rows=indexed_rows,
                         last_effective_by_key=last_effective_by_key,
                         layer_style_name_by_site_id=layer_style_name_by_site_id,
                         step_info_by_site=step_info_by_site,

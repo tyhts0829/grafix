@@ -8,10 +8,17 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Hashable, Mapping
 from typing import TypeVar
 
+from grafix.core.operation_selector import selector_kind
 from grafix.core.parameters.key import ParameterKey
 
 GroupKey = tuple[str, int]
 K = TypeVar("K", bound=Hashable)
+
+
+def operation_display_name(op: str) -> str:
+    """内部 selector 名を公開 API 名へ置き換えた operation 表示名を返す。"""
+
+    return "select" if selector_kind(str(op)) is not None else str(op)
 
 
 def humanize_identifier(value: str) -> str:
@@ -80,7 +87,11 @@ def primitive_header_display_names_from_snapshot(
         group_key = (str(key.op), int(ordinal))
         if group_key in base_name_by_group:
             continue
-        base_name_by_group[group_key] = str(label) if label else str(key.op)
+        if label:
+            base_name = str(label)
+        else:
+            base_name = operation_display_name(str(key.op))
+        base_name_by_group[group_key] = base_name
         site_id_by_group[group_key] = str(key.site_id)
 
     def _sort_key(group_key: GroupKey) -> tuple[int, str, int]:

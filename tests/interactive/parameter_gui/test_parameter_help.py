@@ -106,15 +106,27 @@ def test_loaded_builtin_meta_is_upgraded_before_gui_help() -> None:
             item["ui_min"] = -10.0
             item["ui_max"] = 10.0
     loaded = decode_param_store(payload)
-    stale_view = parameter_table_view_for_store(
+    pre_draw_view = parameter_table_view_for_store(
         loaded,
         show_inactive_params=True,
     )
-    stale_rows = [
-        row for row in stale_view.model.rows if row.op in {"line", "scale"}
+    pre_draw_rows = [
+        row for row in pre_draw_view.model.rows if row.op in {"line", "scale"}
     ]
-    assert stale_rows
-    assert all(row.description is None for row in stale_rows)
+    assert pre_draw_rows
+    assert all(
+        row.description and row.description.strip() for row in pre_draw_rows
+    )
+    assert all(
+        parameter_help_content(row).description != NO_DESCRIPTION
+        for row in pre_draw_rows
+    )
+    pre_draw_length = next(
+        row
+        for row in pre_draw_rows
+        if row.op == "line" and row.arg == "length"
+    )
+    assert (pre_draw_length.ui_min, pre_draw_length.ui_max) == (-10.0, 10.0)
 
     with parameter_context(loaded):
         line = G.line(key="description-upgrade-line")
@@ -129,7 +141,7 @@ def test_loaded_builtin_meta_is_upgraded_before_gui_help() -> None:
         for row in current_view.model.rows
         if row.op in {"line", "scale"}
     ]
-    assert current_view.model is not stale_view.model
+    assert current_view.model is not pre_draw_view.model
     assert rows
     assert all(row.description and row.description.strip() for row in rows)
     assert all(parameter_help_content(row).description != NO_DESCRIPTION for row in rows)

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from grafix.core.builtins import (
@@ -19,7 +20,18 @@ from grafix.core.primitive_registry import PrimitiveFunc
 import grafix.core.primitive_registry as primitive_registry_module
 
 from ._op_validation import validate_operation_kwargs
+from ._operation_selector import (
+    freeze_params_by_target,
+    resolve_primitive_selection,
+)
 from ._param_resolution import resolve_api_params, set_api_label
+
+
+class _PrimitiveDefaultTarget(str):
+    """target 省略と明示的な ``"circle"`` を区別する内部 marker。"""
+
+
+_DEFAULT_TARGET = _PrimitiveDefaultTarget("circle")
 
 
 class PrimitiveNamespace:
@@ -69,6 +81,59 @@ class PrimitiveNamespace:
         if name_s not in primitive_registry_module.primitive_registry:
             raise KeyError(f"未登録の primitive: {name_s!r}")
         return primitive_registry_module.primitive_registry.describe(name_s)
+
+    def select(
+        self,
+        *,
+        target: str = _DEFAULT_TARGET,
+        params_by_target: Mapping[str, Mapping[str, Any]] | None = None,
+        key: str | int | None = None,
+        instance_key: str | int | None = None,
+        shared: bool = False,
+    ) -> Geometry:
+        """登録済み primitive を選択して実 target の Geometry を生成する。
+
+        Parameters
+        ----------
+        target : str, optional
+            code 側の初期 primitive 名。Parameter GUI から上書きできる。
+        params_by_target : Mapping[str, Mapping[str, Any]] or None, optional
+            primitive 名ごとの base keyword 引数。
+        key : str or int or None, optional
+            コード移動に強い semantic parameter identity。
+        instance_key : str or int or None, optional
+            loop/comprehension の反復 instance identity。
+        shared : bool, optional
+            同じ semantic site を反復呼び出し間で共有するか。
+
+        Returns
+        -------
+        Geometry
+            選択された実 primitive を op に持つ Geometry。
+        """
+
+        frozen_params = freeze_params_by_target(
+            params_by_target,
+            kind="primitive",
+        )
+        site_id = caller_site_id(
+            skip=1,
+            key=key,
+            instance_key=instance_key,
+            shared=shared,
+        )
+        selected = resolve_primitive_selection(
+            target=str(target),
+            target_explicit=target is not _DEFAULT_TARGET,
+            params_by_target=frozen_params,
+            site_id=site_id,
+        )
+        set_api_label(
+            op=selected.selector_op,
+            site_id=site_id,
+            label=self._pending_label,
+        )
+        return Geometry.create(op=selected.target, params=selected.params)
 
     def __getattr__(self, name: str) -> Callable[..., Geometry]:
         """primitive 名に対応する Geometry ファクトリを返す。

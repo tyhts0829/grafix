@@ -9,12 +9,14 @@ def _row(
     kind: str,
     ui_value: object,
     choices: tuple[str, ...] | None = None,
+    op: str = "op",
+    arg: str = "arg",
 ) -> ParameterRow:
     return ParameterRow(
-        label="0:arg",
-        op="op",
+        label=f"0:{arg}",
+        op=op,
         site_id="s1",
-        arg="arg",
+        arg=arg,
         kind=str(kind),
         ui_value=ui_value,
         ui_min=None,
@@ -62,5 +64,23 @@ def test_auto_enable_override_choice_valid_value_change_enables() -> None:
     row = _row(kind="choice", ui_value="a", choices=("a", "b"))
     assert (
         _should_auto_enable_override(row, before_ui_value=row.ui_value, after_ui_value="b")
+        is True
+    )
+
+
+def test_auto_enable_override_selector_target_first_choice_enables() -> None:
+    row = _row(
+        kind="choice",
+        ui_value="removed",
+        choices=("arc", "circle"),
+        op="_grafix_select_primitive",
+        arg="target",
+    )
+    assert (
+        _should_auto_enable_override(
+            row,
+            before_ui_value=row.ui_value,
+            after_ui_value="arc",
+        )
         is True
     )

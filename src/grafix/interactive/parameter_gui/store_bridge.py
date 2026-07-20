@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from weakref import WeakKeyDictionary
 
+from grafix.core.operation_selector import ensure_selector_spec_registered
 from grafix.core.builtins import (
     ensure_builtin_effect_registered,
     ensure_builtin_primitive_registered,
@@ -22,13 +23,24 @@ from grafix.core.parameters.favorites import (
     set_parameters_favorite,
 )
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
-from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.meta import (
+    ParamMeta,
+    merge_code_meta_with_stored_gui_meta,
+)
 from grafix.core.parameters.meta_ops import set_meta
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.style import STYLE_OP
-from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
+from grafix.core.parameters.snapshot_ops import (
+    ParamSnapshot,
+    ParamSnapshotEntry,
+    store_snapshot,
+)
 from grafix.core.parameters.ui_ops import update_state_from_ui
-from grafix.core.parameters.view import ParameterRow, rows_from_snapshot
+from grafix.core.parameters.view import (
+    ParameterRow,
+    canonicalize_ui_value_for_meta_change,
+    rows_from_snapshot,
+)
 from grafix.core.preset_registry import preset_registry
 
 from .labeling import primitive_header_display_names_from_snapshot
@@ -67,6 +79,10 @@ from .visibility import active_mask_for_rows
 _logger = logging.getLogger(__name__)
 _TABLE_MODEL_CACHE = ParameterTableModelCache()
 _ENSURED_OPS_BY_STORE_REVISION: WeakKeyDictionary[ParamStore, int] = WeakKeyDictionary()
+_ENSURED_SELECTORS_BY_REVISION: WeakKeyDictionary[
+    ParamStore,
+    tuple[int, int, int],
+] = WeakKeyDictionary()
 _TABLE_VIEW_CACHE: WeakKeyDictionary[
     ParamStore,
     tuple["_ParameterTableViewCacheKey", "ParameterTableView"],
@@ -356,6 +372,63 @@ def _registry_revision() -> RegistryRevision:
     )
 
 
+def _snapshot_with_current_registry_meta(
+    snapshot: ParamSnapshot,
+) -> ParamSnapshot:
+    """保存 state を維持しつつ code-owned metadata を current registry へ追随させる。"""
+
+    overrides: dict[ParameterKey, ParamSnapshotEntry] = {}
+    for key, entry in snapshot.items():
+        stored_meta, state, ordinal, label = entry
+        op = str(key.op)
+        code_meta: ParamMeta | None
+        code_base: object = ""
+        if op in primitive_registry:
+            primitive_spec = primitive_registry[op]
+            code_meta = primitive_spec.meta.get(str(key.arg))
+            code_base = primitive_spec.defaults.get(str(key.arg), "")
+        elif op in effect_registry:
+            effect_spec = effect_registry[op]
+            code_meta = effect_spec.meta.get(str(key.arg))
+            code_base = effect_spec.defaults.get(str(key.arg), "")
+        elif op in preset_registry:
+            preset_spec = preset_registry[op]
+            code_meta = preset_spec.meta.get(str(key.arg))
+        else:
+            code_meta = None
+        if code_meta is None:
+            continue
+        merged_meta = merge_code_meta_with_stored_gui_meta(
+            code_meta,
+            stored_meta,
+        )
+        if merged_meta == stored_meta:
+            continue
+        display_state = state
+        if str(merged_meta.kind) != str(stored_meta.kind):
+            display_state = replace(
+                state,
+                ui_value=canonicalize_ui_value_for_meta_change(
+                    state.ui_value,
+                    code_base,
+                    stored_meta,
+                    merged_meta,
+                ),
+            )
+        overrides[key] = (
+            merged_meta,
+            display_state,
+            int(ordinal),
+            label,
+        )
+
+    if not overrides:
+        return snapshot
+    updated = dict(snapshot)
+    updated.update(overrides)
+    return MappingProxyType(updated)
+
+
 def _build_parameter_table_model(
     store: ParamStore,
     snapshot: ParamSnapshot,
@@ -363,6 +436,7 @@ def _build_parameter_table_model(
 ) -> ParameterTableModel:
     """snapshot から revision 内で不変なテーブル構造を 1 回だけ構築する。"""
 
+    snapshot = _snapshot_with_current_registry_meta(snapshot)
     raw_label_by_site: dict[tuple[str, str], str] = {}
     for key, (_meta, _state, _ordinal, label) in snapshot.items():
         op = str(key.op)
@@ -564,6 +638,20 @@ def _refresh_parameter_table_model_values(
 
 def _parameter_table_model_for_store(store: ParamStore) -> ParameterTableModel:
     revision = int(store.table_revision)
+    selector_revision = (
+        revision,
+        int(primitive_registry.revision),
+        int(effect_registry.revision),
+    )
+    if _ENSURED_SELECTORS_BY_REVISION.get(store) != selector_revision:
+        ops = {str(key.op) for key in store_snapshot(store)}
+        for op in ops:
+            ensure_selector_spec_registered(op)
+        _ENSURED_SELECTORS_BY_REVISION[store] = (
+            revision,
+            int(primitive_registry.revision),
+            int(effect_registry.revision),
+        )
     if _ENSURED_OPS_BY_STORE_REVISION.get(store) != revision:
         # GUI に実際に現れた op だけを遅延登録する。全 built-in の eager import は
         # optional dependency を不要に読み、起動時間も増やすため行わない。
@@ -591,6 +679,7 @@ def clear_parameter_table_model_cache() -> None:
     _DYNAMIC_SEARCH_CORPUS_CACHE.clear()
     _TABLE_VIEW_BUILD_COUNT = 0
     _ENSURED_OPS_BY_STORE_REVISION.clear()
+    _ENSURED_SELECTORS_BY_REVISION.clear()
 
 
 def parameter_table_model_build_count() -> int:

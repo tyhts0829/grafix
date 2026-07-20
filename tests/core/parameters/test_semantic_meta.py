@@ -194,14 +194,23 @@ def test_rows_from_snapshot_carries_semantic_meta() -> None:
     assert row.recommended_range == SEMANTIC_META.recommended_range
 
 
-def test_merge_refreshes_code_description_and_preserves_stored_gui_range() -> None:
+def test_merge_refreshes_code_owned_meta_and_preserves_stored_gui_range() -> None:
     store = ParamStore()
     key = ParameterKey(op="semantic-op", site_id="site-1", arg="width")
     stale_meta = replace(
         SEMANTIC_META,
         ui_min=-10.0,
         ui_max=10.0,
+        choices=("stale",),
+        display_name="Stale width",
         description=None,
+        unit="px",
+        step=2.0,
+        format="%.0f",
+        scale="linear",
+        category="Stale",
+        advanced=False,
+        recommended_range=(1.0, 2.0),
     )
     merge_frame_params(
         store,
@@ -225,47 +234,186 @@ def test_merge_refreshes_code_description_and_preserves_stored_gui_range() -> No
     assert store.revision == revision
 
 
-def test_resolver_refreshes_description_from_current_code() -> None:
+def test_resolver_refreshes_current_choices_without_losing_gui_range_or_value() -> None:
     store = ParamStore()
-    stale_meta = replace(
-        SEMANTIC_META,
+    stale_meta = ParamMeta(
+        kind="choice",
         ui_min=-10.0,
         ui_max=10.0,
-        description=None,
+        choices=("circle",),
+        description="古い候補。",
+    )
+    current_meta = ParamMeta(
+        kind="choice",
+        ui_min=0.0,
+        ui_max=1.0,
+        choices=("circle", "rect"),
+        description="現在登録されている候補。",
     )
     with parameter_context(store):
         resolve_params(
-            op="semantic-op",
-            params={"width": 1.5},
-            meta={"width": stale_meta},
+            op="selector",
+            params={"target": "circle"},
+            meta={"target": stale_meta},
             site_id="site-1",
             explicit_args=set(),
         )
 
     with parameter_context(store):
-        resolve_params(
-            op="semantic-op",
-            params={"width": 1.5},
-            meta={"width": SEMANTIC_META},
+        resolved = resolve_params(
+            op="selector",
+            params={"target": "circle"},
+            meta={"target": current_meta},
             site_id="site-1",
             explicit_args=set(),
         )
 
-    key = ParameterKey(op="semantic-op", site_id="site-1", arg="width")
+    key = ParameterKey(op="selector", site_id="site-1", arg="target")
+    assert resolved == {"target": "circle"}
+    assert store.get_state(key).ui_value == "circle"  # type: ignore[union-attr]
     assert store.get_meta(key) == replace(
-        SEMANTIC_META,
+        current_meta,
         ui_min=-10.0,
         ui_max=10.0,
     )
 
 
-def test_worker_snapshot_records_current_description() -> None:
+def test_resolver_refreshes_current_kind_and_preserves_stored_gui_range() -> None:
+    store = ParamStore()
+    stale_meta = ParamMeta(kind="float", ui_min=-10.0, ui_max=10.0)
+    current_meta = ParamMeta(kind="int", ui_min=0, ui_max=100)
+
+    with parameter_context(store):
+        resolve_params(
+            op="semantic-op",
+            params={"value": 1.5},
+            meta={"value": stale_meta},
+            site_id="site-1",
+            explicit_args={"value"},
+        )
+
+    with parameter_context(store):
+        resolved = resolve_params(
+            op="semantic-op",
+            params={"value": 2},
+            meta={"value": current_meta},
+            site_id="site-1",
+            explicit_args={"value"},
+        )
+
+    key = ParameterKey(op="semantic-op", site_id="site-1", arg="value")
+    assert resolved == {"value": 2}
+    assert store.get_meta(key) == replace(
+        current_meta,
+        ui_min=-10.0,
+        ui_max=10.0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("old_value", "old_meta", "current_base", "current_meta"),
+    [
+        (
+            1.5,
+            ParamMeta(kind="float"),
+            (1.0, 2.0, 3.0),
+            ParamMeta(kind="vec3"),
+        ),
+        (
+            (1.0, 2.0, 3.0),
+            ParamMeta(kind="vec3"),
+            4.5,
+            ParamMeta(kind="float"),
+        ),
+        (
+            (0.0, 0.0, 0.0),
+            ParamMeta(kind="vec3"),
+            False,
+            ParamMeta(kind="bool"),
+        ),
+    ],
+)
+def test_incompatible_kind_change_falls_back_to_current_code_value(
+    old_value: object,
+    old_meta: ParamMeta,
+    current_base: object,
+    current_meta: ParamMeta,
+) -> None:
+    store = ParamStore()
+    key = ParameterKey(op="semantic-op", site_id="site-1", arg="value")
+
+    # 省略引数として観測し、旧 kind の GUI override が有効な状態を作る。
+    with parameter_context(store):
+        resolve_params(
+            op=key.op,
+            params={key.arg: old_value},
+            meta={key.arg: old_meta},
+            site_id=key.site_id,
+            explicit_args=set(),
+        )
+    old_state = store.get_state(key)
+    assert old_state is not None
+    assert old_state.override is True
+
+    with parameter_context(store):
+        resolved = resolve_params(
+            op=key.op,
+            params={key.arg: current_base},
+            meta={key.arg: current_meta},
+            site_id=key.site_id,
+            explicit_args=set(),
+        )
+
+    # 旧 UI 値を新 kind に変換できない場合、ゼロ値ではなく現在の code 値を使う。
+    assert resolved == {key.arg: current_base}
+    current_state = store.get_state(key)
+    assert current_state is not None
+    assert current_state.ui_value == current_base
+    assert current_state.override is True
+    assert store.get_meta(key) == current_meta
+
+
+def test_loaded_choices_follow_current_code_without_losing_saved_selection() -> None:
+    store = ParamStore()
+    key = ParameterKey(op="selector", site_id="site-1", arg="target")
+    stale_meta = ParamMeta(kind="choice", choices=("circle",))
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base="circle",
+                meta=stale_meta,
+                explicit=False,
+            )
+        ],
+    )
+    loaded = loads_param_store(dumps_param_store(store))
+    current_meta = ParamMeta(kind="choice", choices=("circle", "rect"))
+
+    with parameter_context(loaded):
+        resolved = resolve_params(
+            op="selector",
+            params={"target": "circle"},
+            meta={"target": current_meta},
+            site_id="site-1",
+            explicit_args=set(),
+        )
+
+    assert resolved == {"target": "circle"}
+    assert loaded.get_state(key).ui_value == "circle"  # type: ignore[union-attr]
+    assert loaded.get_meta(key) == current_meta
+
+
+def test_worker_snapshot_records_current_code_owned_meta() -> None:
     store = ParamStore()
     key = ParameterKey(op="semantic-op", site_id="site-1", arg="width")
     stale_meta = replace(
         SEMANTIC_META,
         ui_min=-10.0,
         ui_max=10.0,
+        choices=("stale",),
+        display_name="Stale width",
         description=None,
     )
     merge_frame_params(

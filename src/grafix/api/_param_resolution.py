@@ -50,6 +50,7 @@ def resolve_api_params(
     meta: Mapping[str, ParamMeta],
     chain_id: str | None = None,
     step_index: int | None = None,
+    explicit_args: set[str] | None = None,
 ) -> dict[str, Any]:
     """API 層の kwargs を解決し、Geometry.create 用の値を返す。
 
@@ -59,7 +60,11 @@ def resolve_api_params(
     - parameter_context 内で meta がある場合のみ resolve_params を呼び、観測レコードを積む。
     """
 
-    explicit_args = set(user_params.keys())
+    resolved_explicit_args = (
+        set(user_params)
+        if explicit_args is None
+        else {str(arg) for arg in explicit_args}
+    )
     base_params = dict(defaults)
     base_params.update(user_params)
     if current_param_recording_enabled() and current_frame_params() is not None and meta:
@@ -68,7 +73,7 @@ def resolve_api_params(
             params=base_params,
             meta=meta,
             site_id=site_id,
-            explicit_args=explicit_args,
+            explicit_args=resolved_explicit_args,
             chain_id=chain_id,
             step_index=step_index,
         )

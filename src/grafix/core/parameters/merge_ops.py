@@ -11,12 +11,15 @@ from weakref import WeakKeyDictionary
 
 from .frame_params import FrameParamRecord
 from .key import ParameterKey
-from .meta import merge_code_description_with_stored_meta
+from .meta import ParamMeta, merge_code_meta_with_stored_gui_meta
 from .reconcile_ops import reconcile_loaded_groups_for_runtime
 from .runtime import ParamStoreRuntime
 from .source import ValueSource
 from .store import ParamStore
-from .view import canonicalize_ui_value
+from .view import (
+    canonicalize_ui_value,
+    canonicalize_ui_value_for_meta_change,
+)
 
 _MISSING = object()
 _VALUE_SOURCES = frozenset({"code", "ui", "midi_live", "midi_frozen"})
@@ -27,9 +30,7 @@ class _StableMergeEntry:
     """stable record の構造と直近 runtime 値をまとめた内部 cache entry。"""
 
     group: tuple[str, str]
-    meta_kind: str
-    meta_choices: tuple[str, ...] | None
-    meta_description: str | None
+    meta: ParamMeta
     effect_step: tuple[str, int] | None
     explicit: bool | None
     last_effective: object
@@ -135,9 +136,8 @@ def _merge_frame_params(
 
         if (
             entry is None
-            or entry.meta_kind != rec.meta.kind
-            or entry.meta_choices != rec.meta.choices
-            or entry.meta_description != rec.meta.description
+            or merge_code_meta_with_stored_gui_meta(rec.meta, entry.meta)
+            != entry.meta
             or (
                 desired_effect_step is not None
                 and entry.effect_step != desired_effect_step
@@ -174,11 +174,24 @@ def _merge_frame_params(
             desired_meta = (
                 rec.meta
                 if existing_meta is None
-                else merge_code_description_with_stored_meta(
+                else merge_code_meta_with_stored_gui_meta(
                     rec.meta,
                     existing_meta,
                 )
             )
+            state = store._states.get(key)
+            if (
+                state is not None
+                and existing_meta is not None
+                and str(desired_meta.kind) != str(existing_meta.kind)
+            ):
+                store._observe_history_key_before(key)
+                state.ui_value = canonicalize_ui_value_for_meta_change(
+                    state.ui_value,
+                    rec.base,
+                    existing_meta,
+                    desired_meta,
+                )
             if existing_meta != desired_meta:
                 store._set_meta(key, desired_meta)
                 structure_changed = True
@@ -201,13 +214,7 @@ def _merge_frame_params(
             if entry is None:
                 entry = _StableMergeEntry(
                     group=group,
-                    meta_kind=str(rec.meta.kind),
-                    meta_choices=(
-                        None
-                        if rec.meta.choices is None
-                        else tuple(rec.meta.choices)
-                    ),
-                    meta_description=rec.meta.description,
+                    meta=desired_meta,
                     effect_step=current_effect_step,
                     explicit=store._explicit_by_key.get(key),
                     last_effective=runtime.last_effective_by_key.get(key, _MISSING),
@@ -218,13 +225,7 @@ def _merge_frame_params(
                 # duplicate key が同一 frame 中に構造を変えても、runtime/explicit の
                 # frame-local 状態は同じ entry に残して last-record-wins を守る。
                 entry.group = group
-                entry.meta_kind = str(rec.meta.kind)
-                entry.meta_choices = (
-                    None
-                    if rec.meta.choices is None
-                    else tuple(rec.meta.choices)
-                )
-                entry.meta_description = rec.meta.description
+                entry.meta = desired_meta
                 entry.effect_step = current_effect_step
 
         _merge_runtime_observation(

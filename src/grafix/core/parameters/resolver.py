@@ -5,14 +5,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from .context import current_cc_snapshot, current_frame_params, current_param_snapshot
 from .frame_params import FrameParamsBuffer
 from .key import ParameterKey
-from .meta import ParamMeta, merge_code_description_with_stored_meta
+from .meta import ParamMeta, merge_code_meta_with_stored_gui_meta
 from .source import ValueSource
 from .state import ParamState, ParamStateSnapshot
+from .view import canonicalize_ui_value_for_meta_change
 
 DEFAULT_QUANT_STEP = 1e-3
 
@@ -162,20 +164,32 @@ def resolve_params(
         state: ParamState | ParamStateSnapshot
         snapshot_entry = param_snapshot.get(key)
         if snapshot_entry is not None:
-            # state と値解決用 metadata は snapshot を正とする。一方、
-            # 同じ kind/choices の description は現在の登録内容を正とし、
-            # 旧保存データが説明の追加を遮蔽し続けないようにする。
+            # state と GUI-owned range は snapshot を正とする。一方、
+            # kind/choices/説明などの code-owned metadata は現在の登録内容を
+            # 正とし、catalog や callable の更新へ同じ frame から追随する。
             snapshot_meta, state, _ordinal, _label = snapshot_entry
             code_meta = meta.get(arg)
             arg_meta = (
                 snapshot_meta
                 if code_meta is None
-                or str(code_meta.kind) != str(snapshot_meta.kind)
-                else merge_code_description_with_stored_meta(
+                else merge_code_meta_with_stored_gui_meta(
                     code_meta,
                     snapshot_meta,
                 )
             )
+            if (
+                code_meta is not None
+                and str(code_meta.kind) != str(snapshot_meta.kind)
+            ):
+                state = replace(
+                    state,
+                    ui_value=canonicalize_ui_value_for_meta_change(
+                        state.ui_value,
+                        base_value,
+                        snapshot_meta,
+                        arg_meta,
+                    ),
+                )
         else:
             # 初出のキーは「登録側 meta がある場合のみ」GUI 対象として扱う。
             # meta が無い引数は GUI/CC の対象外とし、このフレームでも観測しない。

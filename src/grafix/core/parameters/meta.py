@@ -100,31 +100,47 @@ class ParamMeta:
             object.__setattr__(self, "recommended_range", (lower, upper))
 
 
-def merge_code_description_with_stored_meta(
+def _code_owned_fields(meta: ParamMeta) -> tuple[object, ...]:
+    """ParamMeta から GUI-owned range を除く比較用タプルを返す。"""
+
+    return (
+        meta.kind,
+        meta.choices,
+        meta.display_name,
+        meta.description,
+        meta.unit,
+        meta.step,
+        meta.format,
+        meta.scale,
+        meta.category,
+        meta.advanced,
+        meta.recommended_range,
+    )
+
+
+def merge_code_meta_with_stored_gui_meta(
     code_meta: ParamMeta,
     stored_meta: ParamMeta,
 ) -> ParamMeta:
-    """現在の description を互換な保存済み metadata へ反映する。
+    """現在の code-owned metadata と保存済み GUI range を統合する。
 
-    同じ ``kind`` / ``choices`` のときだけ、現在のコードが定義する
-    ``description`` を反映する。値解決へ影響する metadata と GUI が編集する
-    ``ui_min`` / ``ui_max`` は保存値を維持する。``kind`` が変わった場合は、
-    既存の direct merge 契約どおり現在の metadata 全体を返す。
+    ``kind``、``choices``、説明などは現在のコードを正とする。一方、
+    ``ui_min`` / ``ui_max`` は GUI が調整して永続化する値なので保存値を維持する。
     """
 
     if code_meta is stored_meta:
         return stored_meta
-    if str(code_meta.kind) != str(stored_meta.kind):
-        return code_meta
-    if code_meta.choices != stored_meta.choices:
+    if _code_owned_fields(code_meta) == _code_owned_fields(stored_meta):
         return stored_meta
-    if code_meta.description == stored_meta.description:
-        return stored_meta
-    return replace(stored_meta, description=code_meta.description)
+    return replace(
+        code_meta,
+        ui_min=stored_meta.ui_min,
+        ui_max=stored_meta.ui_max,
+    )
 
 
 __all__ = [
     "ParamMeta",
     "ParamScale",
-    "merge_code_description_with_stored_meta",
+    "merge_code_meta_with_stored_gui_meta",
 ]

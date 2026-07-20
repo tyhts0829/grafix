@@ -4,21 +4,27 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from grafix.core.operation_selector import selector_kind
 from grafix.core.font_resolver import list_font_choices
 from grafix.core.parameters.view import ParameterRow
 
 WidgetFn = Callable[[ParameterRow], tuple[bool, Any]]
 
 _FONT_FILTER_BY_KEY: dict[tuple[str, str, str], str] = {}
+_CHOICE_FILTER_BY_KEY: dict[tuple[str, str, str], str] = {}
+
+_MAX_INLINE_CHOICE_COUNT = 4
+_SEARCHABLE_CHOICE_COUNT = 8
 
 
 def _query_tokens_and(query: str) -> tuple[str, ...]:
     """フィルタークエリを AND 用トークン列へ正規化して返す。"""
-    tokens = [t for t in str(query).lower().split() if t]
+    tokens = [t for t in str(query).casefold().split() if t]
     return tuple(tokens)
 
 
@@ -32,9 +38,262 @@ def _filter_choices_by_query_and(
     out: list[tuple[str, str, bool, str]] = []
     for item in choices:
         _stem, _rel, _is_ttc, search_key = item
-        if all(t in search_key for t in tokens):
+        if all(t in str(search_key).casefold() for t in tokens):
             out.append(item)
     return out
+
+
+def _filter_choice_labels(
+    choices: Sequence[str],
+    *,
+    query: str,
+) -> list[str]:
+    """choice label を case-insensitive AND query で絞り込む。"""
+
+    tokens = _query_tokens_and(query)
+    if not tokens:
+        return [str(choice) for choice in choices]
+    return [
+        str(choice)
+        for choice in choices
+        if all(token in str(choice).casefold() for token in tokens)
+    ]
+
+
+def _content_region_available_width(imgui: Any) -> float | None:
+    """現在の control cell で利用できる幅を backend 互換で返す。"""
+
+    getter = getattr(imgui, "get_content_region_available_width", None)
+    if callable(getter):
+        try:
+            width = float(getter())
+        except (TypeError, ValueError):
+            width = math.nan
+        if math.isfinite(width):
+            return max(0.0, width)
+
+    getter_vec = getattr(imgui, "get_content_region_available", None)
+    if callable(getter_vec):
+        try:
+            width = float(getter_vec()[0])
+        except (IndexError, TypeError, ValueError):
+            return None
+        if math.isfinite(width):
+            return max(0.0, width)
+    return None
+
+
+def _style_spacing_x(imgui: Any, name: str, default: float) -> float:
+    """ImGui style の Vec2 field から正の x 成分を返す。"""
+
+    get_style = getattr(imgui, "get_style", None)
+    if not callable(get_style):
+        return float(default)
+    try:
+        value = getattr(get_style(), name)
+        x_value = getattr(value, "x", None)
+        if x_value is None:
+            x_value = value[0]
+        x = float(x_value)
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return float(default)
+    return x if math.isfinite(x) and x >= 0.0 else float(default)
+
+
+def _choice_radio_layout(
+    imgui: Any,
+    choices: Sequence[str],
+) -> tuple[float, float] | None:
+    """radio 群の推定必要幅と item 間隔を返す。"""
+
+    calc_text_size = getattr(imgui, "calc_text_size", None)
+    get_frame_height = getattr(imgui, "get_frame_height", None)
+    if not callable(calc_text_size) or not callable(get_frame_height):
+        return None
+    try:
+        frame_height = float(get_frame_height())
+        text_widths = [float(calc_text_size(str(choice))[0]) for choice in choices]
+    except (IndexError, TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(frame_height)
+        or frame_height <= 0.0
+        or any(not math.isfinite(width) or width < 0.0 for width in text_widths)
+    ):
+        return None
+
+    inner_spacing = _style_spacing_x(
+        imgui,
+        "item_inner_spacing",
+        max(1.0, frame_height * 0.25),
+    )
+    item_spacing = _style_spacing_x(
+        imgui,
+        "item_spacing",
+        max(1.0, frame_height * 0.35),
+    )
+    item_widths = [
+        frame_height + inner_spacing + text_width for text_width in text_widths
+    ]
+    required = sum(item_widths) + item_spacing * max(0, len(item_widths) - 1)
+    return float(required), float(item_spacing)
+
+
+def _choice_uses_radio(
+    imgui: Any,
+    choices: Sequence[str],
+    *,
+    force_combo: bool,
+) -> bool:
+    """候補数と実 cell 幅から inline radio を使うか決める。"""
+
+    if not callable(getattr(imgui, "begin_combo", None)):
+        return True
+    if force_combo or len(choices) > _MAX_INLINE_CHOICE_COUNT:
+        return False
+
+    available_width = _content_region_available_width(imgui)
+    layout = _choice_radio_layout(imgui, choices)
+    if available_width is None or layout is None:
+        return True
+    required_width, _item_spacing = layout
+    return required_width <= available_width
+
+
+def _render_choice_radio(
+    imgui: Any,
+    *,
+    choices: Sequence[str],
+    current_value: str,
+    changed: bool,
+) -> tuple[bool, str]:
+    """choice を inline radio として描画する。"""
+
+    try:
+        selected_index = list(choices).index(current_value)
+    except ValueError:
+        selected_index = -1
+
+    layout = _choice_radio_layout(imgui, choices)
+    item_spacing = 6.0 if layout is None else float(layout[1])
+    for index, choice in enumerate(choices):
+        clicked = imgui.radio_button(
+            f"{choice}##{index}",
+            index == selected_index,
+        )
+        if clicked:
+            selected_index = int(index)
+            changed = True
+        if index != len(choices) - 1:
+            imgui.same_line(0.0, float(item_spacing))
+
+    if selected_index < 0:
+        return bool(changed), str(current_value)
+    return bool(changed), str(choices[int(selected_index)])
+
+
+def _begin_choice_combo(
+    imgui: Any,
+    *,
+    preview: str,
+) -> bool:
+    """flags 対応差を吸収して choice combo を開始する。"""
+
+    flags = int(getattr(imgui, "COMBO_HEIGHT_LARGE", 0))
+    try:
+        return bool(imgui.begin_combo("##value", str(preview), flags=flags))
+    except TypeError:
+        return bool(imgui.begin_combo("##value", str(preview)))
+
+
+def _render_choice_filter(
+    imgui: Any,
+    *,
+    key: tuple[str, str, str],
+) -> str:
+    """開いている choice popup の一時 filter を描画して返す。"""
+
+    filter_text = _CHOICE_FILTER_BY_KEY.get(key, "")
+    set_width = getattr(imgui, "set_next_item_width", None)
+    if callable(set_width):
+        set_width(-1)
+
+    input_with_hint = getattr(imgui, "input_text_with_hint", None)
+    if callable(input_with_hint):
+        changed, value = input_with_hint(
+            "##choice_filter",
+            "Filter choices",
+            str(filter_text),
+        )
+    else:
+        input_text = getattr(imgui, "input_text", None)
+        if not callable(input_text):
+            return str(filter_text)
+        changed, value = input_text(
+            "Filter##choice_filter",
+            str(filter_text),
+        )
+    if changed:
+        filter_text = str(value)
+        _CHOICE_FILTER_BY_KEY[key] = filter_text
+    return str(filter_text)
+
+
+def _render_choice_combo(
+    imgui: Any,
+    *,
+    row: ParameterRow,
+    choices: Sequence[str],
+    current_value: str,
+    changed: bool,
+    preserve_unavailable: bool,
+) -> tuple[bool, str]:
+    """choice を必要に応じて検索可能な combo として描画する。"""
+
+    unavailable = current_value not in choices
+    preview = (
+        f"{current_value} (unavailable)"
+        if unavailable and preserve_unavailable
+        else current_value
+    )
+    value_out = str(current_value)
+    if not _begin_choice_combo(imgui, preview=preview):
+        return bool(changed), value_out
+
+    key = (str(row.op), str(row.site_id), str(row.arg))
+    searchable = len(choices) >= _SEARCHABLE_CHOICE_COUNT
+    try:
+        filter_text = (
+            _render_choice_filter(imgui, key=key)
+            if searchable
+            else ""
+        )
+        filtered = _filter_choice_labels(choices, query=filter_text)
+        if not filtered:
+            text = getattr(imgui, "text_disabled", None)
+            (text if callable(text) else imgui.text)("No match")
+        else:
+            for index, choice in enumerate(filtered):
+                selected = choice == current_value
+                clicked, _selected_now = imgui.selectable(
+                    f"{choice}##{index}",
+                    selected,
+                )
+                if clicked:
+                    value_out = str(choice)
+                    changed = True
+                    _CHOICE_FILTER_BY_KEY.pop(key, None)
+                if selected:
+                    set_default_focus = getattr(
+                        imgui,
+                        "set_item_default_focus",
+                        None,
+                    )
+                    if callable(set_default_focus):
+                        set_default_focus()
+    finally:
+        imgui.end_combo()
+    return bool(changed), value_out
 
 
 def _float_slider_range(row: ParameterRow) -> tuple[float, float]:
@@ -257,7 +516,7 @@ def widget_font_picker(row: ParameterRow) -> tuple[bool, str]:
 
 
 def widget_choice_radio(row: ParameterRow) -> tuple[bool, str]:
-    """kind=choice のラジオボタン群を描画し、(changed, value) を返す。"""
+    """kind=choice を利用可能幅に応じた radio/combo で描画する。"""
 
     import imgui  # type: ignore[import-untyped]
 
@@ -266,23 +525,35 @@ def widget_choice_radio(row: ParameterRow) -> tuple[bool, str]:
 
     choices = [str(x) for x in row.choices]
     current_value = str(row.ui_value)
-    changed_any = False
-    try:
-        selected_index = choices.index(current_value)
-    except ValueError:
-        # choices 外の値は先頭へ丸める（normalize_input の方針に合わせる）
-        selected_index = 0
-        changed_any = True
+    preserve_unavailable = (
+        selector_kind(row.op) is not None and str(row.arg) == "target"
+    )
+    changed = False
+    if current_value not in choices and not preserve_unavailable:
+        # 通常 choice は従来どおり先頭へ丸める。table 側はこの自動丸め
+        # だけでは override を有効化しない。
+        current_value = choices[0]
+        changed = True
 
-    for i, choice in enumerate(choices):
-        clicked = imgui.radio_button(f"{choice}##{i}", i == selected_index)
-        if clicked:
-            selected_index = i
-            changed_any = True
-        if i != len(choices) - 1:
-            imgui.same_line(0.0, 6.0)
-
-    return changed_any, choices[int(selected_index)]
+    if _choice_uses_radio(
+        imgui,
+        choices,
+        force_combo=preserve_unavailable,
+    ):
+        return _render_choice_radio(
+            imgui,
+            choices=choices,
+            current_value=current_value,
+            changed=changed,
+        )
+    return _render_choice_combo(
+        imgui,
+        row=row,
+        choices=choices,
+        current_value=current_value,
+        changed=changed,
+        preserve_unavailable=preserve_unavailable,
+    )
 
 
 _KIND_TO_WIDGET: dict[str, WidgetFn] = {

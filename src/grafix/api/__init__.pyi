@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -18,6 +18,18 @@ Vec3: TypeAlias = tuple[float, float, float]
 class _G(Protocol):
     def __call__(self, name: str | None = None) -> _G:
         """ラベル付き primitive 名前空間を返す。"""
+        ...
+    def select(self, *, target: str = ..., params_by_target: Mapping[str, Mapping[str, Any]] | None = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
+        """
+        登録済み primitive を Parameter GUI から選択して Geometry を生成する。
+
+        引数:
+            target: 選択する primitive 名。
+            params_by_target: primitive 名ごとの base keyword 引数。
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
         ...
     def arc(self, *, activate: bool = ..., radius: float = ..., start: float = ..., sweep: float = ..., segments: int = ..., center: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
         """
@@ -395,6 +407,19 @@ class _G(Protocol):
 class _EffectBuilder(Protocol):
     def __call__(self, geometry: Geometry, *more_geometries: Geometry) -> Geometry:
         """保持している effect 列を Geometry に適用する。"""
+        ...
+    def select(self, *, target: str = ..., n_inputs: Literal[1] = ..., params_by_target: Mapping[str, Mapping[str, Any]] | None = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        チェーン末尾へ unary effect selector を追加する。
+
+        引数:
+            target: 選択する effect 名。
+            n_inputs: チェーン中段では 1 のみ指定できる。
+            params_by_target: effect 名ごとの base keyword 引数。
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
         ...
     def affine(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., scale: Vec3 = ..., delta: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
@@ -995,6 +1020,19 @@ class _EffectBuilder(Protocol):
 class _E(Protocol):
     def __call__(self, name: str | None = None) -> _E:
         """ラベル付き effect 名前空間を返す。"""
+        ...
+    def select(self, *, target: str = ..., n_inputs: int = ..., params_by_target: Mapping[str, Mapping[str, Any]] | None = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+        """
+        登録済み effect を Parameter GUI から選択して builder を生成する。
+
+        引数:
+            target: 選択する effect 名。
+            n_inputs: 選択候補と適用時の入力 Geometry 数。
+            params_by_target: effect 名ごとの base keyword 引数。
+            key: コード移動後も同じパラメータグループとして扱うための semantic identity。
+            instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
+            shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
+        """
         ...
     def affine(self, *, activate: bool = ..., auto_center: bool = ..., pivot: Vec3 = ..., rotation: Vec3 = ..., scale: Vec3 = ..., delta: Vec3 = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """

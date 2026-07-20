@@ -20,6 +20,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+from grafix.core.operation_selector import (
+    decode_selector_param_key,
+    selector_effect_n_inputs,
+    selector_kind,
+)
+from grafix.core.effect_registry import effect_registry
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.layer_style import (
     LAYER_STYLE_LINE_COLOR,
@@ -36,6 +42,7 @@ from grafix.core.parameters.style import (
 )
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
+from grafix.core.primitive_registry import primitive_registry
 
 from .group_blocks import GroupBlock
 
@@ -135,6 +142,11 @@ def _py_literal(value: object) -> str:
         return "(" + ", ".join(_py_literal(v) for v in value) + (")" if len(value) != 1 else ",)")
     if isinstance(value, list):
         return "[" + ", ".join(_py_literal(v) for v in value) + "]"
+    if isinstance(value, Mapping):
+        items = ", ".join(
+            f"{_py_literal(k)}: {_py_literal(v)}" for k, v in value.items()
+        )
+        return "{" + items + "}"
     # numpy scalar などは repr が長くなりやすいので、まずは str に寄せる。
     try:
         return repr(value)
@@ -194,9 +206,115 @@ def _with_explicit_key(
     return [*kwargs, ("key", _py_literal(explicit_key))]
 
 
+def _selector_kwargs(
+    rows: Sequence[ParameterRow],
+    *,
+    op: str,
+    site_id: str,
+    last_effective_by_key: Mapping[ParameterKey, object] | None,
+    explicit_key_by_site: Mapping[tuple[str, str], str | int] | None,
+) -> tuple[list[tuple[str, str]], str | None]:
+    """selector rows を公開 ``select(...)`` kwargs へ戻す。
+
+    GUI 行から復元できない引数を target が受け取る場合は、不完全な呼び出しを
+    生成せず、手動で ``params_by_target`` を維持するための NOTE を返す。
+    """
+
+    target_row = next((row for row in rows if str(row.arg) == "target"), None)
+    if target_row is None:
+        return [], (
+            "# NOTE: selector の target 行が無いため Copy Code を生成できません。"
+            "元コードの select(...) を確認してください。"
+        )
+    target = str(
+        _effective_or_ui_value(
+            target_row,
+            last_effective_by_key=last_effective_by_key,
+        )
+    )
+    kind = selector_kind(op)
+    registry = primitive_registry if kind == "primitive" else effect_registry
+    target_spec = registry[target] if target in registry else None
+    if target_spec is None:
+        return [], (
+            f"# NOTE: selector target {target!r} が現在の registry に無いため "
+            "Copy Code を生成できません。target と登録順を確認してください。"
+        )
+
+    non_gui_args = tuple(
+        arg for arg in target_spec.accepted_args if arg not in target_spec.meta
+    )
+    if non_gui_args or target_spec.accepts_var_kwargs:
+        details: list[str] = []
+        if non_gui_args:
+            details.append(
+                "GUI 非公開引数 " + ", ".join(repr(arg) for arg in non_gui_args)
+            )
+        if target_spec.accepts_var_kwargs:
+            details.append("GUI から復元できない **kwargs")
+        detail = " と ".join(details)
+        public_api = "G.select" if kind == "primitive" else "E.select"
+        return [], (
+            f"# NOTE: {public_api} target {target!r} は {detail} を受け取るため、"
+            "安全な Copy Code を生成できません。"
+            f"元コードの params_by_target[{target!r}] を手動で保持してください。"
+        )
+
+    target_params: dict[str, object] = {}
+    for row in rows:
+        decoded = decode_selector_param_key(row.arg)
+        if decoded is None:
+            continue
+        row_target, original_arg = decoded
+        if row_target != target:
+            continue
+        target_params[original_arg] = _effective_or_ui_value(
+            row,
+            last_effective_by_key=last_effective_by_key,
+        )
+
+    kwargs: list[tuple[str, str]] = [("target", _py_literal(target))]
+    n_inputs = selector_effect_n_inputs(op)
+    if n_inputs is not None:
+        kwargs.append(("n_inputs", str(int(n_inputs))))
+    if target_params:
+        kwargs.append(
+            (
+                "params_by_target",
+                _py_literal({target: target_params}),
+            )
+        )
+    return _with_explicit_key(
+        kwargs,
+        op=op,
+        site_id=site_id,
+        explicit_key_by_site=explicit_key_by_site,
+    ), None
+
+
+def _selector_rows_for_site(
+    rows: Sequence[ParameterRow],
+    *,
+    all_rows: Sequence[ParameterRow] | None,
+    op: str,
+    site_id: str,
+) -> list[ParameterRow]:
+    """selector site の非表示行を含む全 ParameterRow を返す。"""
+
+    if all_rows is None:
+        return list(rows)
+    site_rows = [
+        row
+        for row in all_rows
+        if str(row.op) == str(op) and str(row.site_id) == str(site_id)
+    ]
+    return site_rows if site_rows else list(rows)
+
+
 def snippet_for_block(
     block: GroupBlock,
     *,
+    all_rows: Sequence[ParameterRow] | None = None,
     last_effective_by_key: Mapping[ParameterKey, object] | None = None,
     layer_style_name_by_site_id: Mapping[str, str] | None = None,
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
@@ -209,6 +327,9 @@ def snippet_for_block(
     ----------
     block:
         `GroupBlock`（連続する group を 1 つにまとめたもの）。
+    all_rows:
+        table model の全行。selector の ``ui_visible`` で非表示になった target 引数も
+        Copy Code へ復元する場合に渡す。
     last_effective_by_key:
         UI 値ではなく実効値で出したい場合の参照マップ。
     layer_style_name_by_site_id:
@@ -379,6 +500,26 @@ def snippet_for_block(
                 raw_label_s = str(raw_label).strip()
                 if raw_label_s:
                     prefix = f"G(name={_py_literal(raw_label_s)})."
+        if selector_kind(op) == "primitive":
+            selector_rows = _selector_rows_for_site(
+                rows,
+                all_rows=all_rows,
+                op=op,
+                site_id=str(row0.site_id),
+            )
+            kwargs, note = _selector_kwargs(
+                selector_rows,
+                op=op,
+                site_id=str(row0.site_id),
+                last_effective_by_key=last_effective_by_key,
+                explicit_key_by_site=explicit_key_by_site,
+            )
+            if note is not None:
+                return _indent_code(note.rstrip() + "\n")
+            return _indent_code(
+                _format_kwargs_call(prefix, op="select", kwargs=kwargs).rstrip()
+                + "\n"
+            )
         kwargs = _with_explicit_key(
             [
                 (
@@ -396,7 +537,9 @@ def snippet_for_block(
             site_id=str(row0.site_id),
             explicit_key_by_site=explicit_key_by_site,
         )
-        return _indent_code(_format_kwargs_call(prefix, op=op, kwargs=kwargs).rstrip() + "\n")
+        return _indent_code(
+            _format_kwargs_call(prefix, op=op, kwargs=kwargs).rstrip() + "\n"
+        )
 
     if group_type == "effect_chain":
         prefix = "E."
@@ -431,31 +574,51 @@ def snippet_for_block(
         for i, ((_step_index, op, _site_id), step_rows) in enumerate(
             sorted(steps.items(), key=lambda x: x[0])
         ):
-            kwargs = _with_explicit_key(
-                [
-                    (
-                        str(r.arg),
-                        _py_literal(
-                            _effective_or_ui_value(
-                                r, last_effective_by_key=last_effective_by_key
-                            )
-                        ),
-                    )
-                    for r in step_rows
-                ],
-                op=op,
-                site_id=_site_id,
-                explicit_key_by_site=explicit_key_by_site,
-            )
+            if selector_kind(op) == "effect":
+                selector_rows = _selector_rows_for_site(
+                    step_rows,
+                    all_rows=all_rows,
+                    op=op,
+                    site_id=_site_id,
+                )
+                kwargs, note = _selector_kwargs(
+                    selector_rows,
+                    op=op,
+                    site_id=_site_id,
+                    last_effective_by_key=last_effective_by_key,
+                    explicit_key_by_site=explicit_key_by_site,
+                )
+                if note is not None:
+                    return _indent_code(note.rstrip() + "\n")
+                call_op = "select"
+            else:
+                kwargs = _with_explicit_key(
+                    [
+                        (
+                            str(r.arg),
+                            _py_literal(
+                                _effective_or_ui_value(
+                                    r,
+                                    last_effective_by_key=last_effective_by_key,
+                                )
+                            ),
+                        )
+                        for r in step_rows
+                    ],
+                    op=op,
+                    site_id=_site_id,
+                    explicit_key_by_site=explicit_key_by_site,
+                )
+                call_op = op
             if i == 0:
-                call = _format_kwargs_call(prefix, op=op, kwargs=kwargs)
+                call = _format_kwargs_call(prefix, op=call_op, kwargs=kwargs)
                 out_lines.extend(call.splitlines())
                 continue
 
             # 2 ステップ目以降は `.op(` を行末へ足して “メソッドチェーン” にする。
             # `kwargs` が空のときは `.op()` に置き換える（括弧の対応を崩さないため）。
-            out_lines[-1] = out_lines[-1] + f".{op}("
-            call_lines = _format_kwargs_call("", op=op, kwargs=kwargs).splitlines()
+            out_lines[-1] = out_lines[-1] + f".{call_op}("
+            call_lines = _format_kwargs_call("", op=call_op, kwargs=kwargs).splitlines()
             if len(call_lines) == 1:
                 out_lines[-1] = out_lines[-1].rstrip("(") + "()"
                 continue

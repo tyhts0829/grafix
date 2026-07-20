@@ -69,6 +69,7 @@ _RESOLVABLE_TYPE_IDENTS = {
     "Layer",
     "Path",
     "Literal",
+    "Mapping",
     "SceneItem",
     "Sequence",
     "Vec3",
@@ -603,10 +604,33 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
     lines.append("    def __call__(self, name: str | None = None) -> _G:\n")
     lines.append('        """ラベル付き primitive 名前空間を返す。"""\n')
     lines.append("        ...\n")
+    lines.append(
+        _render_method(
+            indent="    ",
+            name="select",
+            return_type="Geometry",
+            params=[
+                "target: str = ...",
+                "params_by_target: Mapping[str, Mapping[str, Any]] | None = ...",
+                *_PARAMETER_IDENTITY_STUB_PARAMS,
+            ],
+            doc_lines=_render_operation_docstring(
+                summary="登録済み primitive を Parameter GUI から選択して Geometry を生成する。",
+                param_order=["target", "params_by_target"],
+                parsed_param_docs={
+                    "target": "選択する primitive 名。",
+                    "params_by_target": "primitive 名ごとの base keyword 引数。",
+                },
+                meta_by_name={},
+            ),
+        )
+    )
 
     from grafix.core.primitive_registry import primitive_registry  # type: ignore[import]
 
     for prim in primitive_names:
+        if prim == "select":
+            continue
         spec = primitive_registry[prim]
         meta_by_name: dict[str, Any] = dict(spec.meta)
         param_order = _operation_param_order(spec)
@@ -659,10 +683,35 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
     )
     lines.append('        """保持している effect 列を Geometry に適用する。"""\n')
     lines.append("        ...\n")
+    lines.append(
+        _render_method(
+            indent="    ",
+            name="select",
+            return_type="_EffectBuilder",
+            params=[
+                "target: str = ...",
+                "n_inputs: Literal[1] = ...",
+                "params_by_target: Mapping[str, Mapping[str, Any]] | None = ...",
+                *_PARAMETER_IDENTITY_STUB_PARAMS,
+            ],
+            doc_lines=_render_operation_docstring(
+                summary="チェーン末尾へ unary effect selector を追加する。",
+                param_order=["target", "n_inputs", "params_by_target"],
+                parsed_param_docs={
+                    "target": "選択する effect 名。",
+                    "n_inputs": "チェーン中段では 1 のみ指定できる。",
+                    "params_by_target": "effect 名ごとの base keyword 引数。",
+                },
+                meta_by_name={},
+            ),
+        )
+    )
 
     from grafix.core.effect_registry import effect_registry  # type: ignore[import]
 
     for eff in effect_names:
+        if eff == "select":
+            continue
         impl = _resolve_impl_callable("effect", eff)
 
         spec = effect_registry[eff]
@@ -719,10 +768,35 @@ def _render_e_protocol(effect_names: list[str]) -> str:
     lines.append("    def __call__(self, name: str | None = None) -> _E:\n")
     lines.append('        """ラベル付き effect 名前空間を返す。"""\n')
     lines.append("        ...\n")
+    lines.append(
+        _render_method(
+            indent="    ",
+            name="select",
+            return_type="_EffectBuilder",
+            params=[
+                "target: str = ...",
+                "n_inputs: int = ...",
+                "params_by_target: Mapping[str, Mapping[str, Any]] | None = ...",
+                *_PARAMETER_IDENTITY_STUB_PARAMS,
+            ],
+            doc_lines=_render_operation_docstring(
+                summary="登録済み effect を Parameter GUI から選択して builder を生成する。",
+                param_order=["target", "n_inputs", "params_by_target"],
+                parsed_param_docs={
+                    "target": "選択する effect 名。",
+                    "n_inputs": "選択候補と適用時の入力 Geometry 数。",
+                    "params_by_target": "effect 名ごとの base keyword 引数。",
+                },
+                meta_by_name={},
+            ),
+        )
+    )
 
     from grafix.core.effect_registry import effect_registry  # type: ignore[import]
 
     for eff in effect_names:
+        if eff == "select":
+            continue
         impl = _resolve_impl_callable("effect", eff)
 
         spec = effect_registry[eff]
@@ -955,7 +1029,7 @@ def generate_stubs_str(
 
     lines: list[str] = [header]
     lines.append("from __future__ import annotations\n\n")
-    lines.append("from collections.abc import Callable, Sequence\n")
+    lines.append("from collections.abc import Callable, Mapping, Sequence\n")
     lines.append("from pathlib import Path\n")
     lines.append("from typing import Any, Literal, Protocol, TypeAlias\n\n")
 

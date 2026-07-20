@@ -206,3 +206,31 @@ def canonicalize_ui_value(value: Any, meta: ParamMeta) -> Any:
 
     # unreachable
     return "" if err else value
+
+
+def canonicalize_ui_value_for_meta_change(
+    stored_value: Any,
+    base_value: Any,
+    stored_meta: ParamMeta,
+    current_meta: ParamMeta,
+) -> Any:
+    """kind 更新時の保存 UI 値を変換し、失敗時は current code 値へ戻す。"""
+
+    old_kind = str(stored_meta.kind)
+    new_kind = str(current_meta.kind)
+    compatible = (
+        old_kind == new_kind
+        or {old_kind, new_kind} == {"int", "float"}
+        or {old_kind, new_kind} == {"str", "font"}
+    )
+    if compatible:
+        normalized, error = normalize_input(stored_value, current_meta)
+        if normalized is not None and error is None:
+            if old_kind == "float" and new_kind == "int":
+                try:
+                    if float(stored_value) != float(normalized):
+                        return canonicalize_ui_value(base_value, current_meta)
+                except (TypeError, ValueError):
+                    return canonicalize_ui_value(base_value, current_meta)
+            return normalized
+    return canonicalize_ui_value(base_value, current_meta)

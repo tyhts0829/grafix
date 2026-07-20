@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from grafix.core.operation_selector import selector_help_identity
 from grafix.core.parameters.view import ParameterRow
 
 NO_DESCRIPTION = "No description is available for this parameter."
@@ -38,7 +39,7 @@ def parameter_help_content(row: ParameterRow) -> ParameterHelpContent:
     )
     return ParameterHelpContent(
         title=title or str(row.arg),
-        identity=f"{row.op}.{row.arg}",
+        identity=selector_help_identity(row.op, row.arg) or f"{row.op}.{row.arg}",
         description=description or NO_DESCRIPTION,
         unit=unit or NOT_SPECIFIED,
         recommended_range=recommended_text,
