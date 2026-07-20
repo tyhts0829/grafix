@@ -81,6 +81,38 @@ def test_action_validation_rejects_empty_values() -> None:
         DiagnosticAction("copy", "")
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"category": object()},
+        {"severity": 1},
+        {"summary": object()},
+        {"details": object()},
+        {"actions": [DiagnosticAction("copy", "Copy")]},
+        {"count": 1.0},
+    ],
+)
+def test_event_validation_rejects_implicit_conversion(
+    kwargs: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "category": "scene",
+        "severity": "error",
+        "summary": "failed",
+    }
+    values.update(kwargs)
+
+    with pytest.raises(TypeError):
+        DiagnosticEvent(**values)  # type: ignore[arg-type]
+
+
+def test_action_and_center_reject_implicit_conversion() -> None:
+    with pytest.raises(TypeError):
+        DiagnosticAction("copy", object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        DiagnosticCenter(max_events=1.0)  # type: ignore[arg-type]
+
+
 def test_center_dispatches_registered_typed_action() -> None:
     center = DiagnosticCenter()
     action = DiagnosticAction("retry", "Retry")

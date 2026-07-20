@@ -1,10 +1,9 @@
 from grafix.interactive.parameter_gui.group_blocks import (
-    group_blocks_from_layout,
-    group_blocks_from_rows,
     group_layout_from_rows,
     visible_group_layout,
 )
-from grafix.interactive.parameter_gui.table import _effect_step_heading_by_step
+from grafix.interactive.parameter_gui.grouping import GroupType
+from grafix.interactive.parameter_gui.table import _effect_step_heading_by_rows
 from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.view import ParameterRow
 
@@ -26,19 +25,19 @@ def _row(*, op: str, site_id: str, ordinal: int, arg: str) -> ParameterRow:
     )
 
 
-def test_group_blocks_from_rows_merges_contiguous_same_group():
+def test_group_layout_from_rows_merges_contiguous_same_group():
     rows = [
         _row(op="polygon", site_id="p:1", ordinal=1, arg="n_sides"),
         _row(op="polygon", site_id="p:1", ordinal=1, arg="r"),
     ]
-    blocks = group_blocks_from_rows(
+    blocks = group_layout_from_rows(
         rows,
         primitive_header_by_group={("polygon", 1): "P"},
     )
     assert len(blocks) == 1
 
     block = blocks[0]
-    assert block.group_id == ("primitive", ("polygon", 1))
+    assert block.group_id == (GroupType.PRIMITIVE, ("polygon", 1))
     assert block.header_id == "primitive:polygon#1"
     assert block.header == "P"
     assert [it.visible_label for it in block.items] == [
@@ -47,12 +46,12 @@ def test_group_blocks_from_rows_merges_contiguous_same_group():
     ]
 
 
-def test_group_blocks_from_rows_splits_when_group_changes():
+def test_group_layout_from_rows_splits_when_group_changes():
     rows = [
         _row(op="polygon", site_id="p:1", ordinal=1, arg="n_sides"),
         _row(op="circle", site_id="c:1", ordinal=1, arg="r"),
     ]
-    blocks = group_blocks_from_rows(
+    blocks = group_layout_from_rows(
         rows,
         primitive_header_by_group={("polygon", 1): "P", ("circle", 1): "C"},
     )
@@ -60,19 +59,19 @@ def test_group_blocks_from_rows_splits_when_group_changes():
     assert [b.header_id for b in blocks] == ["primitive:polygon#1", "primitive:circle#1"]
 
 
-def test_group_blocks_from_rows_preserves_effect_visible_label():
+def test_group_layout_from_rows_preserves_effect_visible_label():
     rows = [
         _row(op="scale", site_id="e:1", ordinal=99, arg="auto_center"),
         _row(op="rotate", site_id="e:2", ordinal=99, arg="deg"),
     ]
-    blocks = group_blocks_from_rows(
+    blocks = group_layout_from_rows(
         rows,
         step_info_by_site={("scale", "e:1"): ("chain:1", 0), ("rotate", "e:2"): ("chain:1", 1)},
         effect_chain_header_by_id={"chain:1": "xf"},
         effect_step_ordinal_by_site={("scale", "e:1"): 1, ("rotate", "e:2"): 1},
     )
     assert len(blocks) == 1
-    assert blocks[0].group_id == ("effect_chain", "chain:1")
+    assert blocks[0].group_id == (GroupType.EFFECT_CHAIN, "chain:1")
     assert blocks[0].header == "xf"
     assert [it.visible_label for it in blocks[0].items] == [
         "Auto center",
@@ -86,17 +85,7 @@ def test_effect_step_headings_number_only_duplicate_operations():
         _row(op="rotate", site_id="e:2", ordinal=99, arg="deg"),
         _row(op="scale", site_id="e:3", ordinal=99, arg="y"),
     ]
-    blocks = group_blocks_from_rows(
-        rows,
-        step_info_by_site={
-            ("scale", "e:1"): ("chain:1", 0),
-            ("rotate", "e:2"): ("chain:1", 1),
-            ("scale", "e:3"): ("chain:1", 2),
-        },
-        effect_chain_header_by_id={"chain:1": "xf"},
-    )
-
-    assert _effect_step_heading_by_step(blocks[0]) == {
+    assert _effect_step_heading_by_rows(rows) == {
         ("scale", "e:1"): "Scale 1",
         ("rotate", "e:2"): "Rotate",
         ("scale", "e:3"): "Scale 2",
@@ -108,27 +97,18 @@ def test_effect_step_headings_keep_different_ops_with_same_site_id() -> None:
         _row(op="scale", site_id="shared", ordinal=99, arg="x"),
         _row(op="rotate", site_id="shared", ordinal=99, arg="deg"),
     ]
-    blocks = group_blocks_from_rows(
-        rows,
-        step_info_by_site={
-            ("scale", "shared"): ("chain:1", 0),
-            ("rotate", "shared"): ("chain:1", 1),
-        },
-        effect_chain_header_by_id={"chain:1": "xf"},
-    )
-
-    assert _effect_step_heading_by_step(blocks[0]) == {
+    assert _effect_step_heading_by_rows(rows) == {
         ("scale", "shared"): "Scale",
         ("rotate", "shared"): "Rotate",
     }
 
 
-def test_group_blocks_from_rows_style_is_single_block():
+def test_group_layout_from_rows_style_is_single_block():
     rows = [
         _row(op=STYLE_OP, site_id="__global__", ordinal=1, arg="background_color"),
         _row(op=STYLE_OP, site_id="__global__", ordinal=1, arg="global_thickness"),
     ]
-    blocks = group_blocks_from_rows(rows)
+    blocks = group_layout_from_rows(rows)
     assert len(blocks) == 1
     assert blocks[0].header == "Style"
 
@@ -147,11 +127,8 @@ def test_visible_group_layout_matches_regrouping_filtered_rows():
     mask = (False, True, True)
     view_rows = [row for row, visible in zip(rows, mask, strict=True) if visible]
 
-    from_layout = group_blocks_from_layout(
-        rows,
-        visible_group_layout(layout, mask),
-    )
-    regrouped = group_blocks_from_rows(
+    from_layout = visible_group_layout(layout, mask)
+    regrouped = group_layout_from_rows(
         view_rows,
         primitive_header_by_group=headers,
     )
@@ -161,7 +138,10 @@ def test_visible_group_layout_matches_regrouping_filtered_rows():
             block.group_id,
             block.header_id,
             block.header,
-            [(item.row, item.visible_label) for item in block.items],
+            [
+                (rows[item.row_index], item.visible_label)
+                for item in block.items
+            ],
         )
         for block in from_layout
     ] == [
@@ -169,7 +149,10 @@ def test_visible_group_layout_matches_regrouping_filtered_rows():
             block.group_id,
             block.header_id,
             block.header,
-            [(item.row, item.visible_label) for item in block.items],
+            [
+                (view_rows[item.row_index], item.visible_label)
+                for item in block.items
+            ],
         )
         for block in regrouped
     ]

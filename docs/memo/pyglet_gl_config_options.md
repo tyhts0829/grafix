@@ -1,11 +1,12 @@
-# どこで: `docs/pyglet_gl_config_options.md`。
-# 何を: `src/app/draw_window.py` が指定している `pyglet.gl.Config`（OpenGL 設定テンプレート）の各オプションを、意味・影響・トレードオフ込みで整理する。
-# なぜ: `Config` と `Window` の責務が混ざりやすく、見た目/性能/互換性の調整ポイントを後から追えるようにするため。
+# どこで: `docs/memo/pyglet_gl_config_options.md`。
+# 何を: interactive window が指定する `pyglet.gl.Config` の各オプションを整理する。
+# なぜ: `Config` と `Window` の責務を分け、見た目と性能の調整点を明確にするため。
 
 ## 対象（このリポでの利用箇所）
 
-- 描画ウィンドウ: `src/app/draw_window.py` の `create_draw_window()` が `pyglet.gl.Config(...)` を作り、`pyglet.window.Window(..., config=config)` に渡す。
-- Parameter GUI: `src/app/parameter_gui/pyglet_backend.py` でも同様に `pyglet.gl.Config(...)` を作り、GUI 用の `Window` に渡す。
+- 描画ウィンドウ: `src/grafix/interactive/draw_window.py` の `create_draw_window()`。
+- Parameter GUI: `src/grafix/interactive/parameter_gui/pyglet_backend.py` の
+  `create_parameter_gui_window()`。
 
 このドキュメントは、手元の環境で確認できる pyglet `2.1.11` の `Config` 実装（`pyglet/gl/base.py`）に基づく。
 
@@ -20,7 +21,7 @@
 - 要求が厳しすぎると、マッチする設定が存在せず例外になる。
   - 代表例: MSAA（`sample_buffers`/`samples`）や特定の GL バージョン指定が環境にない場合。
 
-## `src/app/draw_window.py` で指定している項目（詳細）
+## `src/grafix/interactive/draw_window.py` で指定している項目（詳細）
 
 ### `double_buffer=True`
 
@@ -50,18 +51,16 @@ MSAA（Multi-Sample Anti-Aliasing）を要求する 2 つの指定。
   - 環境によっては要求を満たせず `NoSuchConfigException` などで `Window` 生成が失敗する可能性がある。
   - 高い値（例: 8, 16）にすると失敗率も上がるので、まず 4 を基準にするのが無難。
 
-### `vsync=True`（注意: `Config` の項目ではない）
+### VSync（`Config` の項目ではない）
 
-このリポの `create_draw_window()` では `Config(..., vsync=True)` の形で指定しているが、pyglet 2.1.11 の `Config` が持つ公式な属性一覧に `vsync` は含まれない。
+pyglet 2.1.11 の `Config` に `vsync` は含まれない。VSync は
+`pyglet.window.Window(vsync=...)` または Window 作成前の
+`pyglet.options["vsync"]` で制御する。
 
-- 結論
-  - `Config` 側に `vsync` を渡しても、**実質的に無視される**（`Config` は未知のキーワードを単に属性として載せない）。
-- VSync はどこで制御すべきか
-  - `pyglet.window.Window(vsync=...)` に渡す（ウィンドウ単位の指定）
-  - もしくは `pyglet.options["vsync"] = True/False` を **Window 作成前** に設定する（グローバルの既定値）
-- このリポの現状
-  - `src/api/run.py` で `pyglet.options["vsync"] = True` を Window 作成前に設定しているため、描画ウィンドウはそこで VSync が有効化される想定。
-  - GUI 側は `src/app/parameter_gui/pyglet_backend.py` が `Window(vsync=bool(vsync))` を渡している。
+このリポジトリでは `src/grafix/api/runner.py` が Window 作成前に
+`pyglet.options["vsync"] = False` を固定する。Parameter GUI の
+`create_parameter_gui_window(vsync=False)` も既定で無効化し、クリック/ドラッグの
+event polling をディスプレイ同期で抑制しない。`Config` には VSync 引数を渡さない。
 
 ## `Config` で指定できる主な項目（一覧 + 使いどころ）
 
@@ -131,4 +130,3 @@ MSAA（Multi-Sample Anti-Aliasing）を要求する 2 つの指定。
   - マルチディスプレイやフルスクリーン時のターゲット指定に関わる（用途が明確なときだけ触る）。
 - `context`
   - 既存コンテキストをアタッチする特殊用途（通常は `config` から生成させる）。
-

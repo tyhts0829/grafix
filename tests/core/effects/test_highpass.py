@@ -10,12 +10,12 @@ from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.api import E, G
 from grafix.core.effects.highpass import (
-    CLOSED_DISTANCE_EPS,
     MAX_KERNEL_RADIUS,
     MAX_TOTAL_VERTICES,
     highpass,
 )
 from grafix.core.effects.util import (
+    RESAMPLE_CLOSED_DISTANCE_EPS,
     ResamplePlan,
     build_gaussian_kernel,
     pack_polylines,
@@ -119,7 +119,7 @@ def _legacy_highpass(
         step=step,
         closed=closed,
         max_vertices=MAX_TOTAL_VERTICES,
-        closed_distance=CLOSED_DISTANCE_EPS,
+        closed_distance=RESAMPLE_CLOSED_DISTANCE_EPS,
     )
     kernel = build_gaussian_kernel(
         sigma_in_samples=sigma / step,

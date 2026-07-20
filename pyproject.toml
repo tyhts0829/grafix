@@ -24,9 +24,8 @@ dependencies = [
   "shapely",
   "pyclipper",
   "moderngl",
-  "pyglet",
-  "imgui",
-  "fontPens",
+  "pyglet>=2.1,<3",
+  "imgui>=2,<3",
   "fontTools",
   "PyOpenGL",
   "PyOpenGL_accelerate",
@@ -63,9 +62,6 @@ grafix = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-filterwarnings = [
-  "ignore:The py23 module has been deprecated.*:DeprecationWarning:fontTools\\.misc\\.py23",
-]
 
 [tool.ruff]
 line-length = 100
@@ -73,4 +69,4 @@ target-version = "py311"
 
 [tool.mypy]
 python_version = "3.11"
-ignore_missing_imports = true
+mypy_path = "typings"

@@ -24,16 +24,13 @@ from grafix.core.parameters.layer_style import observe_and_apply_layer_style
 from grafix.core.pipeline import RealizedLayer, realize_scene
 from grafix.core.realize import RealizeSession
 from grafix.core.preview_quality import PreviewQuality, preview_quality_context
-from grafix.core.resource_budget import (
-    DEFAULT_RESOURCE_BUDGET,
-    ResourceBudget,
-    ResourceLimitError,
-)
+from grafix.core.resource_budget import ResourceLimitError
 from grafix.core.runtime_limits import (
+    DEFAULT_RUNTIME_LIMIT_PROFILES,
     RuntimeLimitProfiles,
-    profiles_for_resource_budget,
 )
 from grafix.core.scene import SceneItem
+from grafix.core.value_validation import exact_integer, finite_real
 from grafix.interactive.runtime.mp_draw import MpDraw
 from grafix.interactive.runtime.perf import PerfCollector
 from grafix.interactive.runtime.diagnostics import DiagnosticCenter, DiagnosticEvent
@@ -49,20 +46,22 @@ class SceneRunner:
         perf: PerfCollector,
         n_worker: int,
         evaluation_timeout: float | None = 5.0,
-        resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
-        runtime_limit_profiles: RuntimeLimitProfiles | None = None,
+        runtime_limit_profiles: RuntimeLimitProfiles = DEFAULT_RUNTIME_LIMIT_PROFILES,
         diagnostic_center: DiagnosticCenter | None = None,
     ) -> None:
-        worker_count = int(n_worker)
-        if worker_count < 0:
-            raise ValueError("n_worker は 0 以上である必要があります")
-
-        profiles = (
-            profiles_for_resource_budget(resource_budget)
-            if runtime_limit_profiles is None
-            else runtime_limit_profiles
+        worker_count = exact_integer(n_worker, name="n_worker", minimum=0)
+        timeout = (
+            None
+            if evaluation_timeout is None
+            else finite_real(
+                evaluation_timeout,
+                name="evaluation_timeout",
+                minimum=0.0,
+                minimum_inclusive=False,
+            )
         )
-        if not isinstance(profiles, RuntimeLimitProfiles):
+
+        if not isinstance(runtime_limit_profiles, RuntimeLimitProfiles):
             raise TypeError(
                 "runtime_limit_profiles は RuntimeLimitProfiles である必要があります"
             )
@@ -70,21 +69,25 @@ class SceneRunner:
         self._draw = draw
         self._perf = perf
         self._worker_count = worker_count
-        self._evaluation_timeout = evaluation_timeout
-        self._runtime_limit_profiles = profiles
+        self._evaluation_timeout = timeout
+        self._runtime_limit_profiles = runtime_limit_profiles
         self._realize_sessions = {
-            "draft": RealizeSession(runtime_limits=profiles.preview, profiler=perf),
-            "final": RealizeSession(runtime_limits=profiles.final, profiler=perf),
+            "draft": RealizeSession(
+                runtime_limits=runtime_limit_profiles.preview,
+                profiler=perf,
+            ),
+            "final": RealizeSession(
+                runtime_limits=runtime_limit_profiles.final,
+                profiler=perf,
+            ),
         }
-        # 既存の計測・test が参照する preview session alias。
-        self._realize_session = self._realize_sessions["draft"]
         self._diagnostic_center = diagnostic_center
         self._last_operation_diagnostics: tuple[OperationDiagnostic, ...] = ()
         self._mp_draw: MpDraw | None = (
             MpDraw(
                 draw,
                 n_worker=worker_count,
-                evaluation_timeout=evaluation_timeout,
+                evaluation_timeout=timeout,
                 **(
                     {"event_callback": perf.record_event}
                     if perf.enabled
@@ -310,8 +313,8 @@ class SceneRunner:
         cc_snapshot: MidiFrameSnapshot | None,
         defaults: LayerStyleDefaults,
         recording: bool,
-        transport_epoch: int | None = None,
-        quality: PreviewQuality = "draft",
+        transport_epoch: int,
+        quality: PreviewQuality,
     ) -> list[RealizedLayer]:
         """シーンを実行して realized_layers を返す。
 
@@ -323,6 +326,10 @@ class SceneRunner:
 
         if quality not in {"draft", "final"}:
             raise ValueError(f"unknown preview quality: {quality!r}")
+        if recording and quality != "final":
+            raise ValueError(
+                "recording=True の場合は quality='final' が必要です"
+            )
         self._last_evaluation_succeeded = None
         self._last_output_updated = False
         self._last_evaluation_t = None
@@ -331,23 +338,22 @@ class SceneRunner:
         self._last_realized_frame_id = None
         self._waiting_for_fresh_result = False
         operation_diagnostics: OperationDiagnosticBuffer | None = None
-        effective_quality: PreviewQuality = "final" if recording else quality
         input_snapshot_revision = int(store.revision)
         try:
             self._update_epoch(
                 recording=bool(recording),
                 transport_epoch=transport_epoch,
-                quality=effective_quality,
+                quality=quality,
             )
-            with preview_quality_context(effective_quality):
+            with preview_quality_context(quality):
                 with parameter_context(
                     store, cc_snapshot=cc_snapshot
                 ) as operation_diagnostics:
-                    if effective_quality == "final" or self._mp_draw is None:
+                    if quality == "final" or self._mp_draw is None:
                         realized_layers = self._run_sync(
                             t,
                             defaults=defaults,
-                            quality=effective_quality,
+                            quality=quality,
                         )
                         frame_params = current_frame_params()
                         if frame_params is not None:
@@ -373,7 +379,7 @@ class SceneRunner:
                         snapshot_revision=store.revision,
                         cc_snapshot=cc_snapshot,
                         defaults=defaults,
-                        quality=effective_quality,
+                        quality=quality,
                         style_revision=int(store.style_revision),
                     )
         except Exception as exc:
@@ -388,29 +394,32 @@ class SceneRunner:
         self,
         *,
         recording: bool,
-        transport_epoch: int | None,
+        transport_epoch: int,
         quality: PreviewQuality,
     ) -> None:
         """transport/recording の不連続を mp generation へ写像する。"""
 
         discontinuity = False
-        if transport_epoch is not None:
-            requested = int(transport_epoch)
-            if requested < 0:
-                raise ValueError("transport_epoch は 0 以上である必要があります")
-            previous = self._last_transport_epoch
-            if previous is not None and requested < previous:
-                raise ValueError(
-                    "transport_epoch は単調増加である必要があります: "
-                    f"previous={previous}, got={requested}"
-                )
-            if previous is None:
-                # SceneRunner 作成前に seek 済みの場合も、epoch=0 の既定 task と
-                # 混同しない。ただし初期値 0 は通常の連続開始として扱う。
-                discontinuity = requested > 0
-            elif requested != previous:
-                discontinuity = True
-            self._last_transport_epoch = requested
+        if isinstance(transport_epoch, bool) or not isinstance(
+            transport_epoch, int
+        ):
+            raise TypeError("transport_epoch は int である必要があります")
+        requested = transport_epoch
+        if requested < 0:
+            raise ValueError("transport_epoch は 0 以上である必要があります")
+        previous = self._last_transport_epoch
+        if previous is not None and requested < previous:
+            raise ValueError(
+                "transport_epoch は単調増加である必要があります: "
+                f"previous={previous}, got={requested}"
+            )
+        if previous is None:
+            # SceneRunner 作成前に seek 済みの場合も、epoch=0 の既定 task と
+            # 混同しない。ただし初期値 0 は通常の連続開始として扱う。
+            discontinuity = requested > 0
+        elif requested != previous:
+            discontinuity = True
+        self._last_transport_epoch = requested
 
         previous_recording = self._last_recording
         if previous_recording is not None and recording != previous_recording:
@@ -556,7 +565,7 @@ class SceneRunner:
         )
         perf.record_event(
             "mp_task_submitted",
-            frame_id=getattr(mp_draw, "last_submitted_frame_id", None),
+            frame_id=mp_draw.last_submitted_frame_id,
             revision=int(snapshot_revision),
         )
 

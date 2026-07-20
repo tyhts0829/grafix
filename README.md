@@ -73,6 +73,7 @@ frame, parameters, and worker alive; the Inspector shows the traceback with Retr
 - `cc`: MIDI CC(`cc[1]` -> 0..1) to control parameters with physical controllers
 - `run(draw)`: interactive rendering + Parameter GUI
 - `ResourceBudget`: per-operation vertex/line/byte limits checked before large allocations
+- `RuntimeLimits` / `RuntimeLimitProfiles`: headless and interactive resource profiles
 
 `G.select` and `E.select` expose the registered operations as a Parameter GUI choice while
 keeping target-specific base arguments separate:
@@ -135,8 +136,23 @@ Closing the Inspector hides it instead of stopping the artwork; `Cmd/Ctrl+I` sho
 again. Preview/Inspector placement, Inspector visibility, and UI scale are saved per
 sketch and clamped to the available screens on the next launch.
 
-Use `run(..., resource_budget=ResourceBudget(...))` to tune allocation limits for the
-machine or sketch. The defaults apply to code-provided values as well as GUI values.
+Use `RuntimeLimits` for headless rendering and `RuntimeLimitProfiles` for interactive
+preview/final limits:
+
+```python
+from grafix import ResourceBudget, RuntimeLimitProfiles, RuntimeLimits, run
+
+budget = ResourceBudget(
+    max_output_vertices=2_000_000,
+    max_output_lines=200_000,
+    max_output_bytes=256 * 1024 * 1024,
+)
+limits = RuntimeLimits(per_operation=budget, scene=budget)
+run(
+    draw,
+    runtime_limit_profiles=RuntimeLimitProfiles(preview=limits, final=limits),
+)
+```
 
 `G`, `E`, `L`, and `P` accept `key=str|int` as a stable semantic identity when a
 parameter group must survive moving its call within the same source file. For repeated
@@ -295,8 +311,6 @@ def grid_system_frame(
     *,
     n_rows: int = 5,
     n_cols: int = 8,
-    name=None,
-    key=None,
 ):
     return G.grid(
         nx=n_cols,
@@ -307,12 +321,17 @@ def grid_system_frame(
 
 
 P.grid_system_frame()
+P(name="Main grid", key="main").grid_system_frame(n_rows=6)
 ```
 
 A preset is a scene component: it must return a `Geometry`, a `Layer`, or a nested
 sequence of those values (`SceneItem`). Every preset also accepts the automatically
 added `activate` argument. When `activate=False`, Grafix skips the function body and
 returns an empty `Geometry` that can be passed through the normal scene pipeline.
+Labels and parameter identity use only the namespace form
+`P(name=..., key=..., instance_key=..., shared=...).<name>(...)`; preset function
+signatures do not own these wrapper-reserved names. Direct `P.<name>(...)` calls accept
+the automatically added `activate` argument, but not the four identity arguments.
 
 For IDE completion of `P.<name>(...)`, regenerate stubs after adding/changing presets:
 
@@ -492,7 +511,7 @@ mypy src/grafix
 PYTHONPATH=src python -m grafix benchmark run --suite system --profile smoke
 # long measurements are explicit; hosted CI does not use wall time as a hard gate
 PYTHONPATH=src python -m grafix benchmark run --suite all --profile long
-# generate the offline HTML report from schema v3 run JSON
+# generate the offline HTML report from schema v4 run JSON
 PYTHONPATH=src python -m grafix benchmark report
 ```
 

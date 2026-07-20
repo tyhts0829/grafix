@@ -4,13 +4,31 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 DEFAULT_WINDOW_WIDTH = 1100
 DEFAULT_WINDOW_HEIGHT = 1000
 # 3 固定列を保ったまま Value slider に約 175 px を残せる下限。
 MINIMUM_PARAMETER_GUI_WINDOW_WIDTH = 760
 MINIMUM_PARAMETER_GUI_WINDOW_HEIGHT = 480
+
+
+class ImguiPygletRenderer(Protocol):
+    """Grafix の pyglet 描画ループが使う renderer 契約。"""
+
+    def process_inputs(self) -> None: ...
+
+    def render(self, draw_data: Any) -> None: ...
+
+    def refresh_font_texture(self) -> None: ...
+
+    def shutdown(self) -> None: ...
+
+
+class ImguiContentRegion(Protocol):
+    """利用可能な ImGui content 幅を公開する最小契約。"""
+
+    def get_content_region_available_width(self) -> float: ...
 
 
 def _install_imgui_clipboard_callbacks(imgui_mod: Any) -> None:
@@ -38,16 +56,18 @@ def _install_imgui_clipboard_callbacks(imgui_mod: Any) -> None:
         io.get_clipboard_text_fn = _get_clipboard_text
 
 
-def _create_imgui_pyglet_renderer(imgui_pyglet_mod: Any, gui_window: Any) -> Any:
-    """pyglet 用の ImGui renderer を作成する。"""
+def create_imgui_pyglet_renderer(gui_window: Any) -> ImguiPygletRenderer:
+    """pyimgui 2 の programmable pyglet renderer を作成する。"""
 
-    factory = getattr(imgui_pyglet_mod, "create_renderer", None)
-    if callable(factory):
-        return factory(gui_window)
-    renderer_type = getattr(imgui_pyglet_mod, "PygletRenderer", None)
-    if renderer_type is None:
-        raise RuntimeError("imgui.integrations.pyglet renderer is unavailable")
-    return renderer_type(gui_window)
+    from imgui.integrations.pyglet import PygletProgrammablePipelineRenderer
+
+    return PygletProgrammablePipelineRenderer(gui_window)
+
+
+def content_region_available_width(imgui_mod: ImguiContentRegion) -> float:
+    """現在の ImGui window/table cell で利用可能な幅を返す。"""
+
+    return max(0.0, float(imgui_mod.get_content_region_available_width()))
 
 
 def _sync_imgui_io_for_window(imgui_mod: Any, gui_window: Any, *, dt: float) -> None:

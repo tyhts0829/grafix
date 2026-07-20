@@ -8,27 +8,24 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Literal, assert_never
 
-from grafix.core.operation_selector import selector_kind
 from grafix.core.parameters.effects import EffectStepKey
+from grafix.core.parameters.identity import group_key, identity_string
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.source import ValueSource
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
 
-from .group_blocks import (
-    GroupBlock,
-    GroupBlockItem,
-    GroupBlockLayout,
-    group_layout_from_rows,
-)
+from .group_blocks import GroupBlockLayout
+from .grouping import GroupId, GroupType
 from .labeling import (
     format_contextual_row_label,
     humanize_identifier,
     operation_display_name,
 )
 from .midi_learn import MidiLearnState
+from .pyglet_backend import content_region_available_width
 from .rules import ui_rules_for_row
 from .snippet import snippet_for_block
 from .table_model import EffectChainTableState
@@ -85,6 +82,25 @@ class EffectOrderCommand:
     target: EffectStepKey | None = None
     placement: Literal["before", "after"] | None = None
 
+    def __post_init__(self) -> None:
+        identity_string(self.chain_id, name="EffectOrderCommand.chain_id")
+        if self.kind == "move":
+            if self.source is None or self.target is None:
+                raise ValueError("move command には source と target が必要です")
+            group_key(self.source, name="EffectOrderCommand.source")
+            group_key(self.target, name="EffectOrderCommand.target")
+            if self.placement not in {"before", "after"}:
+                raise ValueError("move command には placement が必要です")
+            return
+        if self.kind == "reset":
+            if any(
+                value is not None
+                for value in (self.source, self.target, self.placement)
+            ):
+                raise ValueError("reset command に move 引数は指定できません")
+            return
+        raise ValueError(f"unknown effect order command: {self.kind!r}")
+
     @classmethod
     def move(
         cls,
@@ -98,9 +114,9 @@ class EffectOrderCommand:
 
         return cls(
             kind="move",
-            chain_id=str(chain_id),
-            source=(str(source[0]), str(source[1])),
-            target=(str(target[0]), str(target[1])),
+            chain_id=identity_string(chain_id, name="chain_id"),
+            source=group_key(source, name="source"),
+            target=group_key(target, name="target"),
             placement=placement,
         )
 
@@ -108,7 +124,10 @@ class EffectOrderCommand:
     def reset(cls, *, chain_id: str) -> EffectOrderCommand:
         """コード順へのreset commandを返す。"""
 
-        return cls(kind="reset", chain_id=str(chain_id))
+        return cls(
+            kind="reset",
+            chain_id=identity_string(chain_id, name="chain_id"),
+        )
 
 
 def _encode_effect_step_drag_payload(
@@ -117,8 +136,13 @@ def _encode_effect_step_drag_payload(
 ) -> bytes:
     """drag payloadを小さなUTF-8 JSONとして返す。"""
 
+    normalized_step = group_key(step, name="step")
     return json.dumps(
-        [str(chain_id), str(step[0]), str(step[1])],
+        [
+            identity_string(chain_id, name="chain_id"),
+            normalized_step[0],
+            normalized_step[1],
+        ],
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -141,7 +165,7 @@ def _decode_effect_step_drag_payload(
         or not all(isinstance(item, str) and item for item in decoded)
     ):
         return None
-    return str(decoded[0]), (str(decoded[1]), str(decoded[2]))
+    return decoded[0], (decoded[1], decoded[2])
 
 
 def _effect_step_drop_placement(
@@ -212,74 +236,54 @@ def _derive_header_colors(
     return normal, hovered, active
 
 
-def _header_kind_for_group_id(group_id: tuple[str, object]) -> str | None:
-    """GroupBlock.group_id からヘッダ種別（style/preset/primitive/effect）を返す。"""
+def _header_kind_for_group_id(group_id: GroupId) -> str:
+    """group_id からヘッダ種別（style/preset/primitive/effect）を返す。"""
 
-    group_type = str(group_id[0])
-    if group_type == "effect_chain":
+    group_type = group_id[0]
+    if group_type is GroupType.EFFECT_CHAIN:
         return "effect"
-    if group_type in {"style", "preset", "primitive"}:
-        return group_type
-    return None
-
-
-def _collapse_key_for_block(block: GroupBlock) -> str | None:
-    """ブロックの折りたたみ永続キーを返す。"""
-
-    first_row = None if not block.items else block.items[0].row
-    return _collapse_key_for_group(block.group_id, first_row)
+    if group_type is GroupType.STYLE:
+        return "style"
+    if group_type is GroupType.PRESET:
+        return "preset"
+    if group_type is GroupType.PRIMITIVE:
+        return "primitive"
+    assert_never(group_type)
 
 
 def _collapse_key_for_group(
-    group_id: tuple[str, object],
+    group_id: GroupId,
     first_row: ParameterRow | None,
 ) -> str | None:
     """group id と先頭行から折りたたみ永続キーを返す。"""
 
-    group_type = str(group_id[0])
-    if group_type == "style":
+    group_type = group_id[0]
+    if group_type is GroupType.STYLE:
         return "style:global"
-    if group_type == "effect_chain":
-        chain_id = str(group_id[1])
+    if group_type is GroupType.EFFECT_CHAIN:
+        chain_id = identity_string(group_id[1], name="effect chain group id")
         return f"effect_chain:{chain_id}"
-    if group_type == "preset":
+    if group_type is GroupType.PRESET:
         if first_row is None:
             return None
         return f"preset:{first_row.op}:{first_row.site_id}"
-    if group_type == "primitive":
+    if group_type is GroupType.PRIMITIVE:
         if first_row is None:
             return None
         return f"primitive:{first_row.op}:{first_row.site_id}"
-    return None
+    assert_never(group_type)
 
 
 def parameter_group_collapse_keys(
     rows: list[ParameterRow],
     *,
-    group_layout: Sequence[GroupBlockLayout] | None = None,
-    primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
-    layer_style_name_by_site_id: Mapping[str, str] | None = None,
-    effect_chain_header_by_id: Mapping[str, str] | None = None,
-    step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
-    effect_step_ordinal_by_site: Mapping[tuple[str, str], int] | None = None,
+    group_layout: Sequence[GroupBlockLayout],
 ) -> tuple[str, ...]:
     """現在の行モデルから Expand/Collapse all 対象の header key を返す。"""
 
-    layout = (
-        group_layout_from_rows(
-            rows,
-            primitive_header_by_group=primitive_header_by_group,
-            layer_style_name_by_site_id=layer_style_name_by_site_id,
-            effect_chain_header_by_id=effect_chain_header_by_id,
-            step_info_by_site=step_info_by_site,
-            effect_step_ordinal_by_site=effect_step_ordinal_by_site,
-        )
-        if group_layout is None
-        else group_layout
-    )
     keys: list[str] = []
     seen: set[str] = set()
-    for block in layout:
+    for block in group_layout:
         if not block.header:
             continue
         first_row = None if not block.items else rows[block.items[0].row_index]
@@ -294,7 +298,7 @@ def parameter_group_collapse_keys(
 def _row_visible_label(row: ParameterRow) -> str:
     """行の表示ラベル（`op#ordinal arg`）を返す。"""
 
-    op = str(row.op)
+    op = row.op
     if op in preset_registry:
         op = preset_registry[op].display_op
     display_arg = row.display_name or row.arg
@@ -332,14 +336,8 @@ def source_badge_for_row(row: ParameterRow, last_source: ValueSource | None) -> 
 def _set_item_tooltip(imgui, text: str) -> None:
     """直前の item がhoverまたはkeyboard focus中ならtooltipを設定する。"""
 
-    is_item_hovered = getattr(imgui, "is_item_hovered", None)
-    is_item_focused = getattr(imgui, "is_item_focused", None)
-    set_tooltip = getattr(imgui, "set_tooltip", None)
-    visible = (callable(is_item_hovered) and bool(is_item_hovered())) or (
-        callable(is_item_focused) and bool(is_item_focused())
-    )
-    if callable(set_tooltip) and visible:
-        set_tooltip(str(text))
+    if imgui.is_item_hovered() or imgui.is_item_focused():
+        imgui.set_tooltip(str(text))
 
 
 def _notify_parameter_help(
@@ -352,21 +350,12 @@ def _notify_parameter_help(
     if callback is None:
         return
 
-    def _item_state(name: str) -> bool:
-        getter = getattr(imgui, name, None)
-        if not callable(getter):
-            return False
-        try:
-            return bool(getter())
-        except TypeError:
-            return False
-
-    selected = _item_state("is_item_clicked")
+    selected = bool(imgui.is_item_clicked())
     if (
         selected
-        or _item_state("is_item_hovered")
-        or _item_state("is_item_focused")
-        or _item_state("is_item_active")
+        or bool(imgui.is_item_hovered())
+        or bool(imgui.is_item_focused())
+        or bool(imgui.is_item_active())
     ):
         callback(row, selected)
 
@@ -379,15 +368,7 @@ def _imgui_metric_scale(imgui) -> float:
     1.0 のままにする。
     """
 
-    calc_text_size = getattr(imgui, "calc_text_size", None)
-    if not callable(calc_text_size):
-        return 1.0
-    try:
-        text_height = float(calc_text_size("CODE")[1])
-    except (IndexError, TypeError, ValueError):
-        return 1.0
-    if not math.isfinite(text_height) or text_height <= 0.0:
-        return 1.0
+    text_height = float(imgui.calc_text_size("CODE")[1])
     return min(3.0, max(1.0, text_height / 14.0))
 
 
@@ -521,51 +502,27 @@ def _render_source_segment_button(
 
     colors = _source_segment_style(source, active=bool(active))
     color_indices = (
-        getattr(imgui, "COLOR_BUTTON", None),
-        getattr(imgui, "COLOR_BUTTON_HOVERED", None),
-        getattr(imgui, "COLOR_BUTTON_ACTIVE", None),
-        getattr(imgui, "COLOR_TEXT", None),
+        imgui.COLOR_BUTTON,
+        imgui.COLOR_BUTTON_HOVERED,
+        imgui.COLOR_BUTTON_ACTIVE,
+        imgui.COLOR_TEXT,
     )
-    push_style_color = getattr(imgui, "push_style_color", None)
-    pop_style_color = getattr(imgui, "pop_style_color", None)
-    push_style_var = getattr(imgui, "push_style_var", None)
-    pop_style_var = getattr(imgui, "pop_style_var", None)
-    pushed_colors = 0
-    if (
-        callable(push_style_color)
-        and callable(pop_style_color)
-        and all(index is not None for index in color_indices)
-    ):
-        for color_index, color in zip(color_indices, colors, strict=True):
-            push_style_color(color_index, *color)
-        pushed_colors = len(colors)
-    pushed_frame_padding = False
-    frame_padding_index = getattr(imgui, "STYLE_FRAME_PADDING", None)
-    if (
-        callable(push_style_var)
-        and callable(pop_style_var)
-        and frame_padding_index is not None
-    ):
-        metric_scale = _imgui_metric_scale(imgui)
-        frame_padding_y = 6.0 * metric_scale
-        get_style = getattr(imgui, "get_style", None)
-        if callable(get_style):
-            try:
-                frame_padding_y = float(get_style().frame_padding[1])
-            except (AttributeError, IndexError, TypeError, ValueError):
-                pass
-        # 横paddingだけを詰め、40px CODE segmentでも文字をclipしない。
-        push_style_var(frame_padding_index, (2.0 * metric_scale, frame_padding_y))
-        pushed_frame_padding = True
+    for color_index, color in zip(color_indices, colors, strict=True):
+        imgui.push_style_color(color_index, *color)
+    metric_scale = _imgui_metric_scale(imgui)
+    frame_padding_y = float(imgui.get_style().frame_padding[1])
+    # 横paddingだけを詰め、40px CODE segmentでも文字をclipしない。
+    imgui.push_style_var(
+        imgui.STYLE_FRAME_PADDING,
+        (2.0 * metric_scale, frame_padding_y),
+    )
     try:
         # ``##source_*`` を固定し、active state が変わっても ImGui ID を保つ。
         visible = str(source) if visible_label is None else str(visible_label)
         return bool(imgui.button(f"{visible}##source_{source.lower()}", float(width)))
     finally:
-        if pushed_frame_padding and callable(pop_style_var):
-            pop_style_var()
-        if pushed_colors and callable(pop_style_color):
-            pop_style_color(pushed_colors)
+        imgui.pop_style_var()
+        imgui.pop_style_color(len(colors))
 
 
 def _render_midi_button(
@@ -586,28 +543,19 @@ def _render_midi_button(
         warning,
     )
     color_indices = (
-        getattr(imgui, "COLOR_BUTTON", None),
-        getattr(imgui, "COLOR_BUTTON_HOVERED", None),
-        getattr(imgui, "COLOR_BUTTON_ACTIVE", None),
-        getattr(imgui, "COLOR_TEXT", None),
+        imgui.COLOR_BUTTON,
+        imgui.COLOR_BUTTON_HOVERED,
+        imgui.COLOR_BUTTON_ACTIVE,
+        imgui.COLOR_TEXT,
     )
-    push_style_color = getattr(imgui, "push_style_color", None)
-    pop_style_color = getattr(imgui, "pop_style_color", None)
-    pushed_colors = 0
-    if (
-        bool(driving)
-        and callable(push_style_color)
-        and callable(pop_style_color)
-        and all(index is not None for index in color_indices)
-    ):
+    if driving:
         for color_index, color in zip(color_indices, colors, strict=True):
-            push_style_color(color_index, *color)
-        pushed_colors = len(colors)
+            imgui.push_style_color(color_index, *color)
     try:
         return bool(imgui.button(str(label), float(width)))
     finally:
-        if pushed_colors and callable(pop_style_color):
-            pop_style_color(pushed_colors)
+        if driving:
+            imgui.pop_style_color(len(colors))
 
 
 def _render_source_actions_menu(
@@ -618,30 +566,16 @@ def _render_source_actions_menu(
 ) -> bool:
     """visible な source menu を描画し、明示 reset が選ばれたら True を返す。"""
 
-    push_style_var = getattr(imgui, "push_style_var", None)
-    pop_style_var = getattr(imgui, "pop_style_var", None)
-    frame_padding_index = getattr(imgui, "STYLE_FRAME_PADDING", None)
-    pushed_frame_padding = False
-    if (
-        callable(push_style_var)
-        and callable(pop_style_var)
-        and frame_padding_index is not None
-    ):
-        metric_scale = _imgui_metric_scale(imgui)
-        frame_padding_y = 6.0 * metric_scale
-        get_style = getattr(imgui, "get_style", None)
-        if callable(get_style):
-            try:
-                frame_padding_y = float(get_style().frame_padding[1])
-            except (AttributeError, IndexError, TypeError, ValueError):
-                pass
-        push_style_var(frame_padding_index, (2.0 * metric_scale, frame_padding_y))
-        pushed_frame_padding = True
+    metric_scale = _imgui_metric_scale(imgui)
+    frame_padding_y = float(imgui.get_style().frame_padding[1])
+    imgui.push_style_var(
+        imgui.STYLE_FRAME_PADDING,
+        (2.0 * metric_scale, frame_padding_y),
+    )
     try:
         clicked_menu = bool(imgui.button("v##source_actions", float(width)))
     finally:
-        if pushed_frame_padding and callable(pop_style_var):
-            pop_style_var()
+        imgui.pop_style_var()
     _set_item_tooltip(imgui, "Source actions")
     if clicked_menu:
         imgui.open_popup("Source actions##source_actions_popup")
@@ -649,10 +583,8 @@ def _render_source_actions_menu(
     reset_to_code = False
     with imgui.begin_popup("Source actions##source_actions_popup") as popup:
         if popup.opened:
-            text_disabled = getattr(imgui, "text_disabled", None)
-            if callable(text_disabled):
-                text_disabled("Source")
-                imgui.separator()
+            imgui.text_disabled("Source")
+            imgui.separator()
             clicked_reset, _selected = imgui.menu_item(
                 "Reset to CODE and clear MIDI##reset_to_code",
                 None,
@@ -661,9 +593,7 @@ def _render_source_actions_menu(
             )
             if clicked_reset:
                 reset_to_code = True
-                close_current_popup = getattr(imgui, "close_current_popup", None)
-                if callable(close_current_popup):
-                    close_current_popup()
+                imgui.close_current_popup()
     return reset_to_code
 
 
@@ -679,9 +609,9 @@ def _render_label_cell(
     """source + label を描画し、(source変更, override, 明示reset) を返す。"""
 
     imgui.table_set_column_index(0)
-    cell_width = _content_region_available_width(imgui)
+    cell_width = content_region_available_width(imgui)
     metric_scale = _imgui_metric_scale(imgui)
-    compact = cell_width is not None and cell_width < (
+    compact = cell_width < (
         SOURCE_SELECTOR_SHORT_BREAKPOINT_PX * metric_scale
     )
     code_width = (
@@ -757,12 +687,7 @@ def _render_favorite_toggle(imgui, favorite: bool) -> tuple[bool, bool]:
 
     imgui.same_line(0.0, 4.0 * _imgui_metric_scale(imgui))
     label = "★##favorite" if favorite else "☆##favorite"
-    small_button = getattr(imgui, "small_button", None)
-    clicked = (
-        bool(small_button(label))
-        if callable(small_button)
-        else bool(imgui.button(label))
-    )
+    clicked = bool(imgui.small_button(label))
     _set_item_tooltip(
         imgui,
         "Remove from favorites" if favorite else "Pin to favorites",
@@ -787,107 +712,56 @@ def _draw_effect_step_insertion_line(
 ) -> None:
     """drop previewの水平挿入線を描画する。"""
 
-    get_draw_list = getattr(imgui, "get_window_draw_list", None)
-    get_color = getattr(imgui, "get_color_u32_rgba", None)
-    if not callable(get_draw_list) or not callable(get_color):
-        return
-    draw_list = get_draw_list()
-    add_line = getattr(draw_list, "add_line", None)
-    if not callable(add_line):
-        return
-    x_min = float(item_min[0])
-    x_max = float(item_max[0])
-    get_window_position = getattr(imgui, "get_window_position", None)
-    get_region_min = getattr(imgui, "get_window_content_region_min", None)
-    get_region_max = getattr(imgui, "get_window_content_region_max", None)
-    if (
-        callable(get_window_position)
-        and callable(get_region_min)
-        and callable(get_region_max)
-    ):
-        try:
-            window_position = get_window_position()
-            region_min = get_region_min()
-            region_max = get_region_max()
-            x_min = float(window_position[0]) + float(region_min[0])
-            x_max = float(window_position[0]) + float(region_max[0])
-        except (IndexError, TypeError, ValueError):
-            pass
+    draw_list = imgui.get_window_draw_list()
+    window_position = imgui.get_window_position()
+    region_min = imgui.get_window_content_region_min()
+    region_max = imgui.get_window_content_region_max()
+    x_min = float(window_position[0]) + float(region_min[0])
+    x_max = float(window_position[0]) + float(region_max[0])
     y = float(item_min[1]) if placement == "before" else float(item_max[1])
-    color = get_color(*PARAMETER_GUI_PALETTE["success"])
+    color = imgui.get_color_u32_rgba(*PARAMETER_GUI_PALETTE["success"])
     # table column 内で取得した draw list のclip矩形は通常その列幅に限られる。
     # 挿入線だけはtable全幅へ見せたいので、縦方向のclipを保ったまま横方向を
     # window content領域へ広げる。
-    push_clip_rect = getattr(draw_list, "push_clip_rect", None)
-    pop_clip_rect = getattr(draw_list, "pop_clip_rect", None)
-    get_clip_min = getattr(draw_list, "get_clip_rect_min", None)
-    get_clip_max = getattr(draw_list, "get_clip_rect_max", None)
-    pushed_clip = False
-    if (
-        callable(push_clip_rect)
-        and callable(pop_clip_rect)
-        and callable(get_clip_min)
-        and callable(get_clip_max)
-    ):
-        try:
-            clip_min = get_clip_min()
-            clip_max = get_clip_max()
-            push_clip_rect(
-                x_min,
-                float(clip_min[1]),
-                x_max,
-                float(clip_max[1]),
-                False,
-            )
-            pushed_clip = True
-        except (IndexError, TypeError, ValueError):
-            pass
+    clip_min = draw_list.get_clip_rect_min()
+    clip_max = draw_list.get_clip_rect_max()
+    draw_list.push_clip_rect(
+        x_min,
+        float(clip_min[1]),
+        x_max,
+        float(clip_max[1]),
+        False,
+    )
     try:
-        add_line(
+        draw_list.add_line(
             x_min,
             y,
             x_max,
             y,
-            color,
+            int(color),
             max(1.0, 2.0 * _imgui_metric_scale(imgui)),
         )
     finally:
-        if pushed_clip and callable(pop_clip_rect):
-            pop_clip_rect()
+        draw_list.pop_clip_rect()
 
 
 def _effect_step_item_rect(
     imgui,
-) -> tuple[tuple[float, float], tuple[float, float]] | None:
+) -> tuple[tuple[float, float], tuple[float, float]]:
     """直前itemのscreen-space矩形を返す。"""
 
-    get_min = getattr(imgui, "get_item_rect_min", None)
-    get_max = getattr(imgui, "get_item_rect_max", None)
-    if not callable(get_min) or not callable(get_max):
-        return None
-    try:
-        item_min_raw = get_min()
-        item_max_raw = get_max()
-        return (
-            (float(item_min_raw[0]), float(item_min_raw[1])),
-            (float(item_max_raw[0]), float(item_max_raw[1])),
-        )
-    except (IndexError, TypeError, ValueError):
-        return None
+    item_min_raw = imgui.get_item_rect_min()
+    item_max_raw = imgui.get_item_rect_max()
+    return (
+        (float(item_min_raw[0]), float(item_min_raw[1])),
+        (float(item_max_raw[0]), float(item_max_raw[1])),
+    )
 
 
-def _effect_step_mouse_y(imgui) -> float | None:
+def _effect_step_mouse_y(imgui) -> float:
     """現在のmouse yを返す。"""
 
-    get_mouse = getattr(imgui, "get_mouse_position", None)
-    if not callable(get_mouse):
-        get_mouse = getattr(imgui, "get_mouse_pos", None)
-    if not callable(get_mouse):
-        return None
-    try:
-        return float(get_mouse()[1])
-    except (IndexError, TypeError, ValueError):
-        return None
+    return float(imgui.get_mouse_position()[1])
 
 
 def _render_effect_step_context_menu(
@@ -898,38 +772,28 @@ def _render_effect_step_context_menu(
 ) -> EffectOrderCommand | None:
     """step見出しのMove Up/Down context menuを描画する。"""
 
-    begin_popup = getattr(imgui, "begin_popup_context_item", None)
-    end_popup = getattr(imgui, "end_popup", None)
-    menu_item = getattr(imgui, "menu_item", None)
-    if not callable(begin_popup) or not callable(end_popup) or not callable(menu_item):
-        return None
-
-    popup = begin_popup("Effect step actions##effect_step_actions")
-    opened = bool(getattr(popup, "opened", popup))
-    if not opened:
-        return None
-    try:
+    with imgui.begin_popup_context_item(
+        "Effect step actions##effect_step_actions"
+    ) as popup:
+        if not popup.opened:
+            return None
         up = None if state is None else state.neighbor_move(step, direction=-1)
         down = None if state is None else state.neighbor_move(step, direction=1)
-        clicked_up, _selected = menu_item(
+        clicked_up, _selected = imgui.menu_item(
             "Move Up##effect_step_move_up",
             None,
             False,
             up is not None,
         )
-        clicked_down, _selected = menu_item(
+        clicked_down, _selected = imgui.menu_item(
             "Move Down##effect_step_move_down",
             None,
             False,
             down is not None,
         )
         if state is not None and state.disabled_reason is not None:
-            separator = getattr(imgui, "separator", None)
-            if callable(separator):
-                separator()
-            text_disabled = getattr(imgui, "text_disabled", None)
-            if callable(text_disabled):
-                text_disabled(state.disabled_reason)
+            imgui.separator()
+            imgui.text_disabled(state.disabled_reason)
         if clicked_up and state is not None and up is not None:
             target, placement = up
             return EffectOrderCommand.move(
@@ -946,8 +810,6 @@ def _render_effect_step_context_menu(
                 target=target,
                 placement=placement,
             )
-    finally:
-        end_popup()
     return None
 
 
@@ -979,111 +841,70 @@ def _render_effect_step_heading(
         # targetにすると、gripを掴んだx位置のまま縦へ動かす自然な操作では
         # 別stepへdropできない。EndGroup後はgroup全体が直前itemになるため、
         # sourceを覆うoverlayを置かずに広いtarget矩形を得られる。
-        begin_group = getattr(imgui, "begin_group", None)
-        end_group = getattr(imgui, "end_group", None)
-        grouped = callable(begin_group) and callable(end_group)
-        if grouped:
-            imgui.begin_group()
+        imgui.begin_group()
         try:
             if disabled_reason is None:
-                small_button = getattr(imgui, "small_button", None)
-                if callable(small_button):
-                    small_button("::##effect_step_drag_handle")
-                else:
-                    imgui.button("::##effect_step_drag_handle")
+                imgui.small_button("::##effect_step_drag_handle")
                 _set_item_tooltip(imgui, "Drag to reorder this effect step.")
 
-                begin_source = getattr(imgui, "begin_drag_drop_source", None)
-                end_source = getattr(imgui, "end_drag_drop_source", None)
-                if callable(begin_source) and callable(end_source) and state is not None:
-                    source = begin_source()
-                    if bool(getattr(source, "dragging", source)):
-                        try:
-                            set_payload = getattr(imgui, "set_drag_drop_payload", None)
-                            if callable(set_payload):
-                                set_payload(
-                                    EFFECT_STEP_DRAG_PAYLOAD_TYPE,
-                                    _encode_effect_step_drag_payload(
-                                        state.chain_id,
-                                        step,
-                                    ),
-                                )
+                if state is not None:
+                    with imgui.begin_drag_drop_source() as source:
+                        if source.dragging:
+                            imgui.set_drag_drop_payload(
+                                EFFECT_STEP_DRAG_PAYLOAD_TYPE,
+                                _encode_effect_step_drag_payload(
+                                    state.chain_id,
+                                    step,
+                                ),
+                            )
                             imgui.text(str(label))
-                        finally:
-                            end_source()
             else:
-                text_disabled = getattr(imgui, "text_disabled", None)
-                if callable(text_disabled):
-                    text_disabled("::")
-                else:
-                    imgui.text("::")
+                imgui.text_disabled("::")
                 _set_item_tooltip(imgui, disabled_reason)
 
             imgui.same_line(0.0, 6.0 * _imgui_metric_scale(imgui))
-            selectable = getattr(imgui, "selectable", None)
-            color_text = getattr(imgui, "COLOR_TEXT", None)
-            pushed_color = False
-            if color_text is not None:
-                push_style_color = getattr(imgui, "push_style_color", None)
-                if callable(push_style_color):
-                    push_style_color(color_text, *PARAMETER_GUI_PALETTE["success"])
-                    pushed_color = True
+            imgui.push_style_color(
+                imgui.COLOR_TEXT,
+                *PARAMETER_GUI_PALETTE["success"],
+            )
             try:
-                if callable(selectable):
-                    selectable(
-                        f"{label}##effect_step_drop_target",
-                        False,
-                        0,
-                    )
-                else:
-                    imgui.text(str(label))
+                imgui.selectable(
+                    f"{label}##effect_step_drop_target",
+                    False,
+                    0,
+                )
             finally:
-                if pushed_color:
-                    imgui.pop_style_color()
+                imgui.pop_style_color()
         finally:
-            if grouped:
-                imgui.end_group()
+            imgui.end_group()
         if disabled_reason is not None:
             _set_item_tooltip(imgui, disabled_reason)
 
         item_rect = _effect_step_item_rect(imgui)
         drop_command: EffectOrderCommand | None = None
-        begin_target = getattr(imgui, "begin_drag_drop_target", None)
-        end_target = getattr(imgui, "end_drag_drop_target", None)
-        accept_payload = getattr(imgui, "accept_drag_drop_payload", None)
         if (
             state is not None
             and state.disabled_reason is None
-            and item_rect is not None
-            and callable(begin_target)
-            and callable(end_target)
-            and callable(accept_payload)
         ):
-            target = begin_target()
-            if bool(getattr(target, "hovered", target)):
-                try:
-                    preview_payload = accept_payload(
+            with imgui.begin_drag_drop_target() as target:
+                if target.hovered:
+                    preview_payload = imgui.accept_drag_drop_payload(
                         EFFECT_STEP_DRAG_PAYLOAD_TYPE,
-                        getattr(imgui, "DRAG_DROP_ACCEPT_PEEK_ONLY", 0),
+                        imgui.DRAG_DROP_ACCEPT_PEEK_ONLY,
                     )
                     decoded = _decode_effect_step_drag_payload(preview_payload)
                     mouse_y = _effect_step_mouse_y(imgui)
-                    placement = (
-                        None
-                        if mouse_y is None
-                        else _effect_step_drop_placement(
-                            mouse_y=mouse_y,
-                            item_top=item_rect[0][1],
-                            item_bottom=item_rect[1][1],
-                        )
+                    placement = _effect_step_drop_placement(
+                        mouse_y=mouse_y,
+                        item_top=item_rect[0][1],
+                        item_bottom=item_rect[1][1],
                     )
                     valid_preview = (
                         decoded is not None
                         and decoded[0] == state.chain_id
-                        and placement is not None
                         and state.can_move(decoded[1], step, placement)
                     )
-                    if valid_preview and placement is not None:
+                    if valid_preview:
                         _draw_effect_step_insertion_line(
                             imgui,
                             item_min=item_rect[0],
@@ -1091,19 +912,14 @@ def _render_effect_step_heading(
                             placement=placement,
                         )
 
-                    delivered_payload = accept_payload(
+                    delivered_payload = imgui.accept_drag_drop_payload(
                         EFFECT_STEP_DRAG_PAYLOAD_TYPE,
-                        getattr(
-                            imgui,
-                            "DRAG_DROP_ACCEPT_NO_DRAW_DEFAULT_RECT",
-                            0,
-                        ),
+                        imgui.DRAG_DROP_ACCEPT_NO_DRAW_DEFAULT_RECT,
                     )
                     delivered = _decode_effect_step_drag_payload(delivered_payload)
                     if (
                         delivered is not None
                         and delivered[0] == state.chain_id
-                        and placement is not None
                         and state.can_move(delivered[1], step, placement)
                     ):
                         drop_command = EffectOrderCommand.move(
@@ -1112,8 +928,6 @@ def _render_effect_step_heading(
                             target=step,
                             placement=placement,
                         )
-                finally:
-                    end_target()
 
         menu_command = _render_effect_step_context_menu(
             imgui,
@@ -1125,12 +939,6 @@ def _render_effect_step_heading(
         imgui.pop_id()
 
 
-def _effect_step_heading_by_step(block: GroupBlock) -> dict[EffectStepKey, str]:
-    """Effect block の各stepに、短く一意な小見出しを割り当てる。"""
-
-    return _effect_step_heading_by_rows([item.row for item in block.items])
-
-
 def _effect_step_heading_by_rows(
     rows: Sequence[ParameterRow],
 ) -> dict[EffectStepKey, str]:
@@ -1138,8 +946,8 @@ def _effect_step_heading_by_rows(
 
     steps_by_display_op: dict[str, list[EffectStepKey]] = {}
     for row in rows:
-        display_op = operation_display_name(str(row.op))
-        step = (str(row.op), str(row.site_id))
+        display_op = operation_display_name(row.op)
+        step = (row.op, row.site_id)
         op_steps = steps_by_display_op.setdefault(display_op, [])
         if step not in op_steps:
             op_steps.append(step)
@@ -1154,40 +962,6 @@ def _effect_step_heading_by_rows(
                 else f"{op_label} {int(ordinal)}"
             )
     return out
-
-
-def _should_auto_enable_override(
-    row: ParameterRow,
-    *,
-    before_ui_value: object,
-    after_ui_value: object,
-) -> bool:
-    """GUI の値編集に応じて override を自動で有効化するか判定する。
-
-    Notes
-    -----
-    - override は「GUI 値を採用するか」を決めるトグル。
-    - parameter_gui では `override=False` の行でも、値を触った瞬間に反映されるのが直感的。
-      そのため「値が編集されたら override=True」を基本とする。
-    - `kind=choice` は choices の変化などで ui_value が自動丸めされる場合がある。
-      そのケースでは override を自動で立てず、base 優先を維持する。
-    """
-
-    if selector_kind(row.op) is not None and str(row.arg) == "target":
-        # selector target の combo は候補を自動選択しない。changed=True は必ず
-        # ユーザーの明示選択なので、先頭候補を選んだ場合も UI を有効にする。
-        return True
-
-    if row.kind == "choice":
-        choices = list(row.choices) if row.choices is not None else []
-        if choices:
-            before_s = str(before_ui_value)
-            if before_s not in choices:
-                # choices 外の値は widget 側で先頭へ丸められる。
-                # この「自動丸め」だけでは override を立てない。
-                return str(after_ui_value) != str(choices[0])
-
-    return True
 
 
 def _render_minmax_cell(
@@ -1238,35 +1012,6 @@ def _render_minmax_cell(
     return False, ui_min, ui_max
 
 
-def _content_region_available_width(imgui) -> float | None:
-    """現在の table cell で利用可能な幅を返す。
-
-    古い pyimgui backend や unit-test double に幅取得 API がない場合は
-    ``None`` を返し、従来どおり 1 行配置を使う。通常の pyimgui では table
-    column の work rect が反映されるため、右端 cell の実幅を取得できる。
-    """
-
-    getter = getattr(imgui, "get_content_region_available_width", None)
-    if callable(getter):
-        try:
-            width = float(getter())
-        except (TypeError, ValueError):
-            return None
-        if math.isfinite(width) and width > 0.0:
-            return width
-
-    getter_vec = getattr(imgui, "get_content_region_available", None)
-    if callable(getter_vec):
-        try:
-            available = getter_vec()
-            width = float(available[0])
-        except (IndexError, TypeError, ValueError):
-            return None
-        if math.isfinite(width) and width > 0.0:
-            return width
-    return None
-
-
 def _snippet_popup_geometry(
     imgui,
     *,
@@ -1280,19 +1025,13 @@ def _snippet_popup_geometry(
     viewport_width = 0.0
     viewport_height = 0.0
 
-    get_main_viewport = getattr(imgui, "get_main_viewport", None)
-    if callable(get_main_viewport):
-        try:
-            viewport = get_main_viewport()
-            work_pos = viewport.work_pos
-            work_size = viewport.work_size
-            viewport_x = float(work_pos[0])
-            viewport_y = float(work_pos[1])
-            viewport_width = float(work_size[0])
-            viewport_height = float(work_size[1])
-        except (AttributeError, IndexError, TypeError, ValueError):
-            viewport_width = 0.0
-            viewport_height = 0.0
+    viewport = imgui.get_main_viewport()
+    work_pos = viewport.work_pos
+    work_size = viewport.work_size
+    viewport_x = float(work_pos[0])
+    viewport_y = float(work_pos[1])
+    viewport_width = float(work_size[0])
+    viewport_height = float(work_size[1])
 
     if (
         not math.isfinite(viewport_width)
@@ -1302,16 +1041,21 @@ def _snippet_popup_geometry(
     ):
         # pyimgui 2.0 では frame 開始前の main viewport が 0x0 の場合がある。
         # GUI backend が毎 frame 同期する io.display_size を fallback にする。
-        try:
-            display_size = imgui.get_io().display_size
-            viewport_x = 0.0
-            viewport_y = 0.0
-            viewport_width = float(display_size[0])
-            viewport_height = float(display_size[1])
-        except (AttributeError, IndexError, TypeError, ValueError):
-            fallback_margin = max(0.0, float(margin)) * 2.0
-            viewport_width = float(preferred_size[0]) + fallback_margin
-            viewport_height = float(preferred_size[1]) + fallback_margin
+        display_size = imgui.get_io().display_size
+        viewport_x = 0.0
+        viewport_y = 0.0
+        viewport_width = float(display_size[0])
+        viewport_height = float(display_size[1])
+
+    if (
+        not math.isfinite(viewport_width)
+        or not math.isfinite(viewport_height)
+        or viewport_width <= 0.0
+        or viewport_height <= 0.0
+    ):
+        fallback_margin = max(0.0, float(margin)) * 2.0
+        viewport_width = float(preferred_size[0]) + fallback_margin
+        viewport_height = float(preferred_size[1]) + fallback_margin
 
     preferred_width = max(1.0, float(preferred_size[0]))
     preferred_height = max(1.0, float(preferred_size[1]))
@@ -1331,34 +1075,27 @@ def _render_cc_cell(
     row: ParameterRow,
     rules,
     cc_key: int | tuple[int | None, int | None, int | None] | None,
-    override: bool,
-    cc_key_width: int,
     width_spacer: int,
     midi_learn_state: MidiLearnState | None,
     midi_last_cc_change: tuple[int, int] | None,
     last_source: ValueSource | None = None,
-) -> tuple[bool, int | tuple[int | None, int | None, int | None] | None, bool]:
-    """MIDI 列を描画し、(changed, cc_key, override) を返す。
-
-    ``override`` は source selector が担当する。ここでは互換性のある返り値を
-    維持するだけで変更せず、MIDI learn / unassign だけを扱う。
-    """
+) -> tuple[bool, int | tuple[int | None, int | None, int | None] | None]:
+    """MIDI 列を描画し、(changed, cc_key) を返す。"""
 
     imgui.table_set_column_index(3)
 
     changed_any = False
-    cell_width = _content_region_available_width(imgui)
+    cell_width = content_region_available_width(imgui)
     metric_scale = _imgui_metric_scale(imgui)
     midi_spacing = float(width_spacer) * metric_scale
-    midi_key_width = float(cc_key_width) * metric_scale
 
     if rules.cc_key == "none":
         # Unsupported MIDI is intentionally blank. The bundled font may not
         # contain an em dash, which otherwise renders as a repeated "?" and
         # looks like an error state throughout the table.
-        return changed_any, cc_key, bool(override)
+        return changed_any, cc_key
 
-    def _set_scalar(current: object, value: int | None) -> int | None:
+    def _set_scalar(value: int | None) -> int | None:
         if value is None:
             return None
         return int(value)
@@ -1414,8 +1151,6 @@ def _render_cc_cell(
                 1.0,
                 (float(cell_width) - midi_spacing * 2.0) / 3.0,
             )
-            if cell_width is not None
-            else midi_key_width * 1.6
         )
         compact_components = component_width < 44.0 * metric_scale
         for i in range(3):
@@ -1497,7 +1232,7 @@ def _render_cc_cell(
         if active and midi_learn_state is not None and midi_last_cc_change is not None:
             seq, learned_cc = midi_last_cc_change
             if int(seq) > int(midi_learn_state.last_seen_cc_seq):
-                cc_key = _set_scalar(cc_key, int(learned_cc))
+                cc_key = _set_scalar(int(learned_cc))
                 midi_learn_state.last_seen_cc_seq = int(seq)
                 _cancel_learn()
                 changed_any = True
@@ -1517,7 +1252,7 @@ def _render_cc_cell(
         button_label = f"{label_text}##cc_learn"
         # scalar は vec3 と同じ learn control の 1 成分版。MIDI cell 全幅を使い、
         # 短い V 系列の表示を左右に孤立させない。
-        button_width = -1.0 if cell_width is None else max(1.0, float(cell_width))
+        button_width = max(1.0, float(cell_width))
         clicked = _render_midi_button(
             imgui,
             label=button_label,
@@ -1558,7 +1293,7 @@ def _render_cc_cell(
             else:
                 _enter_learn(key=key, component=None)
 
-    return changed_any, cc_key, bool(override)
+    return changed_any, cc_key
 
 
 def render_parameter_row_4cols(
@@ -1587,7 +1322,7 @@ def render_parameter_row_4cols(
         変更を反映した新しい行モデル。
     """
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
     row_label = _row_visible_label(row) if visible_label is None else str(visible_label)
 
@@ -1602,7 +1337,6 @@ def render_parameter_row_4cols(
     override = row.override
     favorite = row.favorite
 
-    cc_key_width = 30
     width_spacer = 4
 
     rules = ui_rules_for_row(row)
@@ -1648,17 +1382,8 @@ def render_parameter_row_4cols(
         changed, value = _render_control_cell(imgui, row)
         if changed:
             changed_any = True
-            before_ui_value = ui_value
             ui_value = value
-            if (
-                rules.show_override
-                and not bool(override)
-                and _should_auto_enable_override(
-                    row,
-                    before_ui_value=before_ui_value,
-                    after_ui_value=ui_value,
-                )
-            ):
+            if rules.show_override and not bool(override):
                 override = True
         _notify_parameter_help(imgui, row, on_help_row)
 
@@ -1674,13 +1399,11 @@ def render_parameter_row_4cols(
         _notify_parameter_help(imgui, row, on_help_row)
 
         # --- Column 4: MIDI（cc_key learn / unassign のみ）---
-        changed_cc, cc_key, override = _render_cc_cell(
+        changed_cc, cc_key = _render_cc_cell(
             imgui,
             row=row,
             rules=rules,
             cc_key=cc_key,
-            override=bool(override),
-            cc_key_width=cc_key_width,
             width_spacer=width_spacer,
             midi_learn_state=midi_learn_state,
             midi_last_cc_change=midi_last_cc_change,
@@ -1714,16 +1437,11 @@ def render_parameter_row_4cols(
 
 
 def render_parameter_table(
-    rows: list[ParameterRow],
     *,
-    group_layout: Sequence[GroupBlockLayout] | None = None,
-    model_rows: Sequence[ParameterRow] | None = None,
+    group_layout: Sequence[GroupBlockLayout],
+    model_rows: Sequence[ParameterRow],
     metric_scale: float | None = None,
-    primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
-    layer_style_name_by_site_id: Mapping[str, str] | None = None,
-    effect_chain_header_by_id: Mapping[str, str] | None = None,
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
-    effect_step_ordinal_by_site: Mapping[tuple[str, str], int] | None = None,
     effect_chain_state_by_id: Mapping[str, EffectChainTableState] | None = None,
     last_effective_by_key: Mapping[ParameterKey, object] | None = None,
     last_source_by_key: Mapping[ParameterKey, ValueSource] | None = None,
@@ -1734,32 +1452,16 @@ def render_parameter_table(
     on_help_row: Callable[[ParameterRow, bool], None] | None = None,
     on_effect_order_command: Callable[[EffectOrderCommand], None] | None = None,
 ) -> tuple[bool, list[ParameterRow]]:
-    """ParameterRow の列を 4 列テーブルとして描画し、更新後の rows を返す。"""
+    """layout が参照する行を 4 列テーブルで描画し、更新後の行列を返す。"""
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
-    # このテーブル（rows 全体）で変更があったかの集計。
+    # このテーブル全体で変更があったかの集計。
     changed_any = False
     # 返り値として「更新後の row 群」を返すため、描画しながら新しい row を貯める。
-    # 注: グループを折りたたんで行を描画しない場合でも、`rows_before` と 1:1 で揃える必要がある。
-    #     （store_bridge が `zip(rows_before, rows_after, strict=True)` で差分適用するため）
+    # 注: グループを折りたたんで行を描画しない場合でも、group_layout の行と
+    # 1:1 で揃える（store_bridge が strict zip で差分適用するため）。
     updated_rows: list[ParameterRow] = []
-
-    # Store bridge は revision 内で不変な layout を渡す。単体利用時だけ rows から
-    # 構築し、stable frame の group/header/label 分類を繰り返さない。
-    layout = (
-        group_layout_from_rows(
-            rows,
-            primitive_header_by_group=primitive_header_by_group,
-            layer_style_name_by_site_id=layer_style_name_by_site_id,
-            effect_chain_header_by_id=effect_chain_header_by_id,
-            step_info_by_site=step_info_by_site,
-            effect_step_ordinal_by_site=effect_step_ordinal_by_site,
-        )
-        if group_layout is None
-        else group_layout
-    )
-    indexed_rows = rows if model_rows is None else model_rows
 
     # --- Code（ポップアップ出力）---
     # “トリガ（ボタン）” と “表示（ポップアップ）” を分離し、コピペ用途に寄せる。
@@ -1771,11 +1473,9 @@ def render_parameter_table(
     # 最初に開いたグループのテーブルで 1 回だけ描画する。
     drew_column_headers = False
 
-    for block_index, block in enumerate(layout):
+    for block_index, block in enumerate(group_layout):
         if block_index > 0 and block.header:
-            spacing = getattr(imgui, "spacing", None)
-            if callable(spacing):
-                spacing()
+            imgui.spacing()
         # 折りたたみ状態の永続化と ID 衝突回避のため、group 固有 ID で push_id する。
         # - collapsing_header の state（open/close）
         # - begin_table の内部 ID
@@ -1789,7 +1489,7 @@ def render_parameter_table(
                 first_row = (
                     None
                     if not block.items
-                    else indexed_rows[block.items[0].row_index]
+                    else model_rows[block.items[0].row_index]
                 )
                 collapse_key = (
                     None
@@ -1798,38 +1498,27 @@ def render_parameter_table(
                 )
                 if collapsed_headers is not None and collapse_key is not None:
                     want_open = collapse_key not in collapsed_headers
-                    set_next_item_open = getattr(imgui, "set_next_item_open", None)
-                    if callable(set_next_item_open):
-                        cond_always = getattr(imgui, "ALWAYS", None)
-                        try:
-                            if cond_always is None:
-                                set_next_item_open(bool(want_open))
-                            else:
-                                set_next_item_open(bool(want_open), cond_always)
-                        except TypeError:
-                            set_next_item_open(bool(want_open))
+                    imgui.set_next_item_open(bool(want_open), imgui.ALWAYS)
 
                 color_count = 0
                 header_kind = _header_kind_for_group_id(block.group_id)
-                if header_kind is not None:
-                    base_rgba255 = GROUP_HEADER_BASE_COLORS_RGBA.get(header_kind)
-                    if base_rgba255 is not None:
-                        base = _rgba01_from_rgba255(base_rgba255)
-                        normal, hovered, active = _derive_header_colors(base)
-                        imgui.push_style_color(imgui.COLOR_HEADER, *normal)
-                        imgui.push_style_color(imgui.COLOR_HEADER_HOVERED, *hovered)
-                        imgui.push_style_color(imgui.COLOR_HEADER_ACTIVE, *active)
-                        color_count = 3
+                base_rgba255 = GROUP_HEADER_BASE_COLORS_RGBA[header_kind]
+                base = _rgba01_from_rgba255(base_rgba255)
+                normal, hovered, active = _derive_header_colors(base)
+                imgui.push_style_color(imgui.COLOR_HEADER, *normal)
+                imgui.push_style_color(imgui.COLOR_HEADER_HOVERED, *hovered)
+                imgui.push_style_color(imgui.COLOR_HEADER_ACTIVE, *active)
+                color_count = 3
                 try:
-                    allow_overlap_flag = getattr(imgui, "TREE_NODE_ALLOW_ITEM_OVERLAP", 0)
                     group_open, _visible = imgui.collapsing_header(
                         f"{humanize_identifier(block.header)}##group_header",
                         None,
-                        flags=imgui.TREE_NODE_DEFAULT_OPEN | allow_overlap_flag,
+                        flags=(
+                            imgui.TREE_NODE_DEFAULT_OPEN
+                            | imgui.TREE_NODE_ALLOW_ITEM_OVERLAP
+                        ),
                     )
-                    set_item_allow_overlap = getattr(imgui, "set_item_allow_overlap", None)
-                    if callable(set_item_allow_overlap):
-                        set_item_allow_overlap()
+                    imgui.set_item_allow_overlap()
                 finally:
                     if color_count:
                         imgui.pop_style_color(color_count)
@@ -1838,7 +1527,7 @@ def render_parameter_table(
                 # collapsing_header は幅いっぱいを使うため、same_line(position=...) で明示配置する。
                 chain_state: EffectChainTableState | None = None
                 if (
-                    str(block.group_id[0]) == "effect_chain"
+                    block.group_id[0] is GroupType.EFFECT_CHAIN
                     and effect_chain_state_by_id is not None
                 ):
                     chain_state = effect_chain_state_by_id.get(
@@ -1864,14 +1553,10 @@ def render_parameter_table(
                 else:
                     imgui.same_line()
                 if chain_state is not None and chain_state.order_overridden:
-                    text_colored = getattr(imgui, "text_colored", None)
-                    if callable(text_colored):
-                        text_colored(
-                            "UI order",
-                            *PARAMETER_GUI_PALETTE["success"],
-                        )
-                    else:
-                        imgui.text("UI order")
+                    imgui.text_colored(
+                        "UI order",
+                        *PARAMETER_GUI_PALETTE["success"],
+                    )
                     imgui.same_line()
                     if imgui.small_button("Reset##effect_order_reset"):
                         if on_effect_order_command is not None:
@@ -1885,23 +1570,10 @@ def render_parameter_table(
                 imgui.text_disabled(count_label)
                 imgui.same_line()
                 if imgui.small_button(button_label):
-                    snippet_block = GroupBlock(
-                        group_id=block.group_id,
-                        header_id=block.header_id,
-                        header=block.header,
-                        items=[
-                            GroupBlockItem(
-                                row=indexed_rows[item.row_index],
-                                visible_label=item.visible_label,
-                            )
-                            for item in block.items
-                        ],
-                    )
                     snippet_popup_text_new = snippet_for_block(
-                        snippet_block,
-                        all_rows=indexed_rows,
+                        block,
+                        model_rows,
                         last_effective_by_key=last_effective_by_key,
-                        layer_style_name_by_site_id=layer_style_name_by_site_id,
                         step_info_by_site=step_info_by_site,
                         raw_label_by_site=raw_label_by_site,
                     )
@@ -1916,23 +1588,20 @@ def render_parameter_table(
             if not group_open:
                 # 折りたたみ中は描画しないが、rows_after の長さを揃えるため “変更なし” として返す。
                 for item in block.items:
-                    updated_rows.append(indexed_rows[item.row_index])
+                    updated_rows.append(model_rows[item.row_index])
                 continue
 
             # --- open のときだけ、当該グループの行を 4 列テーブルとして描く ---
             #
-            # `begin_table` は pyimgui のバージョン/バックエンドで返り値が揺れるため、
-            # `.opened` 属性があればそれを使い、無ければ返り値自体を bool として扱う。
             table_flags = (
                 imgui.TABLE_SIZING_FIXED_FIT
-                | getattr(imgui, "TABLE_ROW_BACKGROUND", 0)
-                | getattr(imgui, "TABLE_BORDERS_INNER_VERTICAL", 0)
+                | imgui.TABLE_ROW_BACKGROUND
+                | imgui.TABLE_BORDERS_INNER_VERTICAL
             )
             table = imgui.begin_table("##parameters", 4, table_flags)
-            opened = getattr(table, "opened", table)
-            if not opened:
+            if not table.opened:
                 for item in block.items:
-                    updated_rows.append(indexed_rows[item.row_index])
+                    updated_rows.append(model_rows[item.row_index])
                 continue
 
             try:
@@ -1948,21 +1617,21 @@ def render_parameter_table(
 
                 effect_heading_by_step = (
                     _effect_step_heading_by_rows(
-                        [indexed_rows[item.row_index] for item in block.items]
+                        [model_rows[item.row_index] for item in block.items]
                     )
-                    if str(block.group_id[0]) == "effect_chain"
+                    if block.group_id[0] is GroupType.EFFECT_CHAIN
                     else {}
                 )
                 previous_effect_step: EffectStepKey | None = None
                 chain_state = (
                     None
-                    if str(block.group_id[0]) != "effect_chain"
+                    if block.group_id[0] is not GroupType.EFFECT_CHAIN
                     or effect_chain_state_by_id is None
                     else effect_chain_state_by_id.get(str(block.group_id[1]))
                 )
                 for item in block.items:
-                    row = indexed_rows[item.row_index]
-                    item_step = (str(row.op), str(row.site_id))
+                    row = model_rows[item.row_index]
+                    item_step = (row.op, row.site_id)
                     if (
                         effect_heading_by_step
                         and item_step != previous_effect_step
@@ -2054,7 +1723,7 @@ def render_parameter_table(
                     imgui.set_clipboard_text(str(_SNIPPET_POPUP_TEXT))
 
     # changed_any は「UI のどこかが変わったか」。
-    # updated_rows は store へ差分適用するための “更新後” 行モデル列（rows と同じ長さ）。
+    # updated_rows は store へ差分適用するための、layout と同順の更新後行モデル列。
     return changed_any, updated_rows
 
 

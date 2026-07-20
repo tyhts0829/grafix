@@ -62,6 +62,7 @@ def test_scene_runner_selects_preview_and_final_limit_profiles() -> None:
                     color=(0.0, 0.0, 0.0), thickness=0.01
                 ),
                 recording=False,
+                transport_epoch=0,
                 quality="draft",
             )
 
@@ -78,6 +79,7 @@ def test_scene_runner_selects_preview_and_final_limit_profiles() -> None:
                 color=(0.0, 0.0, 0.0), thickness=0.01
             ),
             recording=False,
+            transport_epoch=0,
             quality="final",
         )
         assert len(layers) == 2
@@ -124,6 +126,7 @@ def test_cpu_cache_limit_reaches_common_diagnostic_center() -> None:
                 color=(0.0, 0.0, 0.0), thickness=0.01
             ),
             recording=False,
+            transport_epoch=0,
             quality="draft",
         )
     finally:

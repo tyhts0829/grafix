@@ -8,7 +8,9 @@ import math
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, cast
+
+from grafix.core.value_validation import exact_string, exact_string_choice
 
 OperationDiagnosticSeverity = Literal["info", "warning", "error"]
 OperationDiagnosticScalar: TypeAlias = None | bool | int | float | str
@@ -18,14 +20,14 @@ OperationDiagnosticValue: TypeAlias = (
 
 
 def _normalize_value(value: object, *, field: str) -> OperationDiagnosticValue:
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, (tuple, list)):
+    if value is None or type(value) in {bool, int, float, str}:
+        return cast(OperationDiagnosticScalar, value)
+    if isinstance(value, tuple):
         if len(value) > 16:
             raise ValueError(f"{field} は最大 16 要素である必要があります")
         normalized: list[OperationDiagnosticScalar] = []
         for item in value:
-            if item is not None and not isinstance(item, (bool, int, float, str)):
+            if item is not None and type(item) not in {bool, int, float, str}:
                 raise TypeError(
                     f"{field} の要素は scalar である必要があります: {item!r}"
                 )
@@ -57,16 +59,21 @@ class OperationDiagnostic:
     severity: OperationDiagnosticSeverity = "warning"
 
     def __post_init__(self) -> None:
-        op = str(self.op).strip()
-        reason = str(self.reason).strip()
-        if not op:
+        op = exact_string(self.op, name="op")
+        reason = exact_string(self.reason, name="reason")
+        if not op.strip():
             raise ValueError("op は空にできません")
-        if not reason:
+        if not reason.strip():
             raise ValueError("reason は空にできません")
-        if self.severity not in {"info", "warning", "error"}:
-            raise ValueError(f"未対応の severity: {self.severity!r}")
-        object.__setattr__(self, "op", op)
-        object.__setattr__(self, "reason", reason)
+        object.__setattr__(
+            self,
+            "severity",
+            exact_string_choice(
+                self.severity,
+                name="severity",
+                choices=("info", "warning", "error"),
+            ),
+        )
         object.__setattr__(
             self,
             "original_value",

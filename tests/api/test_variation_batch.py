@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fractions import Fraction
 import json
 import os
 import random
@@ -7,6 +8,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -34,6 +36,14 @@ _LATER = ParameterKey(op="batch", site_id="main", arg="later")
 _DISCOVERED = ParameterKey(op="batch", site_id="main", arg="discovered")
 
 
+class _StringSubclass(str):
+    pass
+
+
+class _TupleSubclass(tuple):
+    pass
+
+
 def _add(store: ParamStore, key: ParameterKey, value: float) -> None:
     merge_frame_params(
         store,
@@ -42,6 +52,8 @@ def _add(store: ParamStore, key: ParameterKey, value: float) -> None:
                 key=key,
                 base=value,
                 meta=_META,
+                effective=value,
+                source="code",
                 explicit=False,
             )
         ],
@@ -131,6 +143,160 @@ class _CaptureService:
         )
 
 
+@pytest.mark.parametrize("overwrite", ("false", 0, 1))
+def test_batch_rejects_non_boolean_overwrite(
+    tmp_path: Path,
+    overwrite: Any,
+) -> None:
+    store = _variation_store()
+
+    with pytest.raises(TypeError, match="overwrite"):
+        render_variation_batch(
+            _Session(store),
+            tmp_path,
+            overwrite=overwrite,
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("default_t", [True, "1.0"])
+def test_batch_rejects_non_numeric_default_time(
+    tmp_path: Path,
+    default_t: object,
+) -> None:
+    with pytest.raises(TypeError, match="default_t"):
+        render_variation_batch(
+            _Session(_variation_store()),
+            tmp_path,
+            default_t=default_t,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("default_t", [float("inf"), float("nan")])
+def test_batch_rejects_non_finite_default_time(
+    tmp_path: Path,
+    default_t: float,
+) -> None:
+    with pytest.raises(ValueError, match="default_t"):
+        render_variation_batch(
+            _Session(_variation_store()),
+            tmp_path,
+            default_t=default_t,
+        )
+
+
+def test_batch_normalizes_a_valid_real_default_time(tmp_path: Path) -> None:
+    result = render_variation_batch(
+        _Session(_variation_store()),
+        tmp_path,
+        variation_names=("C 日本語",),
+        default_t=Fraction(3, 2),
+        thumbnail_format=ExportFormat.SVG,
+        capture_service=_CaptureService(),
+    )
+
+    assert result.items[0].t == 1.5
+    assert type(result.items[0].t) is float
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        "A & first",
+        ["A & first"],
+        iter(("A & first",)),
+        _TupleSubclass(("A & first",)),
+        (1,),
+        (_StringSubclass("A & first"),),
+    ],
+)
+def test_batch_rejects_non_sequence_or_non_string_variation_names(
+    tmp_path: Path,
+    names: object,
+) -> None:
+    with pytest.raises(TypeError, match="variation_names"):
+        render_variation_batch(
+            _Session(_variation_store()),
+            tmp_path,
+            variation_names=names,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("batch_name", (1, _StringSubclass("variations")))
+def test_batch_rejects_non_string_batch_name(
+    tmp_path: Path,
+    batch_name: Any,
+) -> None:
+    with pytest.raises(TypeError, match="batch_name"):
+        render_variation_batch(
+            _Session(_variation_store()),
+            tmp_path,
+            batch_name=batch_name,
+        )
+
+
+@pytest.mark.parametrize("output_root", (1, object(), _StringSubclass("output")))
+def test_batch_rejects_implicit_output_root_path_conversion(
+    tmp_path: Path,
+    output_root: Any,
+) -> None:
+    with pytest.raises(TypeError, match="output_root"):
+        render_variation_batch(
+            _Session(_variation_store()),
+            output_root,
+            variation_names=("A & first",),
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "thumbnail_size",
+    (
+        [320, 320],
+        _TupleSubclass((320, 320)),
+        (True, 320),
+        (320.0, 320),
+        (0, 320),
+    ),
+)
+def test_batch_requires_an_exact_positive_thumbnail_size_tuple(
+    tmp_path: Path,
+    thumbnail_size: Any,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match="thumbnail_size"):
+        render_variation_batch(
+            _Session(_variation_store()),
+            tmp_path,
+            variation_names=("A & first",),
+            thumbnail_size=thumbnail_size,
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_batch_preserves_exact_variation_and_batch_name_whitespace(
+    tmp_path: Path,
+) -> None:
+    store = ParamStore()
+    _add(store, _AMOUNT, 1.0)
+    _add(store, _LATER, 2.0)
+    create_variation(store, "  exact name  ", created_at=1.0)
+
+    result = render_variation_batch(
+        _Session(store),
+        tmp_path,
+        variation_names=("  exact name  ",),
+        batch_name="  exact batch  ",
+        thumbnail_format=ExportFormat.SVG,
+        capture_service=_CaptureService(),
+    )
+
+    assert result.output_directory.name == "  exact batch  "
+    assert result.items[0].variation_name == "  exact name  "
+
+
 def _variation_store() -> ParamStore:
     store = ParamStore()
     _add(store, _AMOUNT, 2.0)
@@ -162,7 +328,7 @@ def test_batch_merges_each_variation_and_restores_original_store(tmp_path: Path)
         tmp_path,
         variation_names=("A & first", "B / missing", "C 日本語"),
         default_t=7.5,
-        thumbnail_format="svg",
+        thumbnail_format=ExportFormat.SVG,
         capture_service=capture,
     )
 
@@ -197,6 +363,15 @@ def test_batch_merges_each_variation_and_restores_original_store(tmp_path: Path)
         "B / missing",
         "C 日本語",
     ]
+
+
+def test_batch_rejects_string_thumbnail_format(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="ExportFormat"):
+        render_variation_batch(
+            _Session(_variation_store()),
+            tmp_path,
+            thumbnail_format="svg",  # type: ignore[arg-type]
+        )
 
 
 def test_batch_exactly_isolates_render_mutations_and_restores_store(
@@ -351,7 +526,7 @@ def test_explicit_overwrite_replaces_the_whole_generation(tmp_path: Path) -> Non
         _Session(_variation_store()),
         tmp_path,
         variation_names=("A & first",),
-        thumbnail_format="svg",
+        thumbnail_format=ExportFormat.SVG,
         overwrite=True,
         capture_service=capture,
     )
@@ -397,7 +572,7 @@ def test_overwrite_publish_failure_rolls_back_previous_generation(
             _Session(_variation_store()),
             tmp_path,
             variation_names=("A & first",),
-            thumbnail_format="svg",
+            thumbnail_format=ExportFormat.SVG,
             overwrite=True,
             capture_service=_CaptureService(),
         )
@@ -407,14 +582,14 @@ def test_overwrite_publish_failure_rolls_back_previous_generation(
     assert list(tmp_path.glob(".variations.backup-*")) == []
 
 
-@pytest.mark.parametrize("columns", [True, 0, -1, 1.5])
-def test_columns_must_be_a_positive_integer(
+@pytest.mark.parametrize("columns", [True, 1.5, "2"])
+def test_columns_must_be_an_integer_without_coercion(
     tmp_path: Path,
     columns: object,
 ) -> None:
     store = _variation_store()
 
-    with pytest.raises(ValueError, match="columns"):
+    with pytest.raises(TypeError, match="columns"):
         render_variation_batch(
             _Session(store),
             tmp_path,
@@ -422,6 +597,116 @@ def test_columns_must_be_a_positive_integer(
             columns=columns,  # type: ignore[arg-type]
             capture_service=_CaptureService(),
         )
+
+
+@pytest.mark.parametrize("columns", [0, -1])
+def test_columns_must_be_positive(
+    tmp_path: Path,
+    columns: int,
+) -> None:
+    with pytest.raises(ValueError, match="columns"):
+        render_variation_batch(
+            _Session(_variation_store()),
+            tmp_path,
+            variation_names=("A & first",),
+            columns=columns,
+            capture_service=_CaptureService(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("variation_name", _StringSubclass("A"), TypeError),
+        ("variation_name", 1, TypeError),
+        ("variation_name", " ", ValueError),
+        ("seed", True, TypeError),
+        ("seed", 1.0, TypeError),
+        ("seed", "1", TypeError),
+        ("t", True, TypeError),
+        ("t", "0.0", TypeError),
+        ("t", float("inf"), ValueError),
+        ("status", _StringSubclass("failed"), TypeError),
+        ("status", 1, TypeError),
+        ("status", "pending", ValueError),
+        ("thumbnail_path", "thumbnail.png", TypeError),
+        ("manifest_path", "manifest.json", TypeError),
+        ("error_type", _StringSubclass("ValueError"), TypeError),
+        ("error_type", 1, TypeError),
+        ("error_message", _StringSubclass("bad"), TypeError),
+        ("error_message", object(), TypeError),
+    ],
+)
+def test_variation_render_result_rejects_implicit_field_coercion(
+    field: str,
+    value: Any,
+    error: type[Exception],
+) -> None:
+    values: dict[str, Any] = {
+        "variation_name": "A",
+        "seed": 1,
+        "t": 0.0,
+        "status": "failed",
+        "error_type": "ValueError",
+        "error_message": "bad",
+    }
+    values[field] = value
+
+    with pytest.raises(error):
+        VariationRenderResult(**values)
+
+
+def test_variation_render_result_preserves_text_and_normalizes_valid_real() -> None:
+    item = VariationRenderResult(
+        variation_name="  A  ",
+        seed=1,
+        t=Fraction(1, 2),
+        status="failed",
+        error_type="  ValueError  ",
+        error_message="  bad  ",
+    )
+
+    assert item.variation_name == "  A  "
+    assert item.t == 0.5
+    assert type(item.t) is float
+    assert item.error_type == "  ValueError  "
+    assert item.error_message == "  bad  "
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("output_directory", "output"),
+        ("contact_sheet_path", "contact-sheet.svg"),
+        ("summary_path", "summary.json"),
+        ("items", []),
+        ("items", iter(())),
+        ("items", _TupleSubclass(())),
+        ("items", (object(),)),
+    ],
+)
+def test_variation_batch_result_requires_paths_and_exact_dto_tuple(
+    field: str,
+    value: Any,
+    tmp_path: Path,
+) -> None:
+    item = VariationRenderResult(
+        variation_name="A",
+        seed=1,
+        t=0.0,
+        status="failed",
+        error_type="ValueError",
+    )
+    values: dict[str, Any] = {
+        "output_directory": tmp_path,
+        "items": (item,),
+        "contact_sheet_path": tmp_path / "contact-sheet.svg",
+        "summary_path": tmp_path / "summary.json",
+    }
+    values[field] = value
+
+    with pytest.raises(TypeError):
+        VariationBatchResult(**values)
 
 
 def test_batch_result_payloads_are_public_immutable_values(tmp_path: Path) -> None:
@@ -441,6 +726,8 @@ def test_batch_result_payloads_are_public_immutable_values(tmp_path: Path) -> No
     )
 
     assert result.failure_count == 1
+    with pytest.raises(TypeError, match="relative_to"):
+        item.as_dict(relative_to="output")  # type: ignore[arg-type]
     with pytest.raises(AttributeError):
         item.status = "success"  # type: ignore[misc]
 
@@ -473,7 +760,7 @@ def test_real_render_session_and_capture_service_contract(tmp_path: Path) -> Non
             session,
             tmp_path,
             variation_names=("Real contract", "Real contract", "No seed"),
-            thumbnail_format="svg",
+            thumbnail_format=ExportFormat.SVG,
             overwrite=True,
         )
         rng_after = random.getstate()
@@ -506,7 +793,7 @@ def test_real_render_session_and_capture_service_contract(tmp_path: Path) -> Non
     assert first.thumbnail_path.read_bytes() == repeated.thumbnail_path.read_bytes()
     assert no_seed.seed is None
     for item, manifest in zip(result.items, manifests, strict=True):
-        assert manifest["artifact_paths"] == [str(item.thumbnail_path)]
+        assert manifest["output"]["artifact_paths"] == [str(item.thumbnail_path)]
         assert manifest["output"]["artifact_paths"] == [str(item.thumbnail_path)]
         assert item.manifest_path is not None
         assert ".variations.batch-" not in item.manifest_path.read_text()

@@ -13,29 +13,80 @@ from grafix.core.capture_manifest import (
     publish_capture_generation,
     write_capture_manifest,
 )
+from grafix.core.capture_provenance import (
+    CaptureProvenance,
+    ConfigProvenance,
+    FrameProvenance,
+    GitProvenance,
+    ParameterSnapshotProvenance,
+    SessionProvenance,
+    SourceProvenance,
+)
 
 
-def test_capture_manifest_normalizes_and_serializes_minimum_provenance() -> None:
+def _capture_provenance(t: float) -> CaptureProvenance:
+    return CaptureProvenance(
+        session=SessionProvenance(
+            grafix_version="test",
+            source=SourceProvenance(
+                module=None,
+                qualname=None,
+                path=None,
+                sha256=None,
+                hash_scope=None,
+                unavailable_reason="test fixture has no source file",
+            ),
+            git=GitProvenance(
+                available=False,
+                unavailable_reason="test fixture is repository independent",
+            ),
+            config=ConfigProvenance(
+                path=None,
+                effective_json="{}",
+                sha256="config-sha256",
+            ),
+            parameter_source="test",
+            parameter_store_path=None,
+            parameter_load_provenance="primary",
+            seed=None,
+        ),
+        frame=FrameProvenance(
+            t=t,
+            frame_index=None,
+            quality="final",
+            origin="headless",
+            parameters=ParameterSnapshotProvenance(
+                revision=0,
+                entry_count=0,
+                sha256="parameters-sha256",
+            ),
+        ),
+    )
+
+
+def test_capture_manifest_serializes_explicit_provenance() -> None:
     manifest = CaptureManifest(
         t=1.25,
         canvas_size=(800, 600),
-        format=".PNG",
+        format="png",
         artifact_paths=(Path("output/capture.png"),),
+        provenance=_capture_provenance(1.25),
+        output_size=(800, 600),
     )
 
     payload = manifest.as_dict()
 
-    assert payload["schema_version"] == CAPTURE_MANIFEST_SCHEMA_VERSION == 2
-    assert payload["t"] == 1.25
-    assert payload["canvas_size"] == {"width": 800, "height": 600}
-    assert payload["format"] == "png"
-    assert payload["artifact_paths"] == ["output/capture.png"]
-    assert payload["grafix"] == {"version": payload["grafix"]["version"]}
+    assert payload["schema_version"] == CAPTURE_MANIFEST_SCHEMA_VERSION == 3
+    assert "t" not in payload
+    assert "canvas_size" not in payload
+    assert "format" not in payload
+    assert "artifact_paths" not in payload
+    assert payload["grafix"] == {"version": "test"}
     assert payload["source"]["available"] is False
-    assert payload["source"]["unavailable_reason"]
+    assert payload["source"]["unavailable_reason"] == "test fixture has no source file"
     assert payload["git"]["available"] is False
     assert payload["config"]["effective"] == {}
-    assert payload["parameters"]["source"] == "unavailable"
+    assert payload["parameters"]["source"] == "test"
     assert payload["parameters"]["snapshot_hash"]["algorithm"] == "sha256"
     assert payload["seed"] is None
     assert payload["frame"] == {
@@ -48,7 +99,7 @@ def test_capture_manifest_normalizes_and_serializes_minimum_provenance() -> None
         "format": "png",
         "artifact_paths": ["output/capture.png"],
         "canvas_size": {"width": 800, "height": 600},
-        "size": None,
+        "size": {"width": 800, "height": 600},
     }
     assert payload["recording"] is None
 
@@ -68,6 +119,7 @@ def test_recording_manifest_serializes_pause_policy_and_counts() -> None:
         canvas_size=(800, 600),
         format="mp4",
         artifact_paths=(Path("output/capture.mp4"),),
+        provenance=_capture_provenance(1.25),
         output_size=(1600, 1200),
         recording=recording,
     )
@@ -88,6 +140,18 @@ def test_recording_manifest_serializes_pause_policy_and_counts() -> None:
     }
 
 
+def test_capture_manifest_rejects_missing_provenance() -> None:
+    with pytest.raises(TypeError, match="provenance"):
+        CaptureManifest(
+            t=0.0,
+            canvas_size=(100, 100),
+            format="svg",
+            artifact_paths=(Path("capture.svg"),),
+            provenance=None,  # type: ignore[arg-type]
+            output_size=(100, 100),
+        )
+
+
 def test_capture_manifest_supports_multiple_layer_artifacts(tmp_path: Path) -> None:
     artifacts = (
         tmp_path / "capture_layer001.gcode",
@@ -96,8 +160,10 @@ def test_capture_manifest_supports_multiple_layer_artifacts(tmp_path: Path) -> N
     manifest = CaptureManifest(
         t=0.0,
         canvas_size=(210, 297),
-        format="gcode_layers",
+        format="gcode",
         artifact_paths=artifacts,
+        provenance=_capture_provenance(0.0),
+        output_size=(210, 297),
     )
     path = tmp_path / "capture.gcode.capture.json"
 
@@ -114,6 +180,8 @@ def test_capture_manifest_write_never_replaces_existing_file(tmp_path: Path) -> 
         canvas_size=(100, 100),
         format="svg",
         artifact_paths=(tmp_path / "capture.svg",),
+        provenance=_capture_provenance(2.0),
+        output_size=(100, 100),
     )
 
     with pytest.raises(FileExistsError):
@@ -142,6 +210,8 @@ def test_capture_generation_rolls_back_artifact_when_manifest_late_collides(
         canvas_size=(100, 80),
         format="svg",
         artifact_paths=(artifact,),
+        provenance=_capture_provenance(1.5),
+        output_size=(100, 80),
     )
 
     with pytest.raises(FileExistsError):
@@ -169,8 +239,10 @@ def test_capture_generation_publishes_all_artifacts_and_manifest(tmp_path: Path)
     manifest = CaptureManifest(
         t=2.25,
         canvas_size=(210, 297),
-        format="gcode_layers",
+        format="gcode",
         artifact_paths=artifacts,
+        provenance=_capture_provenance(2.25),
+        output_size=(210, 297),
     )
 
     published = publish_capture_generation(
@@ -198,6 +270,8 @@ def test_capture_generation_overwrite_replaces_complete_generation(tmp_path: Pat
         canvas_size=(100, 80),
         format="svg",
         artifact_paths=(artifact,),
+        provenance=_capture_provenance(1.5),
+        output_size=(100, 80),
     )
 
     published = publish_capture_generation(
@@ -231,6 +305,8 @@ def test_capture_generation_overwrite_rolls_back_both_files_on_failure(
         canvas_size=(100, 80),
         format="svg",
         artifact_paths=(artifact,),
+        provenance=_capture_provenance(1.5),
+        output_size=(100, 80),
     )
     real_link = capture_module.os.link
     link_calls = 0
@@ -265,6 +341,7 @@ def test_capture_generation_overwrite_rolls_back_both_files_on_failure(
         ({"canvas_size": (0, 100)}, "canvas_size"),
         ({"format": "."}, "format"),
         ({"artifact_paths": ()}, "artifact_paths"),
+        ({"output_size": (0, 100)}, "output_size"),
     ],
 )
 def test_capture_manifest_validates_fields(kwargs: dict[str, object], message: str) -> None:
@@ -273,8 +350,82 @@ def test_capture_manifest_validates_fields(kwargs: dict[str, object], message: s
         "canvas_size": (100, 100),
         "format": "svg",
         "artifact_paths": (Path("capture.svg"),),
+        "provenance": _capture_provenance(0.0),
+        "output_size": (100, 100),
     }
     values.update(kwargs)
 
     with pytest.raises(ValueError, match=message):
         CaptureManifest(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"t": True},
+        {"canvas_size": [100, 100]},
+        {"format": 1},
+        {"artifact_paths": ("capture.svg",)},
+        {"output_size": (100.0, 100)},
+    ],
+)
+def test_capture_manifest_rejects_implicit_field_conversion(
+    kwargs: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "t": 0.0,
+        "canvas_size": (100, 100),
+        "format": "svg",
+        "artifact_paths": (Path("capture.svg"),),
+        "provenance": _capture_provenance(0.0),
+        "output_size": (100, 100),
+    }
+    values.update(kwargs)
+
+    with pytest.raises(TypeError):
+        CaptureManifest(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"fps": "30"},
+        {"frame_count": 1.0},
+        {"error_count": True},
+        {"error_policy": 1},
+    ],
+)
+def test_recording_manifest_rejects_implicit_field_conversion(
+    kwargs: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "fps": 30.0,
+        "frame_count": 1,
+    }
+    values.update(kwargs)
+
+    with pytest.raises(TypeError):
+        RecordingManifest(**values)  # type: ignore[arg-type]
+
+
+def test_publish_capture_generation_rejects_non_bool_overwrite(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "capture.svg"
+    manifest = CaptureManifest(
+        t=0.0,
+        canvas_size=(100, 100),
+        format="svg",
+        artifact_paths=(artifact,),
+        provenance=_capture_provenance(0.0),
+        output_size=(100, 100),
+    )
+
+    with pytest.raises(TypeError, match="overwrite"):
+        publish_capture_generation(
+            staged_artifact_paths=(tmp_path / "staged.svg",),
+            artifact_paths=(artifact,),
+            manifest_path=tmp_path / "capture.svg.capture.json",
+            manifest=manifest,
+            overwrite="false",  # type: ignore[arg-type]
+        )

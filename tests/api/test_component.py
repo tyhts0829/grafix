@@ -1,6 +1,6 @@
 import pytest
 
-from grafix import E, G, preset
+from grafix import E, G, P, preset
 from grafix.core.geometry import Geometry
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.context import parameter_context
@@ -16,7 +16,7 @@ def test_component_records_only_public_params_and_mutes_internal() -> None:
     meta = {"x": {"kind": "float", "ui_min": 0.0, "ui_max": 10.0}}
 
     @preset(meta=meta)
-    def component_records(*, x: float = 1.0, name=None, key=None) -> Geometry:
+    def component_records(*, x: float = 1.0) -> Geometry:
         geometry = G(name="internal").polygon(n_sides=6)
         return E(name="internal_eff").affine(delta=(0.0, 0.0, 0.0))(geometry)
 
@@ -40,7 +40,7 @@ def test_component_passes_resolved_params_to_function() -> None:
     meta = {"x": {"kind": "float", "ui_min": 0.0, "ui_max": 10.0}}
 
     @preset(meta=meta)
-    def component_resolves(*, x: float = 1.0, name=None, key=None) -> Geometry:
+    def component_resolves(*, x: float = 1.0) -> Geometry:
         return Geometry.create(op="concat", params={"x": float(x)})
 
     def _call() -> Geometry:
@@ -65,12 +65,12 @@ def test_component_key_splits_instances_from_same_callsite() -> None:
     meta = {"x": {"kind": "float", "ui_min": 0.0, "ui_max": 10.0}}
 
     @preset(meta=meta)
-    def component_key_split(*, x: float = 1.0, name=None, key=None) -> Geometry:
+    def component_key_split(*, x: float = 1.0) -> Geometry:
         return Geometry.create(op="concat", params={"x": float(x)})
 
     with parameter_context(store=store):
         for i in range(2):
-            component_key_split(key=i)
+            P(key=i).component_key_split()
 
     snap = store_snapshot(store)
     site_ids = {k.site_id for k in snap.keys() if k.op == "preset.component_key_split"}
@@ -79,21 +79,13 @@ def test_component_key_splits_instances_from_same_callsite() -> None:
 
 def test_component_instance_key_and_shared_control_repeated_groups() -> None:
     meta = {"x": {"kind": "float", "ui_min": 0.0, "ui_max": 10.0}}
-    received_identity: list[tuple[object, object]] = []
-
     @preset(meta=meta)
-    def component_instance_identity(
-        *,
-        x: float = 1.0,
-        instance_key=None,
-        shared=False,
-    ) -> Geometry:
-        received_identity.append((instance_key, shared))
+    def component_instance_identity(*, x: float = 1.0) -> Geometry:
         return Geometry.create(op="concat", params={"x": float(x)})
 
     individual_store = ParamStore()
     with parameter_context(store=individual_store):
-        [component_instance_identity(instance_key=i) for i in range(3)]
+        [P(instance_key=i).component_instance_identity() for i in range(3)]
     individual_sites = {
         key.site_id
         for key in store_snapshot(individual_store)
@@ -104,14 +96,13 @@ def test_component_instance_key_and_shared_control_repeated_groups() -> None:
     shared_store = ParamStore()
     with parameter_context(store=shared_store):
         for _i in range(3):
-            component_instance_identity(shared=True)
+            P(shared=True).component_instance_identity()
     shared_sites = {
         key.site_id
         for key in store_snapshot(shared_store)
         if key.op == "preset.component_instance_identity"
     }
     assert len(shared_sites) == 1
-    assert received_identity[-3:] == [(None, True)] * 3
 
 
 def test_component_meta_dict_spec_rejects_unknown_key() -> None:
@@ -120,7 +111,7 @@ def test_component_meta_dict_spec_rejects_unknown_key() -> None:
     with pytest.raises(ValueError, match="未知キー"):
 
         @preset(meta=meta)
-        def component_bad_meta(*, x: float = 1.0, name=None, key=None) -> Geometry:
+        def component_bad_meta(*, x: float = 1.0) -> Geometry:
             return Geometry.create(op="concat", params={"x": float(x)})
 
 
@@ -138,3 +129,15 @@ def test_component_deactivated_returns_normalizable_empty_scene() -> None:
     realized = realize(layers[0].geometry)
     assert realized.coords.shape == (0, 3)
     assert realized.offsets.tolist() == [0]
+
+
+def test_component_requires_exact_bool_activate() -> None:
+    @preset(meta={})
+    def component_strict_activate() -> Geometry:
+        return Geometry.create(op="concat", params={"active": True})
+
+    for invalid in ("false", "true", 0, 1, None):
+        with pytest.raises(TypeError, match="exact bool"):
+            component_strict_activate(activate=invalid)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="exact bool"):
+            P.component_strict_activate(activate=invalid)

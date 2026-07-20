@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import grafix.api
@@ -40,7 +43,7 @@ def onboarding_local_effect(g, *, amount: float = 0.5):
 
 @preset(meta={"size": {"kind": "float", "ui_min": 0.0, "ui_max": 10.0}})
 def onboarding_local_preset(
-    *, size: float = 1.0, name=None, key=None
+    *, size: float = 1.0
 ) -> Geometry:
     return G.circle(radius=size)
 ''',
@@ -66,6 +69,33 @@ def test_stub_cli_defaults_to_project_local_output_and_includes_user_ops(
     assert "def onboarding_local_preset(" in generated
     assert root_proxy.is_file()
     assert installed_stub.read_bytes() == installed_before
+
+    probe = project / "preset_typing_probe.py"
+    probe.write_text(
+        "from grafix import P\n"
+        "P.onboarding_local_preset(size=2.0)\n"
+        "P.onboarding_local_presett(size=2.0)\n",
+        encoding="utf-8",
+    )
+    checked = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mypy",
+            "--no-incremental",
+            "--cache-dir",
+            str(tmp_path / "mypy-cache"),
+            str(probe),
+        ],
+        cwd=project,
+        env={**os.environ, "MYPYPATH": str(project / "typings")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert checked.returncode == 1
+    assert '"_P" has no attribute "onboarding_local_presett"' in checked.stdout
+    assert '"_P" has no attribute "onboarding_local_preset"' not in checked.stdout
 
     # 同一 process での再生成でも module を二重登録せず正常に更新できる。
     assert grafix_main(["stub", "--project", str(project)]) == 0

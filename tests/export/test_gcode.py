@@ -3,23 +3,17 @@
 from __future__ import annotations
 
 from math import hypot
+from typing import Any
 
 import numpy as np
 import pytest
 
 from grafix.core.geometry import Geometry
+from grafix.core.gcode_params import GCodeParams as CoreGCodeParams
 from grafix.core.layer import Layer
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.realized_geometry import RealizedGeometry
-from grafix.core.runtime_config import set_config_path
 from grafix.export.gcode import GCodeParams, export_gcode
-
-
-@pytest.fixture(autouse=True)
-def _reset_runtime_config() -> None:
-    set_config_path(None)
-    yield
-    set_config_path(None)
 
 
 def _realized_layer(
@@ -95,6 +89,84 @@ def _pen_up_xy_targets(text: str, *, z_up: float, z_down: float) -> list[tuple[f
         if not pen_is_down:
             out.append(xy)
     return out
+
+
+def test_gcode_params_is_the_public_reexport_of_the_core_type() -> None:
+    assert GCodeParams is CoreGCodeParams
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("travel_feed", True),
+        ("travel_feed", "3000"),
+        ("draw_feed", float("nan")),
+        ("z_up", float("inf")),
+        ("z_down", object()),
+        ("paper_margin_mm", False),
+        ("bridge_draw_distance", "0.5"),
+        ("canvas_height_mm", float("-inf")),
+    ],
+)
+def test_gcode_params_rejects_non_real_or_non_finite_numeric_values(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        GCodeParams(**{field: value})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("travel_feed", 0.0),
+        ("draw_feed", -1.0),
+        ("paper_margin_mm", -0.1),
+        ("bridge_draw_distance", -0.1),
+        ("canvas_height_mm", 0.0),
+    ],
+)
+def test_gcode_params_rejects_values_outside_semantic_ranges(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError):
+        GCodeParams(**{field: value})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", ["y_down", "optimize_travel", "allow_reverse"])
+@pytest.mark.parametrize("value", [0, 1, "", object()])
+def test_gcode_params_requires_exact_booleans(
+    field: str,
+    value: Any,
+) -> None:
+    with pytest.raises(TypeError):
+        GCodeParams(**{field: value})
+
+
+@pytest.mark.parametrize("value", [True, 1.0, "3", -1])
+def test_gcode_params_requires_non_negative_integer_decimals(value: Any) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        GCodeParams(decimals=value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("origin", [0.0, 0.0]),
+        ("origin", (0.0,)),
+        ("origin", (0.0, float("nan"))),
+        ("bed_x_range", [0.0, 1.0]),
+        ("bed_x_range", (1.0, 1.0)),
+        ("bed_y_range", (2.0, 1.0)),
+    ],
+)
+def test_gcode_params_requires_finite_ordered_tuples(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        GCodeParams(**{field: value})  # type: ignore[arg-type]
 
 
 def test_export_gcode_writes_file_and_is_deterministic(tmp_path) -> None:
@@ -475,36 +547,7 @@ def test_export_gcode_draw_bridge_does_not_cross_face_blocks(tmp_path) -> None:
     assert checked
 
 
-def test_export_gcode_uses_config_when_params_is_none(tmp_path) -> None:
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "\n".join(
-            [
-                "export:",
-                "  png:",
-                "    scale: 8.0",
-                "  gcode:",
-                "    travel_feed: 3000.0",
-                "    draw_feed: 3000.0",
-                "    z_up: 3.0",
-                "    z_down: -1.0",
-                "    y_down: false",
-                "    origin: [0.0, 0.0]",
-                "    decimals: 3",
-                "    paper_margin_mm: 0.0",
-                "    bed_x_range: null",
-                "    bed_y_range: null",
-                "    bridge_draw_distance: null",
-                "    optimize_travel: false",
-                "    allow_reverse: true",
-                "    canvas_height_mm: null",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    set_config_path(config_path)
-
+def test_export_gcode_requires_explicit_params(tmp_path) -> None:
     layers = [
         _realized_layer(
             coords=[
@@ -516,9 +559,7 @@ def test_export_gcode_uses_config_when_params_is_none(tmp_path) -> None:
     ]
 
     out_path = tmp_path / "out.gcode"
-    export_gcode(layers, out_path, canvas_size=(10.0, 10.0))
-    text = out_path.read_text(encoding="utf-8")
+    with pytest.raises(TypeError, match="params"):
+        export_gcode(layers, out_path, canvas_size=(10.0, 10.0))  # type: ignore[call-arg]
 
-    assert "G1 X1.000 Y1.000" in text
-    assert "G1 X2.000 Y1.000" in text
-    assert "Y9.000" not in text
+    assert not out_path.exists()

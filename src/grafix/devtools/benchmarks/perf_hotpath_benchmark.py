@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from grafix.devtools.benchmarks.schema import (
+    BenchmarkOutput,
     ContractResult,
     Metric,
     evaluate_contract,
@@ -27,15 +28,6 @@ class PerfBacklogScenario:
     samples: int
 
 
-@dataclass(frozen=True, slots=True)
-class PerfBacklogResult:
-    """runner 境界へ返す semantic output と metric。"""
-
-    value: dict[str, object]
-    metrics: tuple[Metric, ...]
-    contracts: tuple[ContractResult, ...]
-
-
 def make_perf_backlog_scenario(parameters: dict[str, Any]) -> PerfBacklogScenario:
     """JSON-compatible parameter から scenario を返す。"""
 
@@ -50,7 +42,7 @@ def make_perf_backlog_scenario(parameters: dict[str, Any]) -> PerfBacklogScenari
 
 def run_perf_backlog_scenario(
     scenario: PerfBacklogScenario,
-) -> PerfBacklogResult:
+) -> BenchmarkOutput:
     """future/prefix/all の照合時間と pending semantic を返す。"""
 
     future_ms: list[float] = []
@@ -66,7 +58,7 @@ def run_perf_backlog_scenario(
         started = time.perf_counter_ns()
         future.record_event(
             "preview_presented",
-            revision=-1,
+            revision=0,
             timestamp_ns=scenario.pending + 10_000,
         )
         future_ms.append((time.perf_counter_ns() - started) / 1_000_000.0)
@@ -76,7 +68,7 @@ def run_perf_backlog_scenario(
         started = time.perf_counter_ns()
         prefix.record_event(
             "preview_presented",
-            revision=prefix_count - 1,
+            revision=prefix_count,
             timestamp_ns=scenario.pending + 10_000,
         )
         prefix_ms.append((time.perf_counter_ns() - started) / 1_000_000.0)
@@ -86,7 +78,7 @@ def run_perf_backlog_scenario(
         started = time.perf_counter_ns()
         matched_all.record_event(
             "preview_presented",
-            revision=scenario.pending - 1,
+            revision=scenario.pending,
             timestamp_ns=scenario.pending + 10_000,
         )
         all_ms.append((time.perf_counter_ns() - started) / 1_000_000.0)
@@ -128,8 +120,8 @@ def run_perf_backlog_scenario(
     expected_semantic_digest = hashlib.sha256(
         repr(
             (
-                (0, scenario.pending - 1),
-                (prefix_count, scenario.pending - 1),
+                (1, scenario.pending),
+                (prefix_count + 1, scenario.pending),
                 0,
                 min(prefix_count, latency_limit),
                 min(scenario.pending, latency_limit),
@@ -144,7 +136,7 @@ def run_perf_backlog_scenario(
             )
         ).encode("utf-8")
     ).hexdigest()
-    return PerfBacklogResult(
+    return BenchmarkOutput(
         value={
             "pending": scenario.pending,
             "samples": scenario.samples,
@@ -228,7 +220,7 @@ def _collector_with_pending(count: int) -> PerfCollector:
         console_output=False,
         print_every=10_000,
     )
-    for revision in range(int(count)):
+    for revision in range(1, int(count) + 1):
         collector.record_event(
             "parameter_revision_created",
             revision=revision,
@@ -278,7 +270,6 @@ def _contract(
 
 
 __all__ = [
-    "PerfBacklogResult",
     "PerfBacklogScenario",
     "make_perf_backlog_scenario",
     "run_perf_backlog_scenario",

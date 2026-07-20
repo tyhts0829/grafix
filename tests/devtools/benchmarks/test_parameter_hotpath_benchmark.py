@@ -75,6 +75,24 @@ def test_parameter_hotpath_registry_scopes_reference_and_soak_cases() -> None:
     assert favorites.selectable_suites == ("parameters", "soak")
 
 
+def test_parameter_layout_benchmark_uses_canonical_layout_model() -> None:
+    result = run_parameter_hot_path_scenario(
+        make_parameter_hot_path_scenario(
+            {
+                "operation": "layout_reuse",
+                "rows": 32,
+                "samples": 4,
+            }
+        )
+    )
+
+    metrics = {metric.name for metric in result.metrics}
+    assert "parameter_layout.build" in metrics
+    assert "parameter_layout.legacy_regroup" not in metrics
+    assert result.value["built_blocks"] == result.value["layout_blocks"]
+    assert "legacy_blocks" not in result.value
+
+
 def test_parameter_hotpath_scenario_rejects_unknown_operation() -> None:
     with pytest.raises(ValueError, match="未対応"):
         make_parameter_hot_path_scenario(

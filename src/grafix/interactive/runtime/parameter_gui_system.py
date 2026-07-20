@@ -13,7 +13,8 @@ from grafix.interactive.parameter_gui import ParameterGUI, create_parameter_gui_
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.style import STYLE_OP
-from grafix.core.runtime_config import runtime_config
+from grafix.core.runtime_config import RuntimeConfig
+from grafix.core.value_validation import finite_real
 from grafix.interactive.midi import MidiSession
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ class ParameterGUIWindowSystem:
     def __init__(
         self,
         *,
+        effective_config: RuntimeConfig,
         store: ParamStore,
         midi_session: MidiSession | None = None,
         monitor: RuntimeMonitor | None = None,
@@ -53,8 +55,19 @@ class ParameterGUIWindowSystem:
     ) -> None:
         """GUI 用の window と ParameterGUI を初期化する。"""
 
-        cfg = runtime_config()
-        w, h = cfg.parameter_gui_window_size
+        frame_rate = finite_real(
+            transport_fps,
+            name="transport_fps",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+        scale = finite_real(
+            ui_scale,
+            name="ui_scale",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+        w, h = effective_config.parameter_gui_window_size
         self.window = create_parameter_gui_window(width=w, height=h, vsync=False)
         self._store = store
         self._autosave = autosave
@@ -62,61 +75,51 @@ class ParameterGUIWindowSystem:
         self._on_parameter_revision_created = on_parameter_revision_created
         self._gui = ParameterGUI(
             self.window,
+            effective_config=effective_config,
             store=store,
             midi_session=midi_session,
             monitor=monitor,
             transport=transport,
-            transport_fps=float(transport_fps),
+            transport_fps=frame_rate,
             history=history,
             snapshot_slots=snapshot_slots,
             is_recording=is_recording,
             variation_thumbnail_capture=variation_thumbnail_capture,
             variation_thumbnail_preview=variation_thumbnail_preview,
-            ui_scale=float(ui_scale),
+            ui_scale=scale,
         )
 
     def draw_frame(self) -> None:
         """1 フレーム分の GUI を描画する（`flip()` は呼ばない）。"""
 
-        store = getattr(self, "_store", None)
-        revision_before = None if store is None else int(store.revision)
-        value_revision_before = (
-            None if store is None else int(store.value_revision)
-        )
+        store = self._store
+        revision_before = int(store.revision)
+        value_revision_before = int(store.value_revision)
         input_started_ns = time.monotonic_ns()
         self._gui.draw_frame()
-        if store is not None:
-            revision_after = int(store.revision)
-            value_revision_after = int(store.value_revision)
-            callback = getattr(
-                self,
-                "_on_parameter_revision_created",
-                None,
+        revision_after = int(store.revision)
+        value_revision_after = int(store.value_revision)
+        callback = self._on_parameter_revision_created
+        if (
+            callback is not None
+            and revision_after != revision_before
+            and value_revision_after != value_revision_before
+        ):
+            changed_keys = store.value_changes_since(value_revision_before)
+            domains = (
+                {"geometry"}
+                if changed_keys is None
+                else {
+                    (
+                        "style"
+                        if key.op in {STYLE_OP, LAYER_STYLE_OP}
+                        else "geometry"
+                    )
+                    for key in changed_keys
+                }
             )
-            if (
-                callback is not None
-                and revision_before is not None
-                and value_revision_before is not None
-                and revision_after != revision_before
-                and value_revision_after != value_revision_before
-            ):
-                changed_keys = store.value_changes_since(
-                    value_revision_before
-                )
-                domains = (
-                    {"geometry"}
-                    if changed_keys is None
-                    else {
-                        (
-                            "style"
-                            if key.op in {STYLE_OP, LAYER_STYLE_OP}
-                            else "geometry"
-                        )
-                        for key in changed_keys
-                    }
-                )
-                for domain in sorted(domains):
-                    callback(revision_after, input_started_ns, domain)
+            for domain in sorted(domains):
+                callback(revision_after, input_started_ns, domain)
         autosave = self._autosave
         if autosave is not None:
             try:

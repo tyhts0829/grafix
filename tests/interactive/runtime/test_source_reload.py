@@ -12,7 +12,11 @@ from grafix.core.preset_registry import preset_registry
 from grafix.core.primitive_registry import primitive_registry
 from grafix.core.realize import realize
 from grafix.interactive.runtime.mp_draw import MpDraw
-from grafix.interactive.runtime.source_reload import ReloadedDraw, SourceReloadController
+from grafix.interactive.runtime.source_reload import (
+    ReloadedDraw,
+    SourceReloadController,
+    SourceReloadResult,
+)
 
 
 def _write_source(path: Path, source: str) -> None:
@@ -143,7 +147,14 @@ def test_validated_source_snapshot_runs_in_spawn_worker(tmp_path: Path) -> None:
     with SourceReloadController(source_path) as controller:
         worker = MpDraw(controller.draw, n_worker=1)
         try:
-            worker.submit(t=0.0, snapshot_revision=0, snapshot={})
+            worker.submit(
+                t=0.0,
+                snapshot_revision=0,
+                snapshot={},
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
+            )
             deadline = time.monotonic() + 5.0
             result = None
             while result is None and time.monotonic() < deadline:
@@ -178,7 +189,6 @@ def draw(t):
     )
 
     with SourceReloadController(source_path) as controller:
-        assert preset_registry.get("watch_reload_preset") is not None
         assert "preset.watch_reload_preset" in preset_registry
 
         _write_source(
@@ -193,10 +203,9 @@ def draw(t):
         result = controller.poll(force=True)
 
         assert result.status == "reloaded"
-        assert preset_registry.get("watch_reload_preset") is None
         assert "preset.watch_reload_preset" not in preset_registry
 
-    assert preset_registry.get("watch_reload_preset") is None
+    assert "preset.watch_reload_preset" not in preset_registry
 
 
 def test_preset_reload_is_atomic_and_rollback_restores_one_spec(
@@ -214,7 +223,7 @@ def test_preset_reload_is_atomic_and_rollback_restores_one_spec(
     try:
         original_spec = dict(preset_registry.items())[op]
         original_revision = preset_registry.revision
-        assert preset_registry.get(name) is original_spec.func
+        assert preset_registry[op] is original_spec
         assert original_spec.meta["amount"].kind == "float"
         assert _draw_generation(controller.draw) == 1
 
@@ -232,7 +241,7 @@ def test_preset_reload_is_atomic_and_rollback_restores_one_spec(
         assert failed.status == "failed"
         assert preset_registry.revision == original_revision
         assert dict(preset_registry.items())[op] is original_spec
-        assert preset_registry.get(name) is original_spec.func
+        assert preset_registry[op] is original_spec
         assert _draw_generation(controller.draw) == 1
 
         _write_source(
@@ -245,7 +254,7 @@ def test_preset_reload_is_atomic_and_rollback_restores_one_spec(
         assert preset_registry.revision == original_revision + 1
         replacement_spec = dict(preset_registry.items())[op]
         assert replacement_spec is not original_spec
-        assert preset_registry.get(name) is replacement_spec.func
+        assert preset_registry[op] is replacement_spec
         assert replacement_spec.meta["amount"].kind == "int"
         assert _draw_generation(controller.draw) == 2
 
@@ -253,7 +262,7 @@ def test_preset_reload_is_atomic_and_rollback_restores_one_spec(
 
         assert preset_registry.revision == original_revision + 2
         assert dict(preset_registry.items())[op] is original_spec
-        assert preset_registry.get(name) is original_spec.func
+        assert preset_registry[op] is original_spec
         assert restored_draw is controller.draw
         assert _draw_generation(restored_draw) == 1
     finally:
@@ -262,7 +271,6 @@ def test_preset_reload_is_atomic_and_rollback_restores_one_spec(
 
     assert preset_registry.revision == before_close + 1
     assert op not in preset_registry
-    assert preset_registry.get(name) is None
 
 
 def test_reload_rebinds_source_module_registry_global_to_live_object(
@@ -281,9 +289,9 @@ def test_reload_rebinds_source_module_registry_global_to_live_object(
 
     with SourceReloadController(source_path) as controller:
         assert _draw_generation(controller.draw) == 3
-        assert preset_registry.get(name) is not None
+        assert f"preset.{name}" in preset_registry
 
-    assert preset_registry.get(name) is None
+    assert f"preset.{name}" not in preset_registry
 
 
 def test_transactional_reload_can_rollback_registry_and_draw(tmp_path: Path) -> None:
@@ -344,3 +352,93 @@ def test_initial_load_rejects_missing_or_invalid_draw_signature(
 
     with pytest.raises(RuntimeError, match="draw|callable"):
         SourceReloadController(source_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("status", "legacy", ValueError),
+        ("generation", True, TypeError),
+        ("generation", -2, ValueError),
+        ("draw", object(), TypeError),
+        ("summary", object(), TypeError),
+    ],
+)
+def test_source_reload_result_validates_direct_construction(
+    field: str,
+    value: object,
+    error: type[Exception],
+) -> None:
+    values: dict[str, object] = {
+        "status": "unchanged",
+        "generation": 0,
+        "draw": lambda _t: (),
+    }
+    values[field] = value
+    with pytest.raises(error):
+        SourceReloadResult(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("path", "sketch.py", TypeError),
+        ("source_bytes", bytearray(b""), TypeError),
+        ("module_name", 1, TypeError),
+        ("module_name", "", ValueError),
+        ("draw_attribute", 1, TypeError),
+        ("draw_attribute", "", ValueError),
+        ("loaded_draw", object(), TypeError),
+    ],
+)
+def test_reloaded_draw_rejects_implicit_constructor_coercion(
+    field: str,
+    value: object,
+    error: type[Exception],
+) -> None:
+    values: dict[str, object] = {
+        "path": Path("sketch.py"),
+        "source_bytes": b"",
+        "module_name": "_sketch",
+        "draw_attribute": "draw",
+        "loaded_draw": lambda _t: (),
+    }
+    values[field] = value
+    with pytest.raises(error):
+        ReloadedDraw(**values)  # type: ignore[arg-type]
+
+
+def test_reloaded_draw_rejects_implicit_time_coercion() -> None:
+    draw = ReloadedDraw(
+        path=Path("sketch.py"),
+        source_bytes=b"",
+        module_name="_sketch",
+        draw_attribute="draw",
+        loaded_draw=lambda _t: (),
+    )
+    with pytest.raises(TypeError, match="t"):
+        draw("0")  # type: ignore[arg-type]
+
+
+def test_source_reload_controller_rejects_noncanonical_controls(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=1.0))
+
+    with pytest.raises(TypeError, match="path"):
+        SourceReloadController(object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="draw_attribute"):
+        SourceReloadController(source_path, draw_attribute=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="空白"):
+        SourceReloadController(source_path, draw_attribute=" draw ")
+
+    with SourceReloadController(source_path) as controller:
+        with pytest.raises(TypeError, match="force"):
+            controller.poll(force=1)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="retain_rollback"):
+            controller.poll(retain_rollback=0)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="generation"):
+            controller.accept_generation(True)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="generation"):
+            controller.rollback_generation("0")  # type: ignore[arg-type]

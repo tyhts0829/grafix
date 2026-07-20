@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
-from .util import pack_polylines
-
-NONPLANAR_EPS_ABS = 1e-6
-NONPLANAR_EPS_REL = 1e-5
+from .argument_validation import finite_vec3, integer_scalar
+from .util import (
+    canonical_planar_frame,
+    pack_polylines,
+    planarity_threshold,
+)
 
 partition_meta = {
     "mode": ParamMeta(
@@ -66,132 +67,6 @@ partition_meta = {
 partition_ui_visible = {
     "pivot": lambda v: not bool(v.get("auto_center", True)),
 }
-
-@dataclass(frozen=True, slots=True)
-class _PlaneBasis:
-    """平面の 2D 基底を表現する（3D <-> 2D 変換用）。"""
-
-    origin: np.ndarray  # (3,)
-    u: np.ndarray  # (3,)
-    v: np.ndarray  # (3,)
-
-
-def _fit_plane_basis(
-    points: np.ndarray,
-    *,
-    eps_abs: float = NONPLANAR_EPS_ABS,
-    eps_rel: float = NONPLANAR_EPS_REL,
-) -> tuple[bool, _PlaneBasis]:
-    """点群が“ほぼ平面”なら 2D 基底を返す。"""
-    if points.shape[0] < 3:
-        origin = points.mean(axis=0) if points.shape[0] else np.zeros((3,), dtype=np.float64)
-        basis = _PlaneBasis(
-            origin=np.asarray(origin, dtype=np.float64),
-            u=np.array([1.0, 0.0, 0.0], dtype=np.float64),
-            v=np.array([0.0, 1.0, 0.0], dtype=np.float64),
-        )
-        return False, basis
-
-    origin = points.mean(axis=0, dtype=np.float64)
-    mins = np.min(points, axis=0)
-    maxs = np.max(points, axis=0)
-    diag = float(np.linalg.norm(maxs.astype(np.float64) - mins.astype(np.float64)))
-    threshold = max(float(eps_abs), float(eps_rel) * diag)
-
-    # Fast-path: 入力が XY 平面上（z 残差のみで共平面判定できる）なら、重い推定をスキップする。
-    z = points[:, 2].astype(np.float64, copy=False)
-    z_residual = float(np.max(np.abs(z - float(origin[2]))))
-    if z_residual <= threshold:
-        basis = _PlaneBasis(
-            origin=np.asarray(origin, dtype=np.float64),
-            u=np.array([1.0, 0.0, 0.0], dtype=np.float64),
-            v=np.array([0.0, 1.0, 0.0], dtype=np.float64),
-        )
-        return True, basis
-
-    # SVD（(N,3)）は重いので、3x3 共分散行列の固有分解で法線を推定する。
-    x = points[:, 0]
-    y = points[:, 1]
-    zz = points[:, 2]
-    sxx = float(np.sum(x * x, dtype=np.float64))
-    sxy = float(np.sum(x * y, dtype=np.float64))
-    sxz = float(np.sum(x * zz, dtype=np.float64))
-    syy = float(np.sum(y * y, dtype=np.float64))
-    syz = float(np.sum(y * zz, dtype=np.float64))
-    szz = float(np.sum(zz * zz, dtype=np.float64))
-
-    S = np.array(
-        [
-            [sxx, sxy, sxz],
-            [sxy, syy, syz],
-            [sxz, syz, szz],
-        ],
-        dtype=np.float64,
-    )
-    C = S - float(points.shape[0]) * np.outer(origin, origin)
-    try:
-        _w, v = np.linalg.eigh(C)
-    except Exception:
-        basis = _PlaneBasis(
-            origin=np.asarray(origin, dtype=np.float64),
-            u=np.array([1.0, 0.0, 0.0], dtype=np.float64),
-            v=np.array([0.0, 1.0, 0.0], dtype=np.float64),
-        )
-        return False, basis
-
-    normal = v[:, 0]
-    n_norm = float(np.linalg.norm(normal))
-    if not np.isfinite(n_norm) or n_norm <= 0.0:
-        basis = _PlaneBasis(
-            origin=np.asarray(origin, dtype=np.float64),
-            u=np.array([1.0, 0.0, 0.0], dtype=np.float64),
-            v=np.array([0.0, 1.0, 0.0], dtype=np.float64),
-        )
-        return False, basis
-    normal = normal / n_norm
-
-    d = points @ normal - float(np.dot(origin, normal))
-    residual = float(np.max(np.abs(d)))
-    planar = bool(residual <= threshold)
-
-    # 基底の向きを安定させるため、world x 軸の平面内射影を u として採用する。
-    # normal とほぼ平行な場合は y 軸へフォールバックする。
-    ref = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-    if abs(float(np.dot(ref, normal))) > 0.9:
-        ref = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-    u_axis = ref - float(np.dot(ref, normal)) * normal
-    u_norm = float(np.linalg.norm(u_axis))
-    if u_norm <= 0.0:
-        ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        u_axis = ref - float(np.dot(ref, normal)) * normal
-        u_norm = float(np.linalg.norm(u_axis))
-    u_axis = u_axis / u_norm
-    v_axis = np.cross(normal, u_axis)
-
-    basis = _PlaneBasis(origin=origin, u=u_axis, v=v_axis)
-    return planar, basis
-
-
-def _project_to_2d(points: np.ndarray, basis: _PlaneBasis) -> np.ndarray:
-    """3D 点群を平面 2D 座標へ射影する。"""
-    # dtype 混在での暗黙キャスト（(N,3) の一時コピー）を避けるため、基底だけ float32 へ落とす。
-    u = basis.u.astype(np.float32, copy=False)
-    v = basis.v.astype(np.float32, copy=False)
-    o = basis.origin.astype(np.float32, copy=False)
-
-    x = points @ u - float(o @ u)
-    y = points @ v - float(o @ v)
-    return np.stack([x, y], axis=1).astype(np.float32, copy=False)
-
-
-def _lift_to_3d(coords_2d: np.ndarray, basis: _PlaneBasis) -> np.ndarray:
-    """2D 点群を 3D 空間へ戻す。"""
-    xy = coords_2d.astype(np.float32, copy=False)
-    u = basis.u.astype(np.float32, copy=False)
-    v = basis.v.astype(np.float32, copy=False)
-    o = basis.origin.astype(np.float32, copy=False)
-    return o[None, :] + xy[:, 0:1] * u[None, :] + xy[:, 1:2] * v[None, :]
-
 
 def _ensure_closed_2d(loop: np.ndarray) -> np.ndarray:
     if loop.shape[0] == 0:
@@ -340,7 +215,7 @@ def partition(
     g : tuple[np.ndarray, np.ndarray]
         入力の実体ジオメトリ（coords, offsets）。各ポリラインが閉ループ（リング）を表す想定。
     site_count : int, default 12
-        Voronoi のサイト数。1 未満は 1 扱い。
+        Voronoi の正のサイト数。
     seed : int, default 0
         乱数シード（再現性）。
     site_density_base : tuple[float, float, float], default (0.0, 0.0, 0.0)
@@ -365,14 +240,42 @@ def partition(
 
     Notes
     -----
-    入力が非共平面の場合は no-op として入力を返す。
+    rank 2 以上かつ最大平面残差が
+    ``max(1e-6, 1e-5 * bbox_diagonal)`` 以下の有限入力だけを処理する。
+    非共平面または linear な入力は射影せず no-op として返す。
     """
+    if not isinstance(mode, str):
+        raise TypeError("partition: mode は str である必要がある")
+    if mode not in {"merge", "group", "ring"}:
+        raise ValueError(f"partition: 未知の mode です: {mode!r}")
+    mode_s = mode
+
+    site_count_i = integer_scalar(site_count, name="partition: site_count")
+    if site_count_i <= 0:
+        raise ValueError("partition: site_count は正の整数である必要がある")
+
+    base_x, base_y, base_z = finite_vec3(
+        site_density_base,
+        name="partition: site_density_base",
+    )
+    if not all(0.0 <= value <= 1.0 for value in (base_x, base_y, base_z)):
+        raise ValueError(
+            "partition: site_density_base の各要素は 0.0 以上 1.0 以下である必要がある"
+        )
+    slope_x, slope_y, slope_z = finite_vec3(
+        site_density_slope,
+        name="partition: site_density_slope",
+    )
+    pivot_value = finite_vec3(pivot, name="partition: pivot")
+    seed_i = integer_scalar(seed, name="partition: seed")
+    if seed_i < 0:
+        raise ValueError("partition: seed は 0 以上である必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
-
-    planar, basis = _fit_plane_basis(coords)
-    if not planar:
+    frame = canonical_planar_frame(coords, offsets)
+    if not frame.is_planar(planarity_threshold(coords)):
         return coords, offsets
 
     try:
@@ -382,11 +285,7 @@ def partition(
     except Exception as exc:  # pragma: no cover
         raise RuntimeError("partition effect は shapely が必要です") from exc
 
-    mode = str(mode)
-    if mode not in ("merge", "group", "ring"):
-        raise ValueError("partition の mode は 'merge'|'group'|'ring' のいずれかである必要がある")
-
-    coords_2d_all = _project_to_2d(coords, basis)
+    coords_2d_all = frame.project(coords)
     rings_2d: list[np.ndarray] = []
     polys = []
     for i in range(int(offsets.size) - 1):
@@ -410,13 +309,12 @@ def partition(
     if not polys:
         return coords, offsets
 
-    site_count = max(1, int(site_count))
-    rng = np.random.default_rng(int(seed))
+    rng = np.random.default_rng(seed_i)
 
     regions = []
-    if mode == "ring":
+    if mode_s == "ring":
         regions = list(polys)
-    elif mode == "group":
+    elif mode_s == "group":
         groups = _build_evenodd_groups(polys, rings_2d, Point)
         for g in groups:
             region = _combine_evenodd([polys[i] for i in g], Polygon)
@@ -427,51 +325,6 @@ def partition(
         if region is None or region.is_empty:
             return coords, offsets
         regions = [region]
-
-    try:
-        base_x = float(site_density_base[0])
-        base_y = float(site_density_base[1])
-        base_z = float(site_density_base[2])
-    except Exception:
-        base_x = 0.0
-        base_y = 0.0
-        base_z = 0.0
-
-    if not np.isfinite(base_x):
-        base_x = 0.0
-    if not np.isfinite(base_y):
-        base_y = 0.0
-    if not np.isfinite(base_z):
-        base_z = 0.0
-
-    if base_x < 0.0:
-        base_x = 0.0
-    elif base_x > 1.0:
-        base_x = 1.0
-    if base_y < 0.0:
-        base_y = 0.0
-    elif base_y > 1.0:
-        base_y = 1.0
-    if base_z < 0.0:
-        base_z = 0.0
-    elif base_z > 1.0:
-        base_z = 1.0
-
-    try:
-        slope_x = float(site_density_slope[0])
-        slope_y = float(site_density_slope[1])
-        slope_z = float(site_density_slope[2])
-    except Exception:
-        slope_x = 0.0
-        slope_y = 0.0
-        slope_z = 0.0
-
-    if not np.isfinite(slope_x):
-        slope_x = 0.0
-    if not np.isfinite(slope_y):
-        slope_y = 0.0
-    if not np.isfinite(slope_z):
-        slope_z = 0.0
 
     density_enabled = (
         (base_x != 0.0)
@@ -496,22 +349,10 @@ def partition(
         if auto_center:
             pivot3 = bbox_center
         else:
-            try:
-                pivot3 = np.array(
-                    [float(pivot[0]), float(pivot[1]), float(pivot[2])],
-                    dtype=np.float64,
-                )
-            except Exception:
-                pivot3 = np.zeros((3,), dtype=np.float64)
-            if not np.all(np.isfinite(pivot3)):
-                pivot3 = np.zeros((3,), dtype=np.float64)
-
-        o3 = basis.origin.astype(np.float64, copy=False)
-        u3 = basis.u.astype(np.float64, copy=False)
-        v3 = basis.v.astype(np.float64, copy=False)
+            pivot3 = np.asarray(pivot_value, dtype=np.float64)
 
         def _p_eff_for_xy(xy: np.ndarray) -> np.ndarray:
-            p3 = o3[None, :] + xy[:, 0:1] * u3[None, :] + xy[:, 1:2] * v3[None, :]
+            p3 = frame.lift(xy)
             t = (p3 - pivot3[None, :]) * inv_extent3[None, :]
             t = np.clip(t, -1.0, 1.0)
             tx = t[:, 0]
@@ -531,18 +372,18 @@ def partition(
 
         pts: list[tuple[float, float]] = []
         if width > 0.0 and height > 0.0:
-            trials_per_phase = max(1000, site_count * 50)
-            batch = max(256, site_count * 20)
+            trials_per_phase = max(1000, site_count_i * 50)
+            batch = max(256, site_count_i * 20)
 
             def _append_points(xs: np.ndarray, ys: np.ndarray) -> None:
-                need = int(site_count) - len(pts)
+                need = site_count_i - len(pts)
                 if need <= 0:
                     return
                 for x, y in zip(xs[:need], ys[:need], strict=False):
                     pts.append((float(x), float(y)))
 
             trials_left = int(trials_per_phase)
-            while len(pts) < site_count and trials_left > 0:
+            while len(pts) < site_count_i and trials_left > 0:
                 n = min(int(batch), int(trials_left))
                 xs = float(minx) + rng.random(n) * width
                 ys = float(miny) + rng.random(n) * height
@@ -564,9 +405,9 @@ def partition(
                 trials_left -= n
 
             # top-up: density で足りない場合は、一様サンプリングで埋めて site_count を満たす。
-            if density_enabled and len(pts) < site_count:
+            if density_enabled and len(pts) < site_count_i:
                 trials_left = int(trials_per_phase)
-                while len(pts) < site_count and trials_left > 0:
+                while len(pts) < site_count_i and trials_left > 0:
                     n = min(int(batch), int(trials_left))
                     xs = float(minx) + rng.random(n) * width
                     ys = float(miny) + rng.random(n) * height
@@ -611,5 +452,5 @@ def partition(
 
     loops_2d.sort(key=_sort_key)
 
-    lines_3d = [_lift_to_3d(loop, basis) for loop in loops_2d]
+    lines_3d = [frame.lift(loop[:, :2]) for loop in loops_2d]
     return pack_polylines([line for line in lines_3d if line.shape[0] > 0])

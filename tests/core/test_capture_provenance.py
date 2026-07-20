@@ -10,7 +10,11 @@ import pytest
 
 import grafix.core.capture_provenance as provenance_module
 from grafix import G, RenderSession, export
-from grafix.core.capture_provenance import GitProvenance
+from grafix.core.capture_provenance import (
+    FrameProvenance,
+    GitProvenance,
+    ParameterSnapshotProvenance,
+)
 from grafix.core.parameters.style import style_key
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.interactive.runtime.source_reload import ReloadedDraw
@@ -229,6 +233,42 @@ def test_seed_rejects_bool_and_non_integer() -> None:
         RenderSession(_draw, seed=True)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="seed"):
         RenderSession(_draw, seed=1.5)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"t": True},
+        {"frame_index": 1.5},
+        {"quality": "preview"},
+        {"origin": "worker"},
+    ],
+)
+def test_frame_provenance_rejects_implicit_or_unknown_fields(
+    kwargs: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "t": 0.0,
+        "frame_index": 0,
+        "quality": "final",
+        "origin": "headless",
+        "parameters": ParameterSnapshotProvenance(
+            revision=0,
+            entry_count=0,
+            sha256="sha256",
+        ),
+    }
+    values.update(kwargs)
+
+    with pytest.raises((TypeError, ValueError)):
+        FrameProvenance(**values)  # type: ignore[arg-type]
+
+
+def test_git_provenance_rejects_non_bool_flags() -> None:
+    with pytest.raises(TypeError):
+        GitProvenance(available=1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        GitProvenance(available=True, dirty=0)  # type: ignore[arg-type]
 
 
 def test_frame_seed_override_is_explicit_and_does_not_touch_global_rng(

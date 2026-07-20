@@ -7,6 +7,7 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from .argument_validation import finite_vec3, integer_scalar
 from .util import empty_geom
 
 # 高速 path の float64 中間配列・bool mask を 1 line あたり 192 bytes と
@@ -156,14 +157,14 @@ def drop(
     interval : int, default 0
         線インデックスに対する間引きステップ。1 以上で有効、0 で無効。
     index_offset : int, default 0
-        interval 判定の開始オフセット。
+        interval 判定の開始オフセット。有効な interval に対して剰余へ正規化する。
     min_length : float, default -1.0
         この長さ以下の線を対象とする。0 以上で有効、0 未満で無効。
     max_length : float, default -1.0
         この長さ以上の線を対象とする。0 以上で有効、0 未満で無効。
     probability_base : tuple[float, float, float], default (0.0, 0.0, 0.0)
         ジオメトリ bbox の中心（正規化座標 t=0）における drop 確率（軸別）。
-        各成分は 0.0〜1.0。範囲外はクランプ、非有限は 0.0 扱い。
+        各成分は 0.0〜1.0。有限な範囲外の値はクランプする。
     probability_slope : tuple[float, float, float], default (0.0, 0.0, 0.0)
         正規化座標 t∈[-1,+1] に対する確率勾配（軸別）。
 
@@ -189,48 +190,37 @@ def drop(
     tuple[np.ndarray, np.ndarray]
         条件適用後の実体ジオメトリ（coords, offsets）。
     """
-    coords, offsets = g
-    if coords.shape[0] == 0:
-        return coords, offsets
+    if not isinstance(by, str):
+        raise TypeError("drop: by は str である必要がある")
+    if by not in {"line", "face"}:
+        raise ValueError(f"drop: 未知の by です: {by!r}")
+    if not isinstance(keep_mode, str):
+        raise TypeError("drop: keep_mode は str である必要がある")
+    if keep_mode not in {"drop", "keep"}:
+        raise ValueError(f"drop: 未知の keep_mode です: {keep_mode!r}")
 
-    by_mode = str(by)
-    if by_mode not in {"line", "face"}:
-        return coords, offsets
-
-    keep = str(keep_mode)
-    if keep not in {"drop", "keep"}:
-        return coords, offsets
-
-    n_lines = int(offsets.size) - 1
-    if n_lines <= 0:
-        return coords, offsets
-
-    interval_i = int(interval)
+    by_mode = by
+    keep = keep_mode
+    interval_i = integer_scalar(interval, name="drop: interval")
     eff_interval = interval_i if interval_i >= 1 else None
-    index_offset_i = int(index_offset)
+    index_offset_i = integer_scalar(index_offset, name="drop: index_offset")
     if eff_interval is not None:
-        index_offset_i = index_offset_i % int(eff_interval)
+        index_offset_i %= eff_interval
+    seed_i = integer_scalar(seed, name="drop: seed")
+    if seed_i < 0:
+        raise ValueError("drop: seed は 0 以上である必要がある")
 
     min_length_f = float(min_length)
     max_length_f = float(max_length)
+    if not np.isfinite(min_length_f) or not np.isfinite(max_length_f):
+        raise ValueError("drop: min_length/max_length は有限値である必要がある")
     use_min = np.isfinite(min_length_f) and min_length_f >= 0.0
     use_max = np.isfinite(max_length_f) and max_length_f >= 0.0
 
-    try:
-        base_px = float(probability_base[0])
-        base_py = float(probability_base[1])
-        base_pz = float(probability_base[2])
-    except Exception:
-        base_px = 0.0
-        base_py = 0.0
-        base_pz = 0.0
-
-    if not np.isfinite(base_px):
-        base_px = 0.0
-    if not np.isfinite(base_py):
-        base_py = 0.0
-    if not np.isfinite(base_pz):
-        base_pz = 0.0
+    base_px, base_py, base_pz = finite_vec3(
+        probability_base,
+        name="drop: probability_base",
+    )
 
     if base_px < 0.0:
         base_px = 0.0
@@ -245,21 +235,10 @@ def drop(
     elif base_pz > 1.0:
         base_pz = 1.0
 
-    try:
-        slope_x = float(probability_slope[0])
-        slope_y = float(probability_slope[1])
-        slope_z = float(probability_slope[2])
-    except Exception:
-        slope_x = 0.0
-        slope_y = 0.0
-        slope_z = 0.0
-
-    if not np.isfinite(slope_x):
-        slope_x = 0.0
-    if not np.isfinite(slope_y):
-        slope_y = 0.0
-    if not np.isfinite(slope_z):
-        slope_z = 0.0
+    slope_x, slope_y, slope_z = finite_vec3(
+        probability_slope,
+        name="drop: probability_slope",
+    )
 
     prob_enabled = (
         (base_px != 0.0)
@@ -270,12 +249,20 @@ def drop(
         or (slope_z != 0.0)
     )
 
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
+
+    n_lines = int(offsets.size) - 1
+    if n_lines <= 0:
+        return coords, offsets
+
     if eff_interval is None and not use_min and not use_max and not prob_enabled:
         return coords, offsets
 
     rng = None
     if prob_enabled:
-        rng = np.random.default_rng(int(seed))
+        rng = np.random.default_rng(seed_i)
 
     center = np.zeros((3,), dtype=np.float64)
     inv_extent = np.zeros((3,), dtype=np.float64)

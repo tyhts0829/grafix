@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import operator
 from dataclasses import dataclass
 from typing import Iterator
+
+from grafix.core.value_validation import exact_integer, exact_string
 
 
 DEFAULT_MAX_OUTPUT_VERTICES = 10_000_000
@@ -39,15 +40,11 @@ class ResourceBudget:
             ("max_output_lines", self.max_output_lines),
             ("max_output_bytes", self.max_output_bytes),
         ):
-            if isinstance(value, bool):
-                raise TypeError(f"{name} は整数である必要がある")
-            try:
-                normalized = operator.index(value)
-            except TypeError as exc:
-                raise TypeError(f"{name} は整数である必要がある") from exc
-            if normalized < 0:
-                raise ValueError(f"{name} は 0 以上である必要がある")
-            object.__setattr__(self, name, int(normalized))
+            object.__setattr__(
+                self,
+                name,
+                exact_integer(value, name=name, minimum=0),
+            )
 
 
 DEFAULT_RESOURCE_BUDGET = ResourceBudget()
@@ -78,7 +75,48 @@ def resource_budget_context(budget: ResourceBudget) -> Iterator[None]:
 
 def _estimated_geometry_bytes(*, vertices: int, lines: int, scratch_bytes: int) -> int:
     # Python の int で計算し、NumPy の固定幅整数へ落とす前に検査する。
-    return int(vertices) * 3 * 4 + (int(lines) + 1) * 4 + int(scratch_bytes)
+    return vertices * 3 * 4 + (lines + 1) * 4 + scratch_bytes
+
+
+def _ensure_resource_usage_validated(
+    op: str,
+    *,
+    vertices: int,
+    lines: int,
+    byte_size: int,
+    hint: str | None,
+    budget: ResourceBudget | None,
+) -> None:
+    """検証済みの resource 使用量を active budget と比較する。"""
+
+    active_budget = current_resource_budget() if budget is None else budget
+    if not isinstance(active_budget, ResourceBudget):
+        raise TypeError("budget は ResourceBudget である必要があります")
+
+    exceeded: list[str] = []
+    if vertices > _MAX_INT32:
+        exceeded.append(f"vertices={vertices:,} > int32 capacity {_MAX_INT32:,}")
+    if lines + 1 > _MAX_INT32:
+        exceeded.append(f"offsets={lines + 1:,} > int32 capacity {_MAX_INT32:,}")
+    if vertices > active_budget.max_output_vertices:
+        exceeded.append(
+            f"vertices={vertices:,} > {active_budget.max_output_vertices:,}"
+        )
+    if lines > active_budget.max_output_lines:
+        exceeded.append(f"lines={lines:,} > {active_budget.max_output_lines:,}")
+    if byte_size > active_budget.max_output_bytes:
+        exceeded.append(
+            f"estimated_bytes={byte_size:,} > {active_budget.max_output_bytes:,}"
+        )
+    if not exceeded:
+        return
+
+    suffix = "" if not hint else f"; {hint}"
+    raise ResourceLimitError(
+        f"{op}: resource budget を超えるため配列を確保しません: "
+        + ", ".join(exceeded)
+        + suffix
+    )
 
 
 def ensure_geometry_output(
@@ -91,14 +129,11 @@ def ensure_geometry_output(
 ) -> None:
     """大規模配列を確保する前に output plan を共通上限で検査する。"""
 
-    vertices_i = int(vertices)
-    lines_i = int(lines)
-    scratch_i = int(scratch_bytes)
-    if vertices_i < 0 or lines_i < 0 or scratch_i < 0:
-        raise ValueError(
-            f"{op}: output plan は 0 以上である必要があります: "
-            f"vertices={vertices_i}, lines={lines_i}, scratch_bytes={scratch_i}"
-        )
+    op_s = exact_string(op, name="op")
+    hint_s = None if hint is None else exact_string(hint, name="hint")
+    vertices_i = exact_integer(vertices, name="vertices", minimum=0)
+    lines_i = exact_integer(lines, name="lines", minimum=0)
+    scratch_i = exact_integer(scratch_bytes, name="scratch_bytes", minimum=0)
 
     estimated_bytes = _estimated_geometry_bytes(
         vertices=vertices_i,
@@ -106,12 +141,13 @@ def ensure_geometry_output(
         scratch_bytes=scratch_i,
     )
 
-    ensure_resource_usage(
-        op,
+    _ensure_resource_usage_validated(
+        op_s,
         vertices=vertices_i,
         lines=lines_i,
         byte_size=estimated_bytes,
-        hint=hint,
+        hint=hint_s,
+        budget=None,
     )
 
 
@@ -126,44 +162,18 @@ def ensure_resource_usage(
 ) -> None:
     """operation または scene の実測 aggregate 使用量を検査する。"""
 
-    vertices_i = int(vertices)
-    lines_i = int(lines)
-    byte_size_i = int(byte_size)
-    if vertices_i < 0 or lines_i < 0 or byte_size_i < 0:
-        raise ValueError(
-            f"{op}: resource usage は 0 以上である必要があります: "
-            f"vertices={vertices_i}, lines={lines_i}, bytes={byte_size_i}"
-        )
-    active_budget = current_resource_budget() if budget is None else budget
-    if not isinstance(active_budget, ResourceBudget):
-        raise TypeError("budget は ResourceBudget である必要があります")
-
-    exceeded: list[str] = []
-    if vertices_i > _MAX_INT32:
-        exceeded.append(f"vertices={vertices_i:,} > int32 capacity {_MAX_INT32:,}")
-    if lines_i + 1 > _MAX_INT32:
-        exceeded.append(f"offsets={lines_i + 1:,} > int32 capacity {_MAX_INT32:,}")
-    if vertices_i > int(active_budget.max_output_vertices):
-        exceeded.append(
-            f"vertices={vertices_i:,} > {int(active_budget.max_output_vertices):,}"
-        )
-    if lines_i > int(active_budget.max_output_lines):
-        exceeded.append(
-            f"lines={lines_i:,} > {int(active_budget.max_output_lines):,}"
-        )
-    if byte_size_i > int(active_budget.max_output_bytes):
-        exceeded.append(
-            f"estimated_bytes={byte_size_i:,} > "
-            f"{int(active_budget.max_output_bytes):,}"
-        )
-    if not exceeded:
-        return
-
-    suffix = "" if not hint else f"; {hint}"
-    raise ResourceLimitError(
-        f"{op}: resource budget を超えるため配列を確保しません: "
-        + ", ".join(exceeded)
-        + suffix
+    op_s = exact_string(op, name="op")
+    hint_s = None if hint is None else exact_string(hint, name="hint")
+    vertices_i = exact_integer(vertices, name="vertices", minimum=0)
+    lines_i = exact_integer(lines, name="lines", minimum=0)
+    byte_size_i = exact_integer(byte_size, name="byte_size", minimum=0)
+    _ensure_resource_usage_validated(
+        op_s,
+        vertices=vertices_i,
+        lines=lines_i,
+        byte_size=byte_size_i,
+        hint=hint_s,
+        budget=budget,
     )
 
 

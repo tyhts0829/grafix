@@ -26,7 +26,7 @@ def _row(*, op: str, site_id: str, ordinal: int, arg: str) -> ParameterRow:
 
 
 @_preset(meta={"scale": ParamMeta(kind="float"), "center": ParamMeta(kind="vec3")})
-def _logo_component_param_order(*, center=(0.0, 0.0, 0.0), scale=1.0, name=None, key=None):
+def _logo_component_param_order(*, center=(0.0, 0.0, 0.0), scale=1.0):
     return None
 
 
@@ -101,6 +101,24 @@ def test_order_rows_for_display_places_unknown_arg_last_for_effect():
         display_order_by_group={("scale", "e:1"): 1},
     )
     assert [r.arg for r in out] == ["activate", "__unknown__"]
+
+
+def test_order_rows_for_display_keeps_reconcile_orphan_effect_after_observed_groups():
+    rows = [
+        _row(op="scale", site_id="orphan", ordinal=1, arg="scale"),
+        _row(op="polygon", site_id="p:1", ordinal=1, arg="n_sides"),
+    ]
+
+    out = _order_rows_for_display(
+        rows,
+        step_info_by_site={},
+        display_order_by_group={("polygon", "p:1"): 1},
+    )
+
+    assert [(row.op, row.site_id) for row in out] == [
+        ("polygon", "p:1"),
+        ("scale", "orphan"),
+    ]
 
 
 def test_order_rows_for_display_preset_uses_signature_arg_order():

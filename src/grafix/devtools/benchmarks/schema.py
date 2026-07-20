@@ -157,6 +157,30 @@ class ContractResult:
 
 
 @dataclass(frozen=True, slots=True)
+class BenchmarkOutput:
+    """benchmark workload が runner へ返す共通出力。"""
+
+    value: object
+    metrics: tuple[Metric, ...] = ()
+    contracts: tuple[ContractResult, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.metrics, tuple) or not all(
+            isinstance(metric, Metric) for metric in self.metrics
+        ):
+            raise TypeError("metrics は Metric の tuple である必要があります")
+        if not isinstance(self.contracts, tuple) or not all(
+            isinstance(contract, ContractResult) for contract in self.contracts
+        ):
+            raise TypeError(
+                "contracts は ContractResult の tuple である必要があります"
+            )
+        names = tuple(metric.name for metric in self.metrics)
+        if len(set(names)) != len(names):
+            raise ValueError("benchmark metric name は一意である必要があります")
+
+
+@dataclass(frozen=True, slots=True)
 class CaseResult:
     """隔離 process で得た 1 case の結果。"""
 
@@ -836,16 +860,15 @@ def _validate_case_result(result: CaseResult, *, where: str) -> None:
         raise BenchmarkSchemaError(
             f"{where}.status: unsupported value {result.status!r}"
         )
-    seen_metrics: set[tuple[str, str, str]] = set()
+    seen_metrics: set[str] = set()
     for metric_index, metric in enumerate(result.metrics):
         metric_where = f"{where}.metrics[{metric_index}]"
         _validate_metric(metric, where=metric_where)
-        identity = (metric.name, metric.phase, metric.scope)
-        if identity in seen_metrics:
+        if metric.name in seen_metrics:
             raise BenchmarkSchemaError(
-                f"{metric_where}: duplicate metric identity {identity!r}"
+                f"{metric_where}: duplicate metric name {metric.name!r}"
             )
-        seen_metrics.add(identity)
+        seen_metrics.add(metric.name)
     seen_contracts: set[str] = set()
     for contract_index, contract in enumerate(result.contracts):
         contract_where = f"{where}.contracts[{contract_index}]"
@@ -1223,6 +1246,7 @@ def _boolean(value: object, where: str) -> bool:
 
 
 __all__ = [
+    "BenchmarkOutput",
     "BenchmarkRun",
     "BenchmarkSchemaError",
     "CaseResult",

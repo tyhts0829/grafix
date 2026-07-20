@@ -8,6 +8,8 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import current_resource_budget, ensure_geometry_output
+
+from .argument_validation import known_choice
 from .util import (
     RESAMPLE_CLOSED_DISTANCE_EPS,
     ResampleLinePlan,
@@ -17,6 +19,7 @@ from .util import (
     resample_polylines,
 )
 
+_CLOSED_CHOICES = ("auto", "open", "closed")
 
 resample_meta = {
     "step": ParamMeta(
@@ -27,7 +30,7 @@ resample_meta = {
     ),
     "closed": ParamMeta(
         kind="choice",
-        choices=("auto", "open", "closed"),
+        choices=_CLOSED_CHOICES,
         description="開曲線、閉曲線、端点距離による自動判定から再標本化方式を選ぶ。",
     ),
 }
@@ -102,6 +105,11 @@ def resample(
         再標本化後の実体ジオメトリ（coords, offsets）。
     """
 
+    closed_mode = known_choice(
+        closed,
+        choices=_CLOSED_CHOICES,
+        name="resample: closed",
+    )
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
@@ -115,10 +123,6 @@ def resample(
     line_count = max(0, int(offsets.size) - 1)
     if line_count == 0:
         return coords, offsets
-
-    closed_mode = str(closed)
-    if closed_mode not in {"auto", "open", "closed"}:
-        closed_mode = "auto"
 
     budget = current_resource_budget()
     plan = ResamplePlan.from_geometry(

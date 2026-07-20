@@ -9,7 +9,6 @@ import pytest
 from grafix.core.runtime_config import set_config_path
 from grafix.interactive.runtime import video_recorder
 from grafix.interactive.runtime.video_recorder import (
-    VideoPublishError,
     VideoRecorder,
     _ffmpeg_command,
     default_video_output_path,
@@ -37,6 +36,20 @@ def test_default_video_output_path_uses_data_dir_and_script_stem(
         set_config_path(None)
 
 
+@pytest.mark.parametrize("ext", [1, None, b"mp4"])
+def test_default_video_output_path_rejects_non_string_extension(
+    ext: object,
+) -> None:
+    with pytest.raises(TypeError, match="ext"):
+        default_video_output_path(lambda _t: None, ext=ext)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("ext", ["", ".mp4", " mp4", "video/mp4"])
+def test_default_video_output_path_requires_canonical_extension(ext: str) -> None:
+    with pytest.raises(ValueError, match="ext"):
+        default_video_output_path(lambda _t: None, ext=ext)
+
+
 def test_ffmpeg_command_contains_expected_rawvideo_args():
     cmd = _ffmpeg_command(output_path=Path("out.mp4"), size=(320, 240), fps=60.0)
 
@@ -54,7 +67,7 @@ def test_ffmpeg_command_contains_expected_rawvideo_args():
     assert cmd[-1] == "out.mp4"
 
 
-def test_close_error_includes_recording_context(
+def test_finish_error_includes_recording_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class FailedProcess:
@@ -77,7 +90,7 @@ def test_close_error_includes_recording_context(
     recorder = VideoRecorder(output_path=output_path, size=(3, 5), fps=24.0)
 
     with pytest.raises(RuntimeError) as exc_info:
-        recorder.close()
+        recorder.finish()
 
     message = str(exc_info.value)
     assert f"path={output_path}" in message
@@ -90,161 +103,7 @@ def test_close_error_includes_recording_context(
     assert not ffmpeg_paths[0].exists()
 
 
-def test_close_atomically_replaces_final_video_only_after_ffmpeg_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class SuccessfulProcess:
-        stdin = object()
-        returncode = 0
-
-        def communicate(self, *, input: bytes, timeout: float) -> tuple[bytes, bytes]:
-            assert input == b""
-            return b"", b""
-
-    output_path = tmp_path / "movie.mp4"
-    output_path.write_bytes(b"existing-complete-video")
-    ffmpeg_paths: list[Path] = []
-
-    def fake_popen(cmd: list[str], **kwargs: object) -> SuccessfulProcess:
-        temporary_path = Path(cmd[-1])
-        ffmpeg_paths.append(temporary_path)
-        assert temporary_path.parent == output_path.parent
-        assert temporary_path.suffix == output_path.suffix
-        temporary_path.write_bytes(b"new-complete-video")
-        return SuccessfulProcess()
-
-    monkeypatch.setattr(video_recorder.subprocess, "Popen", fake_popen)
-    recorder = VideoRecorder(output_path=output_path, size=(4, 6), fps=30.0)
-
-    # ffmpeg の処理中は既存の完成品がそのまま残る。
-    assert output_path.read_bytes() == b"existing-complete-video"
-    assert ffmpeg_paths[0] != output_path
-    assert ffmpeg_paths[0].exists()
-
-    recorder.close()
-
-    assert output_path.read_bytes() == b"new-complete-video"
-    assert not ffmpeg_paths[0].exists()
-
-
-def test_versioned_close_does_not_replace_a_late_destination(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class SuccessfulProcess:
-        stdin = object()
-        returncode = 0
-
-        def communicate(self, *, input: bytes, timeout: float) -> tuple[bytes, bytes]:
-            assert input == b""
-            return b"", b""
-
-    output_path = tmp_path / "movie_001.mp4"
-    temporary_paths: list[Path] = []
-
-    def fake_popen(cmd: list[str], **kwargs: object) -> SuccessfulProcess:
-        temporary_path = Path(cmd[-1])
-        temporary_path.write_bytes(b"new-complete-video")
-        temporary_paths.append(temporary_path)
-        return SuccessfulProcess()
-
-    monkeypatch.setattr(video_recorder.subprocess, "Popen", fake_popen)
-    recorder = VideoRecorder(
-        output_path=output_path,
-        size=(4, 6),
-        fps=30.0,
-        no_clobber=True,
-    )
-    # path allocation と encoder 完了の間に別 capture が同名を公開した race。
-    output_path.write_bytes(b"late-existing-video")
-
-    with pytest.raises(VideoPublishError, match="recovery=") as exc_info:
-        recorder.close()
-
-    assert output_path.read_bytes() == b"late-existing-video"
-    assert len(temporary_paths) == 1
-    assert exc_info.value.recovery_path == temporary_paths[0]
-    assert temporary_paths[0].read_bytes() == b"new-complete-video"
-    temporary_paths[0].unlink()
-
-
-def test_versioned_close_publishes_to_an_unused_path_without_temp_residue(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class SuccessfulProcess:
-        stdin = object()
-        returncode = 0
-
-        def communicate(self, *, input: bytes, timeout: float) -> tuple[bytes, bytes]:
-            return b"", b""
-
-    output_path = tmp_path / "movie_001.mp4"
-    temporary_paths: list[Path] = []
-
-    def fake_popen(cmd: list[str], **kwargs: object) -> SuccessfulProcess:
-        temporary_path = Path(cmd[-1])
-        temporary_path.write_bytes(b"new-complete-video")
-        temporary_paths.append(temporary_path)
-        return SuccessfulProcess()
-
-    monkeypatch.setattr(video_recorder.subprocess, "Popen", fake_popen)
-    recorder = VideoRecorder(
-        output_path=output_path,
-        size=(4, 6),
-        fps=30.0,
-        no_clobber=True,
-    )
-
-    recorder.close()
-
-    assert output_path.read_bytes() == b"new-complete-video"
-    assert len(temporary_paths) == 1
-    assert not temporary_paths[0].exists()
-
-
-def test_close_fsyncs_completed_temp_before_publish_and_parent_after(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class SuccessfulProcess:
-        stdin = object()
-        returncode = 0
-
-        def communicate(self, *, input: bytes, timeout: float) -> tuple[bytes, bytes]:
-            return b"", b""
-
-    calls: list[tuple[str, Path]] = []
-    output_path = tmp_path / "durable.mp4"
-
-    def fake_popen(cmd: list[str], **_kwargs: object) -> SuccessfulProcess:
-        Path(cmd[-1]).write_bytes(b"complete-video")
-        return SuccessfulProcess()
-
-    monkeypatch.setattr(video_recorder.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(
-        video_recorder,
-        "_fsync_file",
-        lambda path: calls.append(("file", Path(path))),
-    )
-    monkeypatch.setattr(
-        video_recorder,
-        "_fsync_directory",
-        lambda path: calls.append(("dir", Path(path))),
-    )
-    recorder = VideoRecorder(
-        output_path=output_path,
-        size=(4, 6),
-        fps=30.0,
-        no_clobber=True,
-    )
-    temporary_path = recorder._temporary_path
-    assert temporary_path is not None
-
-    recorder.close()
-
-    assert calls == [("file", temporary_path), ("dir", tmp_path)]
-    assert output_path.read_bytes() == b"complete-video"
-
-
-def test_close_to_staging_transfers_fsynced_temp_without_publishing(
+def test_finish_transfers_fsynced_staging_without_publishing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class SuccessfulProcess:
@@ -271,12 +130,10 @@ def test_close_to_staging_transfers_fsynced_temp_without_publishing(
         output_path=output_path,
         size=(4, 6),
         fps=30.0,
-        no_clobber=True,
     )
 
-    staging_path = recorder.close_to_staging()
+    staging_path = recorder.finish()
 
-    assert staging_path is not None
     assert fsynced == [staging_path]
     assert staging_path.read_bytes() == b"complete-video"
     assert not output_path.exists()
@@ -354,7 +211,7 @@ def test_communicate_failure_aborts_encoder_and_preserves_original_error(
     )
 
     with pytest.raises(KeyboardInterrupt, match="interrupted") as exc_info:
-        recorder.close()
+        recorder.finish()
 
     assert exc_info.value is communicate_error
     assert process.calls == ["communicate", "terminate", "wait:2"]
@@ -362,7 +219,7 @@ def test_communicate_failure_aborts_encoder_and_preserves_original_error(
 
 
 @pytest.mark.parametrize("timeout_s", [0.0, 1.25])
-def test_close_timeout_terminates_kills_reaps_and_removes_partial_temp(
+def test_finish_timeout_terminates_kills_reaps_and_removes_partial_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeout_s: float
 ) -> None:
     class Pipe:
@@ -415,7 +272,7 @@ def test_close_timeout_terminates_kills_reaps_and_removes_partial_temp(
     recorder = VideoRecorder(output_path=output_path, size=(4, 6), fps=30.0)
 
     with pytest.raises(TimeoutError) as exc_info:
-        recorder.close(timeout_s=timeout_s)
+        recorder.finish(timeout_s=timeout_s)
 
     assert isinstance(exc_info.value.__cause__, subprocess.TimeoutExpired)
     assert f"timeout={timeout_s:g}s" in str(exc_info.value)
@@ -475,44 +332,6 @@ def test_abort_reaps_encoder_without_publishing_and_is_idempotent(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_no_clobber_publish_rolls_back_own_inode_when_directory_fsync_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class SuccessfulProcess:
-        stdin = object()
-        returncode = 0
-
-        def communicate(self, *, input: bytes, timeout: float) -> tuple[bytes, bytes]:
-            return b"", b""
-
-    output_path = tmp_path / "durability-failure.mp4"
-
-    def fake_popen(cmd: list[str], **_kwargs: object) -> SuccessfulProcess:
-        Path(cmd[-1]).write_bytes(b"complete-video")
-        return SuccessfulProcess()
-
-    monkeypatch.setattr(video_recorder.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(
-        video_recorder,
-        "_fsync_directory",
-        lambda _path: (_ for _ in ()).throw(OSError("fsync failed")),
-    )
-    recorder = VideoRecorder(
-        output_path=output_path,
-        size=(4, 6),
-        fps=30.0,
-        no_clobber=True,
-    )
-
-    with pytest.raises(VideoPublishError, match="recovery=") as exc_info:
-        recorder.close()
-
-    assert not output_path.exists()
-    assert exc_info.value.recovery_path.read_bytes() == b"complete-video"
-    assert list(tmp_path.iterdir()) == [exc_info.value.recovery_path]
-    exc_info.value.recovery_path.unlink()
-
-
 def test_fsync_interrupt_cleans_staging_and_preserves_interrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -539,51 +358,12 @@ def test_fsync_interrupt_cleans_staging_and_preserves_interrupt(
         output_path=tmp_path / "movie.mp4",
         size=(4, 6),
         fps=30.0,
-        no_clobber=True,
     )
 
     with pytest.raises(KeyboardInterrupt, match="file fsync interrupted") as exc_info:
-        recorder.close()
+        recorder.finish()
 
     assert exc_info.value is interrupt
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_directory_fsync_interrupt_rolls_back_video_and_preserves_interrupt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class SuccessfulProcess:
-        stdin = object()
-        returncode = 0
-
-        def communicate(self, *, input: bytes, timeout: float) -> tuple[bytes, bytes]:
-            return b"", b""
-
-    interrupt = KeyboardInterrupt("directory fsync interrupted")
-    output_path = tmp_path / "movie.mp4"
-
-    def fake_popen(cmd: list[str], **_kwargs: object) -> SuccessfulProcess:
-        Path(cmd[-1]).write_bytes(b"complete-video")
-        return SuccessfulProcess()
-
-    monkeypatch.setattr(video_recorder.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(
-        video_recorder,
-        "_fsync_directory",
-        lambda _path: (_ for _ in ()).throw(interrupt),
-    )
-    recorder = VideoRecorder(
-        output_path=output_path,
-        size=(4, 6),
-        fps=30.0,
-        no_clobber=True,
-    )
-
-    with pytest.raises(KeyboardInterrupt, match="directory fsync interrupted") as exc_info:
-        recorder.close()
-
-    assert exc_info.value is interrupt
-    assert not output_path.exists()
     assert list(tmp_path.iterdir()) == []
 
 
@@ -591,10 +371,47 @@ def test_directory_fsync_interrupt_rolls_back_video_and_preserves_interrupt(
 def test_video_recorder_rejects_non_finite_fps_before_creating_temp(
     tmp_path: Path, fps: float
 ) -> None:
-    with pytest.raises(ValueError, match="有限の正の値"):
+    with pytest.raises(ValueError, match="fps"):
         VideoRecorder(output_path=tmp_path / "movie.mp4", size=(4, 6), fps=fps)
 
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error"),
+    [
+        ({"output_path": "movie.mp4"}, TypeError),
+        ({"size": [4, 6]}, TypeError),
+        ({"size": (4.0, 6)}, TypeError),
+        ({"size": (True, 6)}, TypeError),
+        ({"size": (0, 6)}, ValueError),
+        ({"fps": "30"}, TypeError),
+        ({"fps": True}, TypeError),
+        ({"fps": 0.0}, ValueError),
+    ],
+)
+def test_video_recorder_rejects_implicit_constructor_coercion_before_io(
+    tmp_path: Path,
+    kwargs: dict[str, object],
+    error: type[Exception],
+) -> None:
+    values: dict[str, object] = {
+        "output_path": tmp_path / "movie.mp4",
+        "size": (4, 6),
+        "fps": 30.0,
+    }
+    values.update(kwargs)
+    with pytest.raises(error):
+        VideoRecorder(**values)  # type: ignore[arg-type]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_video_recorder_rejects_implicit_frame_and_timeout_coercion() -> None:
+    recorder = object.__new__(VideoRecorder)
+    with pytest.raises(TypeError, match="frame"):
+        recorder.write_frame_rgb24(bytearray())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="timeout_s"):
+        recorder.finish(timeout_s="1")  # type: ignore[arg-type]
 
 
 def test_ffmpeg_spawn_failure_cleans_temporary_video(
@@ -621,7 +438,9 @@ def test_video_recorder_encodes_odd_input_size_with_even_padding(tmp_path: Path)
     # GL readback と同じ bottom-up 行順。vflip 後は明るい最終行が動画の先頭行になる。
     frame = b"".join(bytes([value]) * (3 * 3) for value in (0, 50, 100, 150, 250))
     recorder.write_frame_rgb24(frame)
-    recorder.close()
+    staging_path = recorder.finish()
+    assert staging_path is not None
+    assert not output_path.exists()
 
     probe = subprocess.run(
         [
@@ -634,7 +453,7 @@ def test_video_recorder_encodes_odd_input_size_with_even_padding(tmp_path: Path)
             "stream=width,height",
             "-of",
             "csv=p=0:s=x",
-            str(output_path),
+            str(staging_path),
         ],
         check=True,
         capture_output=True,
@@ -648,7 +467,7 @@ def test_video_recorder_encodes_odd_input_size_with_even_padding(tmp_path: Path)
             "-v",
             "error",
             "-i",
-            str(output_path),
+            str(staging_path),
             "-frames:v",
             "1",
             "-f",

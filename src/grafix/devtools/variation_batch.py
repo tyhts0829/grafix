@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from grafix.api.render import RenderOptions, RenderSession
+from grafix.api.render import ExportFormat, RenderOptions, RenderSession
 from grafix.api.variation_batch import render_variation_batch
 from grafix.devtools.export_frame import _parameter_source, _resolve_callable
 
@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.out_dir),
             variation_names=(None if args.names is None else tuple(args.names)),
             default_t=float(args.t),
-            thumbnail_format=str(args.thumbnail_format),
+            thumbnail_format=ExportFormat(str(args.thumbnail_format)),
             thumbnail_size=(
                 int(args.thumbnail_size[0]),
                 int(args.thumbnail_size[1]),

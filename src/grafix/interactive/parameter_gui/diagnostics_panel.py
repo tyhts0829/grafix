@@ -18,13 +18,10 @@ def render_diagnostics_panel(
 
     if not events:
         return
-    collapsing_header = getattr(imgui, "collapsing_header", None)
-    if not callable(collapsing_header):
-        return
-    opened = collapsing_header(f"DIAGNOSTICS ({len(events)})##diagnostics")
-    if isinstance(opened, tuple):
-        opened = opened[0]
-    if not bool(opened):
+    opened, _visible = imgui.collapsing_header(
+        f"DIAGNOSTICS ({len(events)})##diagnostics"
+    )
+    if not opened:
         return
 
     for index, event in enumerate(reversed(tuple(events))):
@@ -39,25 +36,17 @@ def render_diagnostics_panel(
         for action in event.actions:
             if imgui.button(f"{action.label}##diagnostic_{index}_{action.action_id}"):
                 if action.action_id == "copy":
-                    setter = getattr(imgui, "set_clipboard_text", None)
-                    if callable(setter):
-                        setter(event.details or event.summary)
+                    imgui.set_clipboard_text(event.details or event.summary)
                 elif center is not None:
                     center.dispatch_action(event, action)
             imgui.same_line()
         if center is not None and imgui.button(f"Dismiss##diagnostic_{index}_dismiss"):
             center.dismiss(event)
-        separator = getattr(imgui, "separator", None)
-        if callable(separator):
-            separator()
+        imgui.separator()
 
 
 def _text_wrapped(imgui: Any, text: str) -> None:
-    renderer = getattr(imgui, "text_wrapped", None)
-    if callable(renderer):
-        renderer(str(text))
-    else:
-        imgui.text(str(text))
+    imgui.text_wrapped(str(text))
 
 
 __all__ = ["render_diagnostics_panel"]

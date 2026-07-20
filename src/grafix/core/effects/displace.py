@@ -9,6 +9,10 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
+from .argument_validation import known_choice
+
+_GRADIENT_PROFILES = ("linear", "radial")
+
 displace_meta = {
     "amplitude": ParamMeta(
         kind="vec3",
@@ -42,7 +46,7 @@ displace_meta = {
     ),
     "gradient_profile": ParamMeta(
         kind="choice",
-        choices=("linear", "radial"),
+        choices=_GRADIENT_PROFILES,
         description="勾配を軸方向の線形変化と中心からの放射変化から選ぶ。",
     ),
     "gradient_radius": ParamMeta(
@@ -72,7 +76,7 @@ displace_meta = {
 }
 
 displace_ui_visible = {
-    "gradient_radius": lambda v: str(v.get("gradient_profile", "linear")) == "radial",
+    "gradient_radius": lambda v: v.get("gradient_profile", "linear") == "radial",
 }
 
 # ノイズ位相進行の係数（freq と独立）。
@@ -831,6 +835,11 @@ def displace(
     tuple[np.ndarray, np.ndarray]
         変位後の実体ジオメトリ（coords, offsets）。
     """
+    profile = known_choice(
+        gradient_profile,
+        choices=_GRADIENT_PROFILES,
+        name="displace: gradient_profile",
+    )
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
@@ -855,7 +864,7 @@ def displace(
     if max_factor_val < min_factor_val:
         max_factor_val = min_factor_val
 
-    profile_mode = 1 if str(gradient_profile) == "radial" else 0
+    profile_mode = 1 if profile == "radial" else 0
 
     new_coords = _apply_noise_to_coords(
         coords,

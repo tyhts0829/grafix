@@ -39,7 +39,14 @@ def test_generate_stub_lists_user_presets_on_p(tmp_path: Path) -> None:
                 'meta = {"out": {"kind": "str"}}',
                 "",
                 "@preset(meta=meta)",
-                "def stubgen_path(*, out: Path = Path('out'), name=None, key=None) -> Geometry:",
+                "def stubgen_path(*, out: Path = Path('out')) -> Geometry:",
+                '    """path を使う preset。',
+                "",
+                "    Parameters",
+                "    ----------",
+                "    out : Path",
+                "        出力 path。",
+                '    """',
                 "    return Geometry.create(op='concat')",
                 "",
             ]
@@ -57,9 +64,13 @@ def test_generate_stub_lists_user_presets_on_p(tmp_path: Path) -> None:
         set_config_path(None)
 
     assert (
-        "def stubgen_path(self, *, activate: bool = ..., out: Path = ..., "
-        "name: str | None = ..., key: str | int | None = ..., "
-        "instance_key: str | int | None = ..., shared: bool = ...) -> SceneItem:"
-        in stub
+        "def stubgen_path(self, *, activate: bool = ..., out: Path = ...) "
+        "-> SceneItem:" in stub
     )
-    assert "def __getattr__(self, name: str) -> Callable[..., SceneItem]:" in stub
+    method = stub.split("    def stubgen_path(", 1)[1].split("\n    def ", 1)[0]
+    assert "activate:" in method
+    assert "out:" in method
+    assert "key:" not in method
+    assert "instance_key:" not in method
+    assert "shared:" not in method
+    assert "def __getattr__(self, name: str)" not in stub

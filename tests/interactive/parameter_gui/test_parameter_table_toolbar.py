@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 from grafix.core.parameters import FrameParamRecord, ParamMeta, ParamStore, ParameterKey
 from grafix.core.parameters.history import ParamStoreHistory
@@ -21,6 +22,8 @@ class _Popup:
 
 
 class _Imgui:
+    COLOR_TEXT = 0
+
     def __init__(
         self,
         *,
@@ -46,10 +49,13 @@ class _Imgui:
     def text_disabled(self, text: str) -> None:
         self.disabled_text.append(str(text))
 
+    def align_text_to_frame_padding(self) -> None:
+        pass
+
     def text(self, _text: str) -> None:
         pass
 
-    def same_line(self) -> None:
+    def same_line(self, position: float = 0.0, spacing: float = -1.0) -> None:
         pass
 
     def input_text_with_hint(
@@ -67,7 +73,7 @@ class _Imgui:
         self.checkbox_labels.append(label)
         return True, True
 
-    def button(self, label: str) -> bool:
+    def button(self, label: str, width: float = 0.0, height: float = 0.0) -> bool:
         self.button_labels.append(str(label))
         widget_id = label.rpartition("##")[2]
         if widget_id == "midi_menu":
@@ -100,14 +106,40 @@ class _Imgui:
     def separator(self) -> None:
         pass
 
+    def get_content_region_available_width(self) -> float:
+        return 640.0
 
-def _setup_with_mapping() -> tuple[ParameterGUI, ParamStore, ParameterKey]:
+    def get_cursor_pos_x(self) -> float:
+        return 0.0
+
+    def set_cursor_pos_x(self, _position: float) -> None:
+        pass
+
+    def push_style_color(self, *_args: object) -> None:
+        pass
+
+    def pop_style_color(self, _count: int = 1) -> None:
+        pass
+
+
+def _setup_with_mapping(
+    gui: ParameterGUI,
+) -> tuple[Any, ParamStore, ParameterKey]:
     store = ParamStore()
     key = ParameterKey(op="circle", site_id="site", arg="radius")
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=0.25, meta=meta, explicit=False)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.25,
+                meta=meta,
+                effective=0.25,
+                source="code",
+                explicit=False,
+            )
+        ],
     )
     ok, error = update_state_from_ui(
         store,
@@ -119,18 +151,23 @@ def _setup_with_mapping() -> tuple[ParameterGUI, ParamStore, ParameterKey]:
     )
     assert ok and error is None
 
-    gui = ParameterGUI.__new__(ParameterGUI)
-    gui._store = store
-    gui._show_inactive_params = False
-    gui._midi_clear_notice = None
-    gui._midi_clear_notice_token = None
-    gui._history = None
-    gui._midi_learn_state = SimpleNamespace(active_target="target", active_component=0)
-    return gui, store, key
+    gui_state = cast(Any, gui)
+    gui_state._store = store
+    gui_state._show_inactive_params = False
+    gui_state._midi_clear_notice = None
+    gui_state._midi_clear_notice_token = None
+    gui_state._history = None
+    gui_state._midi_learn_state = SimpleNamespace(
+        active_target="target",
+        active_component=0,
+    )
+    return gui_state, store, key
 
 
-def test_table_toolbar_names_filter_and_moves_clear_into_midi_menu() -> None:
-    gui, store, key = _setup_with_mapping()
+def test_table_toolbar_names_filter_and_moves_clear_into_midi_menu(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui, store, key = _setup_with_mapping(initialized_parameter_gui)
     imgui = _Imgui(click_clear=True)
     gui._imgui = imgui
 
@@ -150,8 +187,10 @@ def test_table_toolbar_names_filter_and_moves_clear_into_midi_menu() -> None:
     assert state is not None and state.cc_key is None
 
 
-def test_table_toolbar_updates_search_filter_and_displays_filtered_count() -> None:
-    gui, _store, _key = _setup_with_mapping()
+def test_table_toolbar_updates_search_filter_and_displays_filtered_count(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui, _store, _key = _setup_with_mapping(initialized_parameter_gui)
     imgui = _Imgui(
         click_clear=False,
         query="CIRCLE MIDI 12",
@@ -168,8 +207,10 @@ def test_table_toolbar_updates_search_filter_and_displays_filtered_count() -> No
     assert "1 / 1 parameters" in imgui.disabled_text
 
 
-def test_clear_all_menu_item_is_disabled_without_mappings() -> None:
-    gui, store, key = _setup_with_mapping()
+def test_clear_all_menu_item_is_disabled_without_mappings(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui, store, key = _setup_with_mapping(initialized_parameter_gui)
     state = store.get_state(key)
     meta = store.get_meta(key)
     assert state is not None and meta is not None
@@ -190,8 +231,10 @@ def test_clear_all_menu_item_is_disabled_without_mappings() -> None:
     assert gui._midi_clear_notice is None
 
 
-def test_clear_notice_exposes_one_click_undo() -> None:
-    gui, store, key = _setup_with_mapping()
+def test_clear_notice_exposes_one_click_undo(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui, store, key = _setup_with_mapping(initialized_parameter_gui)
     history = ParamStoreHistory(store)
     gui._history = history
     gui._imgui = _Imgui(click_clear=True)
@@ -206,8 +249,10 @@ def test_clear_notice_exposes_one_click_undo() -> None:
     assert gui._midi_clear_notice is None
 
 
-def test_clear_notice_disappears_instead_of_undoing_a_later_edit() -> None:
-    gui, store, key = _setup_with_mapping()
+def test_clear_notice_disappears_instead_of_undoing_a_later_edit(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui, store, key = _setup_with_mapping(initialized_parameter_gui)
     history = ParamStoreHistory(store)
     gui._history = history
     gui._imgui = _Imgui(click_clear=True)
@@ -227,8 +272,10 @@ def test_clear_notice_disappears_instead_of_undoing_a_later_edit() -> None:
     assert gui._midi_clear_notice is None
 
 
-def test_collapse_all_is_an_independent_undoable_operation() -> None:
-    gui, store, _key = _setup_with_mapping()
+def test_collapse_all_is_an_independent_undoable_operation(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui, store, _key = _setup_with_mapping(initialized_parameter_gui)
     history = ParamStoreHistory(store)
     gui._history = history
     gui._imgui = _Imgui(
@@ -244,13 +291,24 @@ def test_collapse_all_is_an_independent_undoable_operation() -> None:
     assert store._collapsed_headers_ref() == set()
 
 
-def test_vec3_menu_counts_each_assigned_component() -> None:
+def test_vec3_menu_counts_each_assigned_component(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     store = ParamStore()
     key = ParameterKey(op="scale", site_id="site", arg="xyz")
     meta = ParamMeta(kind="vec3", ui_min=0.0, ui_max=1.0)
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=(0.0, 0.0, 0.0), meta=meta, explicit=False)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=(0.0, 0.0, 0.0),
+                meta=meta,
+                effective=(0.0, 0.0, 0.0),
+                source="code",
+                explicit=False,
+            )
+        ],
     )
     ok, error = update_state_from_ui(
         store,
@@ -260,7 +318,7 @@ def test_vec3_menu_counts_each_assigned_component() -> None:
         cc_key=(10, 11, 12),
     )
     assert ok and error is None
-    gui = ParameterGUI.__new__(ParameterGUI)
+    gui = cast(Any, initialized_parameter_gui)
     gui._store = store
     gui._history = None
     gui._show_inactive_params = False

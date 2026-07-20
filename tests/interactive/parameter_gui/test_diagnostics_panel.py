@@ -14,9 +14,9 @@ class _Imgui:
         self.clipboard: str | None = None
         self.clicked: set[str] = set()
 
-    def collapsing_header(self, label: str) -> bool:
+    def collapsing_header(self, label: str) -> tuple[bool, None]:
         self.lines.append(label)
-        return True
+        return True, None
 
     def text(self, value: object) -> None:
         self.lines.append(str(value))

@@ -3,7 +3,8 @@ from __future__ import annotations
 from grafix.core.parameters.codec import (
     decode_param_store_result,
     dumps_param_store,
-    loads_param_store,
+    encode_param_store,
+    loads_param_store_result,
 )
 from grafix.core.parameters.favorites import (
     favorite_parameter_key_set,
@@ -31,6 +32,8 @@ def _merge_radius(store: ParamStore, site_id: str) -> ParameterKey:
                 key=key,
                 base=1.0,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=10.0),
+                effective=1.0,
+                source="code",
                 explicit=False,
             )
         ],
@@ -45,7 +48,7 @@ def test_favorite_ui_state_roundtrips_through_param_store_codec() -> None:
     assert set_parameters_favorite(store, (key,), favorite=True) == (key,)
     assert set_parameters_favorite(store, (key,), favorite=True) == ()
 
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
 
     assert favorite_parameter_keys(loaded) == (key,)
     assert loaded.favorite_revision == 1
@@ -54,18 +57,12 @@ def test_favorite_ui_state_roundtrips_through_param_store_codec() -> None:
 
 
 def test_favorite_decode_drops_orphan_and_reports_it() -> None:
-    result = decode_param_store_result(
-        {
-            "schema_version": 1,
-            "states": [],
-            "meta": [],
-            "ui": {
-                "favorite_parameters": [
-                    {"op": "circle", "site_id": "missing", "arg": "radius"}
-                ]
-            },
-        }
-    )
+    payload = encode_param_store(ParamStore())
+    payload["ui"]["favorite_parameters"] = [
+        {"op": "circle", "site_id": "missing", "arg": "radius"}
+    ]
+
+    result = decode_param_store_result(payload)
 
     assert favorite_parameter_keys(result.store) == ()
     assert any(

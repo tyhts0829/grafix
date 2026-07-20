@@ -28,6 +28,7 @@ from grafix.devtools.benchmarks.runner import (
     select_case_definitions,
 )
 from grafix.devtools.benchmarks.schema import (
+    BenchmarkOutput,
     CaseResult,
     Metric,
     case_result_to_dict,
@@ -48,7 +49,10 @@ def test_isolated_process_timeout_kills_the_process_group(
             nonlocal calls
             calls += 1
             if calls == 1:
-                raise subprocess.TimeoutExpired(["benchmark-child"], timeout)
+                raise subprocess.TimeoutExpired(
+                    ["benchmark-child"],
+                    0.0 if timeout is None else timeout,
+                )
             return "", ""
 
     started: dict[str, object] = {}
@@ -160,6 +164,38 @@ def test_registry_selects_suite_and_rejects_unknown_case() -> None:
     )
 
 
+def test_system_cases_with_internal_samples_run_once_per_isolated_measurement() -> None:
+    self_sampling_ids = {
+        definition.case_id
+        for definition in runner._system_definitions()
+        if definition.self_sampling
+    }
+
+    assert self_sampling_ids == {
+        "micro.asemic",
+        "system.cold_import",
+        "system.parameter_snapshot_model",
+    }
+
+
+def test_renderer_cases_with_internal_timing_run_once_per_isolated_measurement() -> None:
+    definitions = {
+        definition.case_id: definition
+        for definition in case_definitions()
+        if definition.case_id
+        in {
+            "interactive.renderer.static_100k",
+            "interactive.renderer.static_1m",
+        }
+    }
+
+    assert set(definitions) == {
+        "interactive.renderer.static_100k",
+        "interactive.renderer.static_1m",
+    }
+    assert all(definition.self_sampling for definition in definitions.values())
+
+
 def test_isolated_runner_returns_raw_samples_checksum_and_rss_delta() -> None:
     definition = next(
         definition
@@ -219,37 +255,7 @@ def test_self_sampling_scenario_runs_one_semantic_outer_sample() -> None:
     assert latency.distribution.count == definition.parameters["drag_frames"]
 
 
-def test_runner_normalizes_legacy_metrics_and_hard_contract_fails_case() -> None:
-    metrics = runner.normalize_metrics(
-        {
-            "completed_results": 4,
-            "cases": {
-                "translate": {
-                    "changing": {
-                        "input_to_result_ms": {
-                            "n": 3,
-                            "median": 12.0,
-                            "p95": 18.0,
-                            "p99": 20.0,
-                            "max": 20.0,
-                        }
-                    }
-                }
-            },
-        }
-    )
-    by_name = {metric.name: metric for metric in metrics}
-    assert by_name["completed_results"].kind == "counter"
-    latency = by_name[
-        "cases.translate.changing.input_to_result_ms"
-    ]
-    assert latency.kind == "distribution"
-    assert latency.unit == "ms"
-    assert latency.phase == "drag"
-    assert latency.scope == "scenario"
-    assert latency.distribution is not None
-    assert latency.distribution.p95 == 18.0
-
+def test_typed_metric_output_preserves_hard_contract_failure() -> None:
     definition = next(
         definition
         for definition in case_definitions()
@@ -266,9 +272,18 @@ def test_runner_normalizes_legacy_metrics_and_hard_contract_fails_case() -> None
     failing_definition = replace(
         definition,
         setup=lambda _parameters, _seed: None,
-        workload=lambda _state: runner._CaseOutput(
+        workload=lambda _state: BenchmarkOutput(
             value={"ok": True},
-            metrics={"interactive_target_met": False},
+            metrics=(
+                Metric(
+                    name="interactive_target_met",
+                    kind="gauge",
+                    unit="boolean",
+                    phase="measure",
+                    scope="test",
+                    value=False,
+                ),
+            ),
             contracts=(failed,),
         ),
     )
@@ -290,6 +305,32 @@ def test_runner_normalizes_legacy_metrics_and_hard_contract_fails_case() -> None
     assert "synthetic.hard" in (result.error or "")
 
 
+def test_case_output_rejects_non_tuple_and_duplicate_metric_names() -> None:
+    metric = Metric(
+        name="value",
+        kind="gauge",
+        unit="count",
+        phase="measure",
+        scope="test",
+        value=1,
+    )
+    with pytest.raises(TypeError, match="tuple"):
+        BenchmarkOutput(
+            value=None,
+            metrics={"value": 1},  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="tuple"):
+        BenchmarkOutput(
+            value=None,
+            metrics=[metric],  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="一意"):
+        BenchmarkOutput(
+            value=None,
+            metrics=(metric, replace(metric, phase="settle")),
+        )
+
+
 def test_warm_samples_preserve_an_earlier_hard_contract_failure() -> None:
     definition = next(
         definition
@@ -298,7 +339,7 @@ def test_warm_samples_preserve_an_earlier_hard_contract_failure() -> None:
     )
     calls = 0
 
-    def workload(_state: object) -> runner._CaseOutput:
+    def workload(_state: object) -> BenchmarkOutput:
         nonlocal calls
         calls += 1
         contract = evaluate_contract(
@@ -309,7 +350,7 @@ def test_warm_samples_preserve_an_earlier_hard_contract_failure() -> None:
             limit=True,
             reason="all outer samples must pass",
         )
-        return runner._CaseOutput(
+        return BenchmarkOutput(
             value={"stable": True},
             metrics=(
                 Metric(
@@ -367,10 +408,10 @@ def test_measurement_context_wraps_warmup_samples_and_postprocess() -> None:
         events.append("workload")
         return {"stable": True}
 
-    def postprocess(_state: object, output: object) -> runner._CaseOutput:
+    def postprocess(_state: object, output: object) -> BenchmarkOutput:
         assert state["inside"] is True
         events.append("postprocess")
-        return runner._CaseOutput(value=output)
+        return BenchmarkOutput(value=output)
 
     result = runner._measure_in_process(
         replace(
@@ -410,10 +451,10 @@ def test_warm_samples_reject_semantic_or_typed_metric_drift() -> None:
     )
     calls = 0
 
-    def changing_output(_state: object) -> runner._CaseOutput:
+    def changing_output(_state: object) -> BenchmarkOutput:
         nonlocal calls
         calls += 1
-        return runner._CaseOutput(value={"sample": calls})
+        return BenchmarkOutput(value={"sample": calls})
 
     checksum_result = runner._measure_in_process(
         replace(
@@ -434,10 +475,10 @@ def test_warm_samples_reject_semantic_or_typed_metric_drift() -> None:
 
     calls = 0
 
-    def changing_metric(_state: object) -> runner._CaseOutput:
+    def changing_metric(_state: object) -> BenchmarkOutput:
         nonlocal calls
         calls += 1
-        return runner._CaseOutput(
+        return BenchmarkOutput(
             value={"stable": True},
             metrics=(
                 Metric(
@@ -474,21 +515,57 @@ def test_slider_interactive_target_is_a_hard_contract(
 ) -> None:
     from grafix.devtools.benchmarks import mp_draw_benchmark
 
+    def mode(*, interactive_target_met: bool) -> dict[str, object]:
+        summary = {
+            "median": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max": 0.0,
+            "n": 0,
+        }
+        return {
+            "fresh_result_ratio": 1.0,
+            "fresh_results_during_drag": 1,
+            "max_consecutive_stale_frames": 0,
+            "revision_lag": summary,
+            "input_to_result_ms": summary,
+            "final_revision_latency_ms": 0.0,
+            "last_result_revision": 1,
+            "final_input_revision": 1,
+            "result_revisions_monotonic": True,
+            "checksum_matches_sync": True,
+            "snapshot_broadcasts": 0,
+            "snapshot_payload_copies": 1,
+            "snapshot_acks": 1,
+            "submitted_tasks": 1,
+            "enqueued_tasks": 1,
+            "dropped_tasks": 0,
+            "completed_results": 1,
+            "rejected_tasks": 0,
+            "progress_contract_met": True,
+            "interactive_target_met": interactive_target_met,
+            "elapsed_ms": 0.0,
+        }
+
     monkeypatch.setattr(
         mp_draw_benchmark,
         "run_mp_slider_churn_benchmarks",
         lambda **_kwargs: {
-            "output": {"progress_contract_met": True},
+            "mean_ms": 0.0,
+            "median_ms": 0.0,
+            "p95_ms": 0.0,
+            "n": 2,
+            "output": {
+                "frames": 1,
+                "frame_interval_s": 0.0,
+                "n_worker": 1,
+                "measurement_scope": "test",
+                "progress_contract_met": True,
+            },
             "cases": {
                 "light_translate": {
-                    "stable": {
-                        "progress_contract_met": True,
-                        "interactive_target_met": True,
-                    },
-                    "changing": {
-                        "progress_contract_met": True,
-                        "interactive_target_met": False,
-                    },
+                    "stable": mode(interactive_target_met=True),
+                    "changing": mode(interactive_target_met=False),
                 }
             },
         },
@@ -508,6 +585,52 @@ def test_slider_interactive_target_is_a_hard_contract(
     ]
 
 
+def test_mp_draw_workload_reads_only_the_two_explicit_mode_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from grafix.devtools.benchmarks import mp_draw_benchmark
+
+    summary = {"mean": 1.0, "median": 1.0, "p95": 1.0, "n": 1}
+    mode = {
+        "startup_ms": summary,
+        "first_result_ms": summary,
+        "steady_ms": summary,
+        "steady_latest_fps": summary,
+    }
+    monkeypatch.setattr(
+        mp_draw_benchmark,
+        "run_mp_draw_benchmarks",
+        lambda **_kwargs: {
+            "mean_ms": 1.0,
+            "median_ms": 1.0,
+            "p95_ms": 1.0,
+            "n": 1,
+            "output": {
+                "steady_frames": 4,
+                "heavy_iterations": 1_000,
+                "n_worker": 2,
+                "measurement_scope": "test",
+            },
+            "cases": {
+                "light": {
+                    "sync_n1": mode,
+                    "mp_n2": mode,
+                    "mp_to_sync_steady_ratio": 1.0,
+                }
+            },
+        },
+    )
+
+    output = runner._workload_mp_draw(
+        {"repeats": 1, "steady_frames": 4, "heavy_iterations": 1_000}
+    )
+    metric_names = {metric.name for metric in output.metrics}
+
+    assert "cases.light.mp_to_sync_steady_ratio" in metric_names
+    assert "cases.light.sync_n1.startup_ms.median" in metric_names
+    assert "cases.light.mp_n2.startup_ms.median" in metric_names
+
+
 def test_renderer_cases_separate_static_offsets_from_animated_topology() -> None:
     static_state = runner._setup_animated_renderer(
         {"polylines": 10, "frames": 4, "topology": "static"},
@@ -518,8 +641,14 @@ def test_renderer_cases_separate_static_offsets_from_animated_topology() -> None
         0,
     )
 
-    static = runner._workload_animated_renderer(static_state).metrics
-    animated = runner._workload_animated_renderer(animated_state).metrics
+    static = {
+        metric.name: metric.value
+        for metric in runner._workload_animated_renderer(static_state).metrics
+    }
+    animated = {
+        metric.name: metric.value
+        for metric in runner._workload_animated_renderer(animated_state).metrics
+    }
 
     assert static["index_builds"] == 1
     assert static["full_uploads"] == 1
@@ -554,11 +683,13 @@ def test_renderer_checksum_is_independent_of_performance_counters() -> None:
 
     static = runner._workload_animated_renderer(static_state)
     animated = runner._workload_animated_renderer(animated_state)
+    static_metrics = {metric.name: metric.value for metric in static.metrics}
+    animated_metrics = {metric.name: metric.value for metric in animated.metrics}
 
-    assert static.metrics["index_builds"] != animated.metrics["index_builds"]
+    assert static_metrics["index_builds"] != animated_metrics["index_builds"]
     assert canonical_checksum(static.value) == canonical_checksum(animated.value)
-    assert static.metrics["full_vertex_upload_bytes"] > 0
-    assert static.metrics["vertex_only_upload_bytes"] > 0
+    assert static_metrics["full_vertex_upload_bytes"] > 0
+    assert static_metrics["vertex_only_upload_bytes"] > 0
 
 
 def test_case_source_hash_includes_transitive_fixture_source(tmp_path: Path) -> None:

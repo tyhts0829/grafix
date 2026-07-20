@@ -107,7 +107,8 @@ GUI ウィンドウは同じループで `ParameterGUIWindowSystem.draw_frame()`
 - 実装: `src/grafix/core/geometry.py`
 - 主な責務:
   - `params` を内容署名に入れられる形へ正規化（`normalize_args()`）
-  - `(schema_version, op, inputs.id, args)` から `GeometryId` を計算（`compute_geometry_id()`）
+  - 固定 schema v2 domain の `(op, inputs.id, args)` から `GeometryId` を計算
+    （`compute_geometry_id()`）。呼び出し側は schema を選択しない
   - `Geometry.create()` で「不変ノード」を生成する
 
 `Geometry` は「何をするか」を表すだけで、実体配列（頂点配列）を持たない。
@@ -137,7 +138,8 @@ GUI ウィンドウは同じループで `ParameterGUIWindowSystem.draw_frame()`
 - `src/grafix/core/parameters/key.py`
   - `ParameterKey(op, site_id, arg)` … GUI 行の一意キー
   - 自動 `site_id` は project-relative path と code location から生成する
-  - G/E/L/P の `key=` を使うと、コード移動に依存しない明示 site ID になる
+  - G/E/L の `key=`、または `P(key=...).foo(...)` を使うと、コード移動に依存しない
+    明示 site ID になる
 - `src/grafix/core/parameters/meta.py`
   - `ParamMeta(kind, ui_min, ui_max, choices)` … UI/検証の最低限メタ
 - `src/grafix/core/parameters/state.py`
@@ -238,7 +240,8 @@ reload 時に API 側の global を追加で差し替えない。
   明示 `override` に従って UI/CODE を選ぶ
 - sourceを `code | ui | midi_live | midi_frozen` として観測recordまで保持する
 - 量子化（既定 `DEFAULT_QUANT_STEP=1e-3`）を **ここだけ** で行い、署名に入る値と実計算値を一致させる
-- `FrameParamsBuffer` に観測レコードを積む（explicit/chain_id/step_index も記録）
+- `FrameParamsBuffer` に `FrameParamRecord` を積む（base/effective/source/explicit を記録）。
+  effect topology は別の `FrameEffectChainRecord` として記録する
 
 ### 7.3 初期 override ポリシー（“省略引数は GUI で動かしやすく”）
 
@@ -314,7 +317,7 @@ interactive の 1 フレーム描画は、概ね次の順で行う。
   - fragment: 単色
 - `src/grafix/interactive/gl/utils.py:build_projection`
   - `canvas_size` に基づく正射影行列を生成（y 軸は画面座標系に合わせて反転）
-- `src/grafix/interactive/gl/index_buffer.py:build_line_indices`
+- `src/grafix/interactive/gl/index_buffer.py:build_line_indices_and_stats`
   - renderer cache miss 時だけ `offsets` から `GL_LINE_STRIP` + primitive restart の index 列を生成する
 
 ## 10. ランタイム（複数ウィンドウの統合ループ）
@@ -384,8 +387,9 @@ encoderを選択する。private stagingでencodeした後、artifactとmanifest
 公開 `grafix.export()` は `api` 側の adapter である。公開 `Frame` の型検証と
 `ExportResult` の生成、`Frame.metadata` に固定された PNG scale / G-code config の適用は
 この adapter が担う。したがって `export` package は公開 API 型を import しない。
-interactive 側は同じ protocol を満たす `FrameExportSnapshot` を直接渡し、thumbnail の
-ためだけに公開 `Frame` を再構築しない。
+interactive 側は preview 用 `FrameExportSnapshot` から provenance 必須の
+`CaptureExportSnapshot` を capture 境界で構築して渡し、thumbnail のためだけに公開
+`Frame` を再構築しない。
 
 `ExportJobSystem` はqueue/worker/deadlineだけを所有し、形式判定・manifest・publishを
 重複実装しない。workerへ渡すprovenanceはmain processで固定済みのimmutable snapshotで、
@@ -403,7 +407,7 @@ draw + parameter source + config
                               CaptureFrame protocol
                                       |
                                       v
-                               CaptureService <--- FrameExportSnapshot
+                               CaptureService <--- CaptureExportSnapshot
                                encode -> stage
                                -> publish artifact + manifest
 

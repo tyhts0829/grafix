@@ -48,7 +48,7 @@ def test_runtime_limits_default_cpu_cache_entry_bound_is_4096() -> None:
 
     assert limits.cpu_cache_entries == 4096
     with RealizeSession() as session:
-        assert session.max_cache_entries == 4096
+        assert session.runtime_limits.cpu_cache_entries == 4096
 
 
 def test_runtime_limit_profiles_keep_preview_and_final_independent() -> None:
@@ -178,7 +178,7 @@ def test_runtime_limits_configure_cpu_cache_entry_bound() -> None:
         stats = session.stats()
 
         assert session.runtime_limits is limits
-        assert session.max_cache_entries == 1
+        assert session.runtime_limits.cpu_cache_entries == 1
 
     assert stats.entries == 1
     assert stats.evictions == 1

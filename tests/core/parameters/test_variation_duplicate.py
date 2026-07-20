@@ -25,6 +25,8 @@ def test_duplicate_variation_copies_snapshot_and_metadata_under_new_name() -> No
                 key=key,
                 base=2.0,
                 meta=meta,
+                effective=2.0,
+                source="code",
                 explicit=False,
             )
         ],

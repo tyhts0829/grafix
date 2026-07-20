@@ -19,6 +19,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from .meta import ParamMeta
+from .validation import (
+    validate_param_choices,
+    validate_param_kind,
+    validate_param_range,
+)
 
 # dict spec として受理するキーを固定し、入力仕様を小さく保つ。
 PARAM_META_SPEC_KEYS = frozenset(
@@ -53,7 +58,7 @@ def meta_from_spec(spec: ParamMeta | Mapping[str, object]) -> ParamMeta:
 
         dict spec の形式:
         - kind: str（必須）
-        - ui_min/ui_max: object（任意）
+        - ui_min/ui_max: 数値 kind 用の有限実数（任意）
         - choices: Sequence[str] | None（任意）
         - display_name/description/unit/format/category: str | None（任意）
         - step: 正の有限数 | None（任意）
@@ -62,8 +67,8 @@ def meta_from_spec(spec: ParamMeta | Mapping[str, object]) -> ParamMeta:
         - recommended_range: 2 要素の有限数列 | None（任意）
 
         注意:
-        - ui_min/ui_max の型・大小関係などはここでは検証しない（UI 側の都合があるため）。
-        - choices の要素は `str(...)` で文字列化して格納する。
+        - choice は重複のない非空 `Sequence[str]` を必須とする。
+        - 非 choice kind に choices は指定できない。
 
     Raises
     ------
@@ -93,10 +98,6 @@ def meta_from_spec(spec: ParamMeta | Mapping[str, object]) -> ParamMeta:
     if not isinstance(kind, str):
         raise TypeError("meta spec の 'kind' は str である必要があります")
 
-    # ui_min/ui_max は UI ヒント用の生値を保持するだけ（型や整合性の解釈はしない）。
-    ui_min = spec.get("ui_min", None)
-    ui_max = spec.get("ui_max", None)
-
     raw_choices = spec.get("choices", None)
     choices: Sequence[str] | None
     if raw_choices is None:
@@ -108,13 +109,21 @@ def meta_from_spec(spec: ParamMeta | Mapping[str, object]) -> ParamMeta:
         if not isinstance(raw_choices, Sequence):
             raise TypeError("meta spec の 'choices' は Sequence[str] である必要があります")
         # list など可変の可能性があるため、ここで tuple にして安定化する。
-        choices = tuple(str(x) for x in raw_choices)
+        choices = tuple(raw_choices)  # type: ignore[arg-type]
+
+    validated_kind = validate_param_kind(kind)
+    validated_choices = validate_param_choices(validated_kind, choices)
+    ui_min, ui_max = validate_param_range(
+        validated_kind,
+        spec.get("ui_min"),
+        spec.get("ui_max"),
+    )
 
     return ParamMeta(
-        kind=str(kind),
+        kind=validated_kind,
         ui_min=ui_min,
         ui_max=ui_max,
-        choices=choices,
+        choices=validated_choices,
         display_name=spec.get("display_name"),  # type: ignore[arg-type]
         description=spec.get("description"),  # type: ignore[arg-type]
         unit=spec.get("unit"),  # type: ignore[arg-type]

@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -22,20 +22,20 @@ import numpy as np
 
 from grafix.core.atomic_write import atomic_write_text
 from grafix.core.geometry import Geometry
+from grafix.core.operation_diagnostics import OperationDiagnostic
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.resource_budget import ResourceLimitError
 from grafix.devtools.benchmarks.environment import make_case_spec
 from grafix.devtools.benchmarks.schema import (
+    BenchmarkOutput,
     CaseResult,
     CaseSpec,
     ContractResult,
-    Distribution,
     Metric,
     Sample,
     case_result_from_dict,
     case_result_to_dict,
     evaluate_contract,
-    summarize_distribution,
     summarize_samples,
 )
 
@@ -91,7 +91,7 @@ class CaseDefinition:
     selectable_suites: tuple[str, ...]
     setup: Callable[[dict[str, Any], int], object]
     workload: Callable[[object], object]
-    postprocess: Callable[[object, object], "_CaseOutput"] | None = None
+    postprocess: Callable[[object, object], BenchmarkOutput] | None = None
     measurement_context: (
         Callable[[object], AbstractContextManager[object]] | None
     ) = None
@@ -127,14 +127,6 @@ class CaseDefinition:
             checksum_policy=self.checksum_policy,
             self_sampling=self.self_sampling,
         )
-
-
-@dataclass(frozen=True, slots=True)
-class _CaseOutput:
-    value: object
-    metrics: dict[str, Any] | tuple[Metric, ...] = field(default_factory=dict)
-    contracts: tuple[ContractResult, ...] = ()
-
 
 def case_definitions() -> tuple[CaseDefinition, ...]:
     """組み込み benchmark case を安定順で返す。"""
@@ -367,6 +359,7 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             setup=_setup_renderer,
             workload=_workload_renderer,
             support_source_files=(_SYSTEM_SOURCE_FILE,),
+            self_sampling=True,
         ),
         _definition(
             "interactive.renderer.animated_coords_static_offsets_100k",
@@ -406,6 +399,7 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             setup=_setup_renderer,
             workload=_workload_renderer,
             support_source_files=(_SYSTEM_SOURCE_FILE,),
+            self_sampling=True,
         ),
         _definition(
             "interactive.renderer.animated_coords_static_offsets_1m",
@@ -473,7 +467,7 @@ def case_definitions() -> tuple[CaseDefinition, ...]:
             support_source_files=(_MP_SOURCE_FILE,),
             self_sampling=True,
         ),
-        *_legacy_system_definitions(),
+        *_system_definitions(),
     ]
     return tuple(sorted(definitions, key=lambda definition: definition.case_id))
 
@@ -616,233 +610,151 @@ def canonical_checksum(value: object) -> tuple[str, str]:
     return hashlib.sha256(encoded).hexdigest(), "canonical_json_sha256_v1"
 
 
-def normalize_metrics(
-    metrics: dict[str, Any] | tuple[Metric, ...],
-) -> tuple[Metric, ...]:
-    """旧 workload の mapping を schema v4 の typed metric へ正規化する。
+def _counter_metric(
+    name: str,
+    value: int | float,
+    *,
+    unit: str,
+    phase: str,
+    scope: str,
+) -> Metric:
+    """producer が指定した identity で counter metric を作る。"""
 
-    workload は段階的に Metric を直接返せる。mapping を返す既存 case は runner
-    境界で再帰的に平坦化し、統計 summary は distribution として認識する。
-    """
-
-    if isinstance(metrics, tuple):
-        if not all(isinstance(metric, Metric) for metric in metrics):
-            raise TypeError("typed metrics tuple must contain Metric values")
-        return metrics
-    normalized = _json_value(metrics)
-    if not isinstance(normalized, dict):
-        raise TypeError("benchmark metrics must be a mapping or Metric tuple")
-    output: list[Metric] = []
-
-    def visit(name: str, value: object) -> None:
-        if isinstance(value, dict):
-            distribution = _distribution_from_summary(value)
-            if distribution is not None:
-                output.append(
-                    Metric(
-                        name=name,
-                        kind="distribution",
-                        unit=_infer_metric_unit(name, value=None),
-                        phase=_infer_metric_phase(name),
-                        scope=_infer_metric_scope(name),
-                        distribution=distribution,
-                    )
-                )
-                return
-            if not value:
-                output.append(_gauge_metric(name, value))
-                return
-            for child_name, child_value in sorted(value.items()):
-                visit(
-                    f"{name}.{child_name}" if name else str(child_name),
-                    child_value,
-                )
-            return
-        if isinstance(value, list) and value and all(
-            isinstance(item, (int, float)) and not isinstance(item, bool)
-            for item in value
-        ):
-            output.append(
-                Metric(
-                    name=name,
-                    kind="distribution",
-                    unit=_infer_metric_unit(name, value=None),
-                    phase=_infer_metric_phase(name),
-                    scope=_infer_metric_scope(name),
-                    distribution=summarize_distribution(
-                        [float(item) for item in value]
-                    ),
-                )
-            )
-            return
-        if _is_counter(name, value):
-            output.append(
-                Metric(
-                    name=name,
-                    kind="counter",
-                    unit=_infer_metric_unit(name, value=value),
-                    phase=_infer_metric_phase(name),
-                    scope=_infer_metric_scope(name),
-                    value=value,
-                )
-            )
-            return
-        output.append(_gauge_metric(name, value))
-
-    for metric_name, metric_value in sorted(normalized.items()):
-        visit(str(metric_name), metric_value)
-    return tuple(output)
-
-
-def _distribution_from_summary(value: dict[str, Any]) -> Distribution | None:
-    count_value = value.get("count", value.get("n"))
-    has_summary = any(
-        key in value
-        for key in ("min", "max", "median", "mad", "p95", "p99", "mean")
-    )
-    if (
-        not isinstance(count_value, int)
-        or isinstance(count_value, bool)
-        or count_value < 0
-        or not has_summary
-    ):
-        return None
-    raw = value.get("raw_samples", value.get("samples", ()))
-    if isinstance(raw, list) and raw and all(
-        isinstance(item, (int, float)) and not isinstance(item, bool)
-        for item in raw
-    ):
-        return summarize_distribution([float(item) for item in raw])
-    if count_value == 0:
-        return Distribution(
-            count=0,
-            min=None,
-            max=None,
-            median=None,
-            mad=None,
-            p95=None,
-            p99=None,
-            mean=None,
-        )
-
-    def optional_stat(name: str) -> float | None:
-        candidate = value.get(name)
-        if (
-            candidate is None
-            or not isinstance(candidate, (int, float))
-            or isinstance(candidate, bool)
-        ):
-            return None
-        return float(candidate)
-
-    return Distribution(
-        count=count_value,
-        min=optional_stat("min"),
-        max=optional_stat("max"),
-        median=optional_stat("median"),
-        mad=optional_stat("mad"),
-        p95=optional_stat("p95"),
-        p99=optional_stat("p99"),
-        mean=optional_stat("mean"),
+    return Metric(
+        name=name,
+        kind="counter",
+        unit=unit,
+        phase=phase,
+        scope=scope,
+        value=value,
     )
 
 
-def _gauge_metric(name: str, value: object) -> Metric:
-    scalar = (
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        if value is None or isinstance(value, (dict, list))
-        else value
-    )
+def _gauge_metric(
+    name: str,
+    value: str | bool | int | float,
+    *,
+    unit: str,
+    phase: str,
+    scope: str,
+) -> Metric:
+    """producer が指定した identity で gauge metric を作る。"""
+
     return Metric(
         name=name,
         kind="gauge",
-        unit=_infer_metric_unit(name, value=scalar),
-        phase=_infer_metric_phase(name),
-        scope=_infer_metric_scope(name),
-        value=scalar,
+        unit=unit,
+        phase=phase,
+        scope=scope,
+        value=value,
     )
 
 
-def _infer_metric_phase(name: str) -> str:
-    lowered = f".{name.lower()}."
-    if ".changing." in lowered or ".drag." in lowered:
-        return "drag"
-    if ".stable." in lowered or ".settle." in lowered:
-        return "settle"
-    if ".warmup." in lowered:
-        return "warmup"
-    return "measure"
+def _summary_metrics(
+    name: str,
+    summary: dict[str, Any],
+    *,
+    unit: str,
+    phase: str,
+    scope: str,
+) -> tuple[Metric, ...]:
+    """既知の mean/median/p95/n summary を独立した typed metric にする。"""
 
-
-def _infer_metric_scope(name: str) -> str:
-    return "scenario" if name.startswith("cases.") else "case"
-
-
-def _infer_metric_unit(name: str, *, value: object) -> str:
-    lowered = name.lower()
-    leaf = lowered.rsplit(".", 1)[-1]
-    if leaf.endswith("_ns") or "_ns_" in leaf:
-        return "ns"
-    if leaf.endswith("_ms") or "_ms_" in leaf:
-        return "ms"
-    if "fps" in leaf:
-        return "frames_per_second"
-    if "byte" in leaf:
-        return "bytes"
-    if "ratio" in leaf:
-        return "ratio"
-    if "revision_lag" in leaf:
-        return "revisions"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, str):
-        return "text"
-    if _is_counter(name, value):
-        return "count"
-    return "unitless"
-
-
-def _is_counter(name: str, value: object) -> bool:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not np.isfinite(float(value))
-        or float(value) < 0.0
-    ):
-        return False
-    leaf = name.lower().rsplit(".", 1)[-1]
     return (
-        leaf == "n"
-        or leaf.startswith("n_")
-        or any(
-            token in leaf
-            for token in (
-                "bytes",
-                "count",
-                "entries",
-                "evictions",
-                "frames",
-                "hits",
-                "misses",
-                "results",
-                "tasks",
-                "uploads",
-                "vertices",
-                "lines",
-                "workers",
-                "builds",
-                "calls",
-                "iterations",
-                "parts",
-                "rows",
-            )
-        )
+        _gauge_metric(
+            f"{name}.mean",
+            float(summary["mean"]),
+            unit=unit,
+            phase=phase,
+            scope=scope,
+        ),
+        _gauge_metric(
+            f"{name}.median",
+            float(summary["median"]),
+            unit=unit,
+            phase=phase,
+            scope=scope,
+        ),
+        _gauge_metric(
+            f"{name}.p95",
+            float(summary["p95"]),
+            unit=unit,
+            phase=phase,
+            scope=scope,
+        ),
+        _counter_metric(
+            f"{name}.samples",
+            int(summary["n"]),
+            unit="count",
+            phase=phase,
+            scope=scope,
+        ),
     )
+
+
+def _percentile_summary_metrics(
+    name: str,
+    summary: dict[str, Any],
+    *,
+    unit: str,
+    phase: str,
+    scope: str,
+) -> tuple[Metric, ...]:
+    """既知の median/p95/p99/max/n summary を typed metric にする。"""
+
+    return (
+        *(
+            _gauge_metric(
+                f"{name}.{statistic}",
+                float(summary[statistic]),
+                unit=unit,
+                phase=phase,
+                scope=scope,
+            )
+            for statistic in ("median", "p95", "p99", "max")
+        ),
+        _counter_metric(
+            f"{name}.samples",
+            int(summary["n"]),
+            unit="count",
+            phase=phase,
+            scope=scope,
+        ),
+    )
+
+
+def _cache_metrics(
+    cache: dict[str, Any],
+    *,
+    name: str,
+    phase: str,
+    scope: str,
+) -> tuple[Metric, ...]:
+    """既知 cache counter schema を明示 identity の typed metric にする。"""
+
+    metrics = [
+        _counter_metric(
+            f"{name}.{field_name}",
+            int(cache[field_name]),
+            unit="count",
+            phase=phase,
+            scope=scope,
+        )
+        for field_name in ("hits", "misses", "evictions", "entries")
+        if field_name in cache
+    ]
+    for field_name in ("bytes", "budget_bytes"):
+        if field_name in cache:
+            metrics.append(
+                _counter_metric(
+                    f"{name}.{field_name}",
+                    int(cache[field_name]),
+                    unit="bytes",
+                    phase=phase,
+                    scope=scope,
+                )
+            )
+    return tuple(metrics)
 
 
 def _run_child(
@@ -1040,9 +952,9 @@ def _measure_in_process(
 
         baseline_rss = _peak_rss_bytes()
         raw_samples: list[Sample] = []
-        measured_outputs: list[_CaseOutput] = []
+        measured_outputs: list[BenchmarkOutput] = []
         semantic_checksum: tuple[str, str] | None = None
-        output: _CaseOutput | None = None
+        output: BenchmarkOutput | None = None
         raw_output: object | None = None
         was_gc_enabled = gc.isenabled()
         if disable_gc and was_gc_enabled:
@@ -1066,13 +978,9 @@ def _measure_in_process(
                     raw_output=raw_output,
                 )
                 measured_outputs.append(
-                    _CaseOutput(
+                    BenchmarkOutput(
                         value=None,
-                        metrics=(
-                            output.metrics
-                            if isinstance(output.metrics, tuple)
-                            else {}
-                        ),
+                        metrics=output.metrics,
                         contracts=output.contracts,
                     )
                 )
@@ -1095,7 +1003,6 @@ def _measure_in_process(
         peak_rss = _peak_rss_bytes()
         assert semantic_checksum is not None
         checksum, checksum_kind = semantic_checksum
-        metrics = normalize_metrics(output.metrics)
         failed_hard = tuple(
             contract
             for contract in output.contracts
@@ -1122,7 +1029,7 @@ def _measure_in_process(
             baseline_rss_bytes=baseline_rss,
             peak_rss_bytes=peak_rss,
             peak_rss_delta_bytes=max(0, peak_rss - baseline_rss),
-            metrics=metrics,
+            metrics=output.metrics,
             contracts=output.contracts,
             error=contract_error,
         )
@@ -1150,27 +1057,17 @@ def _measure_in_process(
 
 
 def _aggregate_measured_outputs(
-    outputs: list[_CaseOutput],
+    outputs: list[BenchmarkOutput],
     *,
-    last: _CaseOutput,
-) -> _CaseOutput:
+    last: BenchmarkOutput,
+) -> BenchmarkOutput:
     """outer sample のtyped outputを検証し、失敗contractを保持する。"""
 
     if not outputs:
         raise RuntimeError("benchmark workload returned no measured output")
-    typed_metrics = isinstance(last.metrics, tuple)
-    if any(
-        isinstance(output.metrics, tuple) != typed_metrics
-        for output in outputs
-    ):
-        raise RuntimeError("benchmark metric representation changed across samples")
-    metrics = last.metrics
-    if typed_metrics:
-        baseline_metrics = outputs[0].metrics
-        assert isinstance(baseline_metrics, tuple)
-        if any(output.metrics != baseline_metrics for output in outputs[1:]):
-            raise RuntimeError("typed metrics changed across warm samples")
-        metrics = baseline_metrics
+    metrics = outputs[0].metrics
+    if any(output.metrics != metrics for output in outputs[1:]):
+        raise RuntimeError("typed metrics changed across warm samples")
 
     contract_ids = tuple(
         contract.contract_id for contract in outputs[0].contracts
@@ -1211,7 +1108,7 @@ def _aggregate_measured_outputs(
             next((sample for sample in samples if not sample.passed), samples[-1])
         )
 
-    return _CaseOutput(
+    return BenchmarkOutput(
         value=last.value,
         metrics=metrics,
         contracts=tuple(contracts),
@@ -1223,7 +1120,7 @@ def _postprocess_case_output(
     *,
     state: object,
     raw_output: object,
-) -> _CaseOutput:
+) -> BenchmarkOutput:
     """timed workload の raw output を計測区間外で semantic output にする。"""
 
     output = (
@@ -1231,8 +1128,8 @@ def _postprocess_case_output(
         if definition.postprocess is not None
         else raw_output
     )
-    if not isinstance(output, _CaseOutput):
-        raise TypeError("benchmark workload must produce _CaseOutput")
+    if not isinstance(output, BenchmarkOutput):
+        raise TypeError("benchmark workload must produce BenchmarkOutput")
     return output
 
 
@@ -1322,7 +1219,7 @@ def _definition(
     selectable_suites: tuple[str, ...],
     setup: Callable[[dict[str, Any], int], object],
     workload: Callable[[object], object],
-    postprocess: Callable[[object, object], _CaseOutput] | None = None,
+    postprocess: Callable[[object, object], BenchmarkOutput] | None = None,
     measurement_context: (
         Callable[[object], AbstractContextManager[object]] | None
     ) = None,
@@ -1361,7 +1258,7 @@ def _scaled_definitions(
     suite: str,
     fixture: str,
     setup: Callable[[dict[str, Any], int], object],
-    workload: Callable[[object], _CaseOutput],
+    workload: Callable[[object], BenchmarkOutput],
     suites: tuple[tuple[str, ...], ...],
     support_source_files: tuple[Path, ...] = (),
     support_implementations: tuple[Callable[..., object], ...] = (),
@@ -1954,8 +1851,8 @@ def _remaining_effect_definitions() -> list[CaseDefinition]:
     ]
 
 
-def _legacy_system_definitions() -> list[CaseDefinition]:
-    """従来の system/micro 診断を schema v4 の個別 case として返す。"""
+def _system_definitions() -> list[CaseDefinition]:
+    """system/micro 診断を個別の benchmark case として返す。"""
 
     cases = (
         (
@@ -2021,44 +1918,36 @@ def _legacy_system_definitions() -> list[CaseDefinition]:
             suite="system",
             fixture=workload_id,
             parameters={"workload": workload_id, **parameters},
-            tags=("legacy-system", "schema-v3"),
+            tags=("system-diagnostic",),
             selectable_suites=("system",),
-            setup=_setup_legacy_system,
-            workload=_workload_legacy_system,
+            setup=_setup_system,
+            workload=_workload_system,
             support_source_files=(_SYSTEM_SOURCE_FILE,),
+            self_sampling=workload_id
+            in {"parameter_snapshot_model", "asemic", "cold_import"},
         )
         for case_id, label, workload_id, parameters in cases
     ]
 
 
-def _postprocess_primitive(state: object, output: object) -> _CaseOutput:
+def _postprocess_primitive(state: object, output: object) -> BenchmarkOutput:
     """raw primitive output を共通metrics/contractsへ変換する。"""
 
     from grafix.devtools.benchmarks.primitive_benchmark import (
         observe_primitive_output,
     )
 
-    observation = observe_primitive_output(state, output)
-    return _CaseOutput(
-        value=observation.geometry,
-        metrics=observation.metrics,
-        contracts=observation.contracts,
-    )
+    return observe_primitive_output(state, output)
 
 
-def _postprocess_remaining_effect(state: object, output: object) -> _CaseOutput:
+def _postprocess_remaining_effect(state: object, output: object) -> BenchmarkOutput:
     """timed effect output を共通 metrics/contracts へ変換する。"""
 
     from grafix.devtools.benchmarks.remaining_effect_benchmark import (
         observe_remaining_effect_output,
     )
 
-    observation = observe_remaining_effect_output(state, output)
-    return _CaseOutput(
-        value=observation.geometry,
-        metrics=observation.metrics,
-        contracts=observation.contracts,
-    )
+    return observe_remaining_effect_output(state, output)
 
 
 def _setup_effect(parameters: dict[str, Any], seed: int) -> object:
@@ -2085,13 +1974,18 @@ def _setup_effect(parameters: dict[str, Any], seed: int) -> object:
     if expected_checksum is not None and not isinstance(expected_checksum, str):
         raise TypeError("expected effect checksum must be a string")
     args = dict(spec.defaults)
-    args.update(
-        {
-            key: value
-            for key, value in parameters.items()
-            if key not in {"effect", "fixture", "quality", "expected_checksum"}
-        }
-    )
+    for key, value in parameters.items():
+        if key in {"effect", "fixture", "quality", "expected_checksum"}:
+            continue
+        meta = spec.meta.get(key)
+        if meta is not None and meta.kind in {"vec3", "rgb"}:
+            if not isinstance(value, list) or len(value) != 3:
+                raise TypeError(
+                    f"{effect_name}.{key} benchmark parameter must be a "
+                    "three-item JSON array"
+                )
+            value = tuple(value)
+        args[key] = value
     args_tuple = tuple(sorted(args.items()))
     return (
         spec.evaluator,
@@ -2103,7 +1997,7 @@ def _setup_effect(parameters: dict[str, Any], seed: int) -> object:
     )
 
 
-def _setup_legacy_system(parameters: dict[str, Any], seed: int) -> object:
+def _setup_system(parameters: dict[str, Any], seed: int) -> object:
     from grafix.devtools.benchmarks import system_benchmark
 
     state = dict(parameters)
@@ -2127,9 +2021,10 @@ def _setup_legacy_system(parameters: dict[str, Any], seed: int) -> object:
     return state
 
 
-def _workload_legacy_system(state: object) -> _CaseOutput:
+def _workload_system(state: object) -> BenchmarkOutput:
     from grafix.core.realize import RealizeSession
     from grafix.core.realized_geometry import concat_realized_geometries
+    from grafix.core.runtime_limits import RuntimeLimits
     from grafix.devtools.benchmarks import system_benchmark
 
     values = cast(dict[str, Any], state)
@@ -2140,7 +2035,9 @@ def _workload_legacy_system(state: object) -> _CaseOutput:
         estimated_bytes = (sides + 1) * 3 * np.dtype(np.float32).itemsize + 8
         cache_limit = max(1_024, 2 * estimated_bytes + 64)
         last: RealizedGeometry | None = None
-        with RealizeSession(max_cache_bytes=cache_limit) as session:
+        with RealizeSession(
+            runtime_limits=RuntimeLimits(cpu_cache_bytes=cache_limit)
+        ) as session:
             for frame in range(frames):
                 last = session.realize(
                     system_benchmark._draw_geometry(frame=frame, sides=sides)
@@ -2148,23 +2045,84 @@ def _workload_legacy_system(state: object) -> _CaseOutput:
             stats = session.stats()
         if last is None:
             raise RuntimeError("animated soak returned no geometry")
-        return _CaseOutput(
+        return BenchmarkOutput(
             value=last,
-            metrics={
-                "frames": frames,
-                "cache_hits": stats.hits,
-                "cache_misses": stats.misses,
-                "cache_evictions": stats.evictions,
-                "cache_entries": stats.entries,
-                "cache_bytes": stats.bytes,
-                "cache_budget_bytes": cache_limit,
-            },
+            metrics=(
+                _counter_metric(
+                    "frames",
+                    frames,
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "cache.hits",
+                    stats.hits,
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "cache.misses",
+                    stats.misses,
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "cache.evictions",
+                    stats.evictions,
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "cache.entries",
+                    stats.entries,
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "cache.bytes",
+                    stats.bytes,
+                    unit="bytes",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "cache.budget_bytes",
+                    cache_limit,
+                    unit="bytes",
+                    phase="measure",
+                    scope="system",
+                ),
+            ),
         )
     if workload == "geometry_signature":
         payload = system_benchmark._geometry_signature_workload(
             iterations=int(values["iterations"])
         )
-        return _CaseOutput(value=payload["output"], metrics=payload)
+        output = cast(dict[str, Any], payload["output"])
+        return BenchmarkOutput(
+            value=output,
+            metrics=(
+                _counter_metric(
+                    "signatures",
+                    int(output["signatures"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _gauge_metric(
+                    "checksum",
+                    str(output["checksum"]),
+                    unit="blake2b",
+                    phase="measure",
+                    scope="system",
+                ),
+            ),
+        )
     if workload == "rotate_scale_identity":
         geometry = cast(RealizedGeometry, values["geometry"])
         payload = system_benchmark._rotate_scale_identity_workload(
@@ -2173,13 +2131,93 @@ def _workload_legacy_system(state: object) -> _CaseOutput:
             include_semantic_outputs=True,
         )
         semantic_outputs = payload.pop("_semantic_outputs")
-        return _CaseOutput(value=semantic_outputs, metrics=payload)
+        output = cast(dict[str, Any], payload["output"])
+        return BenchmarkOutput(
+            value=semantic_outputs,
+            metrics=(
+                _counter_metric(
+                    "n_vertices",
+                    int(output["n_vertices"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "n_lines",
+                    int(output["n_lines"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "output_bytes",
+                    int(output["bytes"]),
+                    unit="bytes",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "iterations",
+                    int(output["iterations"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "operations",
+                    int(output["operations"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "input_reuses",
+                    int(output["input_reuses"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _gauge_metric(
+                    "input_object_reused",
+                    bool(output["input_object_reused"]),
+                    unit="boolean",
+                    phase="measure",
+                    scope="system",
+                ),
+            ),
+        )
     if workload == "cached_site_id":
         payload = system_benchmark._cached_site_id_workload(
             iterations=int(values["iterations"]),
             code=system_benchmark._cached_site_id_workload.__code__,
         )
-        return _CaseOutput(value=payload["output"], metrics=payload)
+        output = cast(dict[str, Any], payload["output"])
+        cache = cast(dict[str, Any], payload["cache"])
+        return BenchmarkOutput(
+            value=output,
+            metrics=(
+                _counter_metric(
+                    "lookups",
+                    int(output["lookups"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _gauge_metric(
+                    "site_id",
+                    str(output["site_id"]),
+                    unit="text",
+                    phase="measure",
+                    scope="system",
+                ),
+                *_cache_metrics(
+                    cache,
+                    name="cache",
+                    phase="measure",
+                    scope="system",
+                ),
+            ),
+        )
     if workload == "parameter_snapshot_model":
         payload = system_benchmark._parameter_snapshot_model_workload(
             values["store"],
@@ -2190,19 +2228,91 @@ def _workload_legacy_system(state: object) -> _CaseOutput:
             key: output[key]
             for key in ("frames", "rows", "snapshot_entries", "render_calls")
         }
-        return _CaseOutput(value=semantic, metrics=payload)
+        cache = cast(dict[str, Any], payload["cache"])
+        return BenchmarkOutput(
+            value=semantic,
+            metrics=(
+                *(
+                    _counter_metric(
+                        name,
+                        int(output[name]),
+                        unit="count",
+                        phase="measure",
+                        scope="system",
+                    )
+                    for name in (
+                        "frames",
+                        "rows",
+                        "snapshot_entries",
+                        "render_calls",
+                        "model_builds",
+                    )
+                ),
+                _gauge_metric(
+                    "first_frame_ms",
+                    float(output["first_frame_ms"]),
+                    unit="ms",
+                    phase="measure",
+                    scope="system",
+                ),
+                _gauge_metric(
+                    "steady_median_ms",
+                    float(output["steady_median_ms"]),
+                    unit="ms",
+                    phase="measure",
+                    scope="system",
+                ),
+                _gauge_metric(
+                    "steady_p95_ms",
+                    float(output["steady_p95_ms"]),
+                    unit="ms",
+                    phase="measure",
+                    scope="system",
+                ),
+                *_cache_metrics(
+                    cache,
+                    name="cache",
+                    phase="measure",
+                    scope="system",
+                ),
+            ),
+        )
     if workload == "realized_concat":
         result = concat_realized_geometries(
             *cast(tuple[RealizedGeometry, ...], values["inputs"])
         )
-        return _CaseOutput(
+        return BenchmarkOutput(
             value=result,
-            metrics={
-                "parts": int(values["parts"]),
-                "n_vertices": int(result.coords.shape[0]),
-                "n_lines": int(result.offsets.size - 1),
-                "output_bytes": result.byte_size,
-            },
+            metrics=(
+                _counter_metric(
+                    "parts",
+                    int(values["parts"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "n_vertices",
+                    int(result.coords.shape[0]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "n_lines",
+                    int(result.offsets.size - 1),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "output_bytes",
+                    result.byte_size,
+                    unit="bytes",
+                    phase="measure",
+                    scope="system",
+                ),
+            ),
         )
     if workload == "asemic":
         payload = system_benchmark._asemic_workload(
@@ -2211,33 +2321,130 @@ def _workload_legacy_system(state: object) -> _CaseOutput:
             include_semantic_geometry=True,
         )
         semantic_geometry = payload.pop("_semantic_geometry")
-        return _CaseOutput(value=semantic_geometry, metrics=payload)
+        output = cast(dict[str, Any], payload["output"])
+        return BenchmarkOutput(
+            value=semantic_geometry,
+            metrics=(
+                _counter_metric(
+                    "n_vertices",
+                    int(output["n_vertices"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "n_lines",
+                    int(output["n_lines"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "output_bytes",
+                    int(output["bytes"]),
+                    unit="bytes",
+                    phase="measure",
+                    scope="system",
+                ),
+                *_cache_metrics(
+                    cast(dict[str, Any], payload["cache"]),
+                    name="cache",
+                    phase="measure",
+                    scope="system",
+                ),
+            ),
+        )
     if workload == "gcode_ordering":
         payload = system_benchmark._gcode_ordering_workload(
             values["stroke_values"]
         )
-        return _CaseOutput(value=payload["output"], metrics=payload)
+        output = cast(dict[str, Any], payload["output"])
+        return BenchmarkOutput(
+            value=output,
+            metrics=(
+                _counter_metric(
+                    "strokes",
+                    int(output["strokes"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "reversed",
+                    int(output["reversed"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _gauge_metric(
+                    "checksum",
+                    str(output["checksum"]),
+                    unit="blake2b",
+                    phase="measure",
+                    scope="system",
+                ),
+            ),
+        )
     if workload == "cold_import":
         payload = system_benchmark._cold_import_benchmark(
             repeats=int(values["repeats"])
         )
         if payload.get("status") != "ok":
             raise RuntimeError(str(payload.get("error", "cold import failed")))
-        return _CaseOutput(value=payload["output"], metrics=payload)
-    raise ValueError(f"unknown legacy system workload: {workload}")
+        return BenchmarkOutput(
+            value=payload["output"],
+            metrics=(
+                _gauge_metric(
+                    "mean_ms",
+                    float(payload["mean_ms"]),
+                    unit="ms",
+                    phase="measure",
+                    scope="system",
+                ),
+                _gauge_metric(
+                    "median_ms",
+                    float(payload["median_ms"]),
+                    unit="ms",
+                    phase="measure",
+                    scope="system",
+                ),
+                _gauge_metric(
+                    "p95_ms",
+                    float(payload["p95_ms"]),
+                    unit="ms",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "samples",
+                    int(payload["n"]),
+                    unit="count",
+                    phase="measure",
+                    scope="system",
+                ),
+                _counter_metric(
+                    "peak_rss_bytes",
+                    int(payload["peak_rss_bytes"]),
+                    unit="bytes",
+                    phase="measure",
+                    scope="system",
+                ),
+            ),
+        )
+    raise ValueError(f"unknown system workload: {workload}")
 
 
 def _diagnostic_effective_value(
-    diagnostics: tuple[Any, ...],
+    diagnostics: tuple[OperationDiagnostic, ...],
     *,
     op: str,
     requested: int | float,
 ) -> int | float:
     effective: int | float = requested
     for diagnostic in diagnostics:
-        if getattr(diagnostic, "op", None) != op:
+        if diagnostic.op != op:
             continue
-        value = getattr(diagnostic, "effective_value", None)
+        value = diagnostic.effective_value
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             effective = value
     return effective
@@ -2250,7 +2457,7 @@ def _effect_metrics(
     args: dict[str, Any],
     inputs: tuple[RealizedGeometry, ...],
     geometry: RealizedGeometry,
-    diagnostics: tuple[Any, ...],
+    diagnostics: tuple[OperationDiagnostic, ...],
 ) -> tuple[Metric, ...]:
     metrics = [
         Metric(
@@ -2354,13 +2561,13 @@ def _effect_metrics(
             (
                 diagnostic
                 for diagnostic in reversed(diagnostics)
-                if getattr(diagnostic, "op", None) == "growth.total_points"
+                if diagnostic.op == "growth.total_points"
             ),
             None,
         )
         if point_budget is not None:
-            original = getattr(point_budget, "original_value", None)
-            effective = getattr(point_budget, "effective_value", None)
+            original = point_budget.original_value
+            effective = point_budget.effective_value
             if isinstance(original, int) and isinstance(effective, int):
                 add_work_metric(
                     "work.total_points.requested",
@@ -2414,7 +2621,7 @@ def _effect_metrics(
     return tuple(metrics)
 
 
-def _workload_effect(state: object) -> _CaseOutput:
+def _workload_effect(state: object) -> BenchmarkOutput:
     from grafix.core.operation_diagnostics import operation_diagnostic_context
     from grafix.core.preview_quality import preview_quality_context
 
@@ -2450,7 +2657,7 @@ def _workload_effect(state: object) -> _CaseOutput:
         if expected_checksum is not None
         else ()
     )
-    return _CaseOutput(
+    return BenchmarkOutput(
         value=geometry,
         metrics=_effect_metrics(
             effect_name=effect_name,
@@ -2484,7 +2691,7 @@ def _setup_provenance(parameters: dict[str, Any], _seed: int) -> object:
     return builder, store
 
 
-def _workload_provenance(state: object) -> _CaseOutput:
+def _workload_provenance(state: object) -> BenchmarkOutput:
     builder, store = cast(tuple[Any, Any], state)
     provenance = builder.frame(
         store,
@@ -2494,13 +2701,21 @@ def _workload_provenance(state: object) -> _CaseOutput:
         origin="interactive",
     )
     parameters = provenance.frame.parameters
-    return _CaseOutput(
+    return BenchmarkOutput(
         value={
             "revision": int(parameters.revision),
             "entry_count": int(parameters.entry_count),
             "sha256": parameters.sha256,
         },
-        metrics={"entry_count": int(parameters.entry_count)},
+        metrics=(
+            _counter_metric(
+                "entry_count",
+                int(parameters.entry_count),
+                unit="count",
+                phase="measure",
+                scope="provenance",
+            ),
+        ),
     )
 
 
@@ -2527,7 +2742,7 @@ def _setup_provenance_changed(parameters: dict[str, Any], seed: int) -> object:
     return builder, store, record
 
 
-def _workload_provenance_changed(state: object) -> _CaseOutput:
+def _workload_provenance_changed(state: object) -> BenchmarkOutput:
     from grafix.core.parameters.merge_ops import merge_frame_params
 
     builder, store, record = cast(tuple[Any, Any, Any], state)
@@ -2550,16 +2765,28 @@ def _workload_provenance_changed(state: object) -> _CaseOutput:
         origin="interactive",
     )
     parameters = provenance.frame.parameters
-    return _CaseOutput(
+    return BenchmarkOutput(
         value={
             "revision": int(parameters.revision),
             "entry_count": int(parameters.entry_count),
             "sha256": parameters.sha256,
         },
-        metrics={
-            "entry_count": int(parameters.entry_count),
-            "changes_per_iteration": 2,
-        },
+        metrics=(
+            _counter_metric(
+                "entry_count",
+                int(parameters.entry_count),
+                unit="count",
+                phase="measure",
+                scope="provenance",
+            ),
+            _counter_metric(
+                "changes_per_iteration",
+                2,
+                unit="count",
+                phase="measure",
+                scope="provenance",
+            ),
+        ),
     )
 
 
@@ -2573,7 +2800,7 @@ def _setup_parameter_gui(parameters: dict[str, Any], _seed: int) -> object:
     return _parameter_store(rows=int(parameters["rows"]))
 
 
-def _workload_parameter_gui(state: object) -> _CaseOutput:
+def _workload_parameter_gui(state: object) -> BenchmarkOutput:
     from grafix.interactive.parameter_gui.store_bridge import (
         parameter_table_model_build_count,
         parameter_table_view_for_store,
@@ -2588,12 +2815,23 @@ def _workload_parameter_gui(state: object) -> _CaseOutput:
         "filtered_count": int(view.filtered_count),
         "visible_count": int(sum(view.visible_mask)),
     }
-    return _CaseOutput(
+    return BenchmarkOutput(
         value=value,
-        metrics={
-            **value,
-            "model_builds": int(parameter_table_model_build_count()),
-        },
+        metrics=tuple(
+            _counter_metric(
+                name,
+                metric_value,
+                unit="count",
+                phase="measure",
+                scope="parameter_gui",
+            )
+            for name, metric_value in (
+                ("total_count", value["total_count"]),
+                ("filtered_count", value["filtered_count"]),
+                ("visible_count", value["visible_count"]),
+                ("model_builds", int(parameter_table_model_build_count())),
+            )
+        ),
     )
 
 
@@ -2608,7 +2846,7 @@ def _setup_parameter_edit_scenario(
     return make_parameter_edit_scenario(parameters)
 
 
-def _workload_parameter_edit_scenario(state: object) -> _CaseOutput:
+def _workload_parameter_edit_scenario(state: object) -> BenchmarkOutput:
     from grafix.devtools.benchmarks.parameter_edit_benchmark import (
         ParameterEditScenario,
         run_parameter_edit_scenario,
@@ -2616,12 +2854,7 @@ def _workload_parameter_edit_scenario(state: object) -> _CaseOutput:
 
     if not isinstance(state, ParameterEditScenario):
         raise TypeError("parameter edit scenario state is invalid")
-    result = run_parameter_edit_scenario(state)
-    return _CaseOutput(
-        value=result.value,
-        metrics=result.metrics,
-        contracts=result.contracts,
-    )
+    return run_parameter_edit_scenario(state)
 
 
 def _setup_parameter_hotpath_scenario(
@@ -2635,7 +2868,7 @@ def _setup_parameter_hotpath_scenario(
     return make_parameter_hot_path_scenario(parameters)
 
 
-def _workload_parameter_hotpath_scenario(state: object) -> _CaseOutput:
+def _workload_parameter_hotpath_scenario(state: object) -> BenchmarkOutput:
     from grafix.devtools.benchmarks.parameter_hotpath_benchmark import (
         ParameterHotPathScenario,
         run_parameter_hot_path_scenario,
@@ -2643,12 +2876,7 @@ def _workload_parameter_hotpath_scenario(state: object) -> _CaseOutput:
 
     if not isinstance(state, ParameterHotPathScenario):
         raise TypeError("parameter hot-path scenario state is invalid")
-    result = run_parameter_hot_path_scenario(state)
-    return _CaseOutput(
-        value=result.value,
-        metrics=result.metrics,
-        contracts=result.contracts,
-    )
+    return run_parameter_hot_path_scenario(state)
 
 
 def _setup_perf_backlog_scenario(
@@ -2662,7 +2890,7 @@ def _setup_perf_backlog_scenario(
     return make_perf_backlog_scenario(parameters)
 
 
-def _workload_perf_backlog_scenario(state: object) -> _CaseOutput:
+def _workload_perf_backlog_scenario(state: object) -> BenchmarkOutput:
     from grafix.devtools.benchmarks.perf_hotpath_benchmark import (
         PerfBacklogScenario,
         run_perf_backlog_scenario,
@@ -2670,12 +2898,7 @@ def _workload_perf_backlog_scenario(state: object) -> _CaseOutput:
 
     if not isinstance(state, PerfBacklogScenario):
         raise TypeError("perf backlog scenario state is invalid")
-    result = run_perf_backlog_scenario(state)
-    return _CaseOutput(
-        value=result.value,
-        metrics=result.metrics,
-        contracts=result.contracts,
-    )
+    return run_perf_backlog_scenario(state)
 
 
 def _setup_concat_recipe(parameters: dict[str, Any], _seed: int) -> object:
@@ -2689,18 +2912,36 @@ def _setup_concat_recipe(parameters: dict[str, Any], _seed: int) -> object:
     )
 
 
-def _workload_concat_recipe(state: object) -> _CaseOutput:
+def _workload_concat_recipe(state: object) -> BenchmarkOutput:
     geometries = cast(tuple[Geometry, ...], state)
     result = geometries[0]
     for geometry in geometries[1:]:
         result = cast(Geometry, result + geometry)
-    return _CaseOutput(
+    return BenchmarkOutput(
         value=result,
-        metrics={
-            "parts": len(geometries),
-            "root_inputs": len(result.inputs),
-            "recipe_id": result.id,
-        },
+        metrics=(
+            _counter_metric(
+                "parts",
+                len(geometries),
+                unit="count",
+                phase="measure",
+                scope="core",
+            ),
+            _counter_metric(
+                "root_inputs",
+                len(result.inputs),
+                unit="count",
+                phase="measure",
+                scope="core",
+            ),
+            _gauge_metric(
+                "recipe_id",
+                result.id,
+                unit="sha256",
+                phase="measure",
+                scope="core",
+            ),
+        ),
     )
 
 
@@ -2719,18 +2960,32 @@ def _setup_deep_dag(parameters: dict[str, Any], _seed: int) -> object:
     return node
 
 
-def _workload_deep_dag(state: object) -> _CaseOutput:
+def _workload_deep_dag(state: object) -> BenchmarkOutput:
     from grafix.core.realize import RealizeSession
+    from grafix.core.runtime_limits import RuntimeLimits
 
-    geometry = RealizeSession(max_cache_bytes=0).realize(state)  # type: ignore[arg-type]
-    return _CaseOutput(value=geometry, metrics={"depth": 5_000})
+    geometry = RealizeSession(
+        runtime_limits=RuntimeLimits(cpu_cache_bytes=0)
+    ).realize(state)  # type: ignore[arg-type]
+    return BenchmarkOutput(
+        value=geometry,
+        metrics=(
+            _counter_metric(
+                "depth",
+                5_000,
+                unit="count",
+                phase="measure",
+                scope="core",
+            ),
+        ),
+    )
 
 
 def _setup_passthrough(parameters: dict[str, Any], _seed: int) -> object:
     return parameters
 
 
-def _workload_draw_realize_indices(state: object) -> _CaseOutput:
+def _workload_draw_realize_indices(state: object) -> BenchmarkOutput:
     from grafix.core.layer import LayerStyleDefaults
     from grafix.core.pipeline import realize_scene
     from grafix.core.realize import RealizeSession
@@ -2755,22 +3010,52 @@ def _workload_draw_realize_indices(state: object) -> _CaseOutput:
         cache = session.stats()
     realized = layers[0].realized
     indices, draw_stats = build_line_indices_and_stats(realized.offsets)
-    metrics = {
-        "layers": len(layers),
-        "n_vertices": int(realized.coords.shape[0]),
-        "n_lines": int(realized.offsets.size - 1),
-        "geometry_bytes": int(realized.byte_size),
-        "index_count": int(indices.size),
-        "index_bytes": int(indices.nbytes),
-        "draw_vertices": int(draw_stats.draw_vertices),
-        "draw_lines": int(draw_stats.draw_lines),
-        "cache_hits": cache.hits,
-        "cache_misses": cache.misses,
-        "cache_evictions": cache.evictions,
-        "cache_entries": cache.entries,
-        "cache_bytes": cache.bytes,
-    }
-    return _CaseOutput(
+    metrics = (
+        *(
+            _counter_metric(
+                name,
+                value,
+                unit="count",
+                phase="measure",
+                scope="renderer",
+            )
+            for name, value in (
+                ("layers", len(layers)),
+                ("n_vertices", int(realized.coords.shape[0])),
+                ("n_lines", int(realized.offsets.size - 1)),
+                ("index_count", int(indices.size)),
+                ("draw_vertices", int(draw_stats.draw_vertices)),
+                ("draw_lines", int(draw_stats.draw_lines)),
+            )
+        ),
+        _counter_metric(
+            "geometry_bytes",
+            int(realized.byte_size),
+            unit="bytes",
+            phase="measure",
+            scope="renderer",
+        ),
+        _counter_metric(
+            "index_bytes",
+            int(indices.nbytes),
+            unit="bytes",
+            phase="measure",
+            scope="renderer",
+        ),
+        *_cache_metrics(
+            {
+                "hits": cache.hits,
+                "misses": cache.misses,
+                "evictions": cache.evictions,
+                "entries": cache.entries,
+                "bytes": cache.bytes,
+            },
+            name="cache",
+            phase="measure",
+            scope="renderer",
+        ),
+    )
+    return BenchmarkOutput(
         value={
             "coords": realized.coords,
             "offsets": realized.offsets,
@@ -2791,7 +3076,7 @@ def _setup_interactive_slider_scenario(
     return make_interactive_slider_scenario(parameters)
 
 
-def _workload_interactive_slider_scenario(state: object) -> _CaseOutput:
+def _workload_interactive_slider_scenario(state: object) -> BenchmarkOutput:
     from grafix.devtools.benchmarks.interactive_scenario_benchmark import (
         InteractiveSliderScenario,
         run_interactive_slider_scenario,
@@ -2799,12 +3084,7 @@ def _workload_interactive_slider_scenario(state: object) -> _CaseOutput:
 
     if not isinstance(state, InteractiveSliderScenario):
         raise TypeError("interactive slider scenario state is invalid")
-    result = run_interactive_slider_scenario(state)
-    return _CaseOutput(
-        value=result.value,
-        metrics=result.metrics,
-        contracts=result.contracts,
-    )
+    return run_interactive_slider_scenario(state)
 
 
 def _setup_renderer(parameters: dict[str, Any], _seed: int) -> object:
@@ -2816,7 +3096,7 @@ def _setup_renderer(parameters: dict[str, Any], _seed: int) -> object:
     )
 
 
-def _workload_renderer(state: object) -> _CaseOutput:
+def _workload_renderer(state: object) -> BenchmarkOutput:
     from grafix.devtools.benchmarks.system_benchmark import _renderer_cache_workload
 
     geometry, frames = cast(tuple[RealizedGeometry, int], state)
@@ -2826,7 +3106,62 @@ def _workload_renderer(state: object) -> _CaseOutput:
         include_semantic_frames=True,
     )
     semantic_frames = payload.pop("_semantic_frames")
-    return _CaseOutput(value=semantic_frames, metrics=payload)
+    output = cast(dict[str, Any], payload["output"])
+    metrics = (
+        *(
+            _counter_metric(
+                name,
+                int(output[name]),
+                unit="count",
+                phase="measure",
+                scope="renderer",
+            )
+            for name in (
+                "n_vertices",
+                "n_lines",
+                "frames",
+                "index_count",
+                "index_builds",
+                "uploads",
+            )
+        ),
+        *(
+            _counter_metric(
+                name,
+                int(output[name]),
+                unit="bytes",
+                phase="measure",
+                scope="renderer",
+            )
+            for name in (
+                "bytes",
+                "full_vertex_upload_bytes",
+                "full_index_upload_bytes",
+                "vertex_only_upload_bytes",
+            )
+        ),
+        _gauge_metric(
+            "steady_median_ms",
+            float(output["steady_median_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="renderer",
+        ),
+        _gauge_metric(
+            "steady_p95_ms",
+            float(output["steady_p95_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="renderer",
+        ),
+        *_cache_metrics(
+            cast(dict[str, Any], payload["cache"]),
+            name="cache",
+            phase="measure",
+            scope="renderer",
+        ),
+    )
+    return BenchmarkOutput(value=semantic_frames, metrics=metrics)
 
 
 def _setup_animated_renderer(parameters: dict[str, Any], _seed: int) -> object:
@@ -2843,7 +3178,7 @@ def _setup_animated_renderer(parameters: dict[str, Any], _seed: int) -> object:
     return tuple(geometries)
 
 
-def _workload_animated_renderer(state: object) -> _CaseOutput:
+def _workload_animated_renderer(state: object) -> BenchmarkOutput:
     from unittest.mock import patch
 
     from grafix.devtools.benchmarks import system_benchmark
@@ -2877,12 +3212,23 @@ def _workload_animated_renderer(state: object) -> _CaseOutput:
             mesh, _stats = renderer.prepare_layer_mesh(
                 geometry,
                 cache_key=("renderer-animated", (frame, 1)),
+                scene_serial=frame + 1,
+                snapshot_revision=frame + 1,
             )
             if mesh is None:
                 raise RuntimeError("renderer benchmark returned an empty mesh")
-            if mesh.last_vertices is None or mesh.last_indices is None:
+            benchmark_mesh = cast(
+                system_benchmark._BenchmarkFakeMesh,
+                mesh,
+            )
+            if (
+                benchmark_mesh.last_vertices is None
+                or benchmark_mesh.last_indices is None
+            ):
                 raise RuntimeError("renderer benchmark mesh upload state is missing")
-            semantic_frames.append((mesh.last_vertices, mesh.last_indices))
+            semantic_frames.append(
+                (benchmark_mesh.last_vertices, benchmark_mesh.last_indices)
+            )
 
     meshes = system_benchmark._BenchmarkFakeMesh.instances
     output = {
@@ -2902,7 +3248,40 @@ def _workload_animated_renderer(state: object) -> _CaseOutput:
         ),
         "candidate_entries": len(renderer._mesh_candidates),
     }
-    return _CaseOutput(value=tuple(semantic_frames), metrics=output)
+    metrics = (
+        *(
+            _counter_metric(
+                name,
+                int(output[name]),
+                unit="count",
+                phase="measure",
+                scope="renderer",
+            )
+            for name in (
+                "frames",
+                "n_lines",
+                "index_builds",
+                "full_uploads",
+                "vertex_only_uploads",
+                "candidate_entries",
+            )
+        ),
+        *(
+            _counter_metric(
+                name,
+                int(output[name]),
+                unit="bytes",
+                phase="measure",
+                scope="renderer",
+            )
+            for name in (
+                "full_vertex_upload_bytes",
+                "full_index_upload_bytes",
+                "vertex_only_upload_bytes",
+            )
+        ),
+    )
+    return BenchmarkOutput(value=tuple(semantic_frames), metrics=metrics)
 
 
 def _setup_multilayer_renderer(
@@ -2912,7 +3291,7 @@ def _setup_multilayer_renderer(
     return dict(parameters)
 
 
-def _workload_multilayer_renderer(state: object) -> _CaseOutput:
+def _workload_multilayer_renderer(state: object) -> BenchmarkOutput:
     from grafix.devtools.benchmarks.system_benchmark import (
         _renderer_multilayer_dynamic_workload,
     )
@@ -2966,14 +3345,65 @@ def _workload_multilayer_renderer(state: object) -> _CaseOutput:
             reason="animated mesh pool を byte 上限内に保つ",
         ),
     )
-    return _CaseOutput(
+    cache = cast(dict[str, Any], payload["cache"])
+    metrics = (
+        *(
+            _counter_metric(
+                name,
+                int(output[name]),
+                unit="count",
+                phase="measure",
+                scope="renderer",
+            )
+            for name in (
+                "layers",
+                "frames",
+                "polylines_per_layer",
+                "index_builds",
+                "full_uploads",
+                "vertex_only_uploads",
+                "dynamic_entries",
+                "dynamic_entry_limit",
+                "candidate_entries",
+                "candidate_entry_limit",
+            )
+        ),
+        _gauge_metric(
+            "stable_topology",
+            bool(output["stable_topology"]),
+            unit="boolean",
+            phase="measure",
+            scope="renderer",
+        ),
+        _counter_metric(
+            "dynamic_bytes",
+            int(output["dynamic_bytes"]),
+            unit="bytes",
+            phase="measure",
+            scope="renderer",
+        ),
+        _counter_metric(
+            "dynamic_byte_limit",
+            int(output["dynamic_byte_limit"]),
+            unit="bytes",
+            phase="measure",
+            scope="renderer",
+        ),
+        *_cache_metrics(
+            cache,
+            name="cache",
+            phase="measure",
+            scope="renderer",
+        ),
+    )
+    return BenchmarkOutput(
         value=semantic_frames,
-        metrics=payload,
+        metrics=metrics,
         contracts=contracts,
     )
 
 
-def _workload_mp_draw(state: object) -> _CaseOutput:
+def _workload_mp_draw(state: object) -> BenchmarkOutput:
     from grafix.devtools.benchmarks.mp_draw_benchmark import run_mp_draw_benchmarks
 
     payload = run_mp_draw_benchmarks(
@@ -2982,10 +3412,96 @@ def _workload_mp_draw(state: object) -> _CaseOutput:
         heavy_iterations=int(state["heavy_iterations"]),  # type: ignore[index]
         n_worker=2,
     )
-    return _CaseOutput(value=payload["output"], metrics=payload)
+    output = cast(dict[str, Any], payload["output"])
+    metrics: list[Metric] = [
+        _gauge_metric(
+            "mean_ms",
+            float(payload["mean_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        _gauge_metric(
+            "median_ms",
+            float(payload["median_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        _gauge_metric(
+            "p95_ms",
+            float(payload["p95_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        _counter_metric(
+            "samples",
+            int(payload["n"]),
+            unit="count",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        _counter_metric(
+            "steady_frames",
+            int(output["steady_frames"]),
+            unit="count",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        _counter_metric(
+            "heavy_iterations",
+            int(output["heavy_iterations"]),
+            unit="count",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        _counter_metric(
+            "n_worker",
+            int(output["n_worker"]),
+            unit="count",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        _gauge_metric(
+            "measurement_scope",
+            str(output["measurement_scope"]),
+            unit="text",
+            phase="measure",
+            scope="mp_draw",
+        ),
+    ]
+    for case_id, case in cast(dict[str, Any], payload["cases"]).items():
+        metrics.append(
+            _gauge_metric(
+                f"cases.{case_id}.mp_to_sync_steady_ratio",
+                float(case["mp_to_sync_steady_ratio"]),
+                unit="ratio",
+                phase="measure",
+                scope="mp_draw",
+            )
+        )
+        for mode_name in ("sync_n1", f"mp_n{int(output['n_worker'])}"):
+            mode = cast(dict[str, Any], case[mode_name])
+            for summary_name, unit in (
+                ("startup_ms", "ms"),
+                ("first_result_ms", "ms"),
+                ("steady_ms", "ms"),
+                ("steady_latest_fps", "frames_per_second"),
+            ):
+                metrics.extend(
+                    _summary_metrics(
+                        f"cases.{case_id}.{mode_name}.{summary_name}",
+                        cast(dict[str, Any], mode[summary_name]),
+                        unit=unit,
+                        phase="measure",
+                        scope="mp_draw",
+                    )
+                )
+    return BenchmarkOutput(value=output, metrics=tuple(metrics))
 
 
-def _workload_mp_slider_churn(state: object) -> _CaseOutput:
+def _workload_mp_slider_churn(state: object) -> BenchmarkOutput:
     from grafix.devtools.benchmarks.mp_draw_benchmark import (
         run_mp_slider_churn_benchmarks,
     )
@@ -2996,9 +3512,41 @@ def _workload_mp_slider_churn(state: object) -> _CaseOutput:
         frame_interval_s=float(parameters["frame_interval_s"]),
     )
     contracts: list[ContractResult] = []
+    metrics: list[Metric] = [
+        _gauge_metric(
+            "mean_ms",
+            float(payload["mean_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_slider",
+        ),
+        _gauge_metric(
+            "median_ms",
+            float(payload["median_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_slider",
+        ),
+        _gauge_metric(
+            "p95_ms",
+            float(payload["p95_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_slider",
+        ),
+        _counter_metric(
+            "samples",
+            int(payload["n"]),
+            unit="count",
+            phase="measure",
+            scope="mp_slider",
+        ),
+    ]
     for case_id, modes in cast(dict[str, Any], payload["cases"]).items():
         for mode_name, mode in cast(dict[str, Any], modes).items():
             prefix = f"{case_id}.{mode_name}"
+            metric_prefix = f"cases.{prefix}"
+            phase = "drag" if mode_name == "changing" else "settle"
             contracts.append(
                 evaluate_contract(
                     contract_id=f"mp.slider.{prefix}.progress",
@@ -3021,9 +3569,119 @@ def _workload_mp_slider_churn(state: object) -> _CaseOutput:
                     reason="slider の interactive latency target を満たす",
                 )
             )
-    return _CaseOutput(
-        value=payload["output"],
-        metrics=payload,
+            for name, unit in (
+                ("fresh_result_ratio", "ratio"),
+                ("final_revision_latency_ms", "ms"),
+                ("elapsed_ms", "ms"),
+            ):
+                metrics.append(
+                    _gauge_metric(
+                        f"{metric_prefix}.{name}",
+                        float(mode[name]),
+                        unit=unit,
+                        phase=phase,
+                        scope="mp_slider",
+                    )
+                )
+            for name in (
+                "fresh_results_during_drag",
+                "max_consecutive_stale_frames",
+                "last_result_revision",
+                "final_input_revision",
+                "snapshot_broadcasts",
+                "snapshot_payload_copies",
+                "snapshot_acks",
+                "submitted_tasks",
+                "enqueued_tasks",
+                "dropped_tasks",
+                "completed_results",
+                "rejected_tasks",
+            ):
+                metrics.append(
+                    _counter_metric(
+                        f"{metric_prefix}.{name}",
+                        int(mode[name]),
+                        unit="count",
+                        phase=phase,
+                        scope="mp_slider",
+                    )
+                )
+            for name in (
+                "result_revisions_monotonic",
+                "checksum_matches_sync",
+                "progress_contract_met",
+                "interactive_target_met",
+            ):
+                metrics.append(
+                    _gauge_metric(
+                        f"{metric_prefix}.{name}",
+                        bool(mode[name]),
+                        unit="boolean",
+                        phase=phase,
+                        scope="mp_slider",
+                    )
+                )
+            metrics.extend(
+                _percentile_summary_metrics(
+                    f"{metric_prefix}.revision_lag",
+                    cast(dict[str, Any], mode["revision_lag"]),
+                    unit="revisions",
+                    phase=phase,
+                    scope="mp_slider",
+                )
+            )
+            metrics.extend(
+                _percentile_summary_metrics(
+                    f"{metric_prefix}.input_to_result_ms",
+                    cast(dict[str, Any], mode["input_to_result_ms"]),
+                    unit="ms",
+                    phase=phase,
+                    scope="mp_slider",
+                )
+            )
+    output = cast(dict[str, Any], payload["output"])
+    metrics.extend(
+        (
+            _counter_metric(
+                "frames",
+                int(output["frames"]),
+                unit="count",
+                phase="measure",
+                scope="mp_slider",
+            ),
+            _gauge_metric(
+                "frame_interval_s",
+                float(output["frame_interval_s"]),
+                unit="s",
+                phase="measure",
+                scope="mp_slider",
+            ),
+            _counter_metric(
+                "n_worker",
+                int(output["n_worker"]),
+                unit="count",
+                phase="measure",
+                scope="mp_slider",
+            ),
+            _gauge_metric(
+                "measurement_scope",
+                str(output["measurement_scope"]),
+                unit="text",
+                phase="measure",
+                scope="mp_slider",
+            ),
+            _gauge_metric(
+                "progress_contract_met",
+                bool(output["progress_contract_met"]),
+                unit="boolean",
+                phase="measure",
+                scope="mp_slider",
+            ),
+        )
+    )
+    return BenchmarkOutput(
+        value=output,
+        metrics=tuple(metrics),
         contracts=tuple(contracts),
     )
 
@@ -3033,7 +3691,7 @@ def _hash_array(digest: Any, array: np.ndarray) -> None:
     digest.update(contiguous.dtype.str.encode("ascii"))
     digest.update(json.dumps(list(contiguous.shape), separators=(",", ":")).encode("ascii"))
     if contiguous.nbytes:
-        digest.update(memoryview(contiguous).cast("B"))
+        digest.update(memoryview(cast(Any, contiguous)).cast("B"))
 
 
 def _json_value(value: object) -> object:
@@ -3085,7 +3743,6 @@ __all__ = [
     "canonical_checksum",
     "case_definitions",
     "geometry_checksum",
-    "normalize_metrics",
     "run_case_isolated",
     "select_case_definitions",
 ]

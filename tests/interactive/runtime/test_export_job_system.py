@@ -13,50 +13,113 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import numpy as np
 
 from grafix.core.capture_manifest import capture_manifest_path_for
+from grafix.core.export_format import ExportFormat
 from grafix.core.capture_provenance import CaptureProvenanceBuilder
+from grafix.core.geometry import Geometry
+from grafix.core.layer import Layer
 from grafix.core.parameters import ParamStore
+from grafix.core.pipeline import RealizedLayer
+from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.runtime_config import runtime_config
+from grafix.core.runtime_limits import RuntimeLimits
 from grafix.export import capture as capture_module
 from grafix.interactive.runtime import export_job_system
 from grafix.interactive.runtime.export_job_system import (
+    CaptureExportSnapshot,
     ExportJob,
     ExportJobResult,
     ExportJobStatus,
     ExportJobSystem,
     ExportQueueFullError,
-    ExportKind,
     FrameExportSnapshot,
+    estimate_snapshot_retained_bytes,
 )
 
 _WAIT_TIMEOUT_S = 8.0
 
 
-def _snapshot() -> FrameExportSnapshot:
-    return FrameExportSnapshot(
+def _provenance_draw(_t: float) -> tuple[object, ...]:
+    return ()
+
+
+_PROVENANCE_STORE = ParamStore()
+_PROVENANCE_BUILDER = CaptureProvenanceBuilder(
+    _provenance_draw,
+    config=runtime_config(),
+    parameter_source="code",
+    parameter_store_path=None,
+    parameter_load_provenance=_PROVENANCE_STORE.load_provenance,
+)
+
+
+def _provenance(*, t: float = 0.0):
+    return _PROVENANCE_BUILDER.frame(
+        _PROVENANCE_STORE,
+        t=t,
+        frame_index=0,
+        quality="final",
+        origin="interactive",
+    )
+
+
+def _snapshot() -> CaptureExportSnapshot:
+    return CaptureExportSnapshot(
         layers=(),
         canvas_size=(100, 80),
         background_color_rgb01=(1.0, 1.0, 1.0),
+        t=0.0,
+        provenance=_provenance(),
+        gcode_params=runtime_config().gcode,
     )
 
 
-def _sized_snapshot(byte_size: int) -> FrameExportSnapshot:
-    coords_bytes = max(0, int(byte_size) - 4)
-    layer = cast(
-        Any,
-        SimpleNamespace(
-            realized=SimpleNamespace(
-                coords=SimpleNamespace(nbytes=coords_bytes),
-                offsets=SimpleNamespace(nbytes=4),
-            )
-        ),
+def _sized_snapshot(byte_size: int) -> CaptureExportSnapshot:
+    target_bytes = int(byte_size)
+    vertex_count, remainder = divmod(target_bytes - 8, 12)
+    if vertex_count < 0 or remainder:
+        raise ValueError("byte_size は 12 * vertex_count + 8 で表せる必要があります")
+    geometry = Geometry.create("line")
+    realized = RealizedGeometry(
+        coords=np.zeros((vertex_count, 3), dtype=np.float32),
+        offsets=np.asarray((0, vertex_count), dtype=np.int32),
     )
-    return FrameExportSnapshot(
+    layer = RealizedLayer(
+        layer=Layer(geometry=geometry, site_id="sized-layer"),
+        realized=realized,
+        cache_key=(geometry.id, (0, 0)),
+        color=(0.0, 0.0, 0.0),
+        thickness=0.01,
+    )
+    return CaptureExportSnapshot(
         layers=(layer,),
         canvas_size=(100, 80),
         background_color_rgb01=(1.0, 1.0, 1.0),
+        t=0.0,
+        provenance=_provenance(),
+        gcode_params=runtime_config().gcode,
     )
+
+
+def test_snapshot_retained_bytes_deduplicates_shared_realized_arrays() -> None:
+    snapshot = _sized_snapshot(80)
+    first = snapshot.layers[0]
+    shared = RealizedLayer(
+        layer=Layer(
+            geometry=first.layer.geometry,
+            site_id="shared-realized-layer",
+        ),
+        realized=first.realized,
+        cache_key=first.cache_key,
+        color=first.color,
+        thickness=first.thickness,
+    )
+
+    duplicated = replace(snapshot, layers=(first, shared))
+
+    assert estimate_snapshot_retained_bytes(duplicated) == 80
 
 
 def test_frame_export_snapshot_rejects_non_finite_capture_time() -> None:
@@ -67,6 +130,46 @@ def test_frame_export_snapshot_rejects_non_finite_capture_time() -> None:
             background_color_rgb01=(1.0, 1.0, 1.0),
             t=float("nan"),
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_match"),
+    [
+        ("layers", [], "layers"),
+        ("layers", (object(),), "layers"),
+        ("canvas_size", [10, 10], "canvas_size"),
+        ("canvas_size", (True, 10), "canvas_size"),
+        ("canvas_size", (0, 10), "canvas_size"),
+        ("background_color_rgb01", [1.0, 1.0, 1.0], "background_color_rgb01"),
+        ("background_color_rgb01", (1.1, 1.0, 1.0), "background_color_rgb01"),
+        (
+            "background_color_rgb01",
+            (float("nan"), 1.0, 1.0),
+            "background_color_rgb01",
+        ),
+        ("background_color_rgb01", (True, 1.0, 1.0), "background_color_rgb01"),
+        ("t", True, "t"),
+        ("t", "0.0", "t"),
+        ("t", float("inf"), "t"),
+        ("provenance", object(), "provenance"),
+        ("gcode_params", object(), "gcode_params"),
+    ],
+)
+def test_frame_export_snapshot_rejects_implicit_dto_coercion(
+    field: str,
+    value: Any,
+    error_match: str,
+) -> None:
+    values: dict[str, Any] = {
+        "layers": (),
+        "canvas_size": (10, 10),
+        "background_color_rgb01": (1.0, 1.0, 1.0),
+        "t": 0.0,
+    }
+    values[field] = value
+
+    with pytest.raises((TypeError, ValueError), match=error_match):
+        FrameExportSnapshot(**values)
 
 
 def test_partial_queue_creation_closes_the_first_queue() -> None:
@@ -308,14 +411,17 @@ def test_close_treats_full_idle_sentinel_queue_as_pending_work() -> None:
     assert system._proc is None
 
 
-def test_worker_releases_completed_job_snapshot_before_waiting_for_next() -> None:
+def test_worker_releases_completed_job_snapshot_before_waiting_for_next(
+    tmp_path: Path,
+) -> None:
     """idle workerが直前の巨大geometryをloop localとして保持しない。"""
 
-    class Probe:
-        pass
-
     class TaskQueue:
-        def __init__(self, job: ExportJob, probe_ref: weakref.ReferenceType[Probe]) -> None:
+        def __init__(
+            self,
+            job: ExportJob,
+            probe_ref: weakref.ReferenceType[Any],
+        ) -> None:
             self._job: ExportJob | None = job
             self._probe_ref = probe_ref
 
@@ -348,20 +454,18 @@ def test_worker_releases_completed_job_snapshot_before_waiting_for_next() -> Non
         def join_thread(self) -> None:
             return
 
-    def make_task_queue() -> tuple[TaskQueue, weakref.ReferenceType[Probe]]:
-        probe = Probe()
-        probe_ref = weakref.ref(probe)
-        snapshot = FrameExportSnapshot(
-            layers=(cast(Any, probe),),
-            canvas_size=(10, 10),
-            background_color_rgb01=(1.0, 1.0, 1.0),
-        )
+    def make_task_queue() -> tuple[TaskQueue, weakref.ReferenceType[Any]]:
+        snapshot = _sized_snapshot(80)
+        probe_ref = weakref.ref(snapshot.layers[0].realized.coords)
+        staging_dir = tmp_path / ".probe.export-1-test"
+        staging_dir.mkdir()
         job = ExportJob(
             job_id=1,
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=snapshot,
-            output_path=Path("probe.gcode"),
+            output_path=tmp_path / "probe.gcode",
             timeout_s=1.0,
+            staging_dir=staging_dir,
         )
         return TaskQueue(job, probe_ref), probe_ref
 
@@ -379,17 +483,20 @@ def test_worker_releases_completed_job_snapshot_before_waiting_for_next() -> Non
 
 
 def _success_backend(job: ExportJob) -> tuple[Path, ...]:
-    return (job.output_path,)
+    path = job.staging_dir / job.output_path.name
+    path.write_bytes(b"export")
+    return (path,)
 
 
 def _two_second_backend(job: ExportJob) -> tuple[Path, ...]:
+    paths = _success_backend(job)
     time.sleep(2.0)
-    return (job.output_path,)
+    return paths
 
 
 def _bounded_backend(job: ExportJob) -> tuple[Path, ...]:
     time.sleep(0.75)
-    return (job.output_path,)
+    return _success_backend(job)
 
 
 def _conditional_backend(job: ExportJob) -> tuple[Path, ...]:
@@ -397,9 +504,16 @@ def _conditional_backend(job: ExportJob) -> tuple[Path, ...]:
     if stem == "fail":
         raise ValueError("backend failure")
     if stem == "slow":
+        paths = _success_backend(job)
         time.sleep(2.0)
+        return paths
     if stem == "die":
+        _success_backend(job)
         os._exit(7)
+    return _success_backend(job)
+
+
+def _outside_staging_backend(job: ExportJob) -> tuple[Path, ...]:
     return (job.output_path,)
 
 
@@ -420,18 +534,20 @@ def _wait_for_job(
     pytest.fail(f"export job timeout: job_id={job_id}")
 
 
-def test_export_messages_are_immutable() -> None:
+def test_export_messages_are_immutable(tmp_path: Path) -> None:
     snapshot = _snapshot()
     job = ExportJob(
         job_id=1,
-        kind=ExportKind.PNG,
+        format=ExportFormat.PNG,
         snapshot=snapshot,
-        output_path=Path("out.png"),
+        output_path=tmp_path / "out.png",
         timeout_s=1.0,
+        staging_dir=tmp_path / ".out.export-1-test",
+        output_size=(100, 80),
     )
     result = ExportJobResult(
         job_id=1,
-        kind=ExportKind.PNG,
+        format=ExportFormat.PNG,
         status=ExportJobStatus.SUCCESS,
         output_path=Path("out.png"),
     )
@@ -442,6 +558,247 @@ def test_export_messages_are_immutable() -> None:
         job.timeout_s = 2.0  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
         result.status = ExportJobStatus.ERROR  # type: ignore[misc]
+
+
+def test_export_job_rejects_preview_snapshot_at_capture_boundary(
+    tmp_path: Path,
+) -> None:
+    preview = FrameExportSnapshot(
+        layers=(),
+        canvas_size=(100, 80),
+        background_color_rgb01=(1.0, 1.0, 1.0),
+        t=0.0,
+        provenance=_provenance(),
+    )
+
+    with pytest.raises(TypeError, match="CaptureExportSnapshot"):
+        ExportJob(
+            job_id=1,
+            format=ExportFormat.PNG,
+            snapshot=cast(Any, preview),
+            output_path=tmp_path / "out.png",
+            timeout_s=1.0,
+            staging_dir=tmp_path / ".out.export-1-test",
+            output_size=(100, 80),
+        )
+
+
+def test_export_job_requires_explicit_gcode_params(tmp_path: Path) -> None:
+    snapshot = replace(_snapshot(), gcode_params=None)
+
+    with pytest.raises(ValueError, match="gcode_params"):
+        ExportJob(
+            job_id=1,
+            format=ExportFormat.GCODE,
+            snapshot=snapshot,
+            output_path=tmp_path / "out.gcode",
+            timeout_s=1.0,
+            staging_dir=tmp_path / ".out.export-1-test",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_match"),
+    [
+        ("job_id", True, "job_id"),
+        ("job_id", 1.0, "job_id"),
+        ("job_id", "1", "job_id"),
+        ("job_id", 0, "job_id"),
+        ("output_path", "out.gcode", "output_path"),
+        ("staging_dir", ".out.export-1-test", "staging_dir"),
+        ("timeout_s", True, "timeout_s"),
+        ("timeout_s", "1.0", "timeout_s"),
+        ("timeout_s", 0.0, "timeout_s"),
+        ("timeout_s", float("nan"), "timeout_s"),
+        ("deadline_monotonic", True, "deadline_monotonic"),
+        ("deadline_monotonic", "1.0", "deadline_monotonic"),
+        ("deadline_monotonic", float("inf"), "deadline_monotonic"),
+    ],
+)
+def test_export_job_rejects_implicit_dto_coercion(
+    field: str,
+    value: Any,
+    error_match: str,
+    tmp_path: Path,
+) -> None:
+    values: dict[str, Any] = {
+        "job_id": 1,
+        "format": ExportFormat.GCODE,
+        "snapshot": _snapshot(),
+        "output_path": tmp_path / "out.gcode",
+        "timeout_s": 1.0,
+        "staging_dir": tmp_path / ".out.export-1-test",
+    }
+    values[field] = value
+
+    with pytest.raises((TypeError, ValueError), match=error_match):
+        ExportJob(**values)
+
+
+def test_export_messages_require_enum_fields(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="ExportFormat"):
+        ExportJob(
+            job_id=1,
+            format=cast(Any, "png"),
+            snapshot=_snapshot(),
+            output_path=tmp_path / "out.png",
+            timeout_s=1.0,
+            staging_dir=tmp_path / ".out.export-1-test",
+            output_size=(100, 80),
+        )
+    with pytest.raises(TypeError, match="ExportFormat"):
+        ExportJobResult(
+            job_id=1,
+            format=cast(Any, "png"),
+            status=ExportJobStatus.SUCCESS,
+            output_path=tmp_path / "out.png",
+        )
+    with pytest.raises(TypeError, match="ExportJobStatus"):
+        ExportJobResult(
+            job_id=1,
+            format=ExportFormat.PNG,
+            status=cast(Any, "success"),
+            output_path=tmp_path / "out.png",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_match"),
+    [
+        ("job_id", True, "job_id"),
+        ("job_id", 1.0, "job_id"),
+        ("job_id", "1", "job_id"),
+        ("job_id", 0, "job_id"),
+        ("output_path", "out.png", "output_path"),
+        ("paths", [], "paths"),
+        ("paths", ("out.png",), "paths"),
+        ("error", object(), "error"),
+        ("worker_pid", True, "worker_pid"),
+        ("worker_pid", 0, "worker_pid"),
+        ("worker_exitcode", 1.0, "worker_exitcode"),
+        ("manifest_path", "out.png.json", "manifest_path"),
+    ],
+)
+def test_export_job_result_rejects_implicit_dto_coercion(
+    field: str,
+    value: Any,
+    error_match: str,
+    tmp_path: Path,
+) -> None:
+    values: dict[str, Any] = {
+        "job_id": 1,
+        "format": ExportFormat.PNG,
+        "status": ExportJobStatus.SUCCESS,
+        "output_path": tmp_path / "out.png",
+    }
+    values[field] = value
+
+    with pytest.raises((TypeError, ValueError), match=error_match):
+        ExportJobResult(**values)
+
+
+@pytest.mark.parametrize(
+    ("format", "output_size"),
+    [
+        (ExportFormat.PNG, None),
+        (ExportFormat.GCODE, (100, 80)),
+    ],
+)
+def test_export_job_requires_output_size_exactly_for_png(
+    tmp_path: Path,
+    format: ExportFormat,
+    output_size: tuple[int, int] | None,
+) -> None:
+    with pytest.raises(ValueError, match="output_size"):
+        ExportJob(
+            job_id=1,
+            format=format,
+            snapshot=_snapshot(),
+            output_path=tmp_path / f"out.{format.value}",
+            timeout_s=1.0,
+            staging_dir=tmp_path / ".out.export-1-test",
+            output_size=output_size,
+        )
+
+
+@pytest.mark.parametrize(
+    ("format", "output_size"),
+    [
+        (ExportFormat.PNG, None),
+        (ExportFormat.GCODE, (100, 80)),
+    ],
+)
+def test_submit_rejects_output_size_mismatch_before_staging(
+    tmp_path: Path,
+    format: ExportFormat,
+    output_size: tuple[int, int] | None,
+) -> None:
+    system = ExportJobSystem()
+    try:
+        with pytest.raises(ValueError, match="output_size"):
+            system.submit(
+                format=format,
+                snapshot=_snapshot(),
+                output_path=tmp_path / f"out.{format.value}",
+                output_size=output_size,
+            )
+
+        assert system.has_work is False
+        assert not tuple(tmp_path.glob(".*.export-*"))
+    finally:
+        system.close()
+
+
+def test_submit_rejects_string_format_before_staging(tmp_path: Path) -> None:
+    system = ExportJobSystem()
+    try:
+        with pytest.raises(TypeError, match="ExportFormat"):
+            system.submit(
+                format=cast(Any, "png"),
+                snapshot=_snapshot(),
+                output_path=tmp_path / "out.png",
+                output_size=(100, 80),
+            )
+
+        assert system.has_work is False
+        assert not tuple(tmp_path.glob(".*.export-*"))
+    finally:
+        system.close()
+
+
+@pytest.mark.parametrize("value", [1, "true"])
+def test_export_job_requires_exact_split_layers_bool(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    with pytest.raises(TypeError, match="split_gcode_layers"):
+        ExportJob(
+            job_id=1,
+            format=ExportFormat.GCODE,
+            snapshot=_snapshot(),
+            output_path=tmp_path / "out.gcode",
+            timeout_s=1.0,
+            staging_dir=tmp_path / ".out.export-1-test",
+            split_gcode_layers=cast(Any, value),
+        )
+
+
+def test_submit_rejects_layer_split_for_non_gcode_before_staging(
+    tmp_path: Path,
+) -> None:
+    system = ExportJobSystem()
+    try:
+        with pytest.raises(ValueError, match="split_gcode_layers"):
+            system.submit(
+                format=ExportFormat.PNG,
+                snapshot=_snapshot(),
+                output_path=tmp_path / "out.png",
+                split_gcode_layers=True,
+                output_size=(100, 80),
+            )
+        assert not tuple(tmp_path.glob(".*.export-*"))
+    finally:
+        system.close()
 
 
 def test_default_backend_delegates_encode_and_publish_to_capture_service(
@@ -459,7 +816,7 @@ def test_default_backend_delegates_encode_and_publish_to_capture_service(
         def encode(self, frame: object, path: object, **kwargs: object) -> tuple[Path, ...]:
             assert frame is snapshot
             assert Path(cast(Any, path)) == staged_path
-            assert kwargs["mode"] == ExportKind.GCODE.value
+            assert kwargs["format"] is ExportFormat.GCODE
             calls.append(("encode", path))
             return (staged_path,)
 
@@ -474,7 +831,8 @@ def test_default_backend_delegates_encode_and_publish_to_capture_service(
             assert Path(cast(Any, path)) == output_path
             assert tuple(cast(Any, staged_paths)) == (staged_path,)
             assert kwargs == {
-                "mode": ExportKind.GCODE.value,
+                "format": ExportFormat.GCODE,
+                "split_gcode_layers": False,
                 "output_size": None,
             }
             calls.append(("publish", path))
@@ -486,7 +844,7 @@ def test_default_backend_delegates_encode_and_publish_to_capture_service(
     monkeypatch.setattr(export_job_system, "_CAPTURE_SERVICE", CaptureServiceSpy())
     job = ExportJob(
         job_id=1,
-        kind=ExportKind.GCODE,
+        format=ExportFormat.GCODE,
         snapshot=snapshot,
         output_path=output_path,
         timeout_s=1.0,
@@ -504,9 +862,10 @@ def test_two_second_backend_does_not_block_frame_polling(tmp_path: Path) -> None
     system = ExportJobSystem(backend=_two_second_backend, default_timeout_s=5.0)
     try:
         job = system.submit(
-            kind=ExportKind.PNG,
+            format=ExportFormat.PNG,
             snapshot=_snapshot(),
             output_path=tmp_path / "slow.png",
+            output_size=(100, 80),
         )
 
         frame_ticks = 0
@@ -523,6 +882,9 @@ def test_two_second_backend_does_not_block_frame_polling(tmp_path: Path) -> None
         assert all(result.job_id != job.job_id for result in early_results)
         result = _wait_for_job(system, job.job_id, collected=early_results)
         assert result.status is ExportJobStatus.SUCCESS
+        assert result.paths == (job.output_path,)
+        assert job.output_path.read_bytes() == b"export"
+        assert not job.staging_dir.exists()
     finally:
         system.close()
 
@@ -533,16 +895,17 @@ def test_repeated_submit_uses_a_bounded_fifo_without_replacing_jobs(
     system = ExportJobSystem(
         backend=_bounded_backend,
         default_timeout_s=5.0,
-        max_pending_jobs=3,
+        runtime_limits=RuntimeLimits(capture_queue_pending_jobs=3),
     )
     jobs: list[ExportJob] = []
     collected: list[ExportJobResult] = []
     try:
         for index in range(4):
             job = system.submit(
-                kind=ExportKind.PNG,
+                format=ExportFormat.PNG,
                 snapshot=_snapshot(),
                 output_path=tmp_path / f"frame_{index}.png",
+                output_size=(100, 80),
             )
             jobs.append(job)
 
@@ -553,9 +916,10 @@ def test_repeated_submit_uses_a_bounded_fifo_without_replacing_jobs(
         assert system.has_work is True
         with pytest.raises(ExportQueueFullError, match="満杯"):
             system.submit(
-                kind=ExportKind.PNG,
+                format=ExportFormat.PNG,
                 snapshot=_snapshot(),
                 output_path=tmp_path / "rejected.png",
+                output_size=(100, 80),
             )
 
         last_result = _wait_for_job(system, jobs[-1].job_id, collected=collected)
@@ -578,28 +942,31 @@ def test_capture_queue_enforces_aggregate_bytes_and_shares_same_snapshot(
     system = ExportJobSystem(
         backend=_bounded_backend,
         default_timeout_s=5.0,
-        max_pending_jobs=3,
-        # raw geometry 80 bytes x (parent + serialization + worker) 3 copies。
-        max_retained_bytes=300,
+        runtime_limits=RuntimeLimits(
+            capture_queue_pending_jobs=3,
+            # raw geometry 80 bytes x (parent + serialization + worker) 3 copies。
+            capture_queue_bytes=300,
+        ),
     )
     try:
         system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=snapshot,
             output_path=tmp_path / "one.gcode",
         )
         # 同じ immutable snapshot の連続 capture は親 geometry 参照を共有する。
         system.submit(
-            kind=ExportKind.PNG,
+            format=ExportFormat.PNG,
             snapshot=snapshot,
             output_path=tmp_path / "two.png",
+            output_size=(100, 80),
         )
 
         assert system.queue_status.request_count == 2
         assert system.queue_status.retained_bytes == 240
         with pytest.raises(ExportQueueFullError) as exc_info:
             system.submit(
-                kind=ExportKind.GCODE,
+                format=ExportFormat.GCODE,
                 snapshot=another_snapshot,
                 output_path=tmp_path / "rejected.gcode",
             )
@@ -625,12 +992,14 @@ def test_capture_queue_releases_byte_budget_after_success(tmp_path: Path) -> Non
     system = ExportJobSystem(
         backend=_success_backend,
         default_timeout_s=5.0,
-        max_pending_jobs=0,
-        max_retained_bytes=240,
+        runtime_limits=RuntimeLimits(
+            capture_queue_pending_jobs=0,
+            capture_queue_bytes=240,
+        ),
     )
     try:
         first = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=first_snapshot,
             output_path=tmp_path / "first.gcode",
         )
@@ -642,7 +1011,7 @@ def test_capture_queue_releases_byte_budget_after_success(tmp_path: Path) -> Non
         # 終端 result 後は以前の geometry が budget を占有し続けず、
         # 同じ上限の別 snapshot を受理できる。
         second = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=second_snapshot,
             output_path=tmp_path / "second.gcode",
         )
@@ -653,11 +1022,26 @@ def test_capture_queue_releases_byte_budget_after_success(tmp_path: Path) -> Non
         system.close()
 
 
+def test_cancel_rejects_implicit_job_id_coercion() -> None:
+    system = ExportJobSystem(backend=_success_backend)
+    try:
+        for job_id, error in (
+            (True, TypeError),
+            (1.0, TypeError),
+            ("1", TypeError),
+            (0, ValueError),
+        ):
+            with pytest.raises(error, match="job_id"):
+                system.cancel(job_id)  # type: ignore[arg-type]
+    finally:
+        system.close()
+
+
 def test_backend_error_is_reported_and_worker_remains_usable(tmp_path: Path) -> None:
     system = ExportJobSystem(backend=_conditional_backend)
     try:
         failed = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=tmp_path / "fail.gcode",
         )
@@ -666,11 +1050,32 @@ def test_backend_error_is_reported_and_worker_remains_usable(tmp_path: Path) -> 
         assert "backend failure" in (failed_result.error or "")
 
         succeeded = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=tmp_path / "ok.gcode",
         )
         assert _wait_for_job(system, succeeded.job_id).status is ExportJobStatus.SUCCESS
+    finally:
+        system.close()
+
+
+def test_custom_backend_cannot_return_a_path_outside_its_staging_directory(
+    tmp_path: Path,
+) -> None:
+    system = ExportJobSystem(backend=_outside_staging_backend)
+    try:
+        job = system.submit(
+            format=ExportFormat.GCODE,
+            snapshot=_snapshot(),
+            output_path=tmp_path / "outside.gcode",
+        )
+
+        result = _wait_for_job(system, job.job_id)
+
+        assert result.status is ExportJobStatus.ERROR
+        assert "staging directory 内の path" in (result.error or "")
+        assert not job.output_path.exists()
+        assert not job.staging_dir.exists()
     finally:
         system.close()
 
@@ -680,7 +1085,7 @@ def test_default_worker_exports_gcode(tmp_path: Path) -> None:
     try:
         output_path = tmp_path / "frame.gcode"
         job = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=output_path,
         )
@@ -695,17 +1100,17 @@ def test_default_worker_exports_gcode(tmp_path: Path) -> None:
         system.close()
 
 
-def test_default_worker_uses_parent_gcode_config_recorded_in_manifest(
+def test_default_worker_uses_parent_gcode_params_recorded_in_manifest(
     tmp_path: Path,
 ) -> None:
     """spawn worker が独自 config を再探索せず、親 snapshot の設定を使う。"""
 
-    gcode_config = replace(
+    gcode_params = replace(
         runtime_config().gcode,
         z_up=17.0,
         decimals=1,
     )
-    effective_config = replace(runtime_config(), gcode=gcode_config)
+    effective_config = replace(runtime_config(), gcode=gcode_params)
 
     def draw(_t: float) -> tuple[object, ...]:
         return ()
@@ -724,18 +1129,19 @@ def test_default_worker_uses_parent_gcode_config_recorded_in_manifest(
         quality="final",
         origin="interactive",
     )
-    snapshot = FrameExportSnapshot(
+    snapshot = CaptureExportSnapshot(
         layers=(),
         canvas_size=(100, 80),
         background_color_rgb01=(1.0, 1.0, 1.0),
+        t=0.0,
         provenance=provenance,
-        gcode_config=gcode_config,
+        gcode_params=gcode_params,
     )
     system = ExportJobSystem()
     try:
         output_path = tmp_path / "parent-config.gcode"
         job = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=snapshot,
             output_path=output_path,
         )
@@ -762,10 +1168,10 @@ def test_default_worker_reports_png_backend_error(
         svg_path = tmp_path / "frame.svg"
         svg_path.write_text("saved-by-s-key", encoding="utf-8")
         job = system.submit(
-            kind=ExportKind.PNG,
+            format=ExportFormat.PNG,
             snapshot=_snapshot(),
             output_path=output_path,
-            svg_output_path=svg_path,
+            output_size=(100, 80),
         )
 
         result = _wait_for_job(system, job.job_id)
@@ -804,15 +1210,18 @@ def test_png_job_uses_private_svg_and_always_cleans_it(
     monkeypatch.setattr(capture_module, "rasterize_svg_to_png", fake_rasterize)
     job = ExportJob(
         job_id=1,
-        kind=ExportKind.PNG,
+        format=ExportFormat.PNG,
         snapshot=_snapshot(),
         output_path=tmp_path / "frame.png",
         timeout_s=1.0,
-        svg_output_path=public_svg,
+        staging_dir=tmp_path / ".frame.export-1-test",
+        output_size=(100, 80),
     )
 
     if raster_succeeds:
-        assert export_job_system._execute_export_job(job) == (job.output_path,)
+        assert export_job_system._execute_export_job(job) == (
+            job.staging_dir / job.output_path.name,
+        )
     else:
         with pytest.raises(RuntimeError, match="raster failed"):
             export_job_system._execute_export_job(job)
@@ -828,18 +1237,20 @@ def test_timeout_cancels_job_and_restarts_worker(tmp_path: Path) -> None:
     system = ExportJobSystem(backend=_conditional_backend)
     try:
         timed_out = system.submit(
-            kind=ExportKind.PNG,
+            format=ExportFormat.PNG,
             snapshot=_snapshot(),
             output_path=tmp_path / "slow.png",
             timeout_s=0.15,
+            output_size=(100, 80),
         )
         timeout_result = _wait_for_job(system, timed_out.job_id)
         assert timeout_result.status is ExportJobStatus.TIMEOUT
 
         succeeded = system.submit(
-            kind=ExportKind.PNG,
+            format=ExportFormat.PNG,
             snapshot=_snapshot(),
             output_path=tmp_path / "ok.png",
+            output_size=(100, 80),
         )
         assert _wait_for_job(system, succeeded.job_id).status is ExportJobStatus.SUCCESS
     finally:
@@ -850,12 +1261,13 @@ def test_cancel_in_flight_dispatches_pending_job(tmp_path: Path) -> None:
     system = ExportJobSystem(backend=_conditional_backend, default_timeout_s=5.0)
     try:
         slow = system.submit(
-            kind=ExportKind.PNG,
+            format=ExportFormat.PNG,
             snapshot=_snapshot(),
             output_path=tmp_path / "slow.png",
+            output_size=(100, 80),
         )
         pending = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=tmp_path / "ok.gcode",
         )
@@ -872,11 +1284,44 @@ def test_cancel_in_flight_dispatches_pending_job(tmp_path: Path) -> None:
         system.close()
 
 
+def test_cancel_pending_job_removes_its_reserved_staging_directory(
+    tmp_path: Path,
+) -> None:
+    system = ExportJobSystem(backend=_conditional_backend, default_timeout_s=5.0)
+    try:
+        in_flight = system.submit(
+            format=ExportFormat.PNG,
+            snapshot=_snapshot(),
+            output_path=tmp_path / "slow.png",
+            output_size=(100, 80),
+        )
+        pending = system.submit(
+            format=ExportFormat.GCODE,
+            snapshot=_snapshot(),
+            output_path=tmp_path / "pending.gcode",
+        )
+        assert in_flight.staging_dir.is_dir()
+        assert pending.staging_dir.is_dir()
+
+        assert system.cancel(pending.job_id)
+        result = next(
+            result
+            for result in system.poll()
+            if result.job_id == pending.job_id
+        )
+
+        assert result.status is ExportJobStatus.CANCELLED
+        assert not pending.staging_dir.exists()
+        assert in_flight.staging_dir.exists()
+    finally:
+        system.close()
+
+
 def test_worker_death_is_reported_and_recovered(tmp_path: Path) -> None:
     system = ExportJobSystem(backend=_conditional_backend)
     try:
         died = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=tmp_path / "die.gcode",
         )
@@ -884,9 +1329,10 @@ def test_worker_death_is_reported_and_recovered(tmp_path: Path) -> None:
         assert death_result.status is ExportJobStatus.WORKER_DIED
         assert death_result.worker_exitcode == 7
         assert death_result.worker_pid is not None
+        assert not died.staging_dir.exists()
 
         succeeded = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=tmp_path / "ok.gcode",
         )
@@ -898,17 +1344,20 @@ def test_worker_death_is_reported_and_recovered(tmp_path: Path) -> None:
 def test_close_cancels_jobs_reaps_worker_and_is_idempotent(tmp_path: Path) -> None:
     system = ExportJobSystem(backend=_conditional_backend, default_timeout_s=5.0)
     in_flight = system.submit(
-        kind=ExportKind.PNG,
+        format=ExportFormat.PNG,
         snapshot=_snapshot(),
         output_path=tmp_path / "slow.png",
+        output_size=(100, 80),
     )
     pending = system.submit(
-        kind=ExportKind.GCODE,
+        format=ExportFormat.GCODE,
         snapshot=_snapshot(),
         output_path=tmp_path / "pending.gcode",
     )
     proc = system._proc
     proc_pid = None if proc is None else proc.pid
+    assert in_flight.staging_dir.is_dir()
+    assert pending.staging_dir.is_dir()
 
     system.close()
     system.close()
@@ -918,13 +1367,16 @@ def test_close_cancels_jobs_reaps_worker_and_is_idempotent(tmp_path: Path) -> No
         in_flight.job_id,
         pending.job_id,
     }
+    assert not in_flight.staging_dir.exists()
+    assert not pending.staging_dir.exists()
     assert proc_pid is not None
     assert proc_pid not in {child.pid for child in mp.active_children()}
     with pytest.raises(RuntimeError, match="close 済み"):
         system.submit(
-            kind=ExportKind.PNG,
+            format=ExportFormat.PNG,
             snapshot=_snapshot(),
             output_path=tmp_path / "after_close.png",
+            output_size=(100, 80),
         )
 
 
@@ -939,7 +1391,7 @@ def test_close_cleans_staging_even_when_queue_teardown_raises(
     (staging_dir / "partial.gcode").write_text("partial", encoding="utf-8")
     job = ExportJob(
         job_id=1,
-        kind=ExportKind.GCODE,
+        format=ExportFormat.GCODE,
         snapshot=_snapshot(),
         output_path=tmp_path / "capture.gcode",
         timeout_s=1.0,
@@ -976,7 +1428,7 @@ def test_cancel_cleans_staging_even_when_worker_replacement_raises(
     (staging_dir / "partial.gcode").write_text("partial", encoding="utf-8")
     job = ExportJob(
         job_id=1,
-        kind=ExportKind.GCODE,
+        format=ExportFormat.GCODE,
         snapshot=_snapshot(),
         output_path=tmp_path / "capture.gcode",
         timeout_s=1.0,

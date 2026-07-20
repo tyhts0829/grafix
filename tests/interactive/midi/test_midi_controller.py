@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from grafix.interactive.midi.midi_controller import (
     MidiController,
     default_cc_snapshot_path,
@@ -30,6 +32,10 @@ class DummyInPort:
         return out
 
 
+class _StringSubclass(str):
+    pass
+
+
 def _controller(*, tmp_dir: Path, mode: str) -> MidiController:
     return MidiController(
         "Dummy Port",
@@ -38,6 +44,32 @@ def _controller(*, tmp_dir: Path, mode: str) -> MidiController:
         save_dir=tmp_dir,
         inport=DummyInPort([]),
     )
+
+
+@pytest.mark.parametrize("mode", [7, b"7bit", _StringSubclass("7bit")])
+def test_controller_rejects_non_exact_string_mode(
+    tmp_path: Path,
+    mode: object,
+) -> None:
+    with pytest.raises(TypeError, match="mode.*str"):
+        MidiController(
+            "Dummy Port",
+            mode=mode,  # type: ignore[arg-type]
+            profile_name="test_profile",
+            save_dir=tmp_path,
+            inport=DummyInPort([]),
+        )
+
+
+def test_controller_rejects_unknown_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="mode"):
+        MidiController(
+            "Dummy Port",
+            mode="16bit",
+            profile_name="test_profile",
+            save_dir=tmp_path,
+            inport=DummyInPort([]),
+        )
 
 
 def test_update_7bit_normalizes_to_0_1(tmp_path: Path) -> None:

@@ -103,7 +103,7 @@ def draw(t):
 
     displaced_primitive = G.polyhedron(
         activate=True,
-        type_index=3,
+        kind="dodecahedron",
         center=(95.604, 47.802, 0.0),
         scale=68.385,
     )

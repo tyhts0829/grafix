@@ -281,17 +281,17 @@ def draw(t: float):
             [top_ring, gate, small_square, small_circle],
             color=_rgb255(INK),
             thickness=0.0037,
-        )
-        + L(name="red circle").layer(
+        ),
+        L(name="red circle").layer(
             red_disc,
             color=_rgb255(RED),
             thickness=0.0037,
-        )
-        + L(name="vertical pale strips").layer(
+        ),
+        L(name="vertical pale strips").layer(
             [strip_left, strip_right],
             color=_rgb255(STRIP),
             thickness=0.0016,
-        )
+        ),
     )
 
 

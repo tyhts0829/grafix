@@ -55,7 +55,16 @@ def _session_with_dirty_explicit_override(
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=0.25, meta=meta, explicit=True)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.25,
+                meta=meta,
+                effective=0.25,
+                source="code",
+                explicit=True,
+            )
+        ],
     )
     autosave = ParamStoreAutosave(
         store,
@@ -447,6 +456,12 @@ def test_failure_after_draw_window_construction_runs_registered_closer(
     midi = cast(Any, Midi())
 
     class Window:
+        def get_requested_size(self) -> tuple[int, int]:
+            return 800, 800
+
+        def get_location(self) -> tuple[int, int]:
+            return 0, 0
+
         def set_location(self, *_args: object) -> None:
             raise RuntimeError("window placement failed")
 
@@ -504,6 +519,7 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    autoload_configs: list[object] = []
 
     class Midi:
         def save(self) -> None:
@@ -515,6 +531,12 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
     midi = cast(Any, Midi())
 
     class Window:
+        def get_requested_size(self) -> tuple[int, int]:
+            return 800, 800
+
+        def get_location(self) -> tuple[int, int]:
+            return 0, 0
+
         def set_location(self, *_args: object) -> None:
             calls.append("place draw")
 
@@ -538,22 +560,37 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
         def final_capture_frame(self) -> None:
             return None
 
+        def record_parameter_revision_created(
+            self,
+            _revision: int,
+            _timestamp_ns: int,
+            _domain: str,
+        ) -> None:
+            return None
+
+    effective_config = SimpleNamespace(
+        midi_inputs=(),
+        window_pos_draw=(0, 0),
+        window_pos_parameter_gui=(10, 10),
+        parameter_gui_window_size=(800, 1000),
+    )
+
     class FailedGUI:
         def __init__(self, **_kwargs: object) -> None:
             assert callable(_kwargs["variation_thumbnail_capture"])
+            assert _kwargs["effective_config"] is effective_config
             calls.append("create gui")
             raise RuntimeError("GUI construction failed")
 
-    monkeypatch.setattr(presets_module, "_autoload_preset_modules", lambda: None)
+    monkeypatch.setattr(
+        presets_module,
+        "_autoload_preset_modules",
+        lambda cfg: autoload_configs.append(cfg),
+    )
     monkeypatch.setattr(
         runner_module,
         "runtime_config",
-        lambda: SimpleNamespace(
-            midi_inputs=(),
-            window_pos_draw=(0, 0),
-            window_pos_parameter_gui=(10, 10),
-            parameter_gui_window_size=(800, 1000),
-        ),
+        lambda: effective_config,
     )
     monkeypatch.setattr(
         runner_module,
@@ -589,6 +626,7 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
         "save midi",
         "close midi",
     ]
+    assert autoload_configs == [effective_config]
 
 
 def test_variation_thumbnail_path_size_and_missing_status(tmp_path: Path) -> None:

@@ -133,21 +133,14 @@ def render_profiler_panel(imgui: Any, snapshot: PerfSnapshot | None) -> None:
 
     if snapshot is None:
         return
-    collapsing_header = getattr(imgui, "collapsing_header", None)
-    if not callable(collapsing_header):
-        return
-    opened = collapsing_header("PROFILER##profiler")
-    if isinstance(opened, tuple):
-        opened = opened[0]
-    if not bool(opened):
+    opened, _visible = imgui.collapsing_header("PROFILER##profiler")
+    if not opened:
         return
 
     for line in profiler_lines(snapshot):
         if line in {"Window tails", "Slow operations", "Slow layers"}:
-            disabled = getattr(imgui, "text_disabled", None)
-            if callable(disabled):
-                disabled(line)
-                continue
+            imgui.text_disabled(line)
+            continue
         imgui.text(line)
 
 

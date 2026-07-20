@@ -8,6 +8,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
+from grafix.core.value_validation import exact_integer
+
+from .identity import group_key, identity_string
+
 EffectStepKey: TypeAlias = tuple[str, str]
 EffectOrder: TypeAlias = tuple[EffectStepKey, ...]
 EffectOrderPlacement: TypeAlias = Literal["before", "after"]
@@ -24,14 +28,18 @@ class EffectStepTopology:
     code_index: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "op", str(self.op))
-        object.__setattr__(self, "site_id", str(self.site_id))
-        object.__setattr__(self, "n_inputs", int(self.n_inputs))
-        object.__setattr__(self, "code_index", int(self.code_index))
-        if self.n_inputs < 1:
-            raise ValueError("n_inputs must be >= 1")
-        if self.code_index < 0:
-            raise ValueError("code_index must be >= 0")
+        identity_string(self.op, name="EffectStepTopology.op")
+        identity_string(self.site_id, name="EffectStepTopology.site_id")
+        object.__setattr__(
+            self,
+            "n_inputs",
+            exact_integer(self.n_inputs, name="n_inputs", minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "code_index",
+            exact_integer(self.code_index, name="code_index", minimum=0),
+        )
 
     @property
     def key(self) -> EffectStepKey:
@@ -41,9 +49,9 @@ class EffectStepTopology:
 
 
 def normalize_effect_order(order: Iterable[EffectStepKey]) -> EffectOrder:
-    """step key列を文字列tupleへ正規化する。"""
+    """step key列を canonical tuple へ検証する。"""
 
-    return tuple((str(op), str(site_id)) for op, site_id in order)
+    return tuple(group_key(key, name="effect step key") for key in order)
 
 
 def topology_signature(
@@ -53,7 +61,7 @@ def topology_signature(
 
     return tuple(
         sorted(
-            (step.op, step.site_id, int(step.n_inputs))
+            (step.op, step.site_id, step.n_inputs)
             for step in steps
         )
     )
@@ -63,11 +71,10 @@ def resolve_effective_steps(
     steps: Sequence[EffectStepTopology],
     override: Sequence[EffectStepKey] | None,
 ) -> tuple[EffectStepTopology, ...]:
-    """有効なoverrideだけをcode topologyへ適用する。
+    """検証済み override を code topology へ適用する。
 
-    不完全、重複、未知step、multi-input制約違反のoverrideは、例外ではなく
-    code orderへfallbackする。保存データやworker snapshotが一世代古くても、
-    draw自体は決定的に継続できるようにするためである。
+    不完全、重複、未知 step、multi-input 制約違反は内部状態の不整合として
+    明示的に拒否する。
     """
 
     code_steps = tuple(steps)
@@ -76,13 +83,13 @@ def resolve_effective_steps(
     order = normalize_effect_order(override)
     keys = tuple(step.key for step in code_steps)
     if len(set(keys)) != len(keys):
-        return code_steps
+        raise ValueError("effect step identity must be unique within its chain")
     if len(order) != len(keys) or len(set(order)) != len(order) or set(order) != set(keys):
-        return code_steps
+        raise ValueError("effect order must be an exact permutation of the chain")
     by_key = {step.key: step for step in code_steps}
     effective = tuple(by_key[key] for key in order)
     if any(step.n_inputs > 1 and index != 0 for index, step in enumerate(effective)):
-        return code_steps
+        raise ValueError("multi-input effect must remain at the start of its chain")
     return effective
 
 
@@ -98,8 +105,8 @@ def moved_effect_order(
     if placement not in {"before", "after"}:
         raise ValueError("placement must be 'before' or 'after'")
     normalized = list(normalize_effect_order(order))
-    source_key = (str(source[0]), str(source[1]))
-    target_key = (str(target[0]), str(target[1]))
+    source_key = group_key(source, name="source")
+    target_key = group_key(target, name="target")
     if source_key not in normalized:
         raise KeyError(f"unknown source effect step: {source_key!r}")
     if target_key not in normalized:
@@ -120,7 +127,6 @@ class EffectChainIndex:
 
     def __init__(self) -> None:
         self._step_by_site: dict[EffectStepKey, tuple[str, int]] = {}
-        self._legacy_step_by_site: dict[EffectStepKey, tuple[str, int]] = {}
         self._chain_ordinals: dict[str, int] = {}
         self._topology_by_chain: dict[str, tuple[EffectStepTopology, ...]] = {}
         self._order_overrides: dict[str, EffectOrder] = {}
@@ -136,8 +142,7 @@ class EffectChainIndex:
     ) -> bool:
         """一つのchainのcode topologyを観測し、実変更の有無を返す。"""
 
-        chain = str(chain_id)
-        self._observed_chain_ids.add(chain)
+        chain = identity_string(chain_id, name="chain_id")
         normalized = tuple(
             EffectStepTopology(
                 op=step.op,
@@ -147,23 +152,15 @@ class EffectChainIndex:
             )
             for index, step in enumerate(steps)
         )
+        if not normalized:
+            raise ValueError("effect chain topology must contain at least one step")
+        if len({step.key for step in normalized}) != len(normalized):
+            raise ValueError("effect step identity must be unique within its chain")
+        self._observed_chain_ids.add(chain)
         previous = self._topology_by_chain.get(chain)
-        if (
-            previous == normalized
-            and chain in self._chain_ordinals
-            and not any(
-                legacy_chain == chain
-                for legacy_chain, _index in self._legacy_step_by_site.values()
-            )
-        ):
+        if previous == normalized and chain in self._chain_ordinals:
             return False
         changed = previous != normalized
-        for key, (legacy_chain, _index) in tuple(
-            self._legacy_step_by_site.items()
-        ):
-            if legacy_chain == chain:
-                del self._legacy_step_by_site[key]
-                changed = True
         if chain not in self._chain_ordinals:
             self._chain_ordinals[chain] = max(
                 self._chain_ordinals.values(), default=0
@@ -185,55 +182,24 @@ class EffectChainIndex:
         self._topology_by_chain[chain] = normalized
         override = self._order_overrides.get(chain)
         if override is not None:
-            effective = resolve_effective_steps(normalized, override)
-            if tuple(step.key for step in effective) != override:
-                del self._order_overrides[chain]
-                changed = True
+            resolve_effective_steps(normalized, override)
         self._rebuild_step_index()
         return changed
-
-    def record_step(
-        self,
-        *,
-        op: str,
-        site_id: str,
-        chain_id: str,
-        step_index: int,
-    ) -> None:
-        """parameter merge由来の実効step情報を保存する。"""
-
-        chain = str(chain_id)
-        if chain in self._topology_by_chain:
-            # 完全なEffectBuilder topologyがあるchainでは、frame開始後にGUI順が
-            # 変わってもparameter record側の旧step_indexで実効順を上書きしない。
-            return
-        if chain not in self._chain_ordinals:
-            self._chain_ordinals[chain] = max(
-                self._chain_ordinals.values(), default=0
-            ) + 1
-        key = (str(op), str(site_id))
-        value = (chain, int(step_index))
-        self._legacy_step_by_site[key] = value
-        self._step_by_site[key] = value
 
     def get_step(self, op: str, site_id: str) -> tuple[str, int] | None:
         """(op, site_id) の実効step情報を返す。"""
 
-        return self._step_by_site.get((str(op), str(site_id)))
+        return self._step_by_site.get(
+            (
+                identity_string(op, name="op"),
+                identity_string(site_id, name="site_id"),
+            )
+        )
 
     def step_info_by_site(self) -> dict[EffectStepKey, tuple[str, int]]:
         """(op, site_id) -> (chain_id, effective_index) のコピーを返す。"""
 
         return dict(self._step_by_site)
-
-    def code_step_info_by_site(self) -> dict[EffectStepKey, tuple[str, int]]:
-        """(op, site_id) -> (chain_id, code_index) を返す。"""
-
-        out: dict[EffectStepKey, tuple[str, int]] = {}
-        for chain_id, steps in self._topology_by_chain.items():
-            for step in steps:
-                out[step.key] = (chain_id, int(step.code_index))
-        return out
 
     def chain_ordinals(self) -> dict[str, int]:
         """chain_id -> ordinal のコピーを返す。"""
@@ -248,7 +214,9 @@ class EffectChainIndex:
     def topology(self, chain_id: str) -> tuple[EffectStepTopology, ...] | None:
         """指定chainのcode topologyを返す。"""
 
-        return self._topology_by_chain.get(str(chain_id))
+        return self._topology_by_chain.get(
+            identity_string(chain_id, name="chain_id")
+        )
 
     def code_order(self, chain_id: str) -> EffectOrder | None:
         """指定chainのコード記述順を返す。"""
@@ -263,7 +231,7 @@ class EffectChainIndex:
     ) -> tuple[EffectStepTopology, ...] | None:
         """指定chainの実効step列を返す。"""
 
-        chain = str(chain_id)
+        chain = identity_string(chain_id, name="chain_id")
         steps = self._topology_by_chain.get(chain)
         if steps is None:
             return None
@@ -305,7 +273,7 @@ class EffectChainIndex:
     ) -> bool:
         """検証済みGUI順を設定し、実変更の有無を返す。"""
 
-        chain = str(chain_id)
+        chain = identity_string(chain_id, name="chain_id")
         steps = self._topology_by_chain.get(chain)
         if steps is None:
             raise KeyError(f"unknown effect chain: {chain!r}")
@@ -319,9 +287,7 @@ class EffectChainIndex:
             or set(normalized) != set(keys)
         ):
             raise ValueError("effect order must be an exact permutation of the chain")
-        effective = resolve_effective_steps(steps, normalized)
-        if tuple(step.key for step in effective) != normalized:
-            raise ValueError("multi-input effect must remain at the start of its chain")
+        resolve_effective_steps(steps, normalized)
 
         desired = None if normalized == keys else normalized
         current = self._order_overrides.get(chain)
@@ -339,7 +305,7 @@ class EffectChainIndex:
     def reset_order(self, chain_id: str) -> bool:
         """指定chainをコード記述順へ戻す。"""
 
-        chain = str(chain_id)
+        chain = identity_string(chain_id, name="chain_id")
         if chain not in self._order_overrides:
             return False
         del self._order_overrides[chain]
@@ -350,23 +316,22 @@ class EffectChainIndex:
         self,
         state_by_chain: Mapping[str, Sequence[EffectStepKey] | None],
         *,
-        topology_signatures: Mapping[str, EffectTopologySignature] | None = None,
+        topology_signatures: Mapping[str, EffectTopologySignature],
     ) -> bool:
-        """memento由来のGUI順を現在topologyへ互換な範囲でmergeする。"""
+        """memento由来のGUI順を同一topologyのchainへmergeする。"""
 
         changed = False
         for raw_chain_id, saved_order in state_by_chain.items():
-            chain_id = str(raw_chain_id)
+            chain_id = identity_string(raw_chain_id, name="chain_id")
             if chain_id not in self._topology_by_chain:
                 continue
-            if topology_signatures is not None:
-                saved_signature = topology_signatures.get(chain_id)
-                if (
-                    saved_signature is None
-                    or saved_signature
-                    != topology_signature(self._topology_by_chain[chain_id])
-                ):
-                    continue
+            saved_signature = topology_signatures.get(chain_id)
+            if (
+                saved_signature is None
+                or saved_signature
+                != topology_signature(self._topology_by_chain[chain_id])
+            ):
+                continue
             if saved_order is None:
                 if chain_id in self._order_overrides:
                     del self._order_overrides[chain_id]
@@ -374,9 +339,7 @@ class EffectChainIndex:
                 continue
             steps = self._topology_by_chain[chain_id]
             normalized = normalize_effect_order(saved_order)
-            effective = resolve_effective_steps(steps, normalized)
-            if tuple(step.key for step in effective) != normalized:
-                continue
+            resolve_effective_steps(steps, normalized)
             code_order = tuple(step.key for step in steps)
             desired = None if normalized == code_order else normalized
             if desired is None:
@@ -390,58 +353,6 @@ class EffectChainIndex:
             self._rebuild_step_index()
         return changed
 
-    def replace_order_overrides_from_json(self, value: object) -> bool:
-        """codec由来のorder override列で状態を置換する。"""
-
-        restored: dict[str, EffectOrder] = {}
-        if isinstance(value, list):
-            for item in value:
-                if not isinstance(item, dict):
-                    continue
-                chain_id = item.get("chain_id")
-                raw_steps = item.get("steps")
-                if chain_id is None or not isinstance(raw_steps, list):
-                    continue
-                keys: list[EffectStepKey] = []
-                valid = True
-                for raw_step in raw_steps:
-                    if not isinstance(raw_step, dict):
-                        valid = False
-                        break
-                    try:
-                        keys.append(
-                            (str(raw_step["op"]), str(raw_step["site_id"]))
-                        )
-                    except Exception:
-                        valid = False
-                        break
-                if not valid or not keys or len(set(keys)) != len(keys):
-                    continue
-                chain = str(chain_id)
-                normalized = tuple(keys)
-                topology = self._topology_by_chain.get(chain)
-                if topology is not None:
-                    code_order = tuple(step.key for step in topology)
-                    if len(set(code_order)) != len(code_order):
-                        continue
-                    if (
-                        len(normalized) != len(code_order)
-                        or set(normalized) != set(code_order)
-                    ):
-                        continue
-                    effective = resolve_effective_steps(topology, normalized)
-                    if tuple(step.key for step in effective) != normalized:
-                        continue
-                    if normalized == code_order:
-                        continue
-                restored[chain] = normalized
-                self._loaded_chain_ids.add(chain)
-        if restored == self._order_overrides:
-            return False
-        self._order_overrides = restored
-        self._rebuild_step_index()
-        return True
-
     def delete_step(
         self,
         op: str,
@@ -451,9 +362,11 @@ class EffectChainIndex:
     ) -> None:
         """指定stepをcode topologyと実効indexから削除する。"""
 
-        key = (str(op), str(site_id))
+        key = (
+            identity_string(op, name="op"),
+            identity_string(site_id, name="site_id"),
+        )
         self._step_by_site.pop(key, None)
-        self._legacy_step_by_site.pop(key, None)
         for chain_id, steps in tuple(self._topology_by_chain.items()):
             if (
                 preserve_observed_topology
@@ -465,6 +378,7 @@ class EffectChainIndex:
                 continue
             if not remaining:
                 del self._topology_by_chain[chain_id]
+                self._chain_ordinals.pop(chain_id, None)
                 self._order_overrides.pop(chain_id, None)
                 self._loaded_chain_ids.discard(chain_id)
                 self._observed_chain_ids.discard(chain_id)
@@ -488,10 +402,7 @@ class EffectChainIndex:
     def prune_unused_chains(self) -> None:
         """topologyから消えたchainのordinalとoverrideを削除する。"""
 
-        used_chain_ids = set(self._topology_by_chain) | {
-            str(chain_id)
-            for chain_id, _step in self._legacy_step_by_site.values()
-        }
+        used_chain_ids = set(self._topology_by_chain)
         for chain_id in tuple(self._chain_ordinals):
             if chain_id not in used_chain_ids:
                 del self._chain_ordinals[chain_id]
@@ -503,17 +414,9 @@ class EffectChainIndex:
         self._observed_chain_ids.intersection_update(used_chain_ids)
 
     def known_chain_ids(self) -> frozenset[str]:
-        """topology、ordinal、overrideのいずれかが参照するchain IDを返す。"""
+        """canonical topology が保持するchain IDを返す。"""
 
-        return frozenset(
-            set(self._topology_by_chain)
-            | set(self._chain_ordinals)
-            | set(self._order_overrides)
-            | {
-                str(chain_id)
-                for chain_id, _step_index in self._legacy_step_by_site.values()
-            }
-        )
+        return frozenset(self._topology_by_chain)
 
     def begin_observation_generation(
         self,
@@ -527,7 +430,8 @@ class EffectChainIndex:
         """
 
         self._pending_generation_chain_ids = set(self.known_chain_ids()) | {
-            str(chain_id) for chain_id in additional_chain_ids
+            identity_string(chain_id, name="chain_id")
+            for chain_id in additional_chain_ids
         }
 
     def complete_observation_generation(
@@ -545,7 +449,10 @@ class EffectChainIndex:
         if pending is None:
             return frozenset()
         self._pending_generation_chain_ids = None
-        observed = {str(chain_id) for chain_id in observed_chain_ids}
+        observed = {
+            identity_string(chain_id, name="chain_id")
+            for chain_id in observed_chain_ids
+        }
         stale = frozenset(pending - observed)
         if not stale:
             return stale
@@ -554,11 +461,6 @@ class EffectChainIndex:
             self._topology_by_chain.pop(chain_id, None)
             self._chain_ordinals.pop(chain_id, None)
             self._order_overrides.pop(chain_id, None)
-        for key, (chain_id, _step_index) in tuple(
-            self._legacy_step_by_site.items()
-        ):
-            if chain_id in stale:
-                del self._legacy_step_by_site[key]
         self._loaded_chain_ids.difference_update(stale)
         self._observed_chain_ids.difference_update(stale)
         self._rebuild_step_index()
@@ -579,99 +481,29 @@ class EffectChainIndex:
             self._topology_by_chain.pop(chain_id, None)
             self._chain_ordinals.pop(chain_id, None)
             self._order_overrides.pop(chain_id, None)
-        for key, (chain_id, _step_index) in tuple(
-            self._legacy_step_by_site.items()
-        ):
-            if chain_id in stale:
-                del self._legacy_step_by_site[key]
         self._loaded_chain_ids.difference_update(stale)
         self._observed_chain_ids.difference_update(stale)
         self._rebuild_step_index()
         return stale
 
-    def replace_from_json(
+    def replace_persisted_state(
         self,
         *,
-        effect_steps: object,
-        chain_ordinals: object,
+        topologies: dict[str, tuple[EffectStepTopology, ...]],
+        chain_ordinals: dict[str, int],
+        order_overrides: dict[str, EffectOrder],
     ) -> None:
-        """JSON由来のcode topologyとordinalで内部状態を置き換える。"""
+        """検証済みの永続化状態を型変換せず一度に置き換える。"""
 
-        steps_by_chain: dict[str, list[EffectStepTopology]] = {}
-        chain_ids_in_order: list[str] = []
-        seen_chain_ids: set[str] = set()
-        if isinstance(effect_steps, list):
-            for item in effect_steps:
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    op = str(item["op"])
-                    site_id = str(item["site_id"])
-                    chain_id = str(item["chain_id"])
-                    step_index = int(item["step_index"])
-                    n_inputs = int(item.get("n_inputs", 1))
-                    step = EffectStepTopology(
-                        op=op,
-                        site_id=site_id,
-                        n_inputs=n_inputs,
-                        code_index=step_index,
-                    )
-                except Exception:
-                    continue
-                steps_by_chain.setdefault(chain_id, []).append(step)
-                if chain_id not in seen_chain_ids:
-                    seen_chain_ids.add(chain_id)
-                    chain_ids_in_order.append(chain_id)
-
-        topology_by_chain: dict[str, tuple[EffectStepTopology, ...]] = {}
-        for chain_id, raw_steps in steps_by_chain.items():
-            ordered = sorted(raw_steps, key=lambda step: (step.code_index, step.key))
-            topology_by_chain[chain_id] = tuple(
-                EffectStepTopology(
-                    op=step.op,
-                    site_id=step.site_id,
-                    n_inputs=step.n_inputs,
-                    code_index=index,
-                )
-                for index, step in enumerate(ordered)
-            )
-
-        chain_ordinal_by_id: dict[str, int] = {}
-        if isinstance(chain_ordinals, dict):
-            for chain_id, ordinal in chain_ordinals.items():
-                try:
-                    chain_ordinal_by_id[str(chain_id)] = int(ordinal)  # type: ignore[arg-type]
-                except Exception:
-                    continue
-
-        values = list(chain_ordinal_by_id.values())
-        needs_repair = any(value <= 0 for value in values) or (
-            len(set(values)) != len(values)
-        )
-        if needs_repair:
-            ordered_ordinals = sorted(
-                chain_ordinal_by_id.items(),
-                key=lambda item: (int(item[1]), str(item[0])),
-            )
-            chain_ordinal_by_id = {
-                chain_id: index
-                for index, (chain_id, _old) in enumerate(
-                    ordered_ordinals, start=1
-                )
-            }
-
-        next_ordinal = max(chain_ordinal_by_id.values(), default=0) + 1
-        for chain_id in chain_ids_in_order:
-            if chain_id in chain_ordinal_by_id:
-                continue
-            chain_ordinal_by_id[chain_id] = next_ordinal
-            next_ordinal += 1
+        topology_by_chain = {
+            chain_id: tuple(steps)
+            for chain_id, steps in topologies.items()
+        }
 
         self._topology_by_chain = topology_by_chain
-        self._legacy_step_by_site = {}
-        self._chain_ordinals = chain_ordinal_by_id
-        self._order_overrides = {}
-        self._loaded_chain_ids = set(chain_ordinal_by_id) | set(topology_by_chain)
+        self._chain_ordinals = dict(chain_ordinals)
+        self._order_overrides = dict(order_overrides)
+        self._loaded_chain_ids = set(chain_ordinals) | set(topologies)
         self._observed_chain_ids = set()
         self._pending_generation_chain_ids = None
         self._rebuild_step_index()
@@ -679,7 +511,7 @@ class EffectChainIndex:
     def _rebuild_step_index(self) -> None:
         """code topologyとoverrideから実効step indexを再構築する。"""
 
-        step_by_site = dict(self._legacy_step_by_site)
+        step_by_site: dict[EffectStepKey, tuple[str, int]] = {}
         for chain_id, code_steps in self._topology_by_chain.items():
             effective = resolve_effective_steps(
                 code_steps,

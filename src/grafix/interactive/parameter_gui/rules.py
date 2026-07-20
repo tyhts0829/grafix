@@ -37,7 +37,7 @@ _DISABLE_MINMAX_KEYS: frozenset[tuple[str, str]] = frozenset(
 # 描画へ効かない」状態になる。RGB も tuple CC の実効値解決をまだ持たない。
 #
 # 非機能 control を見せないことを優先し、対応 resolver と source reporting が揃うまで
-# ここで明示的に無効化する。既存の保存済み cc_key 自体は消さない（破壊的移行を避ける）。
+# ここで明示的に無効化する。非対応 mapping 自体は parameter validator が拒否する。
 _DISABLE_CC_OPS: frozenset[str] = frozenset({STYLE_OP, LAYER_STYLE_OP})
 
 
@@ -60,8 +60,11 @@ def ui_rules_for_row(row: ParameterRow) -> RowUiRules:
     if row.kind == "bool":
         cc_key: CcKeyMode = "none"
         show_override = True
-    elif row.kind in {"str", "font", "choice"}:
+    elif row.kind in {"str", "font"}:
         cc_key = "none"
+        show_override = True
+    elif row.kind == "choice":
+        cc_key = "int"
         show_override = True
     elif row.kind == "vec3":
         cc_key = "int3"
@@ -70,9 +73,11 @@ def ui_rules_for_row(row: ParameterRow) -> RowUiRules:
         # resolve_params() の tuple CC は vec3 専用。対応するまで RGB には出さない。
         cc_key = "none"
         show_override = True
-    else:
+    elif row.kind in {"float", "int"}:
         cc_key = "int"
         show_override = True
+    else:
+        raise ValueError(f"unknown parameter kind: {row.kind!r}")
 
     # --- 2) (op, arg) の例外上書き ---
     if (row.op, row.arg) in _DISABLE_MINMAX_KEYS:

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from grafix.core.builtins import (
     ensure_builtin_primitive_registered,
@@ -14,6 +14,7 @@ from grafix.core.builtins import (
 from grafix.core.geometry import Geometry
 from grafix.core.op_registry import OpCatalogEntry
 from grafix.core.parameters import caller_site_id
+from grafix.core.parameters.identity import identity_string
 from grafix.core.primitive_registry import PrimitiveFunc
 
 # parameters package の初期化後に読み、prune_ops 経由の循環 import を避ける。
@@ -27,11 +28,7 @@ from ._operation_selector import (
 from ._param_resolution import resolve_api_params, set_api_label
 
 
-class _PrimitiveDefaultTarget(str):
-    """target 省略と明示的な ``"circle"`` を区別する内部 marker。"""
-
-
-_DEFAULT_TARGET = _PrimitiveDefaultTarget("circle")
+_DEFAULT_TARGET = cast(str, object())
 
 
 class PrimitiveNamespace:
@@ -75,7 +72,7 @@ class PrimitiveNamespace:
             ``name`` が未登録の場合。
         """
 
-        name_s = str(name)
+        name_s = identity_string(name, name="primitive name")
         if name_s not in primitive_registry_module.primitive_registry:
             ensure_builtin_primitive_registered(name_s)
         if name_s not in primitive_registry_module.primitive_registry:
@@ -122,9 +119,15 @@ class PrimitiveNamespace:
             instance_key=instance_key,
             shared=shared,
         )
+        target_explicit = target is not _DEFAULT_TARGET
+        target_name = (
+            identity_string(target, name="primitive selector target")
+            if target_explicit
+            else "circle"
+        )
         selected = resolve_primitive_selection(
-            target=str(target),
-            target_explicit=target is not _DEFAULT_TARGET,
+            target=target_name,
+            target_explicit=target_explicit,
             params_by_target=frozen_params,
             site_id=site_id,
         )
@@ -214,7 +217,9 @@ class PrimitiveNamespace:
 
     def __call__(self, name: str | None = None) -> "PrimitiveNamespace":
         ns = PrimitiveNamespace()
-        ns._pending_label = name  # type: ignore[attr-defined]
+        ns._pending_label = (
+            None if name is None else identity_string(name, name="primitive label")
+        )
         return ns
 
     _pending_label: str | None = None

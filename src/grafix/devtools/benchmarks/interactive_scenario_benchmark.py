@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import numpy as np
@@ -23,7 +23,7 @@ from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.realize import RealizeSession
 from grafix.devtools.benchmarks import system_benchmark
 from grafix.devtools.benchmarks.schema import (
-    ContractResult,
+    BenchmarkOutput,
     Metric,
     evaluate_contract,
     summarize_distribution,
@@ -63,15 +63,6 @@ class InteractiveSliderScenario:
     settle_timeout_s: float
     latency_guardrail_ms: float
     expected_mesh_checksum: str
-
-
-@dataclass(frozen=True, slots=True)
-class InteractiveSliderScenarioResult:
-    """runner 境界へ渡す semantic output、typed metrics、contract。"""
-
-    value: dict[str, object]
-    metrics: tuple[Metric, ...]
-    contracts: tuple[ContractResult, ...]
 
 
 @dataclass(slots=True)
@@ -143,7 +134,7 @@ def make_interactive_slider_scenario(
 
 def run_interactive_slider_scenario(
     scenario: InteractiveSliderScenario,
-) -> InteractiveSliderScenarioResult:
+) -> BenchmarkOutput:
     """stable→changing→stable の input-to-present scenario を実行する。
 
     実 ImGui、window、OpenGL driver は含めない。ParameterTableView の準備、
@@ -231,6 +222,7 @@ def run_interactive_slider_scenario(
             cc_snapshot=None,
             defaults=defaults,
             recording=False,
+            transport_epoch=0,
             quality="draft",
         )
         phase_samples.scene_runner_ms.append(
@@ -241,13 +233,7 @@ def run_interactive_slider_scenario(
         presented_revision = runner.last_realized_snapshot_revision
         current_checksum: str | None = None
         if layers and presented_revision is not None:
-            fresh_scene = bool(
-                getattr(
-                    runner,
-                    "last_output_updated",
-                    runner.last_evaluation_succeeded is True,
-                )
-            )
+            fresh_scene = bool(runner.last_output_updated)
             if fresh_scene:
                 scene_serial += 1
                 measured_scene_serial_advances += int(phase != "warmup")
@@ -261,8 +247,12 @@ def run_interactive_slider_scenario(
                 )
                 if mesh is None:
                     continue
-                vertices = getattr(mesh, "last_vertices", None)
-                indices = getattr(mesh, "last_indices", None)
+                benchmark_mesh = cast(
+                    system_benchmark._BenchmarkFakeMesh,
+                    mesh,
+                )
+                vertices = benchmark_mesh.last_vertices
+                indices = benchmark_mesh.last_indices
                 if vertices is not None and indices is not None:
                     current_checksum = _mesh_checksum(vertices, indices)
         marker_ns = time.perf_counter_ns()
@@ -378,22 +368,22 @@ def run_interactive_slider_scenario(
         metrics.extend(
             (
                 _distribution_metric(
-                    "ux01.frame_duration",
+                    f"ux01.frame_duration.{phase}",
                     phase,
                     samples.frame_ms,
                 ),
                 _distribution_metric(
-                    "ux01.fake_gui_prepare_duration",
+                    f"ux01.fake_gui_prepare_duration.{phase}",
                     phase,
                     samples.fake_gui_ms,
                 ),
                 _distribution_metric(
-                    "ux01.scene_runner_duration",
+                    f"ux01.scene_runner_duration.{phase}",
                     phase,
                     samples.scene_runner_ms,
                 ),
                 _distribution_metric(
-                    "ux01.fake_gl_mesh_duration",
+                    f"ux01.fake_gl_mesh_duration.{phase}",
                     phase,
                     samples.fake_gl_ms,
                 ),
@@ -547,7 +537,7 @@ def run_interactive_slider_scenario(
         "final_mesh_checksum": last_mesh_checksum,
         "expected_final_mesh_checksum": expected_checksum,
     }
-    return InteractiveSliderScenarioResult(
+    return BenchmarkOutput(
         value=semantic_value,
         metrics=tuple(metrics),
         contracts=contracts,
@@ -633,7 +623,6 @@ def _counter(name: str, value: int) -> Metric:
 
 __all__ = [
     "InteractiveSliderScenario",
-    "InteractiveSliderScenarioResult",
     "interactive_slider_draw",
     "make_interactive_slider_scenario",
     "run_interactive_slider_scenario",

@@ -35,6 +35,9 @@ class _Window:
         self.size_calls: list[tuple[int, int]] = []
         self.location_calls: list[tuple[int, int]] = []
 
+    def get_requested_size(self) -> tuple[int, int]:
+        return self.width, self.height
+
     def set_size(self, width: int, height: int) -> None:
         self.width = int(width)
         self.height = int(height)
@@ -204,7 +207,10 @@ def test_apply_initial_layout_reflows_explicit_content_at_visible_frame_top() ->
 def test_activate_initial_windows_leaves_parameter_gui_in_front() -> None:
     calls: list[str] = []
     preview = SimpleNamespace(activate=lambda: calls.append("preview"))
-    gui = SimpleNamespace(activate=lambda: calls.append("gui"))
+    gui = SimpleNamespace(
+        visible=True,
+        activate=lambda: calls.append("gui"),
+    )
 
     runner_module._activate_initial_windows(preview, gui)
 
@@ -224,17 +230,17 @@ def test_activate_initial_windows_does_not_reactivate_hidden_inspector() -> None
     assert calls == ["preview"]
 
 
-def test_apply_initial_layout_preserves_stub_compatible_fallback() -> None:
-    class StubWindow:
-        width = 900
-        height = 900
+def test_apply_initial_layout_rejects_invalid_content_size_without_mutation() -> None:
+    class InvalidWindow:
+        def get_requested_size(self) -> tuple[int, int]:
+            return 0, 0
 
         def set_location(self, _x: int, _y: int) -> None:
-            raise AssertionError("layout fallback must not mutate the stub")
+            raise AssertionError("invalid layout must not mutate the window")
 
     applied = runner_module._apply_initial_window_layout(
-        preview_window=StubWindow(),
-        parameter_gui_window=StubWindow(),
+        preview_window=InvalidWindow(),
+        parameter_gui_window=InvalidWindow(),
         preferred_preview_position=(200, 100),
         preferred_parameter_gui_position=(980, 100),
     )
@@ -318,6 +324,9 @@ class _WorkspaceWindow:
         self.screen = screen
         self.display = SimpleNamespace(get_screens=lambda: [screen])
         self.calls: list[tuple[object, ...]] = []
+
+    def get_requested_size(self) -> tuple[int, int]:
+        return self.width, self.height
 
     def get_location(self) -> tuple[int, int]:
         return self.x, self.y

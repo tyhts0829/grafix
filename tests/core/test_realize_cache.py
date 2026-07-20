@@ -18,6 +18,7 @@ from grafix.core.primitive_registry import PrimitiveFunc
 from grafix.core.realize import RealizeError, RealizeSession, realize
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.resource_budget import ResourceBudget
+from grafix.core.runtime_limits import RuntimeLimits
 
 realize_module = importlib.import_module("grafix.core.realize")
 
@@ -275,7 +276,9 @@ def test_shared_concat_dag_hits_resource_limit_without_exponential_expansion(
         max_output_lines=10,
         max_output_bytes=10_000,
     )
-    with RealizeSession(resource_budget=budget) as session:
+    with RealizeSession(
+        runtime_limits=RuntimeLimits(per_operation=budget, scene=budget)
+    ) as session:
         with pytest.raises(RealizeError, match="Geometry の評価に失敗"):
             session.realize(geometry)
         stats = session.stats()
@@ -373,7 +376,9 @@ def test_lru_evicts_least_recently_used_entry_by_byte_budget(
     geometries = [Geometry.create("shape", params={"n": n}) for n in (3, 4, 5)]
     entry_size = _realized(5).byte_size
 
-    with RealizeSession(max_cache_bytes=entry_size * 2) as session:
+    with RealizeSession(
+        runtime_limits=RuntimeLimits(cpu_cache_bytes=entry_size * 2)
+    ) as session:
         first = session.realize(geometries[0])
         second = session.realize(geometries[1])
         assert session.realize(geometries[0]) is first
@@ -411,8 +416,10 @@ def test_lru_evicts_least_recently_used_entry_by_entry_budget(
     )
 
     with RealizeSession(
-        max_cache_bytes=1_000_000,
-        max_cache_entries=2,
+        runtime_limits=RuntimeLimits(
+            cpu_cache_bytes=1_000_000,
+            cpu_cache_entries=2,
+        ),
     ) as session:
         first = session.realize(geometries[0])
         second = session.realize(geometries[1])
@@ -438,8 +445,10 @@ def test_cache_transaction_applies_entry_budget_only_after_commit(
     ]
 
     with RealizeSession(
-        max_cache_bytes=1_000_000,
-        max_cache_entries=2,
+        runtime_limits=RuntimeLimits(
+            cpu_cache_bytes=1_000_000,
+            cpu_cache_entries=2,
+        ),
     ) as session:
         with session.cache_transaction() as transaction:
             results = [session.realize(geometry) for geometry in geometries]
@@ -469,7 +478,9 @@ def test_result_larger_than_budget_is_delivered_but_not_cached(
     geometry = Geometry.create("shape")
     result_size = _realized(8).byte_size
 
-    with RealizeSession(max_cache_bytes=result_size - 1) as session:
+    with RealizeSession(
+        runtime_limits=RuntimeLimits(cpu_cache_bytes=result_size - 1)
+    ) as session:
         first = session.realize(geometry)
         second = session.realize(geometry)
         stats = session.stats()
@@ -736,7 +747,9 @@ def test_animation_soak_stays_bounded_and_keeps_static_upstream_hot(
     base = Geometry.create("base")
     entry_size = _realized(16).byte_size
 
-    with RealizeSession(max_cache_bytes=entry_size * 4) as session:
+    with RealizeSession(
+        runtime_limits=RuntimeLimits(cpu_cache_bytes=entry_size * 4)
+    ) as session:
         base_result = session.realize(base)
         for frame in range(5000):
             animated = Geometry.create("animate", inputs=(base,), params={"frame": frame})
@@ -771,8 +784,10 @@ def test_entry_bounded_animation_keeps_frequently_used_base_hot(
     base = Geometry.create("base")
 
     with RealizeSession(
-        max_cache_bytes=1_000_000,
-        max_cache_entries=4,
+        runtime_limits=RuntimeLimits(
+            cpu_cache_bytes=1_000_000,
+            cpu_cache_entries=4,
+        ),
     ) as session:
         base_result = session.realize(base)
         for frame in range(100):
@@ -807,7 +822,9 @@ def test_zero_cache_entry_budget_disables_cache(
     primitives.register("shape", _primitive_spec(evaluate))
     geometry = Geometry.create("shape")
 
-    with RealizeSession(max_cache_entries=0) as session:
+    with RealizeSession(
+        runtime_limits=RuntimeLimits(cpu_cache_entries=0)
+    ) as session:
         first = session.realize(geometry)
         second = session.realize(geometry)
         stats = session.stats()
@@ -879,8 +896,8 @@ def test_close_allows_inflight_leader_to_finish_without_repopulating_cache(
     assert session.stats().bytes == 0
 
 
-def test_negative_cache_budget_is_rejected() -> None:
-    with pytest.raises(ValueError, match="0 以上"):
-        RealizeSession(max_cache_bytes=-1)
-    with pytest.raises(ValueError, match="max_cache_entries"):
-        RealizeSession(max_cache_entries=-1)
+def test_negative_cache_limits_are_rejected() -> None:
+    with pytest.raises(ValueError, match="cpu_cache_bytes"):
+        RuntimeLimits(cpu_cache_bytes=-1)
+    with pytest.raises(ValueError, match="cpu_cache_entries"):
+        RuntimeLimits(cpu_cache_entries=-1)

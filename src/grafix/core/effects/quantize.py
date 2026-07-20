@@ -7,6 +7,7 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from .util import round_half_away_from_zero
 
 quantize_meta = {
     "step": ParamMeta(
@@ -16,12 +17,6 @@ quantize_meta = {
         description="各頂点を丸めて吸着させる格子の間隔を軸ごとに指定する。",
     ),
 }
-
-
-def _round_half_away_from_zero(values: np.ndarray) -> np.ndarray:
-    """0.5 境界を絶対値方向へ丸める（half away from zero）。"""
-    return np.sign(values) * np.floor(np.abs(values) + 0.5)
-
 
 @effect(meta=quantize_meta)
 def quantize(
@@ -60,7 +55,7 @@ def quantize(
     step_vec = np.array([sx, sy, sz], dtype=np.float64)
     coords64 = coords.astype(np.float64, copy=False)
     q = coords64 / step_vec
-    q_rounded = _round_half_away_from_zero(q)
+    q_rounded = round_half_away_from_zero(q)
     snapped64 = q_rounded * step_vec
     coords_out = snapped64.astype(np.float32, copy=False)
     return coords_out, offsets

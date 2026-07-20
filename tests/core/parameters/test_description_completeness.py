@@ -176,7 +176,7 @@ def test_preset_activate_description_is_injected(
         return value
 
     assert isolated.revision == 1
-    assert isolated.get("description_probe") is description_probe
+    assert isolated["preset.description_probe"].func is description_probe
     spec = dict(isolated.items())["preset.description_probe"]
     assert _has_description(spec.meta.get("activate")), (
         "Description が空の operation.arg: preset.description_probe.activate"

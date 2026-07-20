@@ -9,10 +9,12 @@ from __future__ import annotations
 import math
 import warnings
 from functools import lru_cache
+from typing import cast
 
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import (
     GeomTuple,
@@ -40,11 +42,12 @@ _PRESETS: dict[str, tuple[str, dict[str, str]]] = {
 
 _DEFAULT_CUSTOM_AXIOM = "X"
 _DEFAULT_CUSTOM_RULES = "X=F-[[X]+X]+F[+FX]-X\nF=FF"
+_KIND_CHOICES = ("plant", "circuit", "custom")
 
 lsystem_meta = {
     "kind": ParamMeta(
         kind="choice",
-        choices=("plant", "circuit", "custom"),
+        choices=_KIND_CHOICES,
         description="使用する植物・回路プリセット、または独自の書き換え規則を選択します。",
     ),
     "iters": ParamMeta(
@@ -100,8 +103,8 @@ lsystem_meta = {
 }
 
 LSYSTEM_UI_VISIBLE = {
-    "axiom": lambda v: str(v.get("kind", "plant")) == "custom",
-    "rules": lambda v: str(v.get("kind", "plant")) == "custom",
+    "axiom": lambda v: v.get("kind", "plant") == "custom",
+    "rules": lambda v: v.get("kind", "plant") == "custom",
 }
 
 
@@ -135,8 +138,8 @@ def _parse_rules_text(rules: str) -> dict[str, str]:
 
 def _expand_lsystem(axiom: str, rules: dict[str, str], *, iters: int) -> str:
     """L-system を展開して最終文字列を返す。"""
-    s = str(axiom)
-    n = int(iters)
+    s = axiom
+    n = iters
     if n <= 0:
         return s
 
@@ -182,7 +185,7 @@ def _turtle_to_geom_tuple(
     if jitter_f < 0.0:
         jitter_f = 0.0
 
-    rng = np.random.default_rng(int(seed))
+    rng = np.random.default_rng(seed)
     random_values: np.ndarray | None = None
     random_at = 0
     if (
@@ -406,6 +409,30 @@ def lsystem(
     tuple[np.ndarray, np.ndarray]
         生成された枝ポリライン列（coords, offsets）。
     """
+    kind_s = cast(
+        str,
+        validate_parameter_value(
+            kind,
+            kind="choice",
+            choices=_KIND_CHOICES,
+        ),
+    )
+    iters_i = cast(
+        int,
+        validate_parameter_value(iters, kind="int", choices=None),
+    )
+    seed_i = cast(
+        int,
+        validate_parameter_value(seed, kind="int", choices=None),
+    )
+    ax = cast(
+        str,
+        validate_parameter_value(axiom, kind="str", choices=None),
+    )
+    rules_text = cast(
+        str,
+        validate_parameter_value(rules, kind="str", choices=None),
+    )
     try:
         cx, cy, cz = center
     except Exception as exc:
@@ -413,16 +440,12 @@ def lsystem(
             "lsystem の center は長さ 3 のシーケンスである必要がある"
         ) from exc
 
-    kind_s = str(kind)
     if kind_s == "custom":
-        ax = str(axiom)
-        rules_map = _parse_rules_text(str(rules))
-        program = _expand_lsystem(ax, rules_map, iters=int(iters))
+        rules_map = _parse_rules_text(rules_text)
+        program = _expand_lsystem(ax, rules_map, iters=iters_i)
         batch_random = False
     else:
-        if kind_s not in _PRESETS:
-            kind_s = "plant"
-        program = _expand_preset(kind_s, int(iters))
+        program = _expand_preset(kind_s, iters_i)
         batch_random = True
     if not program:
         return empty_geom_tuple()
@@ -434,7 +457,7 @@ def lsystem(
         angle_deg=float(angle),
         step=float(step),
         jitter=float(jitter),
-        seed=int(seed),
+        seed=seed_i,
         z=float(cz),
         batch_random=batch_random,
     )

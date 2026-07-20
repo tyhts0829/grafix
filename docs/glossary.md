@@ -9,7 +9,7 @@
 ## Core（データモデル/評価）
 
 - `Geometry`: 配列そのものではなく「幾何のレシピ」を表す DAG ノード。`src/grafix/core/geometry.py:Geometry`
-- `GeometryId`: schema v2 の型付き canonical encoding `(op, inputs, args)` から計算される内容署名 ID。`src/grafix/core/geometry.py:compute_geometry_id`
+- `GeometryId`: 現行の固定 schema v2 による型付き canonical encoding `(op, inputs, args)` から計算される内容署名 ID。呼び出し側は schema を選択しない。`src/grafix/core/geometry.py:compute_geometry_id`
 - `RealizedGeometry`: `Geometry` を評価して得られる実体配列（`coords` + `offsets`）。`src/grafix/core/realized_geometry.py:RealizedGeometry`
 - `GeomTuple`: `(coords, offsets)` タプルで表す最小実体表現。`@primitive` / `@effect` のユーザー定義 I/O に使う。`src/grafix/core/realized_geometry.py:GeomTuple`
 - `RealizeSession`: `Geometry -> RealizedGeometry` の評価、byte-LRU、inflight 集約を所有する明示的な寿命単位。`src/grafix/core/realize.py:RealizeSession`
@@ -51,11 +51,13 @@
 - `L`: Layer 化（スタイル付与/concat 等）の公開名前空間。`src/grafix/api/layers.py:L`
 - `P` / `@preset`: preset 登録と呼び出しの公開導線。`src/grafix/api/presets.py:P` / `src/grafix/api/preset.py:preset`
 - `run(draw)`: interactive ランナー。`src/grafix/api/runner.py:run`
-- `Export`: headless export の入口。`src/grafix/api/export.py:Export`
+- `render()` / `export()`: headless 評価と出力の入口。`src/grafix/api/render.py:render` /
+  `src/grafix/api/export.py:export`
 
 ## Effect math / runtime
 
 - `PlanarFrame`: 3D の平面形状を決定的な2D座標へ写し、rank/residualも返す共通平面基底。`src/grafix/core/effects/util.py:PlanarFrame`
 - `GridSpec`: bbox、pitch、cell上限から確保前に格子解像度を決める値。`src/grafix/core/effects/util.py:GridSpec`
-- `ExportJobSystem`: PNG/G-code を bounded queue と latest-wins pending で処理する長寿命 spawn worker。`src/grafix/interactive/runtime/export_job_system.py:ExportJobSystem`
+- `ExportJobSystem`: PNG/G-code を bounded FIFO で処理し、満杯時は明示拒否する長寿命
+  spawn worker。`src/grafix/interactive/runtime/export_job_system.py:ExportJobSystem`
 - `ParameterTableModel`: store/registry revision 内で不変なGUI行・順序・ヘッダを保持するcache単位。`src/grafix/interactive/parameter_gui/table_model.py:ParameterTableModel`

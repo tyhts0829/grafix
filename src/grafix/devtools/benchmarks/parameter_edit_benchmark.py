@@ -15,6 +15,7 @@ from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.devtools.benchmarks import system_benchmark
 from grafix.devtools.benchmarks.schema import (
+    BenchmarkOutput,
     ContractResult,
     Metric,
     evaluate_contract,
@@ -42,15 +43,6 @@ class ParameterEditScenario:
     meta: ParamMeta
     history: ParamStoreHistory
     model: ParameterTableModel
-
-
-@dataclass(frozen=True, slots=True)
-class ParameterEditScenarioResult:
-    """runner 境界へ返す semantic output、typed metrics、contract。"""
-
-    value: dict[str, object]
-    metrics: tuple[Metric, ...]
-    contracts: tuple[ContractResult, ...]
 
 
 def make_parameter_edit_scenario(
@@ -92,7 +84,7 @@ def make_parameter_edit_scenario(
 
 def run_parameter_edit_scenario(
     scenario: ParameterEditScenario,
-) -> ParameterEditScenarioResult:
+) -> BenchmarkOutput:
     """単一 key の changed-frame hot path と Undo/Redo を検証・計測する。
 
     実 ImGui widget draw、RSS、allocation はこの scope に含めない。テーブルの
@@ -525,7 +517,7 @@ def run_parameter_edit_scenario(
             "Redo must leave the deterministic final value visible",
         ),
     )
-    return ParameterEditScenarioResult(
+    return BenchmarkOutput(
         value=output_value,
         metrics=metrics,
         contracts=contracts,
@@ -584,7 +576,6 @@ def _hard_contract(
 
 __all__ = [
     "ParameterEditScenario",
-    "ParameterEditScenarioResult",
     "make_parameter_edit_scenario",
     "run_parameter_edit_scenario",
 ]

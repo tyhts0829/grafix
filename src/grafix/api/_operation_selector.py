@@ -8,24 +8,19 @@ from typing import Any, TypeAlias
 
 from grafix.core.geometry import normalize_args
 from grafix.core.op_registry import OpRegistry, OpSpec
+from grafix.core.parameters.identity import identity_string
 from grafix.core.operation_selector import (
     PRIMITIVE_SELECTOR_OP,
     SelectorKind,
-    decode_selector_param_key,
     effect_selector_op,
     ensure_effect_selector_spec,
     ensure_primitive_selector_spec,
-    ensure_selector_spec_registered,
-    selector_display_arg,
-    selector_effect_n_inputs,
-    selector_help_identity,
-    selector_kind,
     selector_param_key,
-    selector_search_terms,
     validate_effect_selector_n_inputs,
     validate_effect_selector_target,
     validate_selector_target,
 )
+from grafix.core.value_validation import exact_bool
 
 import grafix.core.effect_registry as effect_registry_module
 import grafix.core.primitive_registry as primitive_registry_module
@@ -76,7 +71,7 @@ def freeze_params_by_target(
     for raw_target, raw_params in params_by_target.items():
         target = validate_selector_target(
             kind=kind,
-            target=str(raw_target),
+            target=identity_string(raw_target, name="params_by_target target"),
             selector_spec=selector_spec,
             n_inputs=n_inputs,
         )
@@ -113,10 +108,12 @@ def _resolve_selection(
     target_explicit: bool,
     frozen_params: FrozenParamsByTarget,
     site_id: str,
-    chain_id: str | None,
-    step_index: int | None,
     n_inputs: int | None,
 ) -> ResolvedSelection:
+    target_is_explicit = exact_bool(
+        target_explicit,
+        name="target_explicit",
+    )
     base_target_s = validate_selector_target(
         kind=kind,
         target=base_target,
@@ -129,13 +126,11 @@ def _resolve_selection(
         user_params={"target": base_target_s},
         defaults={},
         meta={"target": selector_spec.meta["target"]},
-        chain_id=chain_id,
-        step_index=step_index,
-        explicit_args={"target"} if target_explicit else set(),
+        explicit_args={"target"} if target_is_explicit else set(),
     )["target"]
     target = validate_selector_target(
         kind=kind,
-        target=str(resolved_target),
+        target=identity_string(resolved_target, name="resolved selector target"),
         selector_spec=selector_spec,
         n_inputs=n_inputs,
     )
@@ -165,8 +160,6 @@ def _resolve_selection(
         user_params=visible_user_params,
         defaults=visible_defaults,
         meta=visible_meta,
-        chain_id=chain_id,
-        step_index=step_index,
     )
 
     params = {
@@ -209,11 +202,9 @@ def resolve_primitive_selection(
         selector_spec=selector_spec,
         registry=primitive_registry_module.primitive_registry,
         base_target=target,
-        target_explicit=bool(target_explicit),
+        target_explicit=target_explicit,
         frozen_params=params_by_target,
         site_id=site_id,
-        chain_id=None,
-        step_index=None,
         n_inputs=None,
     )
 
@@ -225,8 +216,6 @@ def resolve_effect_selection(
     n_inputs: int,
     params_by_target: FrozenParamsByTarget,
     site_id: str,
-    chain_id: str,
-    step_index: int,
 ) -> ResolvedSelection:
     """effect selector を解決し、実 target の Geometry 引数を返す。"""
 
@@ -243,11 +232,9 @@ def resolve_effect_selection(
         selector_spec=selector_spec,
         registry=effect_registry_module.effect_registry,
         base_target=current_target,
-        target_explicit=bool(target_explicit),
+        target_explicit=target_explicit,
         frozen_params=params_by_target,
         site_id=site_id,
-        chain_id=chain_id,
-        step_index=step_index,
         n_inputs=count,
     )
 
@@ -257,20 +244,13 @@ __all__ = [
     "PRIMITIVE_SELECTOR_OP",
     "ParamsByTarget",
     "ResolvedSelection",
-    "decode_selector_param_key",
     "effect_selector_op",
     "ensure_effect_selector_spec",
     "ensure_primitive_selector_spec",
-    "ensure_selector_spec_registered",
     "freeze_params_by_target",
     "resolve_effect_selection",
     "resolve_primitive_selection",
-    "selector_display_arg",
-    "selector_effect_n_inputs",
-    "selector_help_identity",
-    "selector_kind",
     "selector_param_key",
-    "selector_search_terms",
     "validate_effect_selector_n_inputs",
     "validate_effect_selector_target",
 ]

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import operator
 from dataclasses import dataclass
-from typing import SupportsIndex, cast
 
 from grafix.core.preview_quality import PreviewQuality
 from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET, ResourceBudget
+from grafix.core.value_validation import exact_integer
 
 DEFAULT_CPU_CACHE_BYTES = 256 * 1024 * 1024
 DEFAULT_CPU_CACHE_ENTRIES = 4096
@@ -16,21 +15,27 @@ DEFAULT_CAPTURE_QUEUE_PENDING_JOBS = 16
 DEFAULT_CAPTURE_QUEUE_BYTES = int(DEFAULT_RESOURCE_BUDGET.max_output_bytes)
 
 
-def _non_negative_int(value: object, *, name: str) -> int:
-    if isinstance(value, bool):
-        raise TypeError(f"{name} は整数である必要があります")
-    try:
-        normalized = operator.index(cast(SupportsIndex, value))
-    except TypeError as exc:
-        raise TypeError(f"{name} は整数である必要があります") from exc
-    if normalized < 0:
-        raise ValueError(f"{name} は 0 以上である必要があります")
-    return int(normalized)
-
-
 @dataclass(frozen=True, slots=True)
 class RuntimeLimits:
-    """1 quality profile の operation/scene/cache/capture 上限。"""
+    """1 quality profile の operation/scene/cache/capture 上限。
+
+    Parameters
+    ----------
+    per_operation : ResourceBudget
+        primitive/effect 1 回ごとの計算量・出力量上限。
+    scene : ResourceBudget
+        1 scene 全体の集約上限。
+    cpu_cache_bytes : int
+        realize cache が保持できる推定 byte 数。
+    cpu_cache_entries : int
+        realize cache が保持できる entry 数。
+    gpu_cache_bytes : int
+        renderer の GPU mesh cache 上限。
+    capture_queue_pending_jobs : int
+        in-flight を含む capture request 件数上限。
+    capture_queue_bytes : int
+        process copy を含めた capture snapshot の推定 byte 上限。
+    """
 
     per_operation: ResourceBudget = DEFAULT_RESOURCE_BUDGET
     scene: ResourceBudget = DEFAULT_RESOURCE_BUDGET
@@ -55,19 +60,27 @@ class RuntimeLimits:
             object.__setattr__(
                 self,
                 name,
-                _non_negative_int(getattr(self, name), name=name),
+                exact_integer(getattr(self, name), name=name, minimum=0),
             )
 
     @property
     def gpu_candidate_cache_bytes(self) -> int:
         """GPU mesh cache 手前の index candidate 用上限を返す。"""
 
-        return int(self.gpu_cache_bytes) // 4
+        return self.gpu_cache_bytes // 4
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeLimitProfiles:
-    """interactive preview と final capture の独立した上限 profile。"""
+    """interactive preview と final capture の独立した上限 profile。
+
+    Parameters
+    ----------
+    preview : RuntimeLimits
+        draft preview 評価へ適用する上限。
+    final : RuntimeLimits
+        final capture 評価へ適用する上限。
+    """
 
     preview: RuntimeLimits
     final: RuntimeLimits
@@ -96,18 +109,6 @@ DEFAULT_RUNTIME_LIMIT_PROFILES = RuntimeLimitProfiles(
 )
 
 
-def profiles_for_resource_budget(
-    budget: ResourceBudget,
-) -> RuntimeLimitProfiles:
-    """旧来の operation budget を両 quality の operation/scene 上限へ写像する。"""
-
-    if not isinstance(budget, ResourceBudget):
-        raise TypeError("budget は ResourceBudget である必要があります")
-    preview = RuntimeLimits(per_operation=budget, scene=budget)
-    final = RuntimeLimits(per_operation=budget, scene=budget)
-    return RuntimeLimitProfiles(preview=preview, final=final)
-
-
 __all__ = [
     "DEFAULT_CAPTURE_QUEUE_BYTES",
     "DEFAULT_CAPTURE_QUEUE_PENDING_JOBS",
@@ -119,5 +120,4 @@ __all__ = [
     "DEFAULT_RUNTIME_LIMIT_PROFILES",
     "RuntimeLimitProfiles",
     "RuntimeLimits",
-    "profiles_for_resource_budget",
 ]

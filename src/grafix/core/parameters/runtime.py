@@ -119,7 +119,7 @@ class ParamStoreLoadDiagnostic:
     backup_path: Path | None = None
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, kw_only=True)
 class ParamStoreRuntime:
     """ParamStore の実行時情報。"""
 
@@ -132,8 +132,6 @@ class ParamStoreRuntime:
     next_display_order: int = 1
     last_effective_by_key: dict[ParameterKey, object] = field(default_factory=dict)
     warned_unknown_args: set[tuple[str, str]] = field(default_factory=set)
-    # 新 field は従来 positional field の末尾に追加し、
-    # ParamStoreRuntime(..., warned_unknown_args) の位置互換を保つ。
     last_source_by_key: dict[ParameterKey, ValueSource] = field(default_factory=dict)
     load_provenance: LoadProvenance = "primary"
     load_diagnostics: tuple[ParamStoreLoadDiagnostic, ...] = ()
@@ -169,9 +167,9 @@ class ParamStoreRuntime:
 
     def __post_init__(self) -> None:
         for name in self._VISIBILITY_FIELDS:
-            groups = getattr(self, name)
-            if isinstance(groups, _TrackedGroupSet):
-                groups.bind(self._visibility_tracker)
+            groups = _TrackedGroupSet(getattr(self, name))
+            groups.bind(self._visibility_tracker)
+            object.__setattr__(self, name, groups)
 
     def __setattr__(self, name: str, value: object) -> None:
         tracker = getattr(self, "_visibility_tracker", None)
@@ -191,33 +189,10 @@ class ParamStoreRuntime:
 
         return int(self._visibility_tracker.revision)
 
-    def visibility_cache_token(
-        self,
-    ) -> tuple[int] | tuple[
-        int,
-        frozenset[GroupKey],
-        frozenset[GroupKey],
-    ]:
-        """可視性 cache 用の exact token を返す。
+    def visibility_cache_token(self) -> tuple[int]:
+        """可視性 cache 用の revision token を返す。"""
 
-        通常の ``ParamStore`` は tracked set なので O(1)。旧 positional
-        construction で plain set を渡した場合だけ、互換性を保つため内容を読む。
-        """
-
-        if isinstance(self.loaded_groups, _TrackedGroupSet) and isinstance(
-            self.observed_groups,
-            _TrackedGroupSet,
-        ):
-            return (self.visibility_revision,)
-        return (
-            self.visibility_revision,
-            frozenset(
-                (str(op), str(site_id)) for op, site_id in self.loaded_groups
-            ),
-            frozenset(
-                (str(op), str(site_id)) for op, site_id in self.observed_groups
-            ),
-        )
+        return (self.visibility_revision,)
 
     def record_effective_changes(
         self,

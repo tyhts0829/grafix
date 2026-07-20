@@ -1,5 +1,4 @@
 from grafix import E, G, run
-from sketch.presets.logo import logo
 
 A5 = (148, 210)
 

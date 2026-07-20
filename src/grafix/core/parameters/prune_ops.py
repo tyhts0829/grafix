@@ -126,9 +126,9 @@ def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
         | favorites
     )
     # 何が削除されたかをデバッグしやすいよう、順序を固定して走査する。
-    for key in sorted(keys, key=lambda k: (str(k.op), str(k.site_id), str(k.arg))):
-        op = str(key.op)
-        arg = str(key.arg)
+    for key in sorted(keys, key=lambda k: (k.op, k.site_id, k.arg)):
+        op = key.op
+        arg = key.arg
 
         if op in primitive_registry:
             # registry の meta は op ごとに一定なので、1 回引いたらキャッシュする。
@@ -189,8 +189,17 @@ def prune_groups(
       GUI/実行系が参照する周辺状態（labels/ordinals/effects/collapsed/runtime）も同期して削除する。
     """
 
-    # GroupKey が str 以外（Enum 的な wrapper 等）でも一致判定できるよう、文字列に正規化する。
-    groups = {(str(op), str(site_id)) for op, site_id in groups_to_remove}
+    groups = set(groups_to_remove)
+    if any(
+        type(group) is not tuple
+        or len(group) != 2
+        or any(type(part) is not str or not part for part in group)
+        for group in groups
+    ):
+        raise TypeError(
+            "groups_to_remove must contain non-empty "
+            "(op, site_id) tuple[str, str] values"
+        )
     if not groups:
         return
 
@@ -205,21 +214,21 @@ def prune_groups(
 
     # 走査中に dict を削除するため、keys() を list 化してから回す。
     for key in list(store._states.keys()):
-        if (str(key.op), str(key.site_id)) in groups:
+        if (key.op, key.site_id) in groups:
             del store._states[key]
     for key in list(store._meta.keys()):
-        if (str(key.op), str(key.site_id)) in groups:
+        if (key.op, key.site_id) in groups:
             del store._meta[key]
     for key in list(store._explicit_by_key.keys()):
-        if (str(key.op), str(key.site_id)) in groups:
+        if (key.op, key.site_id) in groups:
             del store._explicit_by_key[key]
     locked = store._locked_keys_ref()
     for key in list(locked):
-        if (str(key.op), str(key.site_id)) in groups:
+        if (key.op, key.site_id) in groups:
             locked.discard(key)
     favorites = set(store._favorite_keys_snapshot())
     for key in tuple(favorites):
-        if (str(key.op), str(key.site_id)) in groups:
+        if (key.op, key.site_id) in groups:
             favorites.discard(key)
     store._replace_favorite_keys(favorites)
 
@@ -229,7 +238,7 @@ def prune_groups(
 
     # ordinals/effects/collapsed/runtime は「グループの存在」を前提にした情報なのでまとめて消す。
     for op, site_id in groups:
-        affected_ops.add(str(op))
+        affected_ops.add(op)
         ordinals.delete(op, site_id)
         effects.delete_step(
             op,
@@ -237,8 +246,8 @@ def prune_groups(
             preserve_observed_topology=preserve_observed_effect_topology,
         )
         collapsed.discard(f"primitive:{op}:{site_id}")
-        runtime.loaded_groups.discard((str(op), str(site_id)))
-        runtime.observed_groups.discard((str(op), str(site_id)))
+        runtime.loaded_groups.discard((op, site_id))
+        runtime.observed_groups.discard((op, site_id))
 
     # 同じ op の中で site_id が間引かれると ordinal に穴が空くので、op 単位で詰め直す。
     for op in affected_ops:

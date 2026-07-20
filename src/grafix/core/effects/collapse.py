@@ -11,6 +11,7 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
+from .argument_validation import finite_vec3, integer_scalar
 
 EPS = 1e-12
 
@@ -75,7 +76,7 @@ def collapse(
     intensity : float, default 5.0
         変位量（長さ単位は座標系に従う）。0.0 で no-op。
     subdivisions : int, default 6
-        細分回数。0 以下で no-op。
+        細分回数。0 で no-op。
     intensity_mask_base : tuple[float, float, float], default (1.0, 1.0, 1.0)
         ジオメトリ bbox の中心（正規化座標 t=0）における intensity 乗算係数（軸別）。
         各成分は 0.0〜1.0。
@@ -99,13 +100,32 @@ def collapse(
     `intensity_eff = intensity * p_eff` として適用する。
     係数は `p_eff = 1 - (1-px)(1-py)(1-pz)`（OR 合成）で作る。
     """
+    intensity = float(intensity)
+    if not np.isfinite(intensity):
+        raise ValueError("collapse: intensity は有限値である必要がある")
+    if intensity < 0.0:
+        raise ValueError("collapse: intensity は 0 以上である必要がある")
+    divisions = integer_scalar(subdivisions, name="collapse: subdivisions")
+    if divisions < 0:
+        raise ValueError("collapse: subdivisions は 0 以上である必要がある")
+    mask_base = finite_vec3(
+        intensity_mask_base,
+        name="collapse: intensity_mask_base",
+    )
+    if not all(0.0 <= value <= 1.0 for value in mask_base):
+        raise ValueError(
+            "collapse: intensity_mask_base の各要素は 0.0 以上 1.0 以下である必要がある"
+        )
+    mask_slope = finite_vec3(
+        intensity_mask_slope,
+        name="collapse: intensity_mask_slope",
+    )
+    pivot3 = finite_vec3(pivot, name="collapse: pivot")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
-
-    intensity = float(intensity)
-    divisions = int(subdivisions)
-    if intensity == 0.0 or divisions <= 0:
+    if intensity == 0.0 or divisions == 0:
         return coords, offsets
 
     new_coords, new_offsets = _collapse_numba(
@@ -113,10 +133,10 @@ def collapse(
         offsets,
         intensity,
         divisions,
-        intensity_mask_base=intensity_mask_base,
-        intensity_mask_slope=intensity_mask_slope,
+        intensity_mask_base=mask_base,
+        intensity_mask_slope=mask_slope,
         auto_center=bool(auto_center),
-        pivot=pivot,
+        pivot=pivot3,
     )
     return new_coords, new_offsets
 
@@ -335,53 +355,12 @@ def _collapse_numba(
     pivot: tuple[float, float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Numba 経路で collapse を実行する。"""
-    if coords.shape[0] == 0 or intensity == 0.0 or divisions <= 0:
+    if coords.shape[0] == 0 or intensity == 0.0 or divisions == 0:
         return coords.copy(), offsets.copy()
 
-    try:
-        base_x = float(intensity_mask_base[0])
-        base_y = float(intensity_mask_base[1])
-        base_z = float(intensity_mask_base[2])
-    except Exception:
-        base_x = 1.0
-        base_y = 1.0
-        base_z = 1.0
+    base_x, base_y, base_z = intensity_mask_base
 
-    if not np.isfinite(base_x):
-        base_x = 1.0
-    if not np.isfinite(base_y):
-        base_y = 1.0
-    if not np.isfinite(base_z):
-        base_z = 1.0
-
-    if base_x < 0.0:
-        base_x = 0.0
-    elif base_x > 1.0:
-        base_x = 1.0
-    if base_y < 0.0:
-        base_y = 0.0
-    elif base_y > 1.0:
-        base_y = 1.0
-    if base_z < 0.0:
-        base_z = 0.0
-    elif base_z > 1.0:
-        base_z = 1.0
-
-    try:
-        slope_x = float(intensity_mask_slope[0])
-        slope_y = float(intensity_mask_slope[1])
-        slope_z = float(intensity_mask_slope[2])
-    except Exception:
-        slope_x = 0.0
-        slope_y = 0.0
-        slope_z = 0.0
-
-    if not np.isfinite(slope_x):
-        slope_x = 0.0
-    if not np.isfinite(slope_y):
-        slope_y = 0.0
-    if not np.isfinite(slope_z):
-        slope_z = 0.0
+    slope_x, slope_y, slope_z = intensity_mask_slope
 
     use_intensity_mask = not (
         (base_x == 1.0)
@@ -407,15 +386,7 @@ def _collapse_numba(
         if auto_center:
             pivot3 = bbox_center
         else:
-            try:
-                pivot3 = np.array(
-                    [float(pivot[0]), float(pivot[1]), float(pivot[2])],
-                    dtype=np.float64,
-                )
-            except Exception:
-                pivot3 = np.zeros((3,), dtype=np.float64)
-            if not np.all(np.isfinite(pivot3)):
-                pivot3 = np.zeros((3,), dtype=np.float64)
+            pivot3 = np.asarray(pivot, dtype=np.float64)
 
     total_lines, total_vertices, valid_seg_count = _collapse_count(coords, offsets, divisions)
     if total_lines == 0:

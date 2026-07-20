@@ -28,8 +28,11 @@
 ### Meta / State
 
 - `ParamMeta`（`meta.py`）: GUI 表示/検証用メタ（`kind`, `ui_min/ui_max`, `choices`）。
+  - `kind` は `bool/int/float/str/font/choice/vec3/rgb` の 8 種だけを受け付ける。
+  - `choice` は空でない一意な文字列列を必須とし、それ以外の kind は `choices=None` とする。
 - `ParamState`（`state.py`）: GUI 状態（`override`, `ui_value`, `cc_key`）。
-  - `override=True` のとき GUI 値を採用し、`False` のときコードが与えた base を採用する（bool など例外あり）。
+  - MIDI が未採用なら全 kind で `override=True` のとき GUI 値、
+    `False` のときコードが与えた base を採用する。
 
 ### Store
 
@@ -59,8 +62,9 @@
 ### 2) pure 関数レイヤ（副作用なし）
 
 - `view.py`
-  - `normalize_input()`（UI 入力の正規化）
-  - `canonicalize_ui_value()`（`ui_value` を immutable へ正規化。unknown kind は `str(value)`）
+  - `normalize_input()`（kind ごとの canonical な UI 入力を検証）
+  - `canonicalize_ui_value()`（検証済み `ui_value` を immutable へ正規化）
+- `validation.py`: kind/meta/value/MIDI CC の共通 validator。
   - `rows_from_snapshot()`（snapshot -> GUI 行モデル）
 - `reconcile.py`: group の fingerprint 化とマッチング（誤マッチを避けるアルゴリズム）。
 - `snapshot_ops.py`: `store_snapshot()` / `store_snapshot_for_gui()`（副作用なし）
@@ -72,8 +76,9 @@
 - `merge_ops.py`: Frame で観測した `FrameParamRecord` を store に統合（観測→保存）。
   - group ordinal を確保
   - meta/state の初期化
-  - effect step の記録
   - reconcile と override-follow-policy の適用
+- `effect_order_ops.py`: `FrameEffectChainRecord` の完全 topology を store に統合し、
+  GUI-owned order override と別に管理
 - `ui_ops.py`: UI 入力を state に反映（`normalize_input` + `canonicalize_ui_value`）。
 - `labels_ops.py`: label 更新。
 - `meta_ops.py`: meta 更新。
@@ -103,6 +108,7 @@
    - CC/GUI/base を統合して effective を決定（量子化もここで）
    - `FrameParamsBuffer.record(...)` へ `FrameParamRecord` を追加
 3. draw が正常終了した context の終了時に
+   - `merge_frame_effect_chains(store, frame_params.effect_chains, observation_complete=True)`
    - `merge_frame_labels(store, frame_params.labels)`
    - `merge_frame_params(store, frame_params.records)`（store へ保存）
 
@@ -127,7 +133,9 @@ ParamStore には反映しない。
     `prune_groups(store, groups)` を明示的に呼び出す。
   - `encode_param_store()` は **meta を持たない state を drop** して永続化しない。
 - load:
-  - `decode_param_store()` は
+  - `decode_param_store_result()` / `loads_param_store_result()` は
+    - 現行 `schema_version` だけを受理し、旧・future・versionless は明示的に拒否
+    - section ごとの typed parse で canonical value と破損診断を同時に生成
     - meta-less state を drop
     - meta.kind に従って `ui_value` を canonicalize（immutable）
     - effect chain ordinal の重複/不正値を検出したら修復（1..N 再採番）
@@ -150,11 +158,21 @@ ParamStore には反映しない。
 ### `ui_value` の不変性
 
 - snapshot 対象（meta あり）の `ui_value` は `canonicalize_ui_value()` で **immutable**（tuple/int/float/str/bool）に正規化される。
-- unknown kind は `str(value)` に落とす（情報は落ち得るが参照リークを防ぐ）。
+- 型違い、非有限値、選択肢にない `choice` は補正せず拒否し、UI 更新時は既存 state を変更しない。
+- 保存済み `choice` が code reload 後に選択肢から外れた場合、GUI では unavailable として保持する。
+  明示的に有効な選択肢を選ぶまで effective 値には採用しない。
+
+### MIDI CC
+
+- scalar CC は `float/int/choice`、3 要素 CC tuple は `vec3` だけが受け付ける。
+- CC 番号は bool ではない厳密な int の `0..127` とする。
+- `bool/str/font/rgb` と style/layer-style parameter には割り当てない。
 
 ### effect chain ordinal
 
-- `record_step()` は `max(existing)+1` で採番し、重複を避ける（穴は許容）。
+- 完全な code topology を受け取る `record_chain()` が `max(existing)+1` で採番し、
+  重複を避ける（穴は許容）。
+- step index は topology と order override から導出し、parameter record には保持しない。
 - 既存 JSON の重複/不正値はロード時に修復して汚染源を止める。
 
 ---
@@ -163,9 +181,10 @@ ParamStore には反映しない。
 
 ### kind を追加/変更したい
 
-1. `view.normalize_input()` と `view.canonicalize_ui_value()` に正規化ルールを追加
-2. 必要なら `resolver._choose_value()` に CC/GUI/base の選択ルールを追加
-3. 追加した kind の roundtrip / snapshot 不変性のテストを追加
+1. `validation.py` の kind と meta/value/CC 契約を更新
+2. `view.normalize_input()` と `view.canonicalize_ui_value()` の委譲を確認
+3. 必要なら `resolver._choose_value()` に CC/GUI/base の選択ルールを追加
+4. 追加した kind の roundtrip / snapshot 不変性のテストを追加
 
 ### Store を更新したい
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from grafix.core.effects.argument_validation import finite_vec3, integer_scalar
 from grafix.core.effects.util import (
     GridSpec,
     PlanarFrame,
@@ -22,6 +23,34 @@ from grafix.core.effects.util import (
     signed_distance_grid_edt,
     squared_euclidean_distance_transform,
 )
+
+
+def test_finite_vec3_accepts_only_finite_three_item_tuples() -> None:
+    assert finite_vec3((1, 2.5, np.float32(3)), name="vector") == (
+        1.0,
+        2.5,
+        3.0,
+    )
+
+    with pytest.raises(TypeError, match="tuple"):
+        finite_vec3([1.0, 2.0, 3.0], name="vector")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="3要素"):
+        finite_vec3((1.0, 2.0), name="vector")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="実数"):
+        finite_vec3((1.0, "1", 3.0), name="vector")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="実数"):
+        finite_vec3((True, 2.0, 3.0), name="vector")
+    with pytest.raises(ValueError, match="有限値"):
+        finite_vec3((1.0, float("nan"), 3.0), name="vector")
+
+
+def test_integer_scalar_accepts_only_integer_scalars() -> None:
+    assert integer_scalar(3, name="count") == 3
+    assert integer_scalar(np.int64(4), name="count") == 4  # type: ignore[arg-type]
+
+    for value in (True, 1.0, float("inf"), "1"):
+        with pytest.raises(TypeError, match="整数"):
+            integer_scalar(value, name="count")  # type: ignore[arg-type]
 
 
 def _two_open_lines() -> tuple[np.ndarray, np.ndarray]:
@@ -450,11 +479,16 @@ def test_planar_frame_roundtrip_across_coordinate_scales(
     points = origin + scale * unit
 
     frame = PlanarFrame.from_points(points)
-    restored = frame.to_world(frame.to_local(points))
+    local = frame.to_local(points)
+    projected = frame.project(points)
+    restored = frame.to_world(local)
+    lifted = frame.lift(projected)
 
     assert frame.is_planar(max(1e-20, scale * 1e-10))
     np.testing.assert_allclose(frame.inverse, frame.basis.T, rtol=0.0, atol=1e-15)
+    np.testing.assert_allclose(projected, local[:, :2], rtol=0.0, atol=atol)
     np.testing.assert_allclose(restored, points, rtol=0.0, atol=atol)
+    np.testing.assert_allclose(lifted, points, rtol=0.0, atol=atol)
 
 
 def test_planar_frame_reports_degenerate_inputs_without_transforming() -> None:

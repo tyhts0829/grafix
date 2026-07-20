@@ -147,7 +147,7 @@ def test_core_rejects_order_that_moves_multi_input_step_from_front() -> None:
     assert store.revision == revision
 
 
-def test_stale_override_falls_back_then_is_removed_on_topology_merge() -> None:
+def test_topology_replacement_discards_stale_override_on_successful_merge() -> None:
     source = Geometry.create(op="effect-order-stale-source")
     first_two = E.effect_order_test_first(
         key="stale-first"
@@ -219,12 +219,15 @@ def test_resolve_effective_steps_uses_only_an_exact_permutation() -> None:
         first,
     )
     assert resolve_effective_steps(steps, None) == steps
-    assert resolve_effective_steps(steps, (first_key,)) == steps
-    assert resolve_effective_steps(steps, (first_key, first_key)) == steps
-    assert resolve_effective_steps(
-        steps,
-        (first_key, ("removed", "old-site")),
-    ) == steps
+    with pytest.raises(ValueError, match="exact permutation"):
+        resolve_effective_steps(steps, (first_key,))
+    with pytest.raises(ValueError, match="exact permutation"):
+        resolve_effective_steps(steps, (first_key, first_key))
+    with pytest.raises(ValueError, match="exact permutation"):
+        resolve_effective_steps(
+            steps,
+            (first_key, ("removed", "old-site")),
+        )
 
 
 def _chain_record(
@@ -257,7 +260,11 @@ def test_reload_generation_prunes_only_once_from_canonical_success_topology() ->
         ("stale-first", "stale-site-first"),
         ("stale-second", "stale-site-second"),
     )
-    assert merge_frame_effect_chains(store, [keep, stale])
+    assert merge_frame_effect_chains(
+        store,
+        [keep, stale],
+        observation_complete=False,
+    )
     assert set_effect_order(
         store,
         chain_id=stale.chain_id,

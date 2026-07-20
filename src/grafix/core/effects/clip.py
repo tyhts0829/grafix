@@ -22,6 +22,7 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
+from .argument_validation import exact_bool, known_choice
 from .util import PlanarFrame, empty_geom, pack_polylines, planarity_threshold
 
 # `ndarray.tolist()` は各座標を Python object 化する。1 vertex を 384 bytes、
@@ -29,11 +30,12 @@ from .util import PlanarFrame, empty_geom, pack_polylines, planarity_threshold
 # 追加 peak が約 7 MiB に収まる上限にする。
 _BATCH_PATH_MAX_TOTAL_VERTICES = 16_384
 _BATCH_PATH_MAX_TOTAL_LINES = 4_096
+_MODE_CHOICES = ("inside", "outside")
 
 clip_meta = {
     "mode": ParamMeta(
         kind="choice",
-        choices=("inside", "outside"),
+        choices=_MODE_CHOICES,
         description="マスクの内側と外側のどちらを残すか選ぶ。",
     ),
     "draw_outline": ParamMeta(
@@ -213,8 +215,16 @@ def clip(
     tuple[np.ndarray, np.ndarray]
         クリップ後の実体ジオメトリ（coords, offsets）。
     """
+    mode_s = known_choice(
+        mode,
+        choices=_MODE_CHOICES,
+        name="clip: mode",
+    )
+    draw_outline_b = exact_bool(
+        draw_outline,
+        name="clip: draw_outline",
+    )
     scale_i = 1000
-    draw_outline_b = bool(draw_outline)
     base_coords, base_offsets = base
     mask_coords, mask_offsets = mask
     if base_coords.shape[0] == 0:
@@ -231,10 +241,6 @@ def clip(
     aligned_mask = frame.to_local(mask_coords)
 
     if float(np.max(np.abs(aligned_base[:, 2]))) > threshold:
-        return base_coords, base_offsets
-
-    mode_s = str(mode)
-    if mode_s not in {"inside", "outside"}:
         return base_coords, base_offsets
 
     # 少数 path は per-line 処理の方が速いため、多数 path だけ一括化する。

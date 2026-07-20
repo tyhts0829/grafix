@@ -11,23 +11,28 @@ import pytest
 from grafix import E, G
 from grafix.api._operation_selector import (
     PRIMITIVE_SELECTOR_OP,
-    decode_selector_param_key,
     effect_selector_op,
-    selector_kind,
 )
 from grafix.core.effect_registry import effect, effect_registry
 from grafix.core.geometry import Geometry
+from grafix.core.operation_selector import (
+    decode_selector_param_key,
+    selector_kind,
+)
 from grafix.core.parameters import ParamStore, ParameterKey, parameter_context
-from grafix.core.parameters.codec import dumps_param_store, loads_param_store
+from grafix.core.parameters.codec import (
+    dumps_param_store,
+    loads_param_store_result,
+)
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.primitive_registry import primitive, primitive_registry
 from grafix.core.realized_geometry import GeomTuple
 from grafix.interactive.parameter_gui.group_blocks import (
-    GroupBlock,
-    group_blocks_from_layout,
+    GroupBlockLayout,
 )
+from grafix.interactive.parameter_gui.grouping import GroupType
 from grafix.interactive.parameter_gui.help_pane import parameter_help_content
 from grafix.interactive.parameter_gui.snippet import snippet_for_block
 from grafix.interactive.parameter_gui.store_bridge import (
@@ -119,16 +124,19 @@ def _selector_view_and_block(
     store: ParamStore,
     *,
     kind: SelectorKind,
-) -> tuple[ParameterTableView, GroupBlock]:
+) -> tuple[ParameterTableView, GroupBlockLayout]:
     view = parameter_table_view_for_store(
         store,
         show_inactive_params=False,
     )
-    blocks = group_blocks_from_layout(view.model.rows, view.group_layout)
     selector_blocks = [
         block
-        for block in blocks
-        if block.items and selector_kind(block.items[0].row.op) == kind
+        for block in view.group_layout
+        if block.items
+        and selector_kind(
+            view.model.rows[block.items[0].row_index].op
+        )
+        == kind
     ]
     assert len(selector_blocks) == 1
     return view, selector_blocks[0]
@@ -204,7 +212,8 @@ def test_g_select_switches_target_and_preserves_each_target_state() -> None:
     assert "Radius" not in visible_labels
     assert all("_grafix" not in corpus and "@" not in corpus for corpus in _view.model.search_corpus_by_row)
     help_identities = {
-        parameter_help_content(item.row).identity for item in rect_block.items
+        parameter_help_content(_view.model.rows[item.row_index]).identity
+        for item in rect_block.items
     }
     assert "G.select.rect.width" in help_identities
     assert all("_grafix" not in identity and "@" not in identity for identity in help_identities)
@@ -217,20 +226,21 @@ def test_e_select_composes_target_specific_ui_visible_with_selector_target() -> 
     _view, block = _selector_view_and_block(store, kind="effect")
     assert rotate.op == "rotate"
     assert dict(rotate.args)["auto_center"] is True
-    assert block.group_id[0] == "effect_chain"
+    assert block.group_id[0] is GroupType.EFFECT_CHAIN
     assert [item.visible_label for item in block.items] == [
         "Operation",
         "Activate",
         "Auto center",
         "Rotation",
     ]
-    assert set(_effect_step_heading_by_rows([item.row for item in block.items]).values()) == {
+    block_rows = [_view.model.rows[item.row_index] for item in block.items]
+    assert set(_effect_step_heading_by_rows(block_rows).values()) == {
         "Select"
     }
     assert all(
         decoded is None or decoded[0] == "rotate"
         for decoded in (
-            decode_selector_param_key(item.row.arg) for item in block.items
+            decode_selector_param_key(row.arg) for row in block_rows
         )
     )
 
@@ -286,7 +296,7 @@ def test_g_select_snippet_uses_public_api_and_hides_internal_names() -> None:
 
     snippet = snippet_for_block(
         block,
-        all_rows=view.model.rows,
+        view.model.rows,
         step_info_by_site=view.model.step_info_by_site,
         raw_label_by_site=view.model.raw_label_by_site,
     )
@@ -307,7 +317,7 @@ def test_e_select_snippet_uses_public_api_and_hides_internal_names() -> None:
 
     snippet = snippet_for_block(
         block,
-        all_rows=view.model.rows,
+        view.model.rows,
         step_info_by_site=view.model.step_info_by_site,
         raw_label_by_site=view.model.raw_label_by_site,
     )
@@ -345,7 +355,7 @@ def test_selector_snippet_returns_note_for_required_non_gui_argument() -> None:
 
     snippet = snippet_for_block(
         block,
-        all_rows=view.model.rows,
+        view.model.rows,
         step_info_by_site=view.model.step_info_by_site,
         raw_label_by_site=view.model.raw_label_by_site,
     )
@@ -394,10 +404,10 @@ def test_selector_target_states_survive_recovery_roundtrip() -> None:
     )
     _set_ui_value(store, width_key, 9.5)
 
-    loaded = loads_param_store(
+    loaded = loads_param_store_result(
         dumps_param_store(store, preserve_explicit_overrides=True),
         preserve_explicit_overrides=True,
-    )
+    ).store
     restored_rect = _draw_primitive_selector(loaded)
     assert restored_rect.op == "rect"
     assert dict(restored_rect.args)["width"] == 9.5
@@ -438,7 +448,7 @@ def test_omitted_target_is_implicit_and_survives_normal_roundtrip() -> None:
     assert implicit_state.override is True
     _set_ui_value(implicit_store, implicit_target_key, "rect")
 
-    loaded = loads_param_store(dumps_param_store(implicit_store))
+    loaded = loads_param_store_result(dumps_param_store(implicit_store)).store
     with parameter_context(loaded):
         restored = G.select(key="implicit-selector-target")
     assert restored.op == "rect"
@@ -508,7 +518,7 @@ def test_table_registers_worker_only_selector_specs_in_main_registry() -> None:
         assert "Width" not in {
             item.visible_label for item in primitive_block.items
         }
-        assert effect_block.group_id[0] == "effect_chain"
+        assert effect_block.group_id[0] is GroupType.EFFECT_CHAIN
         assert "Pivot" not in {
             item.visible_label for item in effect_block.items
         }
@@ -605,7 +615,7 @@ def test_gui_exposes_current_target_choice_meta_after_operation_overwrite() -> N
     )
     mode_row = next(row for row in view.model.rows if row.arg == mode_key.arg)
     assert tuple(mode_row.choices or ()) == ("c", "d")
-    with pytest.raises(ValueError, match="mode"):
+    with pytest.raises(ValueError, match="unavailable"):
         with parameter_context(store):
             G.select(
                 target="selector_test_choice_reload",
@@ -682,15 +692,30 @@ def test_gui_uses_current_default_for_incompatible_target_kind_change() -> None:
 
 
 class _SelectorComboImgui:
+    COMBO_HEIGHT_LARGE = 8
+
     def __init__(self, click: str | None = None) -> None:
         self.click = click
         self.selected: list[tuple[str, bool]] = []
         self.preview: str | None = None
         self.end_combo_calls = 0
+        self.opened = True
 
-    def begin_combo(self, _label: str, preview: str) -> bool:
+    def begin_combo(
+        self,
+        _label: str,
+        preview: str,
+        flags: int = 0,
+    ) -> _SelectorComboImgui:
+        assert flags == self.COMBO_HEIGHT_LARGE
         self.preview = str(preview)
-        return True
+        return self
+
+    def __enter__(self) -> _SelectorComboImgui:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.end_combo_calls += 1
 
     def selectable(self, label: str, selected: bool) -> tuple[bool, bool]:
         choice = label.split("##", 1)[0]
@@ -700,10 +725,6 @@ class _SelectorComboImgui:
 
     def set_item_default_focus(self) -> None:
         return
-
-    def end_combo(self) -> None:
-        self.end_combo_calls += 1
-
 
 def test_removed_selector_target_is_not_silently_coerced(
     monkeypatch: pytest.MonkeyPatch,

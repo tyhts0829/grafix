@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 
 from grafix.core.parameters import ParamMeta, ParamStore, ParameterKey
-from grafix.core.parameters.codec import dumps_param_store, loads_param_store
+from grafix.core.parameters.codec import (
+    dumps_param_store,
+    loads_param_store_result,
+)
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.ui_ops import update_state_from_ui
@@ -15,33 +18,85 @@ def test_override_follows_implicit_to_explicit_change_when_still_default():
     key = ParameterKey(op="polyhedron", site_id="site", arg="type_index")
     meta = ParamMeta(kind="int", ui_min=0, ui_max=4)
 
-    merge_frame_params(store, [FrameParamRecord(key=key, base=0, meta=meta, explicit=False)])
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=0,
+                meta=meta,
+                effective=0,
+                source="code",
+                explicit=False,
+            )
+        ],
+    )
     st0 = store.get_state(key)
     assert st0 is not None
     assert st0.override is True  # implicit の既定
 
-    merge_frame_params(store, [FrameParamRecord(key=key, base=1, meta=meta, explicit=True)])
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=1,
+                meta=meta,
+                effective=1,
+                source="code",
+                explicit=True,
+            )
+        ],
+    )
     st1 = store.get_state(key)
     assert st1 is not None
     assert st1.override is False  # explicit の既定へ追従
     assert_invariants(store)
 
 
-def test_override_does_not_change_when_prev_explicit_is_unknown_old_json():
+def test_missing_explicit_metadata_is_repaired_then_follows_policy():
     key = ParameterKey(op="polyhedron", site_id="site", arg="type_index")
     meta = ParamMeta(kind="int", ui_min=0, ui_max=4)
 
     store = ParamStore()
-    merge_frame_params(store, [FrameParamRecord(key=key, base=0, meta=meta, explicit=False)])
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=0,
+                meta=meta,
+                effective=0,
+                source="code",
+                explicit=False,
+            )
+        ],
+    )
 
     payload_obj = json.loads(dumps_param_store(store))
-    payload_obj.pop("explicit", None)  # 旧 JSON を模擬（explicit 情報なし）
-    loaded = loads_param_store(json.dumps(payload_obj))
+    payload_obj["explicit"].clear()
+    result = loads_param_store_result(json.dumps(payload_obj))
+    loaded = result.store
 
-    merge_frame_params(loaded, [FrameParamRecord(key=key, base=1, meta=meta, explicit=True)])
+    assert [issue.section for issue in result.issues] == ["explicit"]
+    assert loaded._explicit_by_key[key] is False
+
+    merge_frame_params(
+        loaded,
+        [
+            FrameParamRecord(
+                key=key,
+                base=1,
+                meta=meta,
+                effective=1,
+                source="code",
+                explicit=True,
+            )
+        ],
+    )
     st = loaded.get_state(key)
     assert st is not None
-    assert st.override is True  # unknown の場合は勝手に切り替えない
+    assert st.override is False
     assert_invariants(loaded)
 
 
@@ -52,19 +107,37 @@ def test_override_follows_across_site_id_migration_with_reconcile():
     original = ParamStore()
     merge_frame_params(
         original,
-        [FrameParamRecord(key=old_key, base=0, meta=meta, explicit=False)]
+        [
+            FrameParamRecord(
+                key=old_key,
+                base=0,
+                meta=meta,
+                effective=0,
+                source="code",
+                explicit=False,
+            )
+        ],
     )
     original_state = original.get_state(old_key)
     assert original_state is not None
     assert original_state.override is True
 
     # 永続化ロード相当（loaded_groups を持つ状態にする）
-    store = loads_param_store(dumps_param_store(original))
+    store = loads_param_store_result(dumps_param_store(original)).store
 
     new_key = ParameterKey(op="polyhedron", site_id="new-site", arg="type_index")
     merge_frame_params(
         store,
-        [FrameParamRecord(key=new_key, base=1, meta=meta, explicit=True)]
+        [
+            FrameParamRecord(
+                key=new_key,
+                base=1,
+                meta=meta,
+                effective=1,
+                source="code",
+                explicit=True,
+            )
+        ],
     )
 
     st = store.get_state(new_key)
@@ -78,10 +151,22 @@ def test_explicit_override_is_reset_to_false_on_json_roundtrip():
     key = ParameterKey(op="polyhedron", site_id="site", arg="type_index")
     meta = ParamMeta(kind="int", ui_min=0, ui_max=4)
 
-    merge_frame_params(store, [FrameParamRecord(key=key, base=0, meta=meta, explicit=True)])
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=0,
+                meta=meta,
+                effective=0,
+                source="code",
+                explicit=True,
+            )
+        ],
+    )
     update_state_from_ui(store, key, 3, meta=meta, override=True)
 
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
     loaded_state = loaded.get_state(key)
     assert loaded_state is not None
     assert loaded_state.override is False
@@ -94,10 +179,22 @@ def test_implicit_override_is_preserved_on_json_roundtrip():
     key = ParameterKey(op="polyhedron", site_id="site", arg="type_index")
     meta = ParamMeta(kind="int", ui_min=0, ui_max=4)
 
-    merge_frame_params(store, [FrameParamRecord(key=key, base=0, meta=meta, explicit=False)])
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=0,
+                meta=meta,
+                effective=0,
+                source="code",
+                explicit=False,
+            )
+        ],
+    )
     update_state_from_ui(store, key, 2, meta=meta, override=False)
 
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
     loaded_state = loaded.get_state(key)
     assert loaded_state is not None
     assert loaded_state.override is False
@@ -110,15 +207,39 @@ def test_removing_explicit_allows_override_true_again_after_one_frame_merge():
     key = ParameterKey(op="polyhedron", site_id="site", arg="type_index")
     meta = ParamMeta(kind="int", ui_min=0, ui_max=4)
 
-    merge_frame_params(store, [FrameParamRecord(key=key, base=0, meta=meta, explicit=True)])
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=0,
+                meta=meta,
+                effective=0,
+                source="code",
+                explicit=True,
+            )
+        ],
+    )
     update_state_from_ui(store, key, 0, meta=meta, override=True)
 
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
     loaded_state = loaded.get_state(key)
     assert loaded_state is not None
     assert loaded_state.override is False  # 再起動時は explicit の既定
 
-    merge_frame_params(loaded, [FrameParamRecord(key=key, base=0, meta=meta, explicit=False)])
+    merge_frame_params(
+        loaded,
+        [
+            FrameParamRecord(
+                key=key,
+                base=0,
+                meta=meta,
+                effective=0,
+                source="code",
+                explicit=False,
+            )
+        ],
+    )
     assert loaded.get_state(key) is not None
     assert loaded.get_state(key).override is True
     assert_invariants(loaded)

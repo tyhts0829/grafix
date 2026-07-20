@@ -9,6 +9,7 @@ from __future__ import annotations
 from _runner import PygletImGuiContext, run_pyglet_imgui
 
 from grafix.interactive.parameter_gui import render_parameter_table
+from grafix.interactive.parameter_gui.group_blocks import group_layout_from_rows
 from grafix.core.parameters.view import ParameterRow
 
 
@@ -28,6 +29,7 @@ def main() -> None:
         override=True,
         ordinal=1,
     )
+    group_layout = group_layout_from_rows([row])
 
     def draw_ui(ctx: PygletImGuiContext) -> None:
         nonlocal row
@@ -40,7 +42,11 @@ def main() -> None:
             "Parameter GUI smoke",
             flags=imgui_mod.WINDOW_NO_RESIZE | imgui_mod.WINDOW_NO_COLLAPSE,
         )
-        _, rows = render_parameter_table([row])
+        model_rows = [row]
+        _, rows = render_parameter_table(
+            group_layout=group_layout,
+            model_rows=model_rows,
+        )
         row = rows[0]
         imgui_mod.end()
 

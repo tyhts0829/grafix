@@ -46,13 +46,6 @@ def _set_load_result(
     return store
 
 
-def _legacy_diagnostic() -> ParamStoreLoadDiagnostic:
-    return ParamStoreLoadDiagnostic(
-        code="legacy_migration",
-        summary="schema_version の無い ParamStore を現行形式へ移行しました",
-    )
-
-
 def _finish_decoded_store(
     result: ParamStoreDecodeResult,
     *,
@@ -61,8 +54,6 @@ def _finish_decoded_store(
     repaired_recovery_path: Path | None = None,
 ) -> ParamStore:
     diagnostics: list[ParamStoreLoadDiagnostic] = []
-    if result.migrated_legacy:
-        diagnostics.append(_legacy_diagnostic())
     if not result.issues:
         return _set_load_result(
             result.store,
@@ -147,8 +138,8 @@ def _quarantine_primary_and_return_empty(path: Path, error: Exception) -> ParamS
     )
 
 
-def _reject_future_schema_file(path: Path) -> None:
-    """recovery 選択で上書き得る file の future schema を先に拒否する。"""
+def _reject_unsupported_schema_file(path: Path) -> None:
+    """recovery 選択で上書き得る非現行 schema を先に拒否する。"""
 
     try:
         payload = path.read_text(encoding="utf-8")
@@ -193,10 +184,10 @@ def load_param_store(path: Path) -> ParamStore:
     try:
         result = loads_param_store_result(payload)
     except UnsupportedParamStoreSchemaError:
-        # 新しい Grafix で書かれた file を破損と誤認して
-        # 退避・空 store 化しない。原本を残して caller へ返す。
+        # 非現行 schema を破損と誤認して退避しない。
+        # 原本を残したまま caller へ明示的に拒否を返す。
         raise
-    except Exception as exc:
+    except (json.JSONDecodeError, ParamStoreSchemaError, TypeError) as exc:
         return _quarantine_primary_and_return_empty(path, exc)
     return _finish_decoded_store(
         result,
@@ -258,10 +249,10 @@ def load_param_store_with_recovery(path: Path) -> ParamStore:
         primary_mtime = primary.stat().st_mtime_ns
     except FileNotFoundError:
         primary_mtime = -1
-    # どちらかが future schema なら、mtime で古い側も含めて
+    # どちらかが非現行 schema なら、mtime で古い側も含めて
     # 上書き/削除せず明示的に拒否する。
-    _reject_future_schema_file(primary)
-    _reject_future_schema_file(recovery)
+    _reject_unsupported_schema_file(primary)
+    _reject_unsupported_schema_file(recovery)
     if recovery_mtime <= primary_mtime:
         return load_param_store(primary)
 
@@ -283,10 +274,10 @@ def load_param_store_with_recovery(path: Path) -> ParamStore:
             preserve_explicit_overrides=True,
         )
     except UnsupportedParamStoreSchemaError:
-        # future schema は破損ではない。recovery を保存したまま
+        # 非現行 schema は破損ではない。recovery を保存したまま
         # caller へ拒否を返し、古い primary への黙示 fallback を防ぐ。
         raise
-    except Exception as exc:
+    except (json.JSONDecodeError, ParamStoreSchemaError, TypeError) as exc:
         return _quarantine_recovery_and_load_primary(
             recovery=recovery,
             primary=primary,

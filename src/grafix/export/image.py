@@ -7,64 +7,23 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable, Sequence
-from math import isfinite
+from collections.abc import Callable
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from grafix.core.atomic_write import atomic_output_path
 from grafix.core.output_paths import output_path_for_draw
-from grafix.core.runtime_config import runtime_config
-from grafix.core.pipeline import RealizedLayer
 from grafix.core.parameters.style import rgb01_to_rgb255
-from grafix.export.svg import export_svg
+from grafix.core.value_validation import finite_real, positive_integer_pair
 
 _DEFAULT_RESVG_TIMEOUT_S = 30.0
-
-
-def export_image(
-    layers: Sequence[RealizedLayer],
-    path: str | Path,
-    *,
-    canvas_size: tuple[int, int] | None = None,
-    background_color: tuple[float, float, float] = (1.0, 1.0, 1.0),
-) -> Path:
-    """Layer 列を画像として保存する。
-
-    Notes
-    -----
-    PNG は private な一時 SVG を resvg でラスタライズして生成する。明示的な SVG
-    出力だけが指定パスへ SVG を保存する。
-    """
-    _path = Path(path)
-    suffix = _path.suffix.lower()
-
-    if suffix == ".svg":
-        if canvas_size is None:
-            raise ValueError("canvas_size=None は未対応（現在は必須）")
-        return export_svg(layers, _path, canvas_size=canvas_size)
-
-    if suffix == ".png":
-        if canvas_size is None:
-            raise ValueError("canvas_size=None は未対応（現在は必須）")
-        with TemporaryDirectory(prefix="grafix-png-") as temp_dir:
-            svg_path = Path(temp_dir) / "source.svg"
-            export_svg(layers, svg_path, canvas_size=canvas_size)
-            return rasterize_svg_to_png(
-                svg_path,
-                _path,
-                output_size=png_output_size(canvas_size),
-                background_color_rgb01=background_color,
-            )
-
-    raise ValueError(f"未対応の画像フォーマット: {suffix!r}")
 
 
 def default_png_output_path(
     draw: Callable[[float], object],
     *,
+    scale: float,
+    canvas_size: tuple[int, int],
     run_id: str | None = None,
-    canvas_size: tuple[int, int] | None = None,
 ) -> Path:
     """draw の定義元に基づく PNG の既定保存パスを返す。
 
@@ -73,42 +32,37 @@ def default_png_output_path(
     パスは `output/{kind}/` 配下で sketch_dir のサブディレクトリ構造をミラーする。
     """
 
-    base = output_path_for_draw(kind="png", ext="png", draw=draw, run_id=None)
-    run_suffix = ""
-    if run_id is not None:
-        with_run_id = output_path_for_draw(kind="png", ext="png", draw=draw, run_id=run_id)
-        if with_run_id.stem.startswith(base.stem):
-            run_suffix = with_run_id.stem[len(base.stem) :]
-
-    size_suffix = ""
-    if canvas_size is not None:
-        out_w, out_h = png_output_size(canvas_size)
-        size_suffix = f"_{int(out_w)}x{int(out_h)}"
-
-    return base.with_name(f"{base.stem}{size_suffix}{run_suffix}{base.suffix}")
+    out_w, out_h = png_output_size(canvas_size, scale=scale)
+    return output_path_for_draw(
+        kind="png",
+        ext="png",
+        draw=draw,
+        run_id=run_id,
+        canvas_size=(out_w, out_h),
+    )
 
 
 def png_output_size(
     canvas_size: tuple[int, int],
     *,
-    scale: float | None = None,
+    scale: float,
 ) -> tuple[int, int]:
-    """canvas_size と明示 scale から PNG 出力ピクセルサイズを返す。
+    """canvas_size と明示 scale から PNG 出力ピクセルサイズを返す。"""
 
-    ``scale=None`` の従来入口だけが process runtime config を参照する。Frame や
-    interactive session は、開始時に固定した effective scale を明示して再探索を避ける。
-    """
-
-    canvas_w, canvas_h = canvas_size
-    if int(canvas_w) <= 0 or int(canvas_h) <= 0:
-        raise ValueError("canvas_size は正の (width, height) である必要がある")
-    effective_scale = float(runtime_config().png_scale if scale is None else scale)
-    if not isfinite(effective_scale) or effective_scale <= 0.0:
-        raise ValueError("scale は正の有限値である必要があります")
-    return (
-        int(int(canvas_w) * effective_scale),
-        int(int(canvas_h) * effective_scale),
+    canvas_w, canvas_h = positive_integer_pair(canvas_size, name="canvas_size")
+    effective_scale = finite_real(
+        scale,
+        name="scale",
+        minimum=0.0,
+        minimum_inclusive=False,
     )
+    output_size = (
+        int(canvas_w * effective_scale),
+        int(canvas_h * effective_scale),
+    )
+    if output_size[0] <= 0 or output_size[1] <= 0:
+        raise ValueError("scale 適用後の output_size は正である必要があります")
+    return output_size
 
 
 def _rgb01_to_hex(rgb01: tuple[float, float, float]) -> str:
@@ -123,15 +77,13 @@ def _resvg_command(
     output_size: tuple[int, int],
     background_color_rgb01: tuple[float, float, float],
 ) -> list[str]:
-    out_w, out_h = output_size
-    if int(out_w) <= 0 or int(out_h) <= 0:
-        raise ValueError("output_size は正の (width, height) である必要がある")
+    out_w, out_h = positive_integer_pair(output_size, name="output_size")
     return [
         "resvg",
         "--width",
-        str(int(out_w)),
+        str(out_w),
         "--height",
-        str(int(out_h)),
+        str(out_h),
         "--background",
         _rgb01_to_hex(background_color_rgb01),
         str(input_svg),
@@ -177,9 +129,12 @@ def rasterize_svg_to_png(
 
     _svg_path = Path(svg_path)
     _png_path = Path(png_path)
-    timeout = float(timeout_s)
-    if not isfinite(timeout) or timeout <= 0.0:
-        raise ValueError("timeout_s は正である必要がある")
+    timeout = finite_real(
+        timeout_s,
+        name="timeout_s",
+        minimum=0.0,
+        minimum_inclusive=False,
+    )
     _png_path.parent.mkdir(parents=True, exist_ok=True)
 
     with atomic_output_path(_png_path) as temp_png_path:

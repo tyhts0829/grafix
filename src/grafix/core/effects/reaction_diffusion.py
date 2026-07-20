@@ -13,6 +13,7 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.preview_quality import current_preview_quality
 from grafix.core.realized_geometry import GeomTuple
 
+from .argument_validation import integer_scalar, known_choice
 from .util import (
     DEFAULT_MAX_GRID_CELLS,
     GridSpec,
@@ -31,6 +32,7 @@ DRAFT_MAX_STEPS = 600
 DRAFT_MAX_CELL_STEPS = 14_000_000
 _PARALLEL_MIN_GRID_CELLS = 65_536
 _PARALLEL_MIN_STEPS = 8
+_BOUNDARY_CHOICES = ("noflux", "dirichlet")
 
 reaction_diffusion_meta = {
     "grid_pitch": ParamMeta(
@@ -107,7 +109,7 @@ reaction_diffusion_meta = {
     ),
     "boundary": ParamMeta(
         kind="choice",
-        choices=("noflux", "dirichlet"),
+        choices=_BOUNDARY_CHOICES,
         description="マスク境界を濃度勾配なし、または外側濃度固定として扱う。",
     ),
 }
@@ -178,7 +180,7 @@ def _gray_scott_simulate_masked_serial(
     u_out = 1.0
     v_out = 0.0
 
-    if int(steps) > 0:
+    if steps > 0:
         for j in range(ny):
             for i in range(nx):
                 if mask[j, i] != 0:
@@ -188,7 +190,7 @@ def _gray_scott_simulate_masked_serial(
                 u2[j, i] = u_out
                 v2[j, i] = v_out
 
-    for _ in range(int(steps)):
+    for _ in range(steps):
         for j in range(ny):
             for i in range(nx):
                 if mask[j, i] == 0:
@@ -275,7 +277,7 @@ def _gray_scott_simulate_masked_parallel(
     nx = int(u0.shape[1])
     u = u0.copy()
     v = v0.copy()
-    if int(steps) <= 0:
+    if steps <= 0:
         return v
     u2 = np.empty_like(u)
     v2 = np.empty_like(v)
@@ -304,7 +306,7 @@ def _gray_scott_simulate_masked_parallel(
                 flags |= 8
             neighbor_flags[j, i] = flags
 
-    for _ in range(int(steps)):
+    for _ in range(steps):
         # 各 cell は読み取り元とは別の ping-pong buffer だけへ書き込む。
         for j in prange(ny):
             for i in range(nx):
@@ -392,7 +394,7 @@ def _gray_scott_simulate_masked(
         get_num_threads() > 1
         and int(u0.shape[0]) >= 2
         and int(u0.size) >= _PARALLEL_MIN_GRID_CELLS
-        and int(steps) >= _PARALLEL_MIN_STEPS
+        and steps >= _PARALLEL_MIN_STEPS
         and bool(np.isfinite(u0).all())
         and bool(np.isfinite(v0).all())
     )
@@ -468,6 +470,20 @@ def reaction_diffusion(
     tuple[np.ndarray, np.ndarray]
         生成されたポリライン列（coords, offsets）。
     """
+    requested_steps = integer_scalar(
+        steps,
+        name="reaction_diffusion: steps",
+    )
+    seed_i = integer_scalar(seed, name="reaction_diffusion: seed")
+    min_points_i = integer_scalar(
+        min_points,
+        name="reaction_diffusion: min_points",
+    )
+    boundary_s = known_choice(
+        boundary,
+        choices=_BOUNDARY_CHOICES,
+        name="reaction_diffusion: boundary",
+    )
     mask_coords, mask_offsets = mask
     if mask_coords.shape[0] == 0:
         return empty_geom()
@@ -492,7 +508,6 @@ def reaction_diffusion(
 
     margin = 2.0 * pitch
     quality = current_preview_quality()
-    requested_steps = int(steps)
     if quality == "draft":
         draft_step_target = max(0, min(requested_steps, DRAFT_MAX_STEPS))
         draft_cell_limit = (
@@ -544,7 +559,7 @@ def reaction_diffusion(
     if int(np.sum(domain_mask)) == 0:
         return empty_geom()
 
-    rng = np.random.default_rng(int(seed))
+    rng = np.random.default_rng(seed_i)
     u0 = np.ones((ny, nx), dtype=np.float32)
     v0 = np.zeros((ny, nx), dtype=np.float32)
 
@@ -584,8 +599,7 @@ def reaction_diffusion(
                     u0[y, x] = 0.0
                     v0[y, x] = 1.0
 
-    boundary_s = str(boundary)
-    boundary_i = 0 if boundary_s == "noflux" else 1 if boundary_s == "dirichlet" else 0
+    boundary_i = 0 if boundary_s == "noflux" else 1
     if quality == "draft":
         work_budget_steps = DRAFT_MAX_CELL_STEPS // max(1, grid.cell_count)
         effective_steps = min(
@@ -616,7 +630,7 @@ def reaction_diffusion(
         feed=float(feed),
         kill=float(kill),
         dt=float(dt),
-        boundary=int(boundary_i),
+        boundary=boundary_i,
     )
 
     out_lines: list[np.ndarray] = []
@@ -632,7 +646,7 @@ def reaction_diffusion(
     )
 
     for pts_xy in loops:
-        if pts_xy.shape[0] < int(min_points):
+        if pts_xy.shape[0] < min_points_i:
             continue
         if pts_xy.shape[0] >= 2 and not np.all(pts_xy[0] == pts_xy[-1]):
             pts_xy = np.concatenate([pts_xy, pts_xy[:1]], axis=0)

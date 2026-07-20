@@ -9,10 +9,9 @@ import resource
 import subprocess
 import sys
 import time
-from collections import OrderedDict
 from dataclasses import dataclass
 from types import CodeType
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import numpy as np
@@ -32,11 +31,13 @@ from grafix.core.pipeline import realize_scene
 from grafix.core.primitives.asemic import _generate_asemic_glyph, asemic
 from grafix.core.realize import RealizeSession
 from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
+from grafix.core.runtime_limits import RuntimeLimits
 from grafix.export.gcode import _Stroke, _order_strokes_in_layer
 from grafix.interactive.gl import draw_renderer as renderer_module
 from grafix.interactive.gl.draw_renderer import DrawRenderer
 from grafix.interactive.gl.index_buffer import build_line_indices_and_stats
 from grafix.interactive.parameter_gui import store_bridge
+from grafix.api.render import RenderOptions
 
 
 @dataclass(slots=True)
@@ -92,6 +93,24 @@ class _BenchmarkFakeMesh:
         self.released = True
 
 
+class _BenchmarkFakeUniform:
+    def __init__(self) -> None:
+        self.value: object | None = None
+
+    def write(self, _value: bytes) -> None:
+        return None
+
+
+class _BenchmarkFakeProgram(dict[str, _BenchmarkFakeUniform]):
+    def release(self) -> None:
+        return None
+
+
+class _BenchmarkFakeWindow:
+    def switch_to(self) -> None:
+        return None
+
+
 def _summarize_ns(samples: list[int]) -> dict[str, float | int]:
     ordered = sorted(int(sample) for sample in samples)
     if not ordered:
@@ -138,7 +157,9 @@ def _animated_soak(*, frames: int, sides: int) -> dict[str, Any]:
     ).itemsize
     cache_limit = max(1_024, 2 * int(estimated_bytes) + 64)
     last: RealizedGeometry | None = None
-    with RealizeSession(max_cache_bytes=cache_limit) as session:
+    with RealizeSession(
+        runtime_limits=RuntimeLimits(cpu_cache_bytes=cache_limit)
+    ) as session:
         for frame in range(max(1, int(frames))):
             last = session.realize(_draw_geometry(frame=frame, sides=int(sides)))
         stats = session.stats()
@@ -298,6 +319,7 @@ def _parameter_store(*, rows: int) -> ParamStore:
             meta=meta,
             explicit=False,
             effective=float(index),
+            source="code",
         )
         for index in range(row_count)
     ]
@@ -319,20 +341,28 @@ def _parameter_snapshot_model_workload(
     render_calls = 0
     visible_rows = 0
 
-    def fake_render(rows: list[Any], **_kwargs: Any) -> tuple[bool, list[Any]]:
+    def fake_render(
+        *,
+        model_rows: list[Any],
+        **_kwargs: Any,
+    ) -> tuple[bool, list[Any]]:
         nonlocal render_calls, visible_rows
         render_calls += 1
-        visible_rows = len(rows)
-        return False, rows
+        visible_rows = len(model_rows)
+        return False, model_rows
 
     samples: list[int] = []
     first_frame_ns = 0
     with patch.object(store_bridge, "render_parameter_table", fake_render):
         for frame in range(frame_count):
             started = time.perf_counter_ns()
-            changed = store_bridge.render_store_parameter_table(
+            table_view = store_bridge.parameter_table_view_for_store(
                 store,
                 show_inactive_params=True,
+            )
+            changed = store_bridge.render_store_parameter_table(
+                store,
+                table_view=table_view,
             )
             elapsed = time.perf_counter_ns() - started
             if changed:
@@ -373,28 +403,35 @@ def _renderer_geometry(*, polylines: int) -> RealizedGeometry:
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
-def _fake_renderer() -> Any:
-    renderer: Any = DrawRenderer.__new__(DrawRenderer)
-    renderer.ctx = object()
-    renderer.program = object()
-    renderer._scratch_mesh = _BenchmarkFakeMesh(renderer.ctx, renderer.program)
-    renderer._scratch_topology = None
-    renderer._mesh_cache = OrderedDict()
-    renderer._mesh_candidates = OrderedDict()
-    renderer._dynamic_meshes = OrderedDict()
-    renderer._mesh_cache_bytes = 0
-    renderer._dynamic_mesh_bytes = 0
-    renderer._mesh_upload_count = 0
-    renderer._mesh_cache_max_bytes = 192 * 1024 * 1024
-    renderer._mesh_cache_max_entries = 4_096
-    # 最適化前 source も同じ schema v3 harness で測れるよう、旧candidate
-    # accounting fieldもfake instanceにだけ用意する。
-    renderer._mesh_candidates_bytes = 0
-    renderer._mesh_candidates_max_bytes = 64 * 1024 * 1024
-    renderer._mesh_candidates_max_entries = 4_096
-    renderer._dynamic_mesh_max_bytes = 64 * 1024 * 1024
-    renderer._dynamic_mesh_max_entries = 256
-    return renderer
+def _fake_renderer() -> DrawRenderer:
+    """GL resource constructorだけをfakeにし、rendererを正式初期化する。"""
+
+    context = object()
+    program = _BenchmarkFakeProgram(
+        {
+            "viewport_size": _BenchmarkFakeUniform(),
+            "line_width_px": _BenchmarkFakeUniform(),
+            "color": _BenchmarkFakeUniform(),
+            "projection": _BenchmarkFakeUniform(),
+        }
+    )
+    with (
+        patch.object(
+            renderer_module.moderngl,
+            "create_context",
+            return_value=context,
+        ),
+        patch.object(
+            renderer_module.Shader,
+            "create_shader",
+            return_value=program,
+        ),
+        patch.object(renderer_module, "LineMesh", _BenchmarkFakeMesh),
+    ):
+        return DrawRenderer(
+            cast(Any, _BenchmarkFakeWindow()),
+            RenderOptions(),
+        )
 
 
 def _renderer_cache_workload(
@@ -436,14 +473,25 @@ def _renderer_cache_workload(
             mesh, stats = renderer.prepare_layer_mesh(
                 geometry,
                 cache_key=cache_key,
+                scene_serial=frame + 1,
+                snapshot_revision=1,
             )
             elapsed = time.perf_counter_ns() - started
             if mesh is None:
                 raise RuntimeError("renderer benchmark が空 mesh を返した")
+            benchmark_mesh = cast(_BenchmarkFakeMesh, mesh)
             if include_semantic_frames:
-                if mesh.last_vertices is None or mesh.last_indices is None:
+                if (
+                    benchmark_mesh.last_vertices is None
+                    or benchmark_mesh.last_indices is None
+                ):
                     raise RuntimeError("renderer benchmark mesh upload state is missing")
-                semantic_frames.append((mesh.last_vertices, mesh.last_indices))
+                semantic_frames.append(
+                    (
+                        benchmark_mesh.last_vertices,
+                        benchmark_mesh.last_indices,
+                    )
+                )
             cache_hits += int(cached_before)
             cache_misses += int(not cached_before)
             if frame >= 2:
@@ -549,13 +597,20 @@ def _renderer_multilayer_dynamic_workload(
                     raise RuntimeError(
                         "multi-layer renderer benchmark returned an empty mesh"
                     )
+                benchmark_mesh = cast(_BenchmarkFakeMesh, mesh)
                 if include_semantic_frames:
-                    if mesh.last_vertices is None or mesh.last_indices is None:
+                    if (
+                        benchmark_mesh.last_vertices is None
+                        or benchmark_mesh.last_indices is None
+                    ):
                         raise RuntimeError(
                             "multi-layer renderer upload state is missing"
                         )
                     semantic_frames.append(
-                        (mesh.last_vertices.copy(), mesh.last_indices.copy())
+                        (
+                            benchmark_mesh.last_vertices.copy(),
+                            benchmark_mesh.last_indices.copy(),
+                        )
                     )
 
     meshes = _BenchmarkFakeMesh.instances

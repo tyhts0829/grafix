@@ -1,3 +1,5 @@
+import pytest
+
 from grafix.interactive.parameter_gui.rules import ui_rules_for_row
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.style import STYLE_OP
@@ -40,7 +42,7 @@ def test_ui_rules_for_row_defaults_by_kind():
     assert ui_rules_for_row(_row(op="circle", arg="s", kind="str")).show_override is True
     assert ui_rules_for_row(_row(op="circle", arg="f", kind="font")).cc_key == "none"
     assert ui_rules_for_row(_row(op="circle", arg="f", kind="font")).show_override is True
-    assert ui_rules_for_row(_row(op="circle", arg="c", kind="choice")).cc_key == "none"
+    assert ui_rules_for_row(_row(op="circle", arg="c", kind="choice")).cc_key == "int"
     assert ui_rules_for_row(_row(op="circle", arg="c", kind="choice")).show_override is True
 
 
@@ -67,3 +69,8 @@ def test_style_rgb_rows_do_not_expose_tuple_midi_controls() -> None:
     # CODE/UI の切替は残す。MIDI の非表示と source fallback は別の責務。
     assert ui_rules_for_row(background).show_override is True
     assert ui_rules_for_row(layer_color).show_override is True
+
+
+def test_ui_rules_reject_unknown_kind() -> None:
+    with pytest.raises(ValueError, match="unknown parameter kind"):
+        ui_rules_for_row(_row(op="circle", arg="x", kind="unknown"))

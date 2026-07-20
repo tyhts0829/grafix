@@ -15,13 +15,16 @@ from grafix.core.op_registry import (
     op_defaults_and_order,
 )
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.identity import identity_string
 from grafix.core.parameters.meta_spec import meta_dict_from_user
+from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.realized_geometry import (
     GeomTuple,
     RealizedGeometry,
     concat_realized_geometries,
     realized_geometry_from_tuple,
 )
+from grafix.core.value_validation import exact_bool, exact_integer
 
 EffectFunc = Callable[
     [Sequence[RealizedGeometry], tuple[tuple[str, Any], ...]],
@@ -81,6 +84,7 @@ def effect(
         return coords, offsets
     """
 
+    overwrite = exact_bool(overwrite, name="overwrite")
     meta_norm = None if meta is None else meta_dict_from_user(meta)
     if meta_norm is not None:
         reserved = {"activate", "key"} & set(meta_norm)
@@ -88,17 +92,13 @@ def effect(
             names = ", ".join(sorted(reserved))
             raise ValueError(f"effect の予約引数は meta に含められない: {names}")
 
-    n_inputs_i = int(n_inputs)
-    if n_inputs_i < 1:
-        raise ValueError("n_inputs は 1 以上である必要がある")
+    n_inputs_i = exact_integer(n_inputs, name="n_inputs", minimum=1)
 
     def decorator(
         f: Callable[..., GeomTuple],
     ) -> Callable[..., GeomTuple]:
-        module = str(f.__module__)
-        if meta_norm is None and (
-            module.startswith("grafix.core.effects.") or module.startswith("core.effects.")
-        ):
+        module = identity_string(f.__module__, name="effect module")
+        if meta_norm is None and module.startswith("grafix.core.effects."):
             raise ValueError(f"組み込み effect は meta 必須: {f.__module__}.{f.__name__}")
 
         meta_with_activate = (
@@ -112,7 +112,11 @@ def effect(
             args: tuple[tuple[str, Any], ...],
         ) -> RealizedGeometry:
             params: dict[str, Any] = dict(args)
-            activate = bool(params.pop("activate", True))
+            activate = validate_parameter_value(
+                params.pop("activate", True),
+                kind="bool",
+                choices=None,
+            )
             if not activate:
                 if not inputs:
                     return concat_realized_geometries()

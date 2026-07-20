@@ -132,7 +132,11 @@ def _export_one(*, draw: object, canvas_size: tuple[int, int]) -> tuple[Path, Pa
     )
     svg_result = export(frame, svg_path, overwrite=True)
 
-    png_path = default_png_output_path(draw, canvas_size=canvas_size)  # type: ignore[arg-type]
+    png_path = default_png_output_path(
+        draw,  # type: ignore[arg-type]
+        scale=frame.metadata.effective_config.png_scale,
+        canvas_size=canvas_size,
+    )
     png_result = export(frame, png_path, overwrite=True)
     return svg_result.path, png_result.path
 

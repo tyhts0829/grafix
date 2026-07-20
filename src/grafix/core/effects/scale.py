@@ -7,6 +7,7 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+from .argument_validation import finite_vec3
 
 _CLOSED_ATOL = 1e-6
 # 1 本では従来 loop が速く、8 本では bulk 経路が明確に速くなる実測結果に基づく。
@@ -279,15 +280,19 @@ def scale(
     tuple[np.ndarray, np.ndarray]
         スケール後の実体ジオメトリ（coords, offsets）。
     """
+    if not isinstance(mode, str):
+        raise TypeError("scale: mode は str である必要がある")
+    if mode not in {"all", "by_line", "by_face"}:
+        raise ValueError(f"scale: 未知の mode です: {mode!r}")
+    mode_s = mode
+    scale_value = finite_vec3(scale, name="scale: scale")
+    pivot_value = finite_vec3(pivot, name="scale: pivot")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    mode_s = str(mode)
-    if mode_s not in {"all", "by_line", "by_face"}:
-        return coords, offsets
-
-    sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
+    sx, sy, sz = scale_value
     if sx == 1.0 and sy == 1.0 and sz == 1.0:
         return coords, offsets
 
@@ -307,10 +312,7 @@ def scale(
             if auto_center:
                 center = coords.astype(np.float64, copy=False).mean(axis=0)
             else:
-                center = np.array(
-                    [float(pivot[0]), float(pivot[1]), float(pivot[2])],
-                    dtype=np.float64,
-                )
+                center = np.asarray(pivot_value, dtype=np.float64)
             shifted = coords.astype(np.float64, copy=False) - center
             scaled = shifted * factors + center
             coords_out = scaled.astype(np.float32, copy=False)
@@ -321,10 +323,7 @@ def scale(
             coords64 = coords.astype(np.float64, copy=True)
             center = coords64.mean(axis=0)
         else:
-            center = np.array(
-                [float(pivot[0]), float(pivot[1]), float(pivot[2])],
-                dtype=np.float64,
-            )
+            center = np.asarray(pivot_value, dtype=np.float64)
             coords64 = coords.astype(np.float64, copy=True)
 
         if (

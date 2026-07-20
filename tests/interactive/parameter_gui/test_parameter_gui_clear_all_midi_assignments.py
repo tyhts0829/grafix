@@ -19,8 +19,22 @@ def test_clear_all_midi_assignments_bakes_effective_and_clears_cc_key() -> None:
     merge_frame_params(
         store,
         [
-            FrameParamRecord(key=key_r, base=0.0, meta=meta_r, explicit=True),
-            FrameParamRecord(key=key_p, base=(0.0, 0.0, 0.0), meta=meta_p, explicit=True),
+            FrameParamRecord(
+                key=key_r,
+                base=0.0,
+                meta=meta_r,
+                effective=0.0,
+                source="code",
+                explicit=True,
+            ),
+            FrameParamRecord(
+                key=key_p,
+                base=(0.0, 0.0, 0.0),
+                meta=meta_p,
+                effective=(0.0, 0.0, 0.0),
+                source="code",
+                explicit=True,
+            ),
         ],
     )
 
@@ -65,7 +79,14 @@ def test_clear_all_midi_assignments_returns_false_when_no_assignments() -> None:
     merge_frame_params(
         store,
         [
-            FrameParamRecord(key=key, base=0.0, meta=meta_r, explicit=True),
+            FrameParamRecord(
+                key=key,
+                base=0.0,
+                meta=meta_r,
+                effective=0.0,
+                source="code",
+                explicit=True,
+            ),
         ],
     )
 

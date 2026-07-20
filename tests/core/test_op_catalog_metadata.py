@@ -237,3 +237,47 @@ def test_catalog_records_var_keyword_support(
         return _empty_geometry()
 
     assert registry["dynamic_primitive"].accepts_var_kwargs is True
+
+
+def test_primitive_builtin_meta_requirement_uses_only_canonical_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
+    monkeypatch.setattr(primitive_registry_module, "primitive_registry", registry)
+
+    def canonical_builtin() -> GeomTuple:
+        return _empty_geometry()
+
+    canonical_builtin.__module__ = "grafix.core.primitives.example"
+    with pytest.raises(ValueError, match="meta 必須"):
+        primitive_registry_module.primitive(canonical_builtin)
+
+    def similarly_named_user_module() -> GeomTuple:
+        return _empty_geometry()
+
+    similarly_named_user_module.__module__ = "core.primitives.example"
+    primitive_registry_module.primitive(similarly_named_user_module)
+
+    assert "similarly_named_user_module" in registry
+
+
+def test_effect_builtin_meta_requirement_uses_only_canonical_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
+    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
+
+    def canonical_builtin(g: GeomTuple) -> GeomTuple:
+        return g
+
+    canonical_builtin.__module__ = "grafix.core.effects.example"
+    with pytest.raises(ValueError, match="meta 必須"):
+        effect_registry_module.effect(canonical_builtin)
+
+    def similarly_named_user_module(g: GeomTuple) -> GeomTuple:
+        return g
+
+    similarly_named_user_module.__module__ = "core.effects.example"
+    effect_registry_module.effect(similarly_named_user_module)
+
+    assert "similarly_named_user_module" in registry

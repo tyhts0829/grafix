@@ -423,29 +423,32 @@ def test_scale_bulk_processes_line_metadata_in_bounded_chunks() -> None:
     assert actual_offsets is offsets
 
 
-def test_scale_empty_and_invalid_mode_do_not_evaluate_other_arguments() -> None:
+def test_scale_empty_geometry_is_identity_after_argument_validation() -> None:
     empty_coords = np.zeros((0, 3), dtype=np.float32)
     empty_offsets = np.zeros((1,), dtype=np.int32)
-    invalid_coords = np.ones((1, 3), dtype=np.float32)
-    invalid_offsets = np.array([0, 1], dtype=np.int32)
 
     empty_result = scale_effect(
         (empty_coords, empty_offsets),
-        mode=object(),
-        pivot=(),
-        scale=(),
-    )
-    invalid_mode_result = scale_effect(
-        (invalid_coords, invalid_offsets),
-        mode="invalid",
-        pivot=(),
-        scale=(),
+        mode="all",
+        pivot=(0.0, 0.0, 0.0),
+        scale=(1.0, 1.0, 1.0),
     )
 
     assert empty_result[0] is empty_coords
     assert empty_result[1] is empty_offsets
-    assert invalid_mode_result[0] is invalid_coords
-    assert invalid_mode_result[1] is invalid_offsets
+
+
+def test_scale_rejects_invalid_mode_and_vec3_parameters() -> None:
+    coords = np.ones((1, 3), dtype=np.float32)
+    offsets = np.array([0, 1], dtype=np.int32)
+    geometry = (coords, offsets)
+
+    with pytest.raises(ValueError, match="mode"):
+        scale_effect(geometry, mode="invalid")
+    with pytest.raises(TypeError, match="scale"):
+        scale_effect(geometry, scale=[1.0, 1.0, 1.0])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="pivot"):
+        scale_effect(geometry, pivot=(0.0, 0.0))  # type: ignore[arg-type]
 
 
 def test_scale_all_large_noncanonical_shape_keeps_broadcast_error() -> None:

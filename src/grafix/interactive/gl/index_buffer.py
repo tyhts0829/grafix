@@ -20,25 +20,6 @@ class LineIndexStats:
     draw_lines: int
 
 
-def build_line_indices(offsets: np.ndarray) -> np.ndarray:
-    """RealizedGeometry.offsets から GL_LINE_STRIP 用インデックス配列を生成する。
-
-    Notes
-    -----
-    - 複数ポリラインを 1 draw call で描くため、polyline 間に PRIMITIVE_RESTART_INDEX を挿入する。
-    - cache は geometry ID を知る Renderer が所有し、この純粋関数では保持しない。
-    """
-    offsets_i32 = np.asarray(offsets, dtype=np.int32)
-    if offsets_i32.size < 2:
-        return np.zeros((0,), dtype=np.uint32)
-    indices, _vertices, _lines = _build_line_strip_indices_and_stats_numba(
-        offsets_i32,
-        np.uint32(LineMesh.PRIMITIVE_RESTART_INDEX),
-    )
-    indices.setflags(write=False)
-    return indices
-
-
 def build_line_indices_and_stats(offsets: np.ndarray) -> tuple[np.ndarray, LineIndexStats]:
     """RealizedGeometry.offsets から indices と描画統計をまとめて生成する。"""
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from grafix import cc
 from grafix.core.parameters.context import parameter_context_from_snapshot
 from grafix.interactive.midi.midi_controller import MidiController
@@ -74,4 +76,5 @@ def test_restored_values_are_visible_via_cc_snapshot(tmp_path: Path) -> None:
     with parameter_context_from_snapshot({}, cc_snapshot=snapshot):
         assert cc[1] == 0.25
         assert cc[2] == 1.0
-        assert cc[999] == 0.0
+        with pytest.raises(ValueError, match="0\\.\\.127"):
+            cc[999]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import FrozenInstanceError
 from inspect import signature
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -79,6 +79,99 @@ def test_op_spec_copies_mappings_and_is_frozen() -> None:
         spec.n_inputs = 1  # type: ignore[misc]
 
 
+@pytest.mark.parametrize("n_inputs", [True, 1.0, "1"])
+@pytest.mark.parametrize("kind", ["primitive", "effect"])
+def test_op_spec_rejects_implicitly_convertible_n_inputs(
+    kind: OpKind,
+    n_inputs: object,
+) -> None:
+    with pytest.raises(TypeError, match="n_inputs.*int"):
+        OpSpec(
+            evaluator=_evaluator,
+            meta={},
+            defaults={},
+            param_order=(),
+            ui_visible={},
+            n_inputs=n_inputs,  # type: ignore[arg-type]
+            kind=kind,
+        )
+
+
+def test_op_spec_normalizes_index_integer_n_inputs() -> None:
+    spec = OpSpec(
+        evaluator=_evaluator,
+        meta={},
+        defaults={},
+        param_order=(),
+        ui_visible={},
+        n_inputs=np.int64(1),  # type: ignore[arg-type]
+        kind="effect",
+    )
+
+    assert spec.n_inputs == 1
+    assert type(spec.n_inputs) is int
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("param_order", (1,)),
+        ("description", object()),
+        ("accepted_args", (1,)),
+        ("accepts_var_kwargs", 1),
+    ],
+)
+def test_op_spec_rejects_implicit_metadata_conversion(
+    field: str,
+    value: object,
+) -> None:
+    kwargs: dict[str, object] = {
+        "evaluator": _evaluator,
+        "meta": {},
+        "defaults": {},
+        "param_order": (),
+        "ui_visible": {},
+        "n_inputs": 0,
+        "kind": "primitive",
+    }
+    kwargs[field] = value
+
+    with pytest.raises(TypeError):
+        OpSpec(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("kind", "n_inputs", "message"),
+    [
+        ("primitive", 1, "0 である"),
+        ("effect", 0, "1 以上"),
+    ],
+)
+def test_op_spec_rejects_n_inputs_outside_kind_range(
+    kind: OpKind,
+    n_inputs: int,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        OpSpec(
+            evaluator=_evaluator,
+            meta={},
+            defaults={},
+            param_order=(),
+            ui_visible={},
+            n_inputs=n_inputs,
+            kind=kind,
+        )
+
+
+@pytest.mark.parametrize("n_inputs", [True, 1.0, "1"])
+def test_effect_decorator_rejects_implicitly_convertible_n_inputs(
+    n_inputs: object,
+) -> None:
+    with pytest.raises(TypeError, match="n_inputs.*int"):
+        effect(n_inputs=n_inputs)  # type: ignore[arg-type]
+
+
 def test_registry_requires_explicit_replace_and_advances_revision() -> None:
     registry: OpRegistry[Evaluator] = OpRegistry(kind="primitive")
     first = _spec()
@@ -97,6 +190,27 @@ def test_registry_requires_explicit_replace_and_advances_revision() -> None:
     registry.register("sample", second, replace=True)
     assert registry["sample"] is second
     assert registry.revision == 2
+
+
+@pytest.mark.parametrize("invalid", (1, object()))
+def test_registry_rejects_implicitly_stringifiable_operation_name(
+    invalid: object,
+) -> None:
+    registry: OpRegistry[Evaluator] = OpRegistry(kind="primitive")
+
+    with pytest.raises(TypeError, match="空でない文字列"):
+        registry.register(cast(str, invalid), _spec())
+    with pytest.raises(TypeError, match="空でない文字列"):
+        registry.describe(cast(str, invalid))
+    with pytest.raises(TypeError, match="空でない文字列"):
+        registry.replace_all(cast(Mapping[str, OpSpec[Evaluator]], {invalid: _spec()}))
+
+
+def test_registry_rejects_empty_operation_name() -> None:
+    registry: OpRegistry[Evaluator] = OpRegistry(kind="primitive")
+
+    with pytest.raises(ValueError, match="空でない文字列"):
+        registry.register("", _spec())
 
 
 @pytest.mark.parametrize("kind", ("primitive", "effect"))
@@ -124,6 +238,28 @@ def test_public_decorators_disable_overwrite_by_default() -> None:
     assert signature(effect).parameters["overwrite"].default is False
     assert signature(primitive).parameters["cache_policy"].default == "content"
     assert signature(effect).parameters["cache_policy"].default == "content"
+
+
+@pytest.mark.parametrize("overwrite", [1, 0, "false", None])
+def test_public_decorators_reject_non_bool_overwrite(overwrite: object) -> None:
+    with pytest.raises(TypeError, match="overwrite"):
+        primitive(overwrite=overwrite)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="overwrite"):
+        effect(overwrite=overwrite)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("replace", [1, 0, "false", None])
+def test_registry_rejects_non_bool_replace(replace: object) -> None:
+    registry: OpRegistry[Evaluator] = OpRegistry(kind="primitive")
+
+    with pytest.raises(TypeError, match="replace"):
+        registry.register(
+            "sample",
+            _spec(),
+            replace=replace,  # type: ignore[arg-type]
+        )
+
+    assert registry.revision == 0
 
 
 def test_op_spec_rejects_unknown_cache_policy() -> None:

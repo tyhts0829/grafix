@@ -33,8 +33,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import resources
+from numbers import Real
 from pathlib import Path
 from typing import Any
+
+from grafix.core.gcode_params import GCodeParams
 
 
 # parameter_gui の設定が省略された場合のフォールバック値。
@@ -64,26 +67,6 @@ _PATH_KEYS = frozenset(
     }
 )
 _PATH_LIST_KEYS = frozenset({"paths.preset_module_dirs", "paths.font_dirs"})
-
-
-@dataclass(frozen=True, slots=True)
-class GCodeExportConfig:
-    """G-code 出力設定（`config.yaml` の `export.gcode`）。"""
-
-    travel_feed: float
-    draw_feed: float
-    z_up: float
-    z_down: float
-    y_down: bool
-    origin: tuple[float, float]
-    decimals: int
-    paper_margin_mm: float
-    bed_x_range: tuple[float, float] | None
-    bed_y_range: tuple[float, float] | None
-    bridge_draw_distance: float | None
-    optimize_travel: bool
-    allow_reverse: bool
-    canvas_height_mm: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +120,7 @@ class RuntimeConfig:
     parameter_gui_font_size_base_px: float
     parameter_gui_shortcuts: tuple[tuple[str, str], ...]
     png_scale: float
-    gcode: GCodeExportConfig
+    gcode: GCodeParams
     midi_inputs: tuple[tuple[str, str], ...]
 
 
@@ -191,7 +174,7 @@ class _UiSection:
 @dataclass(frozen=True, slots=True)
 class _ExportSection:
     png_scale: float
-    gcode: GCodeExportConfig
+    gcode: GCodeParams
 
 
 # `set_config_path()` で指定される「明示 config」のパス。
@@ -223,7 +206,13 @@ def set_config_path(path: str | Path | None) -> None:
         _CONFIG_CACHE = None
         _CONFIG_REPORT_CACHE = None
         return
-    p = Path(str(path)).expanduser().resolve(strict=False)
+    if type(path) is str:
+        p = Path(path)
+    elif isinstance(path, Path):
+        p = path
+    else:
+        raise TypeError("config path は str、Path、None のいずれかである必要があります")
+    p = p.expanduser().resolve(strict=False)
     _EXPLICIT_CONFIG_PATH = p
     _CONFIG_CACHE = None
     _CONFIG_REPORT_CACHE = None
@@ -276,56 +265,46 @@ def _default_config_candidates() -> tuple[Path, ...]:
 def _expand_path_text(text: str) -> str:
     """パス文字列内の `~` と環境変数を展開して返す。"""
 
-    return os.path.expandvars(os.path.expanduser(str(text)))
+    if type(text) is not str:
+        raise TypeError("path text は str である必要があります")
+    return os.path.expandvars(os.path.expanduser(text))
 
 
 def _as_optional_path(value: Any) -> Path | None:
-    """任意値を「空なら None / それ以外は Path」へ変換する。"""
+    """None または path 文字列を Path へ変換する。"""
 
     if value is None:
         return None
-    s = str(value).strip()
+    if type(value) is not str:
+        raise RuntimeError(f"path は文字列または None である必要があります: got={value!r}")
+    s = value.strip()
     if not s:
         return None
     return Path(_expand_path_text(s))
 
 
 def _as_optional_str(value: Any) -> str | None:
-    """任意値を「空なら None / それ以外は str」へ変換する。"""
+    """None または文字列を、空なら None として返す。"""
 
     if value is None:
         return None
-    s = str(value).strip()
+    if type(value) is not str:
+        raise RuntimeError(f"値は文字列または None である必要があります: got={value!r}")
+    s = value.strip()
     return None if not s else s
 
 
 def _as_path_list(value: Any) -> list[Path]:
-    """任意値を Path の list に変換する。
+    """path 文字列だけを含む list を Path 列へ変換する。"""
 
-    - None → `[]`
-    - str → `os.pathsep`（macOS/Linux なら `:`）区切りで分解
-    - iterable → 各要素を `_as_optional_path()` で変換（空要素は捨てる）
-    """
-
-    if value is None:
-        return []
-    if isinstance(value, str):
-        s = value.strip()
-        if not s:
-            return []
-        parts = [p for p in s.split(os.pathsep) if p]
-        return [Path(_expand_path_text(p)) for p in parts]
-
-    try:
-        seq = list(value)
-    except Exception:
-        return []
-
+    if not isinstance(value, list):
+        raise RuntimeError(f"path list は文字列の配列である必要があります: got={value!r}")
     out: list[Path] = []
-    for item in seq:
+    for index, item in enumerate(value):
         p = _as_optional_path(item)
-        if p is not None:
-            out.append(p)
+        if p is None:
+            raise RuntimeError(f"path list[{index}] は空でない文字列である必要があります")
+        out.append(p)
     return out
 
 
@@ -374,44 +353,33 @@ def _as_float_pair(value: Any, *, key: str) -> tuple[float, float] | None:
 
 
 def _as_int(value: Any, *, key: str) -> int | None:
-    """任意値を int として解釈して返す。"""
+    """bool や他型を変換せず int を返す。"""
 
     if value is None:
         return None
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, int):
         raise RuntimeError(f"{key} は整数である必要があります: got={value!r}")
-    if isinstance(value, float):
-        if not math.isfinite(value) or not value.is_integer():
-            raise RuntimeError(f"{key} は整数である必要があります: got={value!r}")
-    try:
-        return int(value)
-    except Exception as exc:
-        raise RuntimeError(f"{key} は整数である必要があります: got={value!r}") from exc
+    return value
 
 
 def _as_bool(value: Any, *, key: str) -> bool | None:
-    """任意値を bool として解釈して返す。"""
+    """暗黙 truthiness 変換を行わず bool を返す。"""
 
     if value is None:
         return None
-    if isinstance(value, bool):
-        return bool(value)
-    if isinstance(value, int) and int(value) in (0, 1):
-        return bool(int(value))
-    raise RuntimeError(f"{key} は bool である必要があります: got={value!r}")
+    if type(value) is not bool:
+        raise RuntimeError(f"{key} は bool である必要があります: got={value!r}")
+    return value
 
 
 def _as_float(value: Any, *, key: str) -> float | None:
-    """任意値を float として解釈して返す。"""
+    """bool/文字列を変換せず有限実数を float で返す。"""
 
     if value is None:
         return None
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, Real):
         raise RuntimeError(f"{key} は数値である必要があります: got={value!r}")
-    try:
-        number = float(value)
-    except Exception as exc:
-        raise RuntimeError(f"{key} は数値である必要があります: got={value!r}") from exc
+    number = float(value)
     if not math.isfinite(number):
         raise ValueError(f"{key} は finite な数値である必要があります: got={value!r}")
     return number
@@ -604,7 +572,7 @@ def _resolve_path_text(value: Any, *, base_dir: Path, key: str) -> str | None:
 
     if value is None:
         return None
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise RuntimeError(f"{key} は path 文字列である必要があります: got={value!r}")
     text = value.strip()
     if not text:
@@ -618,20 +586,15 @@ def _resolve_path_text(value: Any, *, base_dir: Path, key: str) -> str | None:
 def _resolve_path_list(value: Any, *, base_dir: Path, key: str) -> list[str]:
     """config path 配列を ``base_dir`` 基準の絶対 path 配列にする。"""
 
-    if value is None:
-        return []
-    if isinstance(value, str):
-        items: list[Any] = [part for part in value.split(os.pathsep) if part]
-    elif isinstance(value, list):
-        items = value
-    else:
+    if not isinstance(value, list):
         raise RuntimeError(f"{key} は path 文字列の配列である必要があります: got={value!r}")
 
     resolved: list[str] = []
-    for index, item in enumerate(items):
+    for index, item in enumerate(value):
         path = _resolve_path_text(item, base_dir=base_dir, key=f"{key}[{index}]")
-        if path:
-            resolved.append(path)
+        if not path:
+            raise RuntimeError(f"{key}[{index}] は空でない path 文字列である必要があります")
+        resolved.append(path)
     return resolved
 
 
@@ -805,7 +768,12 @@ def _parse_ui_section(payload: dict[str, Any]) -> _UiSection:
     )
     shortcuts: list[tuple[str, str]] = []
     for action in _PARAMETER_GUI_SHORTCUT_ACTIONS:
-        key_name = str(shortcut_values.get(action, "")).strip().upper()
+        raw_key_name = shortcut_values.get(action)
+        if type(raw_key_name) is not str:
+            raise ValueError(
+                f"ui.parameter_gui.shortcuts.{action} はpyglet key名である必要があります"
+            )
+        key_name = raw_key_name.strip().upper()
         if not key_name or not key_name.replace("_", "").isalnum():
             raise ValueError(
                 f"ui.parameter_gui.shortcuts.{action} はpyglet key名である必要があります"
@@ -824,7 +792,7 @@ def _parse_ui_section(payload: dict[str, Any]) -> _UiSection:
     )
 
 
-def _parse_gcode_section(gcode: dict[str, Any]) -> GCodeExportConfig:
+def _parse_gcode_section(gcode: dict[str, Any]) -> GCodeParams:
     """``export.gcode`` section を検証して返す。"""
 
     required_keys = (
@@ -974,20 +942,20 @@ def _parse_gcode_section(gcode: dict[str, Any]) -> GCodeExportConfig:
             "（同梱 default_config.yaml を確認してください）"
         )
 
-    return GCodeExportConfig(
-        travel_feed=float(travel_feed),
-        draw_feed=float(draw_feed),
-        z_up=float(z_up),
-        z_down=float(z_down),
-        y_down=bool(y_down),
-        origin=(float(origin[0]), float(origin[1])),
-        decimals=int(decimals),
-        paper_margin_mm=float(paper_margin_mm),
+    return GCodeParams(
+        travel_feed=travel_feed,
+        draw_feed=draw_feed,
+        z_up=z_up,
+        z_down=z_down,
+        y_down=y_down,
+        origin=origin,
+        decimals=decimals,
+        paper_margin_mm=paper_margin_mm,
         bed_x_range=bed_x_range,
         bed_y_range=bed_y_range,
         bridge_draw_distance=bridge_draw_distance,
-        optimize_travel=bool(optimize_travel),
-        allow_reverse=bool(allow_reverse),
+        optimize_travel=optimize_travel,
+        allow_reverse=allow_reverse,
         canvas_height_mm=canvas_height_mm,
     )
 
@@ -1258,7 +1226,6 @@ def output_root_dir() -> Path:
 
 
 __all__ = [
-    "GCodeExportConfig",
     "RuntimeConfig",
     "RuntimeConfigReport",
     "RuntimeConfigFallback",

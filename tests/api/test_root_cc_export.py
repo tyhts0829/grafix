@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from grafix import (
     ExportResult,
     Frame,
@@ -27,6 +29,22 @@ def test_cc_reads_from_parameter_context_cc_snapshot() -> None:
     with parameter_context_from_snapshot({}, cc_snapshot=snapshot):
         assert cc[0] == 0.25
         assert cc[1] == 0.0
+
+
+@pytest.mark.parametrize("invalid", [True, "1", 1.0])
+def test_cc_rejects_non_integer_keys(invalid: object) -> None:
+    with pytest.raises(TypeError, match="整数"):
+        cc[invalid]  # type: ignore[index]
+    with pytest.raises(TypeError, match="整数"):
+        cc.get(invalid)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("invalid", [-1, 128, 999])
+def test_cc_rejects_out_of_range_keys(invalid: int) -> None:
+    with pytest.raises(ValueError, match="0\\.\\.127"):
+        cc[invalid]
+    with pytest.raises(ValueError, match="0\\.\\.127"):
+        cc.get(invalid)
 
 
 def test_root_exports_headless_render_and_export_contract(tmp_path: Path) -> None:

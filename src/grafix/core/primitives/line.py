@@ -7,12 +7,16 @@
 from __future__ import annotations
 
 import math
+from typing import cast
 
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
+
+_ANCHOR_CHOICES = ("center", "left", "right")
 
 line_meta = {
     "center": ParamMeta(
@@ -23,7 +27,7 @@ line_meta = {
     ),
     "anchor": ParamMeta(
         kind="choice",
-        choices=("center", "left", "right"),
+        choices=_ANCHOR_CHOICES,
         description="指定座標を線分の中心・始点・終点のどこに合わせるか選択します。",
     ),
     "length": ParamMeta(
@@ -68,6 +72,14 @@ def line(
     tuple[np.ndarray, np.ndarray]
         2 点の線分としての実体ジオメトリ（coords, offsets）。
     """
+    anchor_s = cast(
+        str,
+        validate_parameter_value(
+            anchor,
+            kind="choice",
+            choices=_ANCHOR_CHOICES,
+        ),
+    )
     try:
         cx, cy, cz = center
     except Exception as exc:
@@ -78,10 +90,6 @@ def line(
     length_f = float(length)
     angle_deg = float(angle)
     cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
-
-    anchor_s = str(anchor)
-    if anchor_s not in {"center", "left", "right"}:
-        anchor_s = "center"
 
     theta = math.radians(angle_deg)
     dx = length_f * math.cos(theta)

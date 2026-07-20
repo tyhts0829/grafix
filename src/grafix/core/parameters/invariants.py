@@ -23,6 +23,7 @@ def assert_invariants(store: ParamStore) -> None:
     for key, state in store._states.items():
         assert isinstance(key, ParameterKey)
         assert isinstance(state, ParamState)
+        assert key in store._explicit_by_key
 
     for key, meta in store._meta.items():
         assert isinstance(key, ParameterKey)

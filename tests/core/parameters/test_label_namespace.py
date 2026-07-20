@@ -1,4 +1,6 @@
-from grafix.api import E, G
+import pytest
+
+from grafix.api import E, G, P
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.snapshot_ops import store_snapshot
@@ -45,3 +47,19 @@ def test_name_overwrites_last_value():
     # 最後の指定 "second" がどこかに入っていることを確認
     labels = [lbl for _k, (_m, _s, _o, lbl) in snap.items()]
     assert "second" in labels
+
+
+@pytest.mark.parametrize("namespace", (G, E, P))
+@pytest.mark.parametrize("invalid", (1, object()))
+def test_namespace_label_rejects_implicitly_stringifiable_value(
+    namespace: object,
+    invalid: object,
+) -> None:
+    with pytest.raises(TypeError, match="空でない文字列"):
+        namespace(name=invalid)  # type: ignore[operator]
+
+
+@pytest.mark.parametrize("namespace", (G, E, P))
+def test_namespace_label_rejects_empty_value(namespace: object) -> None:
+    with pytest.raises(ValueError, match="空でない文字列"):
+        namespace(name="")  # type: ignore[operator]

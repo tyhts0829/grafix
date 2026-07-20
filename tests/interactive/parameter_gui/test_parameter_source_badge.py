@@ -62,7 +62,16 @@ def test_undo_badge_matches_restored_effective_source_before_the_next_draw() -> 
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=0.0, meta=meta, explicit=True)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.0,
+                meta=meta,
+                effective=0.0,
+                source="code",
+                explicit=True,
+            )
+        ],
     )
     history = ParamStoreHistory(store)
     ok, error = update_state_from_ui(store, key, 0.75, meta=meta, override=True)
@@ -98,6 +107,7 @@ def test_merge_remembers_last_effective_source_without_persisting_it() -> None:
                 effective=0.75,
                 source="midi_live",
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                explicit=True,
             )
         ],
     )

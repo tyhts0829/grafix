@@ -4,7 +4,8 @@ import multiprocessing as mp
 import os
 import queue
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -12,11 +13,13 @@ import pytest
 import grafix.interactive.runtime.scene_runner as scene_runner_module
 from grafix.api import G
 from grafix.core.geometry import Geometry
-from grafix.core.layer import LayerStyleDefaults
+from grafix.core.layer import Layer, LayerStyleDefaults
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters import (
+    EffectOrderSnapshot,
     EffectStepTopology,
     FrameEffectChainRecord,
+    FrameLabelRecord,
     FrameParamRecord,
     MidiFrameSnapshot,
     ParameterKey,
@@ -26,7 +29,7 @@ from grafix.core.parameters import (
     parameter_context,
 )
 from grafix.core.parameters.effect_order_ops import merge_frame_effect_chains
-from grafix.core.parameters.snapshot_ops import store_snapshot
+from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
 from grafix.core.parameters.layer_style import (
     LAYER_STYLE_LINE_COLOR,
     LAYER_STYLE_LINE_THICKNESS,
@@ -34,6 +37,7 @@ from grafix.core.parameters.layer_style import (
 )
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.resource_budget import ResourceBudget
+from grafix.core.runtime_limits import RuntimeLimitProfiles, RuntimeLimits
 from grafix.core.preview_quality import current_preview_quality
 from grafix.core.scene import normalize_scene
 from grafix.interactive.runtime.mp_draw import (
@@ -41,7 +45,11 @@ from grafix.interactive.runtime.mp_draw import (
     MpDraw,
     MpDrawWorkerError,
     _DrawTask,
+    _SnapshotAck,
     _SnapshotUpdate,
+    _TaskRejected,
+    _TaskStarted,
+    _WorkerReady,
 )
 from grafix.interactive.runtime.perf import PerfCollector
 from grafix.interactive.runtime.scene_runner import SceneRunner
@@ -73,6 +81,7 @@ def _seed_effect_chain(store: ParamStore, chain_id: str) -> None:
                 ),
             )
         ],
+        observation_complete=False,
     )
 
 
@@ -133,6 +142,26 @@ def _wait_for_worker_error(mp_draw: MpDraw) -> MpDrawWorkerError:
     pytest.fail("mp-draw worker death timeout")
 
 
+@pytest.fixture
+def initialized_mp_draw(monkeypatch: pytest.MonkeyPatch) -> Iterator[MpDraw]:
+    """worker を起動せず、通常の constructor で初期化した MpDraw を返す。"""
+
+    def skip_worker_start(_mp_draw: MpDraw, *, wait_ready: bool) -> None:
+        assert wait_ready
+
+    monkeypatch.setattr(MpDraw, "_start_generation", skip_worker_start)
+    mp_draw = MpDraw(_empty_draw, n_worker=1)
+    initialized_state = mp_draw.__dict__.copy()
+    try:
+        yield mp_draw
+    finally:
+        # 各 test が差し替えた in-memory queue ではなく、constructor が作った
+        # multiprocessing queue を通常の close 経路で片付ける。
+        mp_draw.__dict__.clear()
+        mp_draw.__dict__.update(initialized_state)
+        mp_draw.close()
+
+
 @pytest.mark.parametrize("n_worker", [1, 2])
 def test_workers_report_ready_and_normal_close_leaves_no_children(
     n_worker: int,
@@ -145,7 +174,14 @@ def test_workers_report_ready_and_normal_close_leaves_no_children(
 
     assert mp_draw._ready_worker_pids == worker_pids
 
-    mp_draw.submit(t=0.125, snapshot_revision=0, snapshot={})
+    mp_draw.submit(
+        t=0.125,
+        snapshot_revision=0,
+        snapshot={},
+        effect_order_snapshot={},
+        epoch=0,
+        quality="draft",
+    )
     result = _wait_for_result(mp_draw)
     assert result.error is None
     assert result.t == pytest.approx(0.125)
@@ -169,10 +205,848 @@ def test_mp_draw_rejects_zero_workers() -> None:
         MpDraw(_empty_draw, n_worker=0)
 
 
+@pytest.mark.parametrize("n_worker", [True, 1.0, "1"])
+def test_mp_draw_rejects_implicitly_convertible_worker_count(
+    n_worker: object,
+) -> None:
+    with pytest.raises(TypeError, match="n_worker.*int"):
+        MpDraw(_empty_draw, n_worker=n_worker)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
 def test_mp_draw_rejects_invalid_evaluation_timeout(timeout: float) -> None:
     with pytest.raises(ValueError, match="evaluation_timeout"):
         MpDraw(_empty_draw, n_worker=1, evaluation_timeout=timeout)
+
+
+@pytest.mark.parametrize("timeout", [True, "1", object()])
+def test_mp_draw_rejects_non_real_evaluation_timeout(timeout: object) -> None:
+    with pytest.raises(TypeError, match="evaluation_timeout"):
+        MpDraw(
+            _empty_draw,
+            n_worker=1,
+            evaluation_timeout=timeout,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("epoch", [True, 1.0, "1"])
+def test_begin_epoch_rejects_implicit_integer_conversion(
+    initialized_mp_draw: MpDraw,
+    epoch: object,
+) -> None:
+    with pytest.raises(TypeError, match="epoch"):
+        initialized_mp_draw.begin_epoch(cast(Any, epoch))
+
+    assert initialized_mp_draw.current_epoch == 0
+
+
+def test_begin_epoch_rejects_negative_value(
+    initialized_mp_draw: MpDraw,
+) -> None:
+    with pytest.raises(ValueError, match="epoch"):
+        initialized_mp_draw.begin_epoch(-1)
+
+    assert initialized_mp_draw.current_epoch == 0
+
+
+class _StringSubclass(str):
+    pass
+
+
+class _TupleSubclass(tuple[object, ...]):
+    pass
+
+
+class _ParameterKeySubclass(ParameterKey):
+    pass
+
+
+class _ParamMetaSubclass(ParamMeta):
+    pass
+
+
+class _EffectStepTopologySubclass(EffectStepTopology):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_type"),
+    [
+        pytest.param("t", True, TypeError, id="t-bool"),
+        pytest.param("t", "0.0", TypeError, id="t-string"),
+        pytest.param("t", float("inf"), ValueError, id="t-infinite"),
+        pytest.param("snapshot_revision", True, TypeError, id="revision-bool"),
+        pytest.param("snapshot_revision", 1.0, TypeError, id="revision-float"),
+        pytest.param("snapshot_revision", "1", TypeError, id="revision-string"),
+        pytest.param("snapshot_revision", -1, ValueError, id="revision-negative"),
+        pytest.param("epoch", True, TypeError, id="epoch-bool"),
+        pytest.param("epoch", 1.0, TypeError, id="epoch-float"),
+        pytest.param("epoch", "1", TypeError, id="epoch-string"),
+        pytest.param("quality", 1, TypeError, id="quality-non-string"),
+        pytest.param(
+            "quality",
+            _StringSubclass("draft"),
+            TypeError,
+            id="quality-string-subclass",
+        ),
+        pytest.param("quality", "preview", ValueError, id="quality-unknown"),
+    ],
+)
+def test_submit_rejects_noncanonical_scalars_before_enqueue(
+    initialized_mp_draw: MpDraw,
+    field: str,
+    value: object,
+    error_type: type[Exception],
+) -> None:
+    arguments: dict[str, object] = {
+        "t": 0.0,
+        "snapshot_revision": 0,
+        "snapshot": {},
+        "effect_order_snapshot": {},
+        "cc_snapshot": None,
+        "epoch": 0,
+        "quality": "draft",
+    }
+    arguments[field] = value
+
+    with pytest.raises(error_type, match=field):
+        initialized_mp_draw.submit(**cast(Any, arguments))
+
+    assert initialized_mp_draw.last_submitted_frame_id == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("snapshot", [], id="snapshot-list"),
+        pytest.param(
+            "effect_order_snapshot",
+            [],
+            id="effect-order-list",
+        ),
+        pytest.param("cc_snapshot", {}, id="cc-mapping"),
+    ],
+)
+def test_submit_rejects_wrong_snapshot_composition_before_enqueue(
+    initialized_mp_draw: MpDraw,
+    field: str,
+    value: object,
+) -> None:
+    arguments: dict[str, object] = {
+        "t": 0.0,
+        "snapshot_revision": 0,
+        "snapshot": {},
+        "effect_order_snapshot": {},
+        "cc_snapshot": None,
+        "epoch": 0,
+        "quality": "draft",
+    }
+    arguments[field] = value
+
+    with pytest.raises(TypeError, match=field):
+        initialized_mp_draw.submit(**cast(Any, arguments))
+
+    assert initialized_mp_draw.last_submitted_frame_id == 0
+
+
+def _valid_frame_param_record() -> FrameParamRecord:
+    return FrameParamRecord(
+        key=ParameterKey(op="line", site_id="site", arg="length"),
+        base=1.0,
+        meta=ParamMeta(kind="float"),
+        effective=1.0,
+        source="code",
+        explicit=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_type", "message"),
+    [
+        pytest.param(
+            "key",
+            object(),
+            TypeError,
+            "ParameterKey",
+            id="key-object",
+        ),
+        pytest.param(
+            "key",
+            _ParameterKeySubclass(op="line", site_id="site", arg="length"),
+            TypeError,
+            "ParameterKey",
+            id="key-subclass",
+        ),
+        pytest.param(
+            "meta",
+            object(),
+            TypeError,
+            "ParamMeta",
+            id="meta-object",
+        ),
+        pytest.param(
+            "meta",
+            _ParamMetaSubclass(kind="float"),
+            TypeError,
+            "ParamMeta",
+            id="meta-subclass",
+        ),
+        pytest.param(
+            "base",
+            "1.0",
+            TypeError,
+            "float parameter value",
+            id="base-string",
+        ),
+        pytest.param(
+            "effective",
+            float("inf"),
+            ValueError,
+            "finite",
+            id="effective-infinite",
+        ),
+        pytest.param(
+            "source",
+            _StringSubclass("code"),
+            TypeError,
+            "source",
+            id="source-string-subclass",
+        ),
+        pytest.param(
+            "source",
+            "worker",
+            ValueError,
+            "source",
+            id="source-unknown",
+        ),
+        pytest.param(
+            "explicit",
+            1,
+            TypeError,
+            "explicit",
+            id="explicit-int",
+        ),
+    ],
+)
+def test_frame_param_record_rejects_noncanonical_payload(
+    field: str,
+    value: object,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error_type, match=message):
+        replace(_valid_frame_param_record(), **{field: value})
+
+
+def test_frame_param_record_normalizes_values_using_meta_contract() -> None:
+    record = replace(_valid_frame_param_record(), base=1, effective=2)
+
+    assert record.base == 1.0
+    assert type(record.base) is float
+    assert record.effective == 2.0
+    assert type(record.effective) is float
+
+
+def test_frame_label_record_rejects_label_string_subclass() -> None:
+    with pytest.raises(TypeError, match="label"):
+        FrameLabelRecord(
+            op="line",
+            site_id="site",
+            label=_StringSubclass("Line"),
+        )
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        pytest.param([], id="list"),
+        pytest.param(
+            _TupleSubclass(
+                (
+                    EffectStepTopology(
+                        op="scale",
+                        site_id="site",
+                        n_inputs=1,
+                        code_index=0,
+                    ),
+                )
+            ),
+            id="tuple-subclass",
+        ),
+        pytest.param(
+            (
+                _EffectStepTopologySubclass(
+                    op="scale",
+                    site_id="site",
+                    n_inputs=1,
+                    code_index=0,
+                ),
+            ),
+            id="item-subclass",
+        ),
+    ],
+)
+def test_frame_effect_chain_record_requires_canonical_steps(
+    steps: object,
+) -> None:
+    with pytest.raises(TypeError, match="steps"):
+        FrameEffectChainRecord(
+            chain_id="chain",
+            steps=cast(Any, steps),
+        )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error_type", "message"),
+    [
+        pytest.param(
+            {"source": _StringSubclass("midi_live")},
+            TypeError,
+            "source",
+            id="source-string-subclass",
+        ),
+        pytest.param(
+            {"source": "recorded"},
+            ValueError,
+            "source",
+            id="source-unknown",
+        ),
+        pytest.param(
+            {"entries": [(1, 0.5)]},
+            TypeError,
+            "entries",
+            id="entries-list",
+        ),
+        pytest.param(
+            {"entries": _TupleSubclass(((1, 0.5),))},
+            TypeError,
+            "entries",
+            id="entries-tuple-subclass",
+        ),
+        pytest.param(
+            {"entries": (_TupleSubclass((1, 0.5)),)},
+            TypeError,
+            "MIDI entry",
+            id="entry-tuple-subclass",
+        ),
+        pytest.param(
+            {"entries": ((True, 0.5),)},
+            TypeError,
+            "MIDI CC番号",
+            id="cc-bool",
+        ),
+        pytest.param(
+            {"entries": ((1, "0.5"),)},
+            TypeError,
+            "MIDI CC値",
+            id="value-string",
+        ),
+        pytest.param(
+            {"entries": ((1, float("nan")),)},
+            ValueError,
+            "MIDI CC値",
+            id="value-nan",
+        ),
+    ],
+)
+def test_midi_frame_snapshot_rejects_noncanonical_queue_payload(
+    arguments: dict[str, object],
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    values: dict[str, object] = {
+        "source": "midi_live",
+        "entries": (),
+    }
+    values.update(arguments)
+
+    with pytest.raises(error_type, match=message):
+        MidiFrameSnapshot(**cast(Any, values))
+
+
+def _valid_draw_task() -> _DrawTask:
+    return _DrawTask(
+        frame_id=1,
+        t=0.0,
+        snapshot_revision=0,
+        cc_snapshot=None,
+        snapshot={},
+        effect_order_snapshot={},
+        epoch=0,
+        generation=0,
+        quality="draft",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_type"),
+    [
+        pytest.param("frame_id", True, TypeError, id="frame-id-bool"),
+        pytest.param("t", "0.0", TypeError, id="t-string"),
+        pytest.param("t", float("nan"), ValueError, id="t-nan"),
+        pytest.param(
+            "snapshot_revision",
+            0.5,
+            TypeError,
+            id="revision-fractional",
+        ),
+        pytest.param("epoch", "0", TypeError, id="epoch-string"),
+        pytest.param("generation", True, TypeError, id="generation-bool"),
+        pytest.param(
+            "quality",
+            _StringSubclass("final"),
+            TypeError,
+            id="quality-string-subclass",
+        ),
+        pytest.param("quality", "preview", ValueError, id="quality-unknown"),
+        pytest.param("cc_snapshot", {}, TypeError, id="cc-mapping"),
+        pytest.param("snapshot", [], TypeError, id="snapshot-list"),
+        pytest.param(
+            "effect_order_snapshot",
+            [],
+            TypeError,
+            id="effect-order-list",
+        ),
+    ],
+)
+def test_draw_task_rejects_noncanonical_queue_payload(
+    field: str,
+    value: object,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type, match=field):
+        replace(_valid_draw_task(), **{field: value})
+
+
+def test_draw_task_requires_snapshot_pair() -> None:
+    with pytest.raises(ValueError, match="同時"):
+        replace(_valid_draw_task(), snapshot=None)
+
+
+def _valid_draw_result() -> DrawResult:
+    return DrawResult(
+        frame_id=1,
+        t=0.0,
+        epoch=0,
+        generation=0,
+        snapshot_revision=0,
+        layers=[],
+        records=[],
+        labels=[],
+        effect_chains=[],
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_type"),
+    [
+        pytest.param("frame_id", True, TypeError, id="frame-id-bool"),
+        pytest.param("t", "0.0", TypeError, id="t-string"),
+        pytest.param("t", float("inf"), ValueError, id="t-infinite"),
+        pytest.param("epoch", 0.5, TypeError, id="epoch-fractional"),
+        pytest.param("generation", "0", TypeError, id="generation-string"),
+        pytest.param(
+            "snapshot_revision",
+            True,
+            TypeError,
+            id="revision-bool",
+        ),
+        pytest.param("layers", (), TypeError, id="layers-tuple"),
+        pytest.param("layers", [object()], TypeError, id="layers-item"),
+        pytest.param("records", (), TypeError, id="records-tuple"),
+        pytest.param("records", [object()], TypeError, id="records-item"),
+        pytest.param("labels", (), TypeError, id="labels-tuple"),
+        pytest.param("labels", [object()], TypeError, id="labels-item"),
+        pytest.param(
+            "effect_chains",
+            (),
+            TypeError,
+            id="effect-chains-tuple",
+        ),
+        pytest.param(
+            "effect_chains",
+            [object()],
+            TypeError,
+            id="effect-chains-item",
+        ),
+        pytest.param(
+            "error",
+            _StringSubclass("failure"),
+            TypeError,
+            id="error-string-subclass",
+        ),
+        pytest.param("worker_pid", 1.5, TypeError, id="pid-fractional"),
+        pytest.param("diagnostics", [], TypeError, id="diagnostics-list"),
+        pytest.param(
+            "diagnostics",
+            (object(),),
+            TypeError,
+            id="diagnostics-item",
+        ),
+        pytest.param("worker_lag_ms", True, TypeError, id="lag-bool"),
+        pytest.param(
+            "worker_lag_ms",
+            float("inf"),
+            ValueError,
+            id="lag-infinite",
+        ),
+        pytest.param(
+            "worker_lag_ms",
+            -0.1,
+            ValueError,
+            id="lag-negative",
+        ),
+    ],
+)
+def test_draw_result_rejects_noncanonical_queue_payload(
+    field: str,
+    value: object,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type, match=field):
+        replace(_valid_draw_result(), **{field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param(
+            "layers",
+            [
+                Layer(
+                    geometry=Geometry.create(op="concat"),
+                    site_id="layer",
+                )
+            ],
+            id="layers",
+        ),
+        pytest.param(
+            "records",
+            [_valid_frame_param_record()],
+            id="records",
+        ),
+        pytest.param(
+            "labels",
+            [
+                FrameLabelRecord(
+                    op="line",
+                    site_id="site",
+                    label="Line",
+                )
+            ],
+            id="labels",
+        ),
+        pytest.param(
+            "effect_chains",
+            [
+                FrameEffectChainRecord(
+                    chain_id="chain",
+                    steps=(
+                        EffectStepTopology(
+                            op="scale",
+                            site_id="site",
+                            n_inputs=1,
+                            code_index=0,
+                        ),
+                    ),
+                )
+            ],
+            id="effect-chains",
+        ),
+    ],
+)
+def test_draw_result_error_rejects_success_payload(
+    field: str,
+    value: object,
+) -> None:
+    error_result = replace(_valid_draw_result(), error="draw failed")
+
+    with pytest.raises(ValueError, match="error result"):
+        replace(error_result, **{field: value})
+
+
+@pytest.mark.parametrize(
+    ("factory", "field", "error_type"),
+    [
+        pytest.param(
+            lambda: _SnapshotUpdate(
+                revision=0.5,  # type: ignore[arg-type]
+                snapshot={},
+                effect_order_snapshot={},
+                generation=0,
+            ),
+            "revision",
+            TypeError,
+            id="snapshot-update-revision",
+        ),
+        pytest.param(
+            lambda: _SnapshotUpdate(
+                revision=0,
+                snapshot=[],  # type: ignore[arg-type]
+                effect_order_snapshot={},
+                generation=0,
+            ),
+            "snapshot",
+            TypeError,
+            id="snapshot-update-container",
+        ),
+        pytest.param(
+            lambda: _SnapshotAck(
+                worker="worker",
+                pid=1,
+                requested_revision=0,
+                applied_revision=0,
+                status=_StringSubclass("applied"),
+                generation=0,
+            ),
+            "status",
+            TypeError,
+            id="snapshot-ack-string-subclass",
+        ),
+        pytest.param(
+            lambda: _SnapshotAck(
+                worker="worker",
+                pid=1,
+                requested_revision=0,
+                applied_revision=0,
+                status="ignored",
+                generation=0,
+            ),
+            "status",
+            ValueError,
+            id="snapshot-ack-unknown-status",
+        ),
+        pytest.param(
+            lambda: _TaskRejected(
+                frame_id=1,
+                worker="worker",
+                pid=1,
+                requested_revision=0,
+                applied_revision="0",  # type: ignore[arg-type]
+                reason="unknown",
+                generation=0,
+            ),
+            "applied_revision",
+            TypeError,
+            id="task-rejected-revision",
+        ),
+        pytest.param(
+            lambda: _TaskRejected(
+                frame_id=1,
+                worker="worker",
+                pid=1,
+                requested_revision=0,
+                applied_revision=None,
+                reason="future",
+                generation=0,
+            ),
+            "reason",
+            ValueError,
+            id="task-rejected-unknown-reason",
+        ),
+        pytest.param(
+            lambda: _TaskStarted(
+                frame_id=1,
+                worker="worker",
+                pid=1.0,  # type: ignore[arg-type]
+                generation=0,
+            ),
+            "pid",
+            TypeError,
+            id="task-started-pid",
+        ),
+        pytest.param(
+            lambda: _WorkerReady(
+                worker=1,  # type: ignore[arg-type]
+                pid=1,
+                generation=0,
+            ),
+            "worker",
+            TypeError,
+            id="worker-ready-name",
+        ),
+    ],
+)
+def test_worker_control_dtos_reject_noncanonical_payload(
+    factory: Callable[[], object],
+    field: str,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type, match=field):
+        factory()
+
+
+class _ConstructorFaultQueue:
+    def __init__(self) -> None:
+        self.close_calls = 0
+        self.join_thread_calls = 0
+        self.cancel_join_thread_calls = 0
+        self.put_calls = 0
+
+    def put(self, _value: object, *, timeout: float) -> None:
+        assert timeout > 0.0
+        self.put_calls += 1
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+    def join_thread(self) -> None:
+        self.join_thread_calls += 1
+
+    def cancel_join_thread(self) -> None:
+        self.cancel_join_thread_calls += 1
+
+
+class _ConstructorFaultProcess:
+    def __init__(
+        self,
+        *,
+        name: str,
+        pid: int,
+        fail_start: bool,
+    ) -> None:
+        self.name = name
+        self._next_pid = int(pid)
+        self._fail_start = bool(fail_start)
+        self.pid: int | None = None
+        self.exitcode: int | None = None
+        self.start_calls = 0
+        self.join_calls = 0
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self._alive = False
+
+    def start(self) -> None:
+        self.start_calls += 1
+        if self._fail_start:
+            raise OSError("process start failed")
+        self.pid = self._next_pid
+        self._alive = True
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def join(self, *, timeout: float) -> None:
+        assert timeout >= 0.0
+        self.join_calls += 1
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        self._alive = False
+        self.exitcode = -15
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self._alive = False
+        self.exitcode = -9
+
+
+class _ConstructorFaultContext:
+    def __init__(
+        self,
+        *,
+        queue_failure_call: int | None = None,
+        process_start_failure_call: int | None = None,
+    ) -> None:
+        self.queue_failure_call = queue_failure_call
+        self.process_start_failure_call = process_start_failure_call
+        self.queues: list[_ConstructorFaultQueue] = []
+        self.processes: list[_ConstructorFaultProcess] = []
+        self._queue_calls = 0
+
+    def Queue(self, *, maxsize: int = 0) -> _ConstructorFaultQueue:
+        assert maxsize >= 0
+        self._queue_calls += 1
+        if self._queue_calls == self.queue_failure_call:
+            raise OSError("queue creation failed")
+        created = _ConstructorFaultQueue()
+        self.queues.append(created)
+        return created
+
+    def Process(
+        self,
+        *,
+        target: object,
+        args: tuple[object, ...],
+        name: str,
+    ) -> _ConstructorFaultProcess:
+        del target, args
+        call = len(self.processes) + 1
+        created = _ConstructorFaultProcess(
+            name=name,
+            pid=70_000 + call,
+            fail_start=call == self.process_start_failure_call,
+        )
+        self.processes.append(created)
+        return created
+
+
+def _install_constructor_fault_context(
+    monkeypatch: pytest.MonkeyPatch,
+    context: _ConstructorFaultContext,
+) -> None:
+    monkeypatch.setattr(mp, "get_context", lambda method: context)
+
+
+def test_constructor_failure_before_first_queue_preserves_root_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _ConstructorFaultContext(queue_failure_call=1)
+    _install_constructor_fault_context(monkeypatch, context)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        MpDraw(_empty_draw, n_worker=1)
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert str(exc_info.value.__cause__) == "queue creation failed"
+    assert context.queues == []
+    assert context.processes == []
+
+
+def test_constructor_failure_closes_every_partially_created_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # task queue と最初の control queue の後、2本目の control queue で失敗する。
+    context = _ConstructorFaultContext(queue_failure_call=3)
+    _install_constructor_fault_context(monkeypatch, context)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        MpDraw(_empty_draw, n_worker=2)
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert len(context.queues) == 2
+    assert context.processes == []
+    assert all(queue.close_calls == 1 for queue in context.queues)
+    assert all(queue.join_thread_calls == 1 for queue in context.queues)
+
+
+def test_constructor_failure_stops_partial_processes_and_closes_all_queues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _ConstructorFaultContext(process_start_failure_call=2)
+    _install_constructor_fault_context(monkeypatch, context)
+    active_children_before = {
+        proc.pid for proc in mp.active_children() if proc.pid is not None
+    }
+
+    with pytest.raises(RuntimeError) as exc_info:
+        MpDraw(_empty_draw, n_worker=2)
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert str(exc_info.value.__cause__) == "process start failed"
+    assert len(context.queues) == 4
+    assert len(context.processes) == 2
+    assert all(not process.is_alive() for process in context.processes)
+    assert context.processes[0].terminate_calls == 1
+    assert context.processes[1].start_calls == 1
+    assert all(queue.close_calls == 1 for queue in context.queues)
+    assert all(queue.join_thread_calls == 1 for queue in context.queues)
+    assert all(
+        queue.cancel_join_thread_calls == 1 for queue in context.queues
+    )
+    assert {
+        proc.pid for proc in mp.active_children() if proc.pid is not None
+    } == active_children_before
 
 
 def test_hung_evaluation_restarts_worker_and_recovers_without_child_leak() -> None:
@@ -185,12 +1059,26 @@ def test_hung_evaluation_restarts_worker_and_recovers_without_child_leak() -> No
     all_worker_pids = {int(proc.pid) for proc in old_procs if proc.pid is not None}
 
     try:
-        mp_draw.submit(t=0.0, snapshot_revision=0, snapshot={})
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=0,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         successful = _wait_for_result(mp_draw)
         assert successful.error is None
         assert successful.generation == 0
 
-        mp_draw.submit(t=1.0, snapshot_revision=0, snapshot={})
+        mp_draw.submit(
+            t=1.0,
+            snapshot_revision=0,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         call_durations: list[float] = []
         deadline = time.monotonic() + _WAIT_TIMEOUT_S
         while mp_draw.generation == 0 and time.monotonic() < deadline:
@@ -219,7 +1107,14 @@ def test_hung_evaluation_restarts_worker_and_recovers_without_child_leak() -> No
 
         # 新世代は snapshot ACK をまだ持たないため、task 同梱 snapshot だけで
         # 新しい revision を評価できなければならない。
-        mp_draw.submit(t=0.25, snapshot_revision=7, snapshot={})
+        mp_draw.submit(
+            t=0.25,
+            snapshot_revision=7,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         recovered = _wait_for_result(mp_draw)
         assert recovered.error is None
         assert recovered.t == pytest.approx(0.25)
@@ -235,7 +1130,9 @@ def test_hung_evaluation_restarts_worker_and_recovers_without_child_leak() -> No
     assert all_worker_pids.isdisjoint(active_pids)
 
 
-def test_single_slot_task_queue_drops_old_frame_and_keeps_latest() -> None:
+def test_single_slot_task_queue_drops_old_frame_and_keeps_latest(
+    initialized_mp_draw: MpDraw,
+) -> None:
     """1-worker 相当の満杯 queue では待機中の古い frame だけを置換する。"""
 
     old = _DrawTask(
@@ -243,17 +1140,27 @@ def test_single_slot_task_queue_drops_old_frame_and_keeps_latest() -> None:
         t=1.0,
         snapshot_revision=7,
         cc_snapshot=None,
+        snapshot=None,
+        effect_order_snapshot=None,
+        epoch=0,
+        generation=0,
+        quality="draft",
     )
     latest = _DrawTask(
         frame_id=2,
         t=2.0,
         snapshot_revision=7,
         cc_snapshot=None,
+        snapshot=None,
+        effect_order_snapshot=None,
+        epoch=0,
+        generation=0,
+        quality="draft",
     )
     task_q: queue.Queue[object] = queue.Queue(maxsize=1)
     task_q.put(old)
 
-    mp_draw = object.__new__(MpDraw)
+    mp_draw = initialized_mp_draw
     mp_draw._task_q = cast(Any, task_q)
     mp_draw._ready_worker_pids = {101}
     mp_draw._worker_snapshot_revisions = {101: 7}
@@ -267,16 +1174,57 @@ def test_single_slot_task_queue_drops_old_frame_and_keeps_latest() -> None:
     assert mp_draw.task_drop_count == 1
 
 
+@pytest.mark.parametrize(
+    ("snapshot", "effect_order_snapshot"),
+    [
+        pytest.param({}, None, id="parameter-only"),
+        pytest.param(None, {}, id="effect-order-only"),
+    ],
+)
+def test_draw_task_rejects_partial_snapshot_payload(
+    snapshot: ParamSnapshot | None,
+    effect_order_snapshot: EffectOrderSnapshot | None,
+) -> None:
+    """task-carried parameter/order snapshot は不可分な payload とする。"""
+
+    with pytest.raises(ValueError, match="同時に指定"):
+        _DrawTask(
+            frame_id=1,
+            t=0.0,
+            snapshot_revision=1,
+            cc_snapshot=None,
+            snapshot=snapshot,
+            effect_order_snapshot=effect_order_snapshot,
+            epoch=0,
+            generation=0,
+            quality="draft",
+        )
+
+
 def test_error_result_keeps_last_successful_layers_for_preview() -> None:
     mp_draw = MpDraw(_draw_that_fails_at_one, n_worker=2)
     try:
-        mp_draw.submit(t=0.0, snapshot_revision=0, snapshot={})
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=0,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         successful = _wait_for_result(mp_draw)
         assert successful.error is None
         assert successful.t == pytest.approx(0.0)
         assert mp_draw.latest_layers() is successful.layers
 
-        mp_draw.submit(t=1.0, snapshot_revision=0, snapshot={})
+        mp_draw.submit(
+            t=1.0,
+            snapshot_revision=0,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         failed = _wait_for_result(mp_draw)
         assert failed.error is not None
         assert failed.t == pytest.approx(1.0)
@@ -314,10 +1262,13 @@ def test_worker_roundtrip_preserves_frozen_midi_value_source() -> None:
             t=0.0,
             snapshot_revision=store.revision,
             snapshot=store_snapshot(store),
+            effect_order_snapshot={},
             cc_snapshot=MidiFrameSnapshot.from_mapping(
                 {7: 0.5},
                 source="midi_frozen",
             ),
+            epoch=0,
+            quality="draft",
         )
         result = _wait_for_result(mp_draw)
     finally:
@@ -336,7 +1287,9 @@ def test_worker_result_carries_explicit_epoch() -> None:
             t=4.25,
             snapshot_revision=0,
             snapshot={},
+            effect_order_snapshot={},
             epoch=7,
+            quality="draft",
         )
         result = _wait_for_result(mp_draw)
         assert mp_draw.current_epoch == 7
@@ -346,29 +1299,39 @@ def test_worker_result_carries_explicit_epoch() -> None:
         mp_draw.close()
 
 
-def test_batched_drain_keeps_success_time_when_a_later_result_is_an_error() -> None:
+def test_batched_drain_keeps_success_time_when_a_later_result_is_an_error(
+    initialized_mp_draw: MpDraw,
+) -> None:
     """batch の終端 error と preview 用 success を同じ result として混同しない。"""
 
     successful = DrawResult(
         frame_id=10,
         t=0.25,
+        epoch=0,
+        generation=0,
+        snapshot_revision=0,
         layers=normalize_scene(_empty_draw(0.25)),
         records=[],
         labels=[],
+        effect_chains=[],
     )
     failed = DrawResult(
         frame_id=11,
         t=0.5,
+        epoch=0,
+        generation=0,
+        snapshot_revision=0,
         layers=[],
         records=[],
         labels=[],
+        effect_chains=[],
         error="later frame failed",
     )
     result_q: queue.Queue[object] = queue.Queue()
     result_q.put(successful)
     result_q.put(failed)
 
-    mp_draw = object.__new__(MpDraw)
+    mp_draw = initialized_mp_draw
     mp_draw._result_q = cast(Any, result_q)
     mp_draw._latest_received = None
     mp_draw._latest_successful = None
@@ -381,28 +1344,29 @@ def test_batched_drain_keeps_success_time_when_a_later_result_is_an_error() -> N
     assert latest_successful.t == pytest.approx(0.25)
 
 
-def test_draw_result_keeps_legacy_constructor_shape() -> None:
-    """t/epoch 追加後も旧 positional/keyword constructor を維持する。"""
-
-    positional = DrawResult(1, [], [], [], "legacy error")
-    keyword = DrawResult(
+def test_draw_result_uses_keyword_constructor() -> None:
+    result = DrawResult(
         frame_id=2,
+        t=0.0,
+        epoch=0,
+        generation=0,
+        snapshot_revision=0,
         layers=[],
         records=[],
         labels=[],
-        error=None,
+        effect_chains=[],
+        error="draw error",
     )
 
-    assert positional.error == "legacy error"
-    assert positional.t == pytest.approx(0.0)
-    assert positional.epoch == 0
-    assert positional.snapshot_revision == 0
-    assert keyword.t == pytest.approx(0.0)
-    assert keyword.epoch == 0
-    assert keyword.snapshot_revision == 0
+    assert result.error == "draw error"
+    assert result.t == pytest.approx(0.0)
+    assert result.epoch == 0
+    assert result.snapshot_revision == 0
 
 
-def test_result_drain_discards_old_epoch_and_keeps_diagnostic() -> None:
+def test_result_drain_discards_old_epoch_and_keeps_diagnostic(
+    initialized_mp_draw: MpDraw,
+) -> None:
     stale_error = DrawResult(
         frame_id=10,
         layers=[],
@@ -411,6 +1375,9 @@ def test_result_drain_discards_old_epoch_and_keeps_diagnostic() -> None:
         error="old timeline failure",
         t=99.0,
         epoch=1,
+        generation=0,
+        snapshot_revision=0,
+        effect_chains=[],
     )
     fresh = DrawResult(
         frame_id=11,
@@ -419,12 +1386,15 @@ def test_result_drain_discards_old_epoch_and_keeps_diagnostic() -> None:
         labels=[],
         t=2.0,
         epoch=2,
+        generation=0,
+        snapshot_revision=0,
+        effect_chains=[],
     )
     result_q: queue.Queue[object] = queue.Queue()
     result_q.put(stale_error)
     result_q.put(fresh)
 
-    mp_draw = object.__new__(MpDraw)
+    mp_draw = initialized_mp_draw
     mp_draw._result_q = cast(Any, result_q)
     mp_draw._current_epoch = 2
     mp_draw._latest_received = None
@@ -441,25 +1411,35 @@ def test_result_drain_discards_old_epoch_and_keeps_diagnostic() -> None:
     assert mp_draw.last_stale_result == (10, 1, 2)
 
 
-def test_result_drain_rejects_result_from_old_worker_generation() -> None:
+def test_result_drain_rejects_result_from_old_worker_generation(
+    initialized_mp_draw: MpDraw,
+) -> None:
     cached = DrawResult(
         frame_id=10,
+        t=0.0,
+        epoch=0,
+        snapshot_revision=0,
         layers=normalize_scene(_empty_draw(0.0)),
         records=[],
         labels=[],
+        effect_chains=[],
         generation=1,
     )
     stale = DrawResult(
         frame_id=999,
+        t=9.0,
+        epoch=0,
+        snapshot_revision=0,
         layers=normalize_scene(_empty_draw(9.0)),
         records=[],
         labels=[],
+        effect_chains=[],
         generation=0,
     )
     result_q: queue.Queue[object] = queue.Queue()
     result_q.put(stale)
 
-    mp_draw = object.__new__(MpDraw)
+    mp_draw = initialized_mp_draw
     mp_draw._result_q = cast(Any, result_q)
     mp_draw._generation = 1
     mp_draw._current_epoch = 0
@@ -479,7 +1459,9 @@ def test_result_drain_rejects_result_from_old_worker_generation() -> None:
     assert mp_draw.last_stale_generation_result == (999, 0, 1)
 
 
-def test_begin_epoch_invalidates_cached_result_and_queued_task() -> None:
+def test_begin_epoch_invalidates_cached_result_and_queued_task(
+    initialized_mp_draw: MpDraw,
+) -> None:
     cached = DrawResult(
         frame_id=3,
         layers=normalize_scene(_empty_draw(3.0)),
@@ -487,18 +1469,25 @@ def test_begin_epoch_invalidates_cached_result_and_queued_task() -> None:
         labels=[],
         t=3.0,
         epoch=0,
+        generation=0,
+        snapshot_revision=0,
+        effect_chains=[],
     )
     task = _DrawTask(
         frame_id=4,
         t=4.0,
         snapshot_revision=0,
         cc_snapshot=None,
+        snapshot=None,
+        effect_order_snapshot=None,
         epoch=0,
+        generation=0,
+        quality="draft",
     )
     task_q: queue.Queue[object] = queue.Queue()
     task_q.put(task)
 
-    mp_draw = object.__new__(MpDraw)
+    mp_draw = initialized_mp_draw
     mp_draw._closed = False
     mp_draw._procs = []
     mp_draw._current_epoch = 0
@@ -531,7 +1520,14 @@ def test_fatal_draw_exit_fails_fast_with_worker_identity(
 
     try:
         try:
-            mp_draw.submit(t=0.0, snapshot_revision=0, snapshot={})
+            mp_draw.submit(
+                t=0.0,
+                snapshot_revision=0,
+                snapshot={},
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
+            )
         except MpDrawWorkerError as exc:
             error = exc
         else:
@@ -571,7 +1567,14 @@ def test_submit_detects_all_worker_death_without_fallback() -> None:
 
     try:
         with pytest.raises(MpDrawWorkerError) as exc_info:
-            mp_draw.submit(t=0.0, snapshot_revision=0, snapshot={})
+            mp_draw.submit(
+                t=0.0,
+                snapshot_revision=0,
+                snapshot={},
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
+            )
     finally:
         mp_draw.close()
 
@@ -592,10 +1595,12 @@ class _TrackedQueue:
         self.join_thread_calls += 1
 
 
-def test_close_is_idempotent_and_joins_both_queue_threads() -> None:
+def test_close_is_idempotent_and_joins_both_queue_threads(
+    initialized_mp_draw: MpDraw,
+) -> None:
     task_q = _TrackedQueue()
     result_q = _TrackedQueue()
-    mp_draw = object.__new__(MpDraw)
+    mp_draw = initialized_mp_draw
     mp_draw._closed = False
     mp_draw._procs = []
     mp_draw._task_q = cast(Any, task_q)
@@ -633,22 +1638,32 @@ class _BatchedSuccessThenErrorMpDraw:
         self.success = DrawResult(
             frame_id=10,
             t=0.25,
+            epoch=0,
+            generation=0,
+            snapshot_revision=0,
             layers=normalize_scene(_empty_draw(0.25)),
             records=[],
             labels=[],
+            effect_chains=[],
         )
         self.error = DrawResult(
             frame_id=11,
             t=0.5,
+            epoch=0,
+            generation=0,
+            snapshot_revision=0,
             layers=[],
             records=[],
             labels=[],
+            effect_chains=[],
             error="later frame failed",
         )
         self.poll_calls = 0
         self.close_calls = 0
+        self.last_submitted_frame_id = 0
 
     def submit(self, **_kwargs: object) -> None:
+        self.last_submitted_frame_id += 1
         return
 
     def poll_latest(self) -> DrawResult | None:
@@ -676,6 +1691,7 @@ class _EpochMpDraw:
         self.submitted_epochs: list[int] = []
         self._published = False
         self.close_calls = 0
+        self.last_submitted_frame_id = 0
 
     def begin_epoch(self, epoch: int | None = None) -> int:
         self.current_epoch = self.current_epoch + 1 if epoch is None else int(epoch)
@@ -686,6 +1702,7 @@ class _EpochMpDraw:
         return self.current_epoch
 
     def submit(self, **kwargs: object) -> None:
+        self.last_submitted_frame_id += 1
         self.submitted_epochs.append(int(cast(int, kwargs["epoch"])))
 
     def poll_latest(self) -> DrawResult | None:
@@ -719,9 +1736,11 @@ class _IdleMpDraw:
         self.evaluation_timeout = evaluation_timeout
         self.submit_calls: list[dict[str, object]] = []
         self.close_calls = 0
+        self.last_submitted_frame_id = 0
         type(self).instances.append(self)
 
     def submit(self, **kwargs: object) -> None:
+        self.last_submitted_frame_id += 1
         self.submit_calls.append(dict(kwargs))
 
     def poll_latest(self) -> None:
@@ -755,6 +1774,8 @@ def test_scene_runner_sync_failure_keeps_generation_until_success() -> None:
                 cc_snapshot=None,
                 defaults=defaults,
                 recording=False,
+                transport_epoch=0,
+                quality="draft",
             )
         assert "old-generation-chain" in store.effect_chain_topologies()
 
@@ -765,6 +1786,8 @@ def test_scene_runner_sync_failure_keeps_generation_until_success() -> None:
             cc_snapshot=None,
             defaults=defaults,
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
         assert "old-generation-chain" not in store.effect_chain_topologies()
     finally:
@@ -794,6 +1817,8 @@ def test_scene_runner_mp_wait_does_not_finish_effect_chain_generation(
                 thickness=0.01,
             ),
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
         assert "old-generation-chain" in store.effect_chain_topologies()
     finally:
@@ -819,6 +1844,8 @@ def test_scene_runner_mp_fresh_empty_topology_finishes_effect_chain_generation()
             cc_snapshot=None,
             defaults=defaults,
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
         assert "old-generation-chain" in store.effect_chain_topologies()
 
@@ -829,6 +1856,8 @@ def test_scene_runner_mp_fresh_empty_topology_finishes_effect_chain_generation()
             labels=[],
             effect_chains=[],
             t=0.1,
+            epoch=0,
+            generation=0,
             snapshot_revision=store.revision,
         )
         epoch_mp._published = False
@@ -838,6 +1867,8 @@ def test_scene_runner_mp_fresh_empty_topology_finishes_effect_chain_generation()
             cc_snapshot=None,
             defaults=defaults,
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
         assert "old-generation-chain" not in store.effect_chain_topologies()
     finally:
@@ -867,6 +1898,8 @@ def test_scene_runner_uses_background_evaluation_for_positive_worker_count(
             cc_snapshot=None,
             defaults=LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01),
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         ) == []
 
         fake = _IdleMpDraw.instances[-1]
@@ -977,6 +2010,8 @@ def test_scene_runner_zero_runs_synchronously_without_constructing_worker(
             cc_snapshot=None,
             defaults=LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01),
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
         assert draw_calls == [2.5]
         assert runner.last_evaluation_succeeded is True
@@ -986,7 +2021,7 @@ def test_scene_runner_zero_runs_synchronously_without_constructing_worker(
         runner.close()
 
 
-def test_scene_runner_uses_draft_for_preview_and_final_for_recording() -> None:
+def test_scene_runner_uses_explicit_quality_for_preview_and_recording() -> None:
     qualities: list[str] = []
 
     def draw(_t: float) -> Geometry:
@@ -995,7 +2030,10 @@ def test_scene_runner_uses_draft_for_preview_and_final_for_recording() -> None:
 
     runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=0)
     try:
-        for recording in (False, True):
+        for transport_epoch, recording, quality in (
+            (0, False, "draft"),
+            (1, True, "final"),
+        ):
             runner.run(
                 0.0,
                 store=ParamStore(),
@@ -1005,11 +2043,37 @@ def test_scene_runner_uses_draft_for_preview_and_final_for_recording() -> None:
                     thickness=0.01,
                 ),
                 recording=recording,
+                transport_epoch=transport_epoch,
+                quality=quality,
             )
     finally:
         runner.close()
 
     assert qualities == ["draft", "final"]
+
+
+def test_scene_runner_rejects_non_final_quality_while_recording() -> None:
+    runner = SceneRunner(
+        _empty_draw,
+        perf=PerfCollector(enabled=False),
+        n_worker=0,
+    )
+    try:
+        with pytest.raises(ValueError, match="quality='final'"):
+            runner.run(
+                0.0,
+                store=ParamStore(),
+                cc_snapshot=None,
+                defaults=LayerStyleDefaults(
+                    color=(0.0, 0.0, 0.0),
+                    thickness=0.01,
+                ),
+                recording=True,
+                transport_epoch=0,
+                quality="draft",
+            )
+    finally:
+        runner.close()
 
 
 def test_mp_draw_quality_roundtrips_into_worker_context() -> None:
@@ -1019,6 +2083,8 @@ def test_mp_draw_quality_roundtrips_into_worker_context() -> None:
             t=0.0,
             snapshot_revision=0,
             snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
             quality="final",
         )
         result = _wait_for_result(mp_draw)
@@ -1033,6 +2099,35 @@ def test_mp_draw_quality_roundtrips_into_worker_context() -> None:
 def test_scene_runner_rejects_negative_worker_count() -> None:
     with pytest.raises(ValueError, match="0 以上"):
         SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=-1)
+
+
+@pytest.mark.parametrize("n_worker", [True, 1.0, "1"])
+def test_scene_runner_rejects_implicitly_convertible_worker_count(
+    n_worker: object,
+) -> None:
+    with pytest.raises(TypeError, match="n_worker.*int"):
+        SceneRunner(
+            _empty_draw,
+            perf=PerfCollector(enabled=False),
+            n_worker=n_worker,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "timeout",
+    [True, "1", 0.0, -1.0, float("inf"), float("nan")],
+)
+def test_scene_runner_validates_timeout_in_synchronous_mode(
+    timeout: object,
+) -> None:
+    expected_error = TypeError if isinstance(timeout, (bool, str)) else ValueError
+    with pytest.raises(expected_error, match="evaluation_timeout"):
+        SceneRunner(
+            _empty_draw,
+            perf=PerfCollector(enabled=False),
+            n_worker=0,
+            evaluation_timeout=timeout,  # type: ignore[arg-type]
+        )
 
 
 def test_recording_remains_synchronous_with_background_preview_configured(
@@ -1054,6 +2149,8 @@ def test_recording_remains_synchronous_with_background_preview_configured(
             cc_snapshot=None,
             defaults=LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01),
             recording=True,
+            transport_epoch=0,
+            quality="final",
         )
 
         fake = _IdleMpDraw.instances[-1]
@@ -1085,6 +2182,8 @@ def test_scene_runner_propagates_worker_death_without_sync_fallback() -> None:
             cc_snapshot=None,
             defaults=LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01),
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
 
     assert exc_info.value is error
@@ -1111,6 +2210,8 @@ def test_scene_runner_couples_output_time_to_batched_success_before_later_error(
                 cc_snapshot=None,
                 defaults=defaults,
                 recording=False,
+                transport_epoch=0,
+                quality="draft",
             )
 
         # error frame 自身は realized output ではないため、その t=0.5 を
@@ -1125,6 +2226,8 @@ def test_scene_runner_couples_output_time_to_batched_success_before_later_error(
             cc_snapshot=None,
             defaults=defaults,
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
 
         assert realized
@@ -1150,16 +2253,19 @@ def test_scene_runner_does_not_rerealize_same_mp_result(
         records=[],
         labels=[],
         t=1.0,
+        epoch=0,
+        generation=0,
         snapshot_revision=0,
+        effect_chains=[],
     )
     mp_draw = _EpochMpDraw(result)
     original_realize_scene = scene_runner_module.realize_scene
     realize_calls = 0
 
-    def counted_realize_scene(*args: object, **kwargs: object):
+    def counted_realize_scene(*args: object, **kwargs: object) -> Any:
         nonlocal realize_calls
         realize_calls += 1
-        return original_realize_scene(*args, **kwargs)
+        return cast(Any, original_realize_scene)(*args, **kwargs)
 
     monkeypatch.setattr(
         scene_runner_module,
@@ -1177,6 +2283,8 @@ def test_scene_runner_does_not_rerealize_same_mp_result(
             cc_snapshot=None,
             defaults=defaults,
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
         assert runner.last_output_updated is True
         color_key = layer_style_key("implicit:1", LAYER_STYLE_LINE_COLOR)
@@ -1208,6 +2316,8 @@ def test_scene_runner_does_not_rerealize_same_mp_result(
             cc_snapshot=None,
             defaults=defaults,
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
         third = runner.run(
             3.0,
@@ -1215,6 +2325,8 @@ def test_scene_runner_does_not_rerealize_same_mp_result(
             cc_snapshot=None,
             defaults=defaults,
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
         assert second[0].realized is first[0].realized
         assert third[0] is second[0]
@@ -1240,7 +2352,9 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
         labels=[],
         t=1.0,
         epoch=0,
+        generation=0,
         snapshot_revision=3,
+        effect_chains=[],
     )
     epoch_mp = _EpochMpDraw(old_preview)
     runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
@@ -1255,6 +2369,7 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
             defaults=defaults,
             recording=False,
             transport_epoch=0,
+            quality="draft",
         )
         assert runner.last_realized_t == pytest.approx(1.0)
         assert runner.last_realized_snapshot_revision == 3
@@ -1268,6 +2383,7 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
             defaults=defaults,
             recording=True,
             transport_epoch=1,
+            quality="final",
         )
         assert runner.last_realized_t == pytest.approx(5.0)
         assert runner.last_realized_snapshot_revision == store.revision
@@ -1281,6 +2397,7 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
             defaults=defaults,
             recording=False,
             transport_epoch=2,
+            quality="draft",
         )
         assert waiting_layers == recording_layers
         assert runner.last_realized_t == pytest.approx(5.0)
@@ -1301,7 +2418,9 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
         labels=[],
         t=2.0,
         epoch=0,
+        generation=0,
         snapshot_revision=4,
+        effect_chains=[],
     )
     epoch_mp = _EpochMpDraw(initial)
     runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
@@ -1316,6 +2435,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
             defaults=defaults,
             recording=False,
             transport_epoch=0,
+            quality="draft",
         )
         assert runner.last_realized_t == pytest.approx(2.0)
         assert runner.last_realized_snapshot_revision == 4
@@ -1327,6 +2447,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
             defaults=defaults,
             recording=False,
             transport_epoch=1,
+            quality="draft",
         )
         assert waiting == before_seek
         assert runner.last_realized_t == pytest.approx(2.0)
@@ -1340,7 +2461,9 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
             labels=[],
             t=20.0,
             epoch=1,
+            generation=0,
             snapshot_revision=9,
+            effect_chains=[],
         )
         epoch_mp._published = False
         fresh = runner.run(
@@ -1350,6 +2473,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
             defaults=defaults,
             recording=False,
             transport_epoch=1,
+            quality="draft",
         )
         assert fresh
         assert runner.last_realized_t == pytest.approx(20.0)
@@ -1378,6 +2502,9 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
     batched.success = DrawResult(
         frame_id=10,
         t=0.25,
+        epoch=0,
+        generation=0,
+        snapshot_revision=0,
         layers=batched.success.layers,
         records=[record],
         labels=[],
@@ -1419,6 +2546,8 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
                 cc_snapshot=None,
                 defaults=defaults,
                 recording=False,
+                transport_epoch=0,
+                quality="draft",
             )
 
         # retained success の records は frame buffer へ入るが、main realize 失敗に
@@ -1430,6 +2559,8 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
                 cc_snapshot=None,
                 defaults=defaults,
                 recording=False,
+                transport_epoch=0,
+                quality="draft",
             )
         assert store.get_state(key) is None
         assert "worker-chain" not in store.effect_chain_topologies()
@@ -1444,6 +2575,8 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
                 cc_snapshot=None,
                 defaults=defaults,
                 recording=False,
+                transport_epoch=0,
+                quality="draft",
             )
             == []
         )
@@ -1455,20 +2588,26 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
         runner.close()
 
 
-def test_scene_runner_passes_resource_budget_to_realize_session() -> None:
+def test_scene_runner_passes_runtime_profiles_to_realize_sessions() -> None:
     budget = ResourceBudget(
         max_output_vertices=123,
         max_output_lines=45,
         max_output_bytes=6_789,
     )
+    preview_limits = RuntimeLimits(per_operation=budget, scene=budget)
+    final_limits = RuntimeLimits()
     runner = SceneRunner(
         _empty_draw,
         perf=PerfCollector(enabled=False),
         n_worker=0,
-        resource_budget=budget,
+        runtime_limit_profiles=RuntimeLimitProfiles(
+            preview=preview_limits,
+            final=final_limits,
+        ),
     )
     try:
-        assert runner._realize_session.resource_budget is budget
+        assert runner._realize_sessions["draft"].runtime_limits is preview_limits
+        assert runner._realize_sessions["final"].runtime_limits is final_limits
     finally:
         runner.close()
 
@@ -1490,6 +2629,9 @@ def test_600_stable_frames_broadcast_snapshot_only_once() -> None:
                 t=float(frame),
                 snapshot_revision=7,
                 snapshot={},
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
             )
 
         result = _wait_for_result(mp_draw)
@@ -1504,10 +2646,20 @@ def test_600_stable_frames_broadcast_snapshot_only_once() -> None:
                 t=float(frame),
                 snapshot_revision=7,
                 snapshot={},
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
             )
         assert mp_draw.snapshot_broadcast_count == 1
 
-        mp_draw.submit(t=661.0, snapshot_revision=8, snapshot={})
+        mp_draw.submit(
+            t=661.0,
+            snapshot_revision=8,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
 
         def revision_8_was_acked() -> bool:
             mp_draw.poll_latest()
@@ -1530,6 +2682,9 @@ def test_single_worker_uses_task_snapshot_without_duplicate_control_broadcast() 
                 t=float(frame),
                 snapshot_revision=7,
                 snapshot={},
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
             )
 
         result = _wait_for_result(mp_draw)
@@ -1539,7 +2694,14 @@ def test_single_worker_uses_task_snapshot_without_duplicate_control_broadcast() 
         assert mp_draw.snapshot_payload_copy_count == 1
         assert set(mp_draw.worker_snapshot_revisions.values()) == {7}
 
-        mp_draw.submit(t=31.0, snapshot_revision=8, snapshot={})
+        mp_draw.submit(
+            t=31.0,
+            snapshot_revision=8,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         latest: DrawResult | None = None
         deadline = time.monotonic() + _WAIT_TIMEOUT_S
         while time.monotonic() < deadline:
@@ -1573,7 +2735,14 @@ def test_mp_draw_emits_revision_and_frame_causal_events() -> None:
         event_callback=record_event,
     )
     try:
-        mp_draw.submit(t=0.0, snapshot_revision=9, snapshot={})
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=9,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         submitted_frame_id = mp_draw.last_submitted_frame_id
         result = _wait_for_result(mp_draw)
 
@@ -1601,7 +2770,14 @@ def test_mp_draw_emits_revision_and_frame_causal_events() -> None:
 def test_worker_rejects_unknown_and_stale_revision_and_acks_stale_update() -> None:
     mp_draw = MpDraw(_empty_draw, n_worker=2)
     try:
-        mp_draw.submit(t=0.0, snapshot_revision=5, snapshot={})
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=5,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         _wait_for_result(mp_draw)
         assert set(mp_draw.worker_snapshot_revisions.values()) == {5}
 
@@ -1612,6 +2788,11 @@ def test_worker_rejects_unknown_and_stale_revision_and_acks_stale_update() -> No
                 t=0.0,
                 snapshot_revision=6,
                 cc_snapshot=None,
+                snapshot=None,
+                effect_order_snapshot=None,
+                epoch=0,
+                generation=0,
+                quality="draft",
             )
         )
 
@@ -1629,6 +2810,11 @@ def test_worker_rejects_unknown_and_stale_revision_and_acks_stale_update() -> No
                 t=0.0,
                 snapshot_revision=4,
                 cc_snapshot=None,
+                snapshot=None,
+                effect_order_snapshot=None,
+                epoch=0,
+                generation=0,
+                quality="draft",
             )
         )
 
@@ -1640,7 +2826,14 @@ def test_worker_rejects_unknown_and_stale_revision_and_acks_stale_update() -> No
         assert mp_draw.last_rejection == (4, 5, "stale")
 
         ack_before = mp_draw.snapshot_ack_count
-        mp_draw._control_qs[0].put(_SnapshotUpdate(revision=4, snapshot={}))
+        mp_draw._control_qs[0].put(
+            _SnapshotUpdate(
+                revision=4,
+                snapshot={},
+                effect_order_snapshot={},
+                generation=mp_draw.generation,
+            )
+        )
 
         def stale_was_acked() -> bool:
             mp_draw.poll_latest()
@@ -1660,6 +2853,9 @@ def test_rapid_revision_changes_keep_snapshot_control_backlog_bounded() -> None:
                 t=float(revision),
                 snapshot_revision=revision,
                 snapshot={},
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
             )
             assert mp_draw.pending_snapshot_update_count <= 2
             assert mp_draw.queued_snapshot_update_count <= 2
@@ -1694,6 +2890,9 @@ def test_revision_churn_keeps_results_moving_and_reaches_latest(
                 t=float(revision),
                 snapshot_revision=revision,
                 snapshot={},
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
             )
             result = mp_draw.poll_latest()
             if result is not None:
@@ -1713,6 +2912,9 @@ def test_revision_churn_keeps_results_moving_and_reaches_latest(
                 t=60.0,
                 snapshot_revision=60,
                 snapshot={},
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
             )
             result = mp_draw.poll_latest()
             if result is not None and int(result.snapshot_revision) == 60:

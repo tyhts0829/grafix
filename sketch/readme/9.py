@@ -37,5 +37,5 @@ if __name__ == "__main__":
         canvas_size=(CANVAS_WIDTH, CANVAS_HEIGHT),
         parameter_gui=True,
         midi_port_name="OXI E16 „Éù„Éº„Éà3",
-        midi_mode="7bit_rel",
+        midi_mode="7bit",
     )

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from grafix import RenderOptions
+from grafix import ExportFormat, RenderOptions
 from grafix.__main__ import main as grafix_main
 from grafix.devtools import variation_batch
 
@@ -96,7 +96,7 @@ def test_cli_passes_headless_inputs_and_reports_partial_failure(
     assert isinstance(options, RenderOptions)
     assert options.canvas_size == (120, 90)
     assert calls[0]["variation_names"] == ("Quiet", "Broken")
-    assert calls[0]["thumbnail_format"] == "svg"
+    assert calls[0]["thumbnail_format"] is ExportFormat.SVG
     assert calls[0]["thumbnail_size"] == (240, 180)
     assert calls[0]["columns"] == 2
     output = capsys.readouterr()

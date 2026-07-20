@@ -9,13 +9,19 @@ from copy import deepcopy
 from hashlib import sha256
 import time
 from dataclasses import dataclass, replace
-from math import ceil, floor, isfinite
+from math import ceil, floor
 from pathlib import Path
 from random import Random
 from typing import TYPE_CHECKING, Any
 from unicodedata import category
 
-from .effects import EffectTopologySignature
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string,
+    finite_real,
+)
+
 from .key import ParameterKey
 from .memento import (
     ParamStoreMemento,
@@ -23,8 +29,7 @@ from .memento import (
     restore_param_store_memento,
 )
 from .meta import ParamMeta
-from .meta_spec import meta_from_record, meta_to_spec
-from .state import ParamState
+from .meta_spec import meta_to_spec
 from .view import canonicalize_ui_value
 
 if TYPE_CHECKING:
@@ -53,27 +58,29 @@ class Variation:
     thumbnail_path: str | None
 
     def __post_init__(self) -> None:
-        name = _normalize_name(self.name)
-        created_at = float(self.created_at)
-        if not isfinite(created_at):
-            raise ValueError("created_at must be finite")
-        if not isinstance(self.note, str):
-            raise TypeError("note must be a str")
-        if self.seed is not None and (
-            isinstance(self.seed, bool) or not isinstance(self.seed, int)
-        ):
-            raise TypeError("seed must be an int or None")
-        t = None if self.t is None else float(self.t)
-        if t is not None and not isfinite(t):
-            raise ValueError("t must be finite or None")
+        name = _validated_name(self.name)
+        created_at = finite_real(self.created_at, name="created_at")
+        note = exact_string(self.note, name="note")
+        seed = (
+            None
+            if self.seed is None
+            else exact_integer(self.seed, name="seed")
+        )
+        t = None if self.t is None else finite_real(self.t, name="t")
         if not isinstance(self.parameter_snapshot, ParamStoreMemento):
             raise TypeError("parameter_snapshot must be a ParamStoreMemento")
-        if self.thumbnail_path is not None and not isinstance(self.thumbnail_path, str):
-            raise TypeError("thumbnail_path must be a str or None")
+        thumbnail_path = (
+            None
+            if self.thumbnail_path is None
+            else exact_string(self.thumbnail_path, name="thumbnail_path")
+        )
 
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "created_at", created_at)
+        object.__setattr__(self, "note", note)
+        object.__setattr__(self, "seed", seed)
         object.__setattr__(self, "t", t)
+        object.__setattr__(self, "thumbnail_path", thumbnail_path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,21 +106,19 @@ def create_variation(
     同名 variation は暗黙に上書きしない。
     """
 
-    normalized_name = _normalize_name(name)
+    validated_name = _validated_name(name)
     variations = store._variations_ref()
-    if normalized_name in variations:
-        raise ValueError(f"variation already exists: {normalized_name!r}")
+    if validated_name in variations:
+        raise ValueError(f"variation already exists: {validated_name!r}")
 
     variation = Variation(
-        name=normalized_name,
+        name=validated_name,
         created_at=time.time() if created_at is None else created_at,
         note=note,
         seed=seed,
         t=t,
         parameter_snapshot=capture_param_store_memento(store),
-        thumbnail_path=(
-            None if thumbnail_path is None else str(Path(thumbnail_path))
-        ),
+        thumbnail_path=_thumbnail_path_text(thumbnail_path),
     )
     variations[variation.name] = variation
     store._touch()
@@ -129,8 +134,8 @@ def duplicate_variation(
 ) -> Variation:
     """既存 variation の snapshot/metadata を独立した新名称で複製する。"""
 
-    source_name = _normalize_name(name)
-    duplicate_name = _normalize_name(new_name)
+    source_name = _validated_name(name)
+    duplicate_name = _validated_name(new_name)
     variations = store._variations_ref()
     source = _require_variation(variations, source_name)
     if duplicate_name in variations:
@@ -139,7 +144,7 @@ def duplicate_variation(
     duplicate = replace(
         source,
         name=duplicate_name,
-        created_at=time.time() if created_at is None else float(created_at),
+        created_at=time.time() if created_at is None else created_at,
         parameter_snapshot=deepcopy(source.parameter_snapshot),
     )
     variations[duplicate.name] = duplicate
@@ -150,18 +155,18 @@ def duplicate_variation(
 def rename_variation(store: ParamStore, name: str, new_name: str) -> Variation:
     """variation の名前を変更し、内容と並び順は保つ。"""
 
-    current_name = _normalize_name(name)
-    normalized_new_name = _normalize_name(new_name)
+    current_name = _validated_name(name)
+    validated_new_name = _validated_name(new_name)
     variations = store._variations_ref()
     variation = _require_variation(variations, current_name)
-    if normalized_new_name == current_name:
+    if validated_new_name == current_name:
         return variation
-    if normalized_new_name in variations:
-        raise ValueError(f"variation already exists: {normalized_new_name!r}")
+    if validated_new_name in variations:
+        raise ValueError(f"variation already exists: {validated_new_name!r}")
 
-    renamed = replace(variation, name=normalized_new_name)
+    renamed = replace(variation, name=validated_new_name)
     items = [
-        (normalized_new_name, renamed) if key == current_name else (key, value)
+        (validated_new_name, renamed) if key == current_name else (key, value)
         for key, value in variations.items()
     ]
     variations.clear()
@@ -173,11 +178,11 @@ def rename_variation(store: ParamStore, name: str, new_name: str) -> Variation:
 def delete_variation(store: ParamStore, name: str) -> bool:
     """variation を削除する。存在しなければ False を返す。"""
 
-    normalized_name = _normalize_name(name)
+    validated_name = _validated_name(name)
     variations = store._variations_ref()
-    if normalized_name not in variations:
+    if validated_name not in variations:
         return False
-    del variations[normalized_name]
+    del variations[validated_name]
     store._touch()
     return True
 
@@ -194,7 +199,7 @@ def diff_variation(
 ) -> tuple[VariationDifference, ...]:
     """現在の parameter 状態と variation の差分を返す。"""
 
-    variation = _require_variation(store._variations_ref(), _normalize_name(name))
+    variation = _require_variation(store._variations_ref(), _validated_name(name))
     saved_states = variation.parameter_snapshot._states
     saved_meta = variation.parameter_snapshot._meta
     current_states = store._states
@@ -242,15 +247,15 @@ def restore_variation(
     variation 作成後に発見された parameter は削除しない。
     """
 
-    normalized_name = _normalize_name(name)
-    variation = _require_variation(store._variations_ref(), normalized_name)
+    validated_name = _validated_name(name)
+    variation = _require_variation(store._variations_ref(), validated_name)
     if history is None:
         return restore_param_store_memento(store, variation.parameter_snapshot)
     if history._store is not store:
         raise ValueError("history must belong to the same ParamStore")
 
     changed = False
-    with history.transaction(source=("variation", normalized_name)):
+    with history.transaction(source=("variation", validated_name)):
         changed = restore_param_store_memento(store, variation.parameter_snapshot)
     return changed
 
@@ -287,8 +292,7 @@ def set_parameters_locked(
     複数 key を変更しても store revision は 1 回だけ進む。
     """
 
-    if not isinstance(locked, bool):
-        raise TypeError("locked must be a bool")
+    locked = exact_bool(locked, name="locked")
     ordered_keys = _ordered_scope(keys)
     locked_keys = store._locked_keys_ref()
     changed: list[ParameterKey] = []
@@ -326,8 +330,7 @@ def randomize_parameters(
     ``history`` を渡した場合、全変更を 1 回の Undo 操作として記録する。
     """
 
-    if isinstance(seed, bool) or not isinstance(seed, int):
-        raise TypeError("seed must be an int")
+    normalized_seed = exact_integer(seed, name="seed")
     _validate_history(store, history)
     ordered_keys = _ordered_scope(keys)
 
@@ -341,7 +344,7 @@ def randomize_parameters(
             meta = store._meta.get(key)
             if state is None or meta is None:
                 continue
-            randomized = _randomized_value(meta, seed=seed, key=key)
+            randomized = _randomized_value(meta, seed=normalized_seed, key=key)
             if randomized is _UNSUPPORTED:
                 continue
             if state.ui_value == randomized and state.override:
@@ -356,7 +359,7 @@ def randomize_parameters(
     if history is None:
         return apply()
     history.break_coalescing()
-    with history.transaction(source=("variation-randomize", int(seed))):
+    with history.transaction(source=("variation-randomize", normalized_seed)):
         return apply()
 
 
@@ -387,14 +390,12 @@ def morph_variations(
     scope 全体の適用を 1 回の Undo 操作として記録する。
     """
 
-    if isinstance(amount, bool) or not isinstance(amount, (int, float)):
-        raise TypeError("amount must be a finite number in [0, 1]")
-    normalized_amount = float(amount)
-    if not isfinite(normalized_amount) or not 0.0 <= normalized_amount <= 1.0:
+    normalized_amount = finite_real(amount, name="amount")
+    if not 0.0 <= normalized_amount <= 1.0:
         raise ValueError("amount must be a finite number in [0, 1]")
     _validate_history(store, history)
-    variation_a = _require_variation(store._variations_ref(), _normalize_name(a_name))
-    variation_b = _require_variation(store._variations_ref(), _normalize_name(b_name))
+    variation_a = _require_variation(store._variations_ref(), _validated_name(a_name))
+    variation_b = _require_variation(store._variations_ref(), _validated_name(b_name))
     ordered_keys = _ordered_scope(keys)
     states_a = variation_a.parameter_snapshot._states
     states_b = variation_b.parameter_snapshot._states
@@ -453,7 +454,7 @@ def morph_variations(
             ):
                 continue
             current_state.ui_value = value
-            current_state.override = bool(selected_state.override)
+            current_state.override = selected_state.override
             current_state.cc_key = selected_cc
             changed.append(key)
         if changed:
@@ -494,18 +495,17 @@ def _validate_history(
 
 
 def _key_random(seed: int, key: ParameterKey) -> Random:
-    payload = f"{int(seed)}\0{key.op}\0{key.site_id}\0{key.arg}".encode("utf-8")
+    payload = f"{seed}\0{key.op}\0{key.site_id}\0{key.arg}".encode("utf-8")
     digest = sha256(payload).digest()
     return Random(int.from_bytes(digest[:16], "big"))
 
 
 def _numeric_components(value: object, count: int) -> tuple[float, ...] | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        normalized = float(value)
-        if not isfinite(normalized):
-            return None
+    try:
+        normalized = finite_real(value, name="numeric component")
+    except (TypeError, ValueError):
+        normalized = None
+    if normalized is not None:
         return (normalized,) * count
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         return None
@@ -513,10 +513,9 @@ def _numeric_components(value: object, count: int) -> tuple[float, ...] | None:
         return None
     out: list[float] = []
     for component in value:
-        if isinstance(component, bool) or not isinstance(component, (int, float)):
-            return None
-        normalized = float(component)
-        if not isfinite(normalized):
+        try:
+            normalized = finite_real(component, name="numeric component")
+        except (TypeError, ValueError):
             return None
         out.append(normalized)
     return tuple(out)
@@ -531,8 +530,8 @@ def _ranges_for_meta(
     lowers: tuple[float, ...]
     uppers: tuple[float, ...]
     if recommended is not None:
-        lowers = (float(recommended[0]),) * count
-        uppers = (float(recommended[1]),) * count
+        lowers = (recommended[0],) * count
+        uppers = (recommended[1],) * count
     else:
         ui_lowers = _numeric_components(meta.ui_min, count)
         ui_uppers = _numeric_components(meta.ui_max, count)
@@ -552,7 +551,7 @@ def _randomized_value(
     seed: int,
     key: ParameterKey,
 ) -> object:
-    kind = str(meta.kind)
+    kind = meta.kind
     if kind not in _NUMERIC_KINDS:
         return _UNSUPPORTED
     count = 3 if kind in {"vec3", "rgb"} else 1
@@ -599,7 +598,7 @@ def _morphed_value(
     value_b: object,
     amount: float,
 ) -> object:
-    kind = str(meta.kind)
+    kind = meta.kind
     if kind in _DISCRETE_KINDS:
         selected = value_b if amount >= 0.5 else value_a
         return canonicalize_ui_value(selected, meta)
@@ -610,8 +609,6 @@ def _morphed_value(
             return _UNSUPPORTED
         float_a = components_a[0]
         float_b = components_b[0]
-        if not isfinite(float_a) or not isfinite(float_b):
-            return _UNSUPPORTED
         return float_a + (float_b - float_a) * amount
     if kind == "int":
         components_a = _numeric_components(value_a, 1)
@@ -639,22 +636,34 @@ def _morphed_value(
     return _UNSUPPORTED
 
 
-def _normalize_name(name: object) -> str:
-    if not isinstance(name, str):
-        raise TypeError("variation name must be a str")
+def _validated_name(name: object) -> str:
+    """variation 名を変更せず、canonical な exact str として検証する。"""
+
+    name = exact_string(name, name="variation name")
     if any(category(character) in {"Cc", "Cs", "Zl", "Zp"} for character in name):
         raise ValueError(
             "variation name must not contain line breaks or control characters"
         )
-    normalized = name.strip()
-    if not normalized:
+    if not name.strip():
         raise ValueError("variation name must not be empty")
-    if len(normalized) > _MAX_VARIATION_NAME_LENGTH:
+    if len(name) > _MAX_VARIATION_NAME_LENGTH:
         raise ValueError(
             "variation name must be at most "
             f"{_MAX_VARIATION_NAME_LENGTH} characters"
         )
-    return normalized
+    return name
+
+
+def _thumbnail_path_text(value: str | Path | None) -> str | None:
+    """thumbnail path の宣言型だけを受け、暗黙 Path/string 化を行わない。"""
+
+    if value is None:
+        return None
+    if type(value) is str:
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError("thumbnail_path must be a str, Path, or None")
 
 
 def _require_variation(
@@ -684,9 +693,17 @@ def _encode_variation(variation: Variation) -> dict[str, Any]:
                     "op": key.op,
                     "site_id": key.site_id,
                     "arg": key.arg,
-                    "override": bool(state.override),
-                    "ui_value": state.ui_value,
-                    "cc_key": state.cc_key,
+                    "override": state.override,
+                    "ui_value": (
+                        list(state.ui_value)
+                        if isinstance(state.ui_value, tuple)
+                        else state.ui_value
+                    ),
+                    "cc_key": (
+                        list(state.cc_key)
+                        if isinstance(state.cc_key, tuple)
+                        else state.cc_key
+                    ),
                 }
                 for key, state in snapshot._states.items()
                 if key in snapshot._meta
@@ -731,193 +748,6 @@ def _encode_variation(variation: Variation) -> dict[str, Any]:
             ],
         },
     }
-
-
-def _decode_variation(obj: object) -> Variation | None:
-    """JSON 由来の 1 entry を復元する。不正 entry は None。"""
-
-    if not isinstance(obj, dict):
-        return None
-    snapshot_obj = obj.get("parameter_snapshot")
-    if not isinstance(snapshot_obj, dict):
-        return None
-
-    meta_by_key: dict[ParameterKey, ParamMeta] = {}
-    meta_items = snapshot_obj.get("meta", [])
-    if isinstance(meta_items, list):
-        for item in meta_items:
-            if not isinstance(item, dict):
-                continue
-            try:
-                key = _decode_key(item)
-                meta_by_key[key] = meta_from_record(item)
-            except Exception:
-                continue
-
-    states: dict[ParameterKey, ParamState] = {}
-    state_items = snapshot_obj.get("states", [])
-    if isinstance(state_items, list):
-        for item in state_items:
-            if not isinstance(item, dict):
-                continue
-            try:
-                key = _decode_key(item)
-                meta = meta_by_key[key]
-                states[key] = ParamState(
-                    override=bool(item.get("override", True)),
-                    ui_value=canonicalize_ui_value(item.get("ui_value"), meta),
-                    cc_key=_decode_cc_key(item.get("cc_key")),
-                )
-            except Exception:
-                continue
-
-    raw_collapsed = snapshot_obj.get("collapsed_by_header", {})
-    collapsed_by_header = (
-        {str(key): bool(value) for key, value in raw_collapsed.items()}
-        if isinstance(raw_collapsed, dict)
-        else {}
-    )
-    (
-        effect_order_state,
-        effect_topology_signatures,
-    ) = _decode_effect_order_state(
-        snapshot_obj.get("effect_order_state", [])
-    )
-    try:
-        memento = ParamStoreMemento._from_gui_owned_parts(
-            states=states,
-            meta={key: meta_by_key[key] for key in states},
-            collapsed_by_header=collapsed_by_header,
-            effect_order_state=effect_order_state,
-            effect_topology_signatures=effect_topology_signatures,
-        )
-        raw_seed = obj.get("seed")
-        seed = raw_seed if isinstance(raw_seed, int) and not isinstance(raw_seed, bool) else None
-        raw_thumbnail = obj.get("thumbnail_path")
-        thumbnail_path = raw_thumbnail if isinstance(raw_thumbnail, str) else None
-        return Variation(
-            name=obj["name"],
-            created_at=obj["created_at"],
-            note=obj.get("note", ""),
-            seed=seed,
-            t=obj.get("t"),
-            parameter_snapshot=memento,
-            thumbnail_path=thumbnail_path,
-        )
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _decode_effect_order_state(
-    obj: object,
-) -> tuple[
-    dict[str, tuple[tuple[str, str], ...] | None],
-    dict[str, EffectTopologySignature],
-]:
-    """variation 内の互換な effect 順序状態だけを復元する。"""
-
-    if not isinstance(obj, list):
-        return {}, {}
-
-    state: dict[str, tuple[tuple[str, str], ...] | None] = {}
-    signatures: dict[str, EffectTopologySignature] = {}
-    for item in obj:
-        if not isinstance(item, dict):
-            continue
-        chain_id = item.get("chain_id")
-        steps_obj = item.get("steps")
-        if (
-            not isinstance(chain_id, str)
-            or not chain_id.strip()
-            or chain_id in state
-        ):
-            continue
-        if steps_obj is None:
-            state[chain_id] = None
-        elif not isinstance(steps_obj, list) or not steps_obj:
-            continue
-        else:
-            steps: list[tuple[str, str]] = []
-            seen_steps: set[tuple[str, str]] = set()
-            malformed = False
-            for step in steps_obj:
-                if not isinstance(step, dict):
-                    malformed = True
-                    break
-                op = step.get("op")
-                site_id = step.get("site_id")
-                if (
-                    not isinstance(op, str)
-                    or not op.strip()
-                    or not isinstance(site_id, str)
-                    or not site_id.strip()
-                ):
-                    malformed = True
-                    break
-                key = (op, site_id)
-                if key in seen_steps:
-                    malformed = True
-                    break
-                seen_steps.add(key)
-                steps.append(key)
-            if malformed:
-                continue
-            state[chain_id] = tuple(steps)
-
-        topology_obj = item.get("topology")
-        if not isinstance(topology_obj, list) or not topology_obj:
-            continue
-        signature_items: list[tuple[str, str, int]] = []
-        malformed_topology = False
-        for topology_step in topology_obj:
-            if not isinstance(topology_step, dict):
-                malformed_topology = True
-                break
-            op = topology_step.get("op")
-            site_id = topology_step.get("site_id")
-            n_inputs = topology_step.get("n_inputs")
-            if (
-                not isinstance(op, str)
-                or not op.strip()
-                or not isinstance(site_id, str)
-                or not site_id.strip()
-                or isinstance(n_inputs, bool)
-                or not isinstance(n_inputs, int)
-                or n_inputs < 1
-            ):
-                malformed_topology = True
-                break
-            signature_items.append((op, site_id, n_inputs))
-        if not malformed_topology:
-            signatures[chain_id] = tuple(sorted(signature_items))
-    return state, signatures
-
-
-def _decode_key(item: dict[str, Any]) -> ParameterKey:
-    return ParameterKey(
-        op=str(item["op"]),
-        site_id=str(item["site_id"]),
-        arg=str(item["arg"]),
-    )
-
-
-def _decode_cc_key(
-    value: object,
-) -> int | tuple[int | None, int | None, int | None] | None:
-    def to_int(item: object) -> int | None:
-        if isinstance(item, bool) or not isinstance(item, (int, str)):
-            return None
-        try:
-            return int(item)
-        except ValueError:
-            return None
-
-    if value is None:
-        return None
-    if isinstance(value, (list, tuple)) and len(value) == 3:
-        decoded = (to_int(value[0]), to_int(value[1]), to_int(value[2]))
-        return None if decoded == (None, None, None) else decoded
-    return to_int(value)
 
 
 __all__ = [

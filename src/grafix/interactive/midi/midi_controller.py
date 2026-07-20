@@ -12,6 +12,7 @@ from pathlib import Path
 
 from grafix.core.atomic_write import atomic_write_text
 from grafix.core.runtime_config import output_root_dir
+from grafix.core.value_validation import exact_string_choice
 
 
 def _contains_japanese(text: str) -> bool:
@@ -178,11 +179,14 @@ class MidiController:
         persistence_path: Path | None = None,
         inport: object | None = None,
     ) -> None:
-        if mode not in ("7bit", "14bit"):
-            raise ValueError(f"unknown mode: {mode!r}")
+        mode_value = exact_string_choice(
+            mode,
+            name="mode",
+            choices=("7bit", "14bit"),
+        )
 
         self.port_name = str(port_name)
-        self.mode = str(mode)
+        self.mode = mode_value
         self.profile_name = (
             str(profile_name) if profile_name is not None else _default_profile_name()
         )

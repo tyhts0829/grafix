@@ -19,6 +19,7 @@ class _FakeSession:
         self.draw = draw
         self.kwargs = kwargs
         self.rendered: list[float] = []
+        self.config = SimpleNamespace(png_scale=8.0)
 
     def __enter__(self) -> _FakeSession:
         return self

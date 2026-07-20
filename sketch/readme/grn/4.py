@@ -19,8 +19,8 @@ def draw(t):
     g = G.sphere(
         activate=True,
         subdivisions=0,
-        type_index=3,
-        mode=2,
+        style="rings",
+        line_mode="both",
         center=(75.0, 93.0, 0.0),
         scale=93.898,
     )

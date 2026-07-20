@@ -1,8 +1,10 @@
+import pytest
+
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.runtime import ParamStoreRuntime
 
 
-def test_new_runtime_field_preserves_legacy_positional_argument_order() -> None:
+def test_runtime_constructor_is_keyword_only_and_canonicalizes_group_sets() -> None:
     loaded = {("line", "loaded")}
     observed = {("line", "observed")}
     reconciled = {(("line", "old"), ("line", "new"))}
@@ -11,19 +13,20 @@ def test_new_runtime_field_preserves_legacy_positional_argument_order() -> None:
     effective = {key: 12.5}
     warned = {("line", "unknown")}
 
-    # last_source_by_key 追加前の 7 positional fields をそのまま使う。
     runtime = ParamStoreRuntime(
-        loaded,
-        observed,
-        reconciled,
-        display_order,
-        8,
-        effective,
-        warned,
+        loaded_groups=loaded,
+        observed_groups=observed,
+        reconcile_applied=reconciled,
+        display_order_by_group=display_order,
+        next_display_order=8,
+        last_effective_by_key=effective,
+        warned_unknown_args=warned,
     )
 
-    assert runtime.loaded_groups is loaded
-    assert runtime.observed_groups is observed
+    assert runtime.loaded_groups == loaded
+    assert runtime.loaded_groups is not loaded
+    assert runtime.observed_groups == observed
+    assert runtime.observed_groups is not observed
     assert runtime.reconcile_applied is reconciled
     assert runtime.display_order_by_group is display_order
     assert runtime.next_display_order == 8
@@ -31,6 +34,9 @@ def test_new_runtime_field_preserves_legacy_positional_argument_order() -> None:
     assert runtime.warned_unknown_args is warned
     assert runtime.last_source_by_key == {}
     assert runtime.effective_revision == 0
+
+    with pytest.raises(TypeError):
+        ParamStoreRuntime(loaded, observed)  # type: ignore[misc]
 
 
 def test_default_group_sets_advance_visibility_revision_only_on_change() -> None:
@@ -54,16 +60,16 @@ def test_default_group_sets_advance_visibility_revision_only_on_change() -> None
     assert runtime.visibility_cache_token() != token
 
 
-def test_legacy_plain_group_sets_use_exact_content_token() -> None:
+def test_constructor_group_sets_are_tracked_after_canonicalization() -> None:
     loaded = {("line", "a")}
     observed = {("line", "a")}
-    runtime = ParamStoreRuntime(loaded, observed)
+    runtime = ParamStoreRuntime(loaded_groups=loaded, observed_groups=observed)
     token = runtime.visibility_cache_token()
 
-    loaded.clear()
-    loaded.add(("line", "b"))
+    runtime.loaded_groups.clear()
+    runtime.loaded_groups.add(("line", "b"))
 
-    assert runtime.visibility_revision == 0
+    assert runtime.visibility_revision == 2
     assert runtime.visibility_cache_token() != token
 
 

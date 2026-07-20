@@ -14,11 +14,11 @@ import numpy as np
 from grafix.core.parameters.style import line_width_for_short_side
 from grafix.core.realize import GeometryCacheKey
 from grafix.core.realized_geometry import RealizedGeometry
-from grafix.core.runtime_limits import RuntimeLimits
+from grafix.core.render_options import RenderOptions
+from grafix.core.runtime_limits import DEFAULT_PREVIEW_RUNTIME_LIMITS, RuntimeLimits
 from grafix.interactive.gl import utils as render_utils
 from grafix.interactive.gl.index_buffer import LineIndexStats, build_line_indices_and_stats
 from grafix.interactive.gl.line_mesh import LineMesh
-from grafix.interactive.render_settings import RenderSettings
 from grafix.interactive.gl.shader import Shader
 from grafix.interactive.runtime.diagnostics import DiagnosticCenter, DiagnosticEvent
 
@@ -117,9 +117,9 @@ class DrawRenderer:
     def __init__(
         self,
         window: Window,
-        settings: RenderSettings,
+        options: RenderOptions,
         *,
-        runtime_limits: RuntimeLimits | None = None,
+        runtime_limits: RuntimeLimits = DEFAULT_PREVIEW_RUNTIME_LIMITS,
         diagnostic_center: DiagnosticCenter | None = None,
     ) -> None:
         window.switch_to()
@@ -132,7 +132,7 @@ class DrawRenderer:
         # 初見を即キャッシュすると「毎フレーム別 id」ケースで逆効果になりうるため、
         # 2 回目以降にキャッシュへ昇格させる。
         self._mesh_candidates: OrderedDict[
-            GeometryCacheKey, _MeshAdmission | None
+            GeometryCacheKey, _MeshAdmission
         ] = OrderedDict()
         # animated layer ごとに VBO は更新しつつ、安定した IBO/topology を
         # 再利用する bounded pool。static full mesh cache とは責務を分ける。
@@ -144,26 +144,25 @@ class DrawRenderer:
         self._dynamic_mesh_bytes = 0
         self._dynamic_slot_count = 0
         self._mesh_upload_count = 0
-        limits = RuntimeLimits() if runtime_limits is None else runtime_limits
-        if not isinstance(limits, RuntimeLimits):
+        if not isinstance(runtime_limits, RuntimeLimits):
             raise TypeError("runtime_limits は RuntimeLimits である必要があります")
         self._diagnostic_center = diagnostic_center
         (
             self._mesh_cache_max_bytes,
             self._dynamic_mesh_max_bytes,
-        ) = _gpu_mesh_cache_budgets(limits.gpu_cache_bytes)
+        ) = _gpu_mesh_cache_budgets(runtime_limits.gpu_cache_bytes)
         self._mesh_cache_max_entries = _mesh_entry_limit(
             self._mesh_cache_max_bytes,
             maximum=_MESH_CACHE_MAX_ENTRIES,
         )
         self._mesh_candidates_max_entries = _mesh_candidate_entry_limit(
-            limits.gpu_candidate_cache_bytes
+            runtime_limits.gpu_candidate_cache_bytes
         )
         self._dynamic_mesh_max_entries = _mesh_entry_limit(
             self._dynamic_mesh_max_bytes,
             maximum=_DYNAMIC_MESH_MAX_ENTRIES,
         )
-        self._canvas_w, self._canvas_h = settings.canvas_size
+        self._canvas_w, self._canvas_h = options.canvas_size
         self._framebuffer_size = (1, 1)
         self._viewport = (0, 0, 1, 1)
         self._viewport_size = (1, 1)
@@ -210,7 +209,7 @@ class DrawRenderer:
     def mesh_upload_count(self) -> int:
         """renderer lifetime 中の VBO/IBO upload 呼び出し回数を返す。"""
 
-        return int(getattr(self, "_mesh_upload_count", 0))
+        return int(self._mesh_upload_count)
 
     def apply_runtime_limits(self, limits: RuntimeLimits) -> None:
         """quality 切替時に GPU cache 上限を適用する。"""
@@ -244,7 +243,7 @@ class DrawRenderer:
         reason: str,
         unit: str = "bytes",
     ) -> None:
-        center = getattr(self, "_diagnostic_center", None)
+        center = self._diagnostic_center
         if center is None:
             return
         requested_label = f"requested_{unit}"
@@ -301,8 +300,8 @@ class DrawRenderer:
         cache_key: GeometryCacheKey,
         color: tuple[float, float, float],
         thickness: float,
-        scene_serial: int | None = None,
-        snapshot_revision: int | None = None,
+        scene_serial: int,
+        snapshot_revision: int,
         dynamic_slot: int | None = None,
     ) -> LineIndexStats:
         """RealizedGeometry をライン描画する。"""
@@ -323,8 +322,8 @@ class DrawRenderer:
         realized: RealizedGeometry,
         *,
         cache_key: GeometryCacheKey,
-        scene_serial: int | None = None,
-        snapshot_revision: int | None = None,
+        scene_serial: int,
+        snapshot_revision: int,
         dynamic_slot: int | None = None,
     ) -> tuple[LineMesh | None, LineIndexStats]:
         """upload（必要なら）を行い、描画に使う LineMesh を返す。"""
@@ -342,26 +341,20 @@ class DrawRenderer:
             scene_serial=scene_serial,
             snapshot_revision=snapshot_revision,
         )
-        was_candidate = cache_key in self._mesh_candidates
         previous_admission = self._mesh_candidates.get(cache_key)
-        should_promote = was_candidate and (
-            admission is None
-            or (
-                previous_admission is not None
-                and admission.scene_serial > previous_admission.scene_serial
-                and admission.snapshot_revision
-                == previous_admission.snapshot_revision
-            )
+        was_candidate = previous_admission is not None
+        should_promote = (
+            previous_admission is not None
+            and admission.scene_serial > previous_admission.scene_serial
+            and admission.snapshot_revision
+            == previous_admission.snapshot_revision
         )
         if should_promote:
             del self._mesh_candidates[cache_key]
-        elif was_candidate and admission is not None:
+        elif previous_admission is not None:
             # 同一 result の再表示は admission hit と数えない。parameter revision が
             # 変わった場合も候補を現在値へ進め、安定した次の fresh scene を待つ。
-            if (
-                previous_admission is None
-                or admission.scene_serial >= previous_admission.scene_serial
-            ):
+            if admission.scene_serial >= previous_admission.scene_serial:
                 self._mesh_candidates[cache_key] = admission
                 self._mesh_candidates.move_to_end(cache_key)
 
@@ -455,17 +448,11 @@ class DrawRenderer:
     @staticmethod
     def _mesh_admission(
         *,
-        scene_serial: int | None,
-        snapshot_revision: int | None,
-    ) -> _MeshAdmission | None:
-        """renderer 単体利用との互換を保ちつつ fresh scene 情報を正規化する。"""
+        scene_serial: int,
+        snapshot_revision: int,
+    ) -> _MeshAdmission:
+        """fresh scene の cache admission 情報を正規化する。"""
 
-        if scene_serial is None and snapshot_revision is None:
-            return None
-        if scene_serial is None or snapshot_revision is None:
-            raise ValueError(
-                "scene_serial と snapshot_revision は同時に指定する必要があります"
-            )
         serial = int(scene_serial)
         revision = int(snapshot_revision)
         if serial < 0:
@@ -533,7 +520,7 @@ class DrawRenderer:
         *,
         vertices_nbytes: int,
         indices_nbytes: int,
-        admission: _MeshAdmission | None,
+        admission: _MeshAdmission,
     ) -> None:
         """初見 key だけを、件数上限付き admission set へ記録する。"""
 
@@ -642,9 +629,7 @@ class DrawRenderer:
         return None if retained is None else retained.mesh
 
     def _record_mesh_upload(self) -> None:
-        self._mesh_upload_count = int(
-            getattr(self, "_mesh_upload_count", 0)
-        ) + 1
+        self._mesh_upload_count += 1
 
     def _release_dynamic_mesh(self, slot: int) -> None:
         """slot の transient mesh を解放し、static 昇格との重複保持を防ぐ。"""
@@ -673,7 +658,7 @@ class DrawRenderer:
         """layer数縮小時に末尾のdynamic slotを解放する。"""
 
         count = max(0, int(slot_count))
-        previous = int(getattr(self, "_dynamic_slot_count", 0))
+        previous = int(self._dynamic_slot_count)
         if count < previous:
             for slot in tuple(self._dynamic_meshes):
                 if slot >= count:

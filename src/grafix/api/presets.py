@@ -9,11 +9,13 @@ import importlib
 import sys
 import types
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
-from typing import Any
 
 from grafix.core.parameters import validate_parameter_identity
-from grafix.core.runtime_config import runtime_config
+from grafix.core.parameters.identity import identity_string
+from grafix.core.preset_registry import PresetIdentity, preset_op
+from grafix.core.runtime_config import RuntimeConfig, runtime_config
 from grafix.core.scene import SceneItem
 
 import grafix.core.preset_registry as preset_registry_module
@@ -21,8 +23,19 @@ import grafix.core.preset_registry as preset_registry_module
 _AUTOLOAD_KEY: tuple[Path | None, tuple[Path, ...]] | None = None
 
 
-def _autoload_preset_modules() -> None:
-    cfg = runtime_config()
+def _loaded_module_paths() -> set[Path]:
+    """別名を含め、現在の process で実行済みの module source を返す。"""
+
+    return {
+        Path(module_file).resolve(strict=False)
+        for module in tuple(sys.modules.values())
+        if (module_file := getattr(module, "__file__", None)) is not None
+    }
+
+
+def _autoload_preset_modules(cfg: RuntimeConfig) -> None:
+    """確定済み runtime config が指定する user preset を一度だけ import する。"""
+
     key = (cfg.config_path, tuple(cfg.preset_module_dirs))
 
     global _AUTOLOAD_KEY
@@ -30,6 +43,7 @@ def _autoload_preset_modules() -> None:
         return
 
     dirs = cfg.preset_module_dirs
+    loaded_paths = _loaded_module_paths()
     for d in dirs:
         dir_path = Path(d).resolve(strict=False)
         if not dir_path.is_dir():
@@ -46,8 +60,12 @@ def _autoload_preset_modules() -> None:
             rel = py_path.relative_to(dir_path)
             if rel.name == "__init__.py":
                 continue
+            resolved_path = py_path.resolve(strict=False)
+            if resolved_path in loaded_paths:
+                continue
             mod_name = pkg_name + "." + ".".join(rel.with_suffix("").parts)
             importlib.import_module(mod_name)
+            loaded_paths.add(resolved_path)
 
     _AUTOLOAD_KEY = key
 
@@ -62,45 +80,31 @@ class PresetNamespace:
     - 未登録名は `AttributeError`。
     """
 
+    __slots__ = ("_identity",)
+
+    def __init__(self, identity: PresetIdentity | None = None) -> None:
+        self._identity = identity
+
     def __getattr__(self, name: str) -> Callable[..., SceneItem]:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        _autoload_preset_modules()
-
-        func = preset_registry_module.preset_registry.get(name)
-        if func is None:
+        registry = preset_registry_module.preset_registry
+        op = preset_op(name)
+        if op not in registry:
+            _autoload_preset_modules(runtime_config())
+            registry = preset_registry_module.preset_registry
+        if op not in registry:
             raise AttributeError(f"未登録の preset: {name!r}")
-        pending_name = self._pending_name
-        pending_key = self._pending_key
-        pending_instance_key = self._pending_instance_key
-        pending_shared = self._pending_shared
-
-        if (
-            pending_name is None
-            and pending_key is None
-            and pending_instance_key is None
-            and not pending_shared
-        ):
-            return func
-
-        def _call_with_pending(*args: Any, **kwargs: Any) -> SceneItem:
-            if pending_name is not None and "name" not in kwargs:
-                kwargs["name"] = pending_name
-            if pending_key is not None and "key" not in kwargs:
-                kwargs["key"] = pending_key
-            if pending_instance_key is not None and "instance_key" not in kwargs:
-                kwargs["instance_key"] = pending_instance_key
-            if pending_shared and "shared" not in kwargs:
-                kwargs["shared"] = True
-            return func(*args, **kwargs)
-
-        return _call_with_pending
+        spec = registry[op]
+        if self._identity is None:
+            return spec.func
+        return partial(spec.invoker, self._identity)
 
     def __call__(
         self,
-        name: str | None = None,
         *,
+        name: str | None = None,
         key: str | int | None = None,
         instance_key: str | int | None = None,
         shared: bool = False,
@@ -109,7 +113,7 @@ class PresetNamespace:
 
         ``key`` は semantic site、``instance_key`` は反復 instance を表す。
         ``shared=True`` は同じ semantic site を共有し、``instance_key`` との
-        同時指定は実際の preset 呼び出し時に拒否される。
+        同時指定はこの呼び出しで拒否される。
         """
 
         validate_parameter_identity(
@@ -117,17 +121,15 @@ class PresetNamespace:
             instance_key=instance_key,
             shared=shared,
         )
-        ns = PresetNamespace()
-        ns._pending_name = name  # type: ignore[attr-defined]
-        ns._pending_key = key  # type: ignore[attr-defined]
-        ns._pending_instance_key = instance_key  # type: ignore[attr-defined]
-        ns._pending_shared = shared  # type: ignore[attr-defined]
-        return ns
-
-    _pending_name: str | None = None
-    _pending_key: str | int | None = None
-    _pending_instance_key: str | int | None = None
-    _pending_shared: bool = False
+        label = None if name is None else identity_string(name, name="preset label")
+        return PresetNamespace(
+            PresetIdentity(
+                name=label,
+                key=key,
+                instance_key=instance_key,
+                shared=shared,
+            )
+        )
 
 
 P = PresetNamespace()

@@ -13,7 +13,7 @@ import numpy as np
 
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 from grafix.devtools.benchmarks.schema import (
-    ContractResult,
+    BenchmarkOutput,
     Metric,
     evaluate_contract,
 )
@@ -70,15 +70,6 @@ class PrimitiveBenchmarkState:
     asset_sha256: str | None
     asset_bytes: int | None
     work: dict[str, int | float | str | bool]
-
-
-@dataclass(frozen=True, slots=True)
-class PrimitiveObservation:
-    """timed raw output を計測区間外で検証・要約した結果。"""
-
-    geometry: RealizedGeometry
-    metrics: tuple[Metric, ...]
-    contracts: tuple[ContractResult, ...]
 
 
 def primitive_benchmark_cases() -> tuple[PrimitiveBenchmarkCase, ...]:
@@ -624,7 +615,7 @@ def run_raw_primitive(state: object) -> object:
 def observe_primitive_output(
     state: object,
     output: object,
-) -> PrimitiveObservation:
+) -> BenchmarkOutput:
     """raw output のmetrics/checksum契約を timed区間外で構築する。"""
 
     from grafix.core.operation_diagnostics import operation_diagnostic_context
@@ -759,8 +750,8 @@ def observe_primitive_output(
             reason="raw primitive leaves benchmark input arrays unchanged",
         ),
     )
-    return PrimitiveObservation(
-        geometry=geometry,
+    return BenchmarkOutput(
+        value=geometry,
         metrics=tuple(metrics),
         contracts=contracts,
     )
@@ -805,7 +796,7 @@ def _array_sha256(array: np.ndarray) -> str:
     digest = hashlib.sha256()
     digest.update(contiguous.dtype.str.encode("ascii"))
     digest.update(repr(contiguous.shape).encode("ascii"))
-    digest.update(memoryview(contiguous).cast("B"))
+    digest.update(memoryview(cast(Any, contiguous)).cast("B"))
     return digest.hexdigest()
 
 
@@ -991,7 +982,6 @@ def _specific_metrics(
 __all__ = [
     "PrimitiveBenchmarkCase",
     "PrimitiveBenchmarkState",
-    "PrimitiveObservation",
     "observe_primitive_output",
     "primitive_benchmark_cases",
     "run_raw_primitive",

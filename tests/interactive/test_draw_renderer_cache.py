@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import OrderedDict
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -11,6 +11,7 @@ from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.runtime_limits import RuntimeLimits
 from grafix.interactive.gl import draw_renderer as renderer_module
 from grafix.interactive.gl.draw_renderer import DrawRenderer
+from grafix.api.render import RenderOptions
 from grafix.interactive.runtime.diagnostics import DiagnosticCenter
 
 
@@ -47,6 +48,7 @@ class _FakeMesh:
 class _FakeUniform:
     def __init__(self) -> None:
         self.values: list[object] = []
+        self.writes: list[bytes] = []
 
     @property
     def value(self) -> object | None:
@@ -56,6 +58,26 @@ class _FakeUniform:
     def value(self, value: object) -> None:
         self.values.append(value)
 
+    def write(self, value: bytes) -> None:
+        self.writes.append(value)
+
+
+class _FakeProgram(dict[str, _FakeUniform]):
+    def __init__(self, uniforms: dict[str, _FakeUniform]) -> None:
+        super().__init__(uniforms)
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _FakeWindow:
+    def __init__(self) -> None:
+        self.switch_count = 0
+
+    def switch_to(self) -> None:
+        self.switch_count += 1
+
 
 class _FakeDrawContext:
     LINE_STRIP = 3
@@ -63,9 +85,17 @@ class _FakeDrawContext:
     def __init__(self) -> None:
         self.viewport = (0, 0, 1, 1)
         self.clear_calls = 0
+        self.released = False
+        self.finish_count = 0
 
     def clear(self, *_args: object, **_kwargs: object) -> None:
         self.clear_calls += 1
+
+    def release(self) -> None:
+        self.released = True
+
+    def finish(self) -> None:
+        self.finish_count += 1
 
 
 class _FakeVao:
@@ -83,22 +113,16 @@ def _draw_renderer() -> tuple[
     DrawRenderer,
     dict[str, _FakeUniform],
 ]:
-    renderer = DrawRenderer.__new__(DrawRenderer)
-    renderer.ctx = _FakeDrawContext()
     uniforms = {
         "viewport_size": _FakeUniform(),
         "line_width_px": _FakeUniform(),
         "color": _FakeUniform(),
+        "projection": _FakeUniform(),
     }
-    renderer.program = uniforms
-    renderer._canvas_w = 800
-    renderer._canvas_h = 800
-    renderer._framebuffer_size = (800, 800)
-    renderer._viewport = (0, 0, 800, 800)
-    renderer._viewport_size = (800, 800)
-    renderer._line_width_uniform = uniforms["line_width_px"]
-    renderer._color_uniform = uniforms["color"]
-    renderer._last_draw_style = None
+    renderer = _initialized_renderer(uniforms)
+    renderer.viewport(800, 800)
+    for uniform in uniforms.values():
+        uniform.values.clear()
     return renderer, uniforms
 
 
@@ -110,24 +134,38 @@ def _draw_mesh(name: str, draw_order: list[str]) -> SimpleNamespace:
 
 
 def _renderer() -> DrawRenderer:
-    renderer = DrawRenderer.__new__(DrawRenderer)
-    renderer.ctx = SimpleNamespace(release=lambda: None)
-    renderer.program = SimpleNamespace(release=lambda: None)
-    renderer._scratch_mesh = _FakeMesh(renderer.ctx, renderer.program)
-    renderer._scratch_topology = None
-    renderer._mesh_cache = OrderedDict()
-    renderer._mesh_candidates = OrderedDict()
-    renderer._dynamic_meshes = OrderedDict()
-    renderer._mesh_cache_bytes = 0
-    renderer._dynamic_mesh_bytes = 0
-    renderer._dynamic_slot_count = 0
-    renderer._mesh_upload_count = 0
-    renderer._mesh_cache_max_bytes = 192 * 1024 * 1024
-    renderer._mesh_cache_max_entries = 4_096
-    renderer._mesh_candidates_max_entries = 4_096
-    renderer._dynamic_mesh_max_bytes = 64 * 1024 * 1024
-    renderer._dynamic_mesh_max_entries = 256
-    return renderer
+    return _initialized_renderer(
+        {
+            "viewport_size": _FakeUniform(),
+            "line_width_px": _FakeUniform(),
+            "color": _FakeUniform(),
+            "projection": _FakeUniform(),
+        }
+    )
+
+
+def _initialized_renderer(
+    uniforms: dict[str, _FakeUniform],
+) -> DrawRenderer:
+    context = _FakeDrawContext()
+    program = _FakeProgram(uniforms)
+    with (
+        patch.object(
+            renderer_module.moderngl,
+            "create_context",
+            return_value=context,
+        ),
+        patch.object(
+            renderer_module.Shader,
+            "create_shader",
+            return_value=program,
+        ),
+        patch.object(renderer_module, "LineMesh", _FakeMesh),
+    ):
+        return DrawRenderer(
+            _FakeWindow(),
+            RenderOptions(canvas_size=(800, 800)),
+        )
 
 
 def test_renderer_skips_same_style_uniform_writes_across_layers_and_frames() -> None:
@@ -227,9 +265,24 @@ def test_renderer_cache_builds_indices_once_and_uploads_static_mesh_once(
     geometry = _geometry()
 
     cache_key = _cache_key("static")
-    first_mesh, first_stats = renderer.prepare_layer_mesh(geometry, cache_key=cache_key)
-    second_mesh, second_stats = renderer.prepare_layer_mesh(geometry, cache_key=cache_key)
-    third_mesh, third_stats = renderer.prepare_layer_mesh(geometry, cache_key=cache_key)
+    first_mesh, first_stats = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=1,
+        snapshot_revision=1,
+    )
+    second_mesh, second_stats = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=2,
+        snapshot_revision=1,
+    )
+    third_mesh, third_stats = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=cache_key,
+        scene_serial=2,
+        snapshot_revision=1,
+    )
 
     assert first_mesh is renderer._scratch_mesh
     assert second_mesh is third_mesh
@@ -254,10 +307,30 @@ def test_renderer_mesh_cache_evicts_lru_entry_by_byte_budget(
 
     first_key = _cache_key("first")
     second_key = _cache_key("second")
-    renderer.prepare_layer_mesh(geometry, cache_key=first_key)
-    first_mesh, _ = renderer.prepare_layer_mesh(geometry, cache_key=first_key)
-    renderer.prepare_layer_mesh(geometry, cache_key=second_key)
-    second_mesh, _ = renderer.prepare_layer_mesh(geometry, cache_key=second_key)
+    renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=first_key,
+        scene_serial=1,
+        snapshot_revision=1,
+    )
+    first_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=first_key,
+        scene_serial=2,
+        snapshot_revision=1,
+    )
+    renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=second_key,
+        scene_serial=3,
+        snapshot_revision=1,
+    )
+    second_mesh, _ = renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=second_key,
+        scene_serial=4,
+        snapshot_revision=1,
+    )
 
     assert list(renderer._mesh_cache) == [second_key]
     assert first_mesh is not None and first_mesh.released is True
@@ -275,8 +348,18 @@ def test_renderer_cache_separates_registry_revisions(
     old_key = _cache_key("same-geometry", revision=1)
     new_key = _cache_key("same-geometry", revision=2)
 
-    renderer.prepare_layer_mesh(geometry, cache_key=old_key)
-    renderer.prepare_layer_mesh(geometry, cache_key=new_key)
+    renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=old_key,
+        scene_serial=1,
+        snapshot_revision=1,
+    )
+    renderer.prepare_layer_mesh(
+        geometry,
+        cache_key=new_key,
+        scene_serial=2,
+        snapshot_revision=2,
+    )
 
     assert list(renderer._mesh_candidates) == [old_key, new_key]
 
@@ -304,6 +387,8 @@ def test_renderer_publishes_gpu_cache_limit_to_common_center() -> None:
     renderer.prepare_layer_mesh(
         _geometry(),
         cache_key=_cache_key("gpu-limit"),
+        scene_serial=1,
+        snapshot_revision=1,
     )
 
     event = center.snapshot()[0]
@@ -332,6 +417,8 @@ def test_renderer_reuses_scratch_topology_for_animated_coordinates(
         mesh, _ = renderer.prepare_layer_mesh(
             _geometry(offsets=offsets, shift=float(frame)),
             cache_key=_cache_key(f"animated-{frame}"),
+            scene_serial=frame + 1,
+            snapshot_revision=frame,
         )
         assert mesh is renderer._scratch_mesh
 
@@ -363,6 +450,8 @@ def test_renderer_rebuilds_scratch_topology_for_new_offsets_object(
         renderer.prepare_layer_mesh(
             _geometry(offsets=np.asarray([0, 3], dtype=np.int32)),
             cache_key=_cache_key(f"topology-{frame}"),
+            scene_serial=frame + 1,
+            snapshot_revision=frame,
         )
 
     assert build_count == 2
@@ -395,6 +484,8 @@ def test_renderer_reuses_topology_for_multiple_animated_layer_slots(
             mesh, _ = renderer.prepare_layer_mesh(
                 _geometry(offsets=offsets, shift=float(frame)),
                 cache_key=_cache_key(f"animated-{frame}-{layer_index}"),
+                scene_serial=frame + 1,
+                snapshot_revision=frame,
                 dynamic_slot=layer_index,
             )
             assert mesh is renderer._dynamic_meshes[layer_index].mesh
@@ -423,6 +514,8 @@ def test_renderer_dynamic_mesh_pool_is_entry_bounded(
         renderer.prepare_layer_mesh(
             _geometry(),
             cache_key=_cache_key(f"dynamic-{layer_index}"),
+            scene_serial=1,
+            snapshot_revision=1,
             dynamic_slot=layer_index,
         )
 
@@ -439,6 +532,8 @@ def test_renderer_empty_geometry_releases_its_dynamic_slot(
     mesh, _ = renderer.prepare_layer_mesh(
         _geometry(),
         cache_key=_cache_key("non-empty"),
+        scene_serial=1,
+        snapshot_revision=1,
         dynamic_slot=0,
     )
     assert 0 in renderer._dynamic_meshes
@@ -450,6 +545,8 @@ def test_renderer_empty_geometry_releases_its_dynamic_slot(
     empty_mesh, _ = renderer.prepare_layer_mesh(
         empty,
         cache_key=_cache_key("empty"),
+        scene_serial=2,
+        snapshot_revision=1,
         dynamic_slot=0,
     )
 
@@ -470,6 +567,8 @@ def test_renderer_prunes_trailing_dynamic_slots_when_layer_count_shrinks(
         mesh, _ = renderer.prepare_layer_mesh(
             _geometry(shift=float(slot)),
             cache_key=_cache_key(f"slot-{slot}"),
+            scene_serial=1,
+            snapshot_revision=1,
             dynamic_slot=slot,
         )
         meshes.append(mesh)
@@ -492,11 +591,19 @@ def test_renderer_candidate_cache_is_key_only_and_count_bounded(
     offsets = np.asarray([0, 3], dtype=np.int32)
     keys = [_cache_key(f"candidate-{index}") for index in range(4)]
 
-    for key in keys:
-        renderer.prepare_layer_mesh(_geometry(offsets=offsets), cache_key=key)
+    for scene_serial, key in enumerate(keys, start=1):
+        renderer.prepare_layer_mesh(
+            _geometry(offsets=offsets),
+            cache_key=key,
+            scene_serial=scene_serial,
+            snapshot_revision=1,
+        )
 
     assert list(renderer._mesh_candidates) == keys[-2:]
-    assert list(renderer._mesh_candidates.values()) == [None, None]
+    assert [
+        admission.scene_serial
+        for admission in renderer._mesh_candidates.values()
+    ] == [3, 4]
 
 
 def test_renderer_stale_result_redisplay_does_not_promote_mesh(
@@ -742,10 +849,14 @@ def test_renderer_reuses_empty_scratch_topology_without_upload(
     first_mesh, first_stats = renderer.prepare_layer_mesh(
         geometry,
         cache_key=_cache_key("empty-1"),
+        scene_serial=1,
+        snapshot_revision=1,
     )
     second_mesh, second_stats = renderer.prepare_layer_mesh(
         geometry,
         cache_key=_cache_key("empty-2"),
+        scene_serial=2,
+        snapshot_revision=1,
     )
 
     assert first_mesh is second_mesh is None
@@ -761,6 +872,8 @@ def test_renderer_release_drops_scratch_topology_reference() -> None:
     renderer.prepare_layer_mesh(
         _geometry(offsets=offsets),
         cache_key=_cache_key("release"),
+        scene_serial=1,
+        snapshot_revision=1,
     )
 
     renderer.release()

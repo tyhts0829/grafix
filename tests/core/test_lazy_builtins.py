@@ -41,6 +41,7 @@ print(json.dumps({
     assert result["before"] == []
     assert result["after_polygon"] == ["grafix.core.primitives.polygon"]
     assert result["after_scale"] == [
+        "grafix.core.effects.argument_validation",
         "grafix.core.effects.scale",
         "grafix.core.primitives.polygon",
     ]

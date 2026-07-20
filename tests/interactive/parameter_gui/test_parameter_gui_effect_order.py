@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from grafix import E
@@ -13,9 +11,9 @@ from grafix.core.parameters.frame_params import FrameEffectChainRecord
 from grafix.core.parameters.history import ParamStoreHistory
 from grafix.core.parameters.store import ParamStore
 from grafix.interactive.parameter_gui import store_bridge
-from grafix.interactive.parameter_gui.group_blocks import group_blocks_from_layout
 from grafix.interactive.parameter_gui.gui import apply_effect_order_command
 from grafix.interactive.parameter_gui.snippet import snippet_for_block
+from grafix.interactive.parameter_gui.grouping import GroupType
 from grafix.interactive.parameter_gui.table import (
     EFFECT_STEP_DRAG_PAYLOAD_TYPE,
     EffectOrderCommand,
@@ -149,15 +147,72 @@ def test_effect_chain_table_states_follow_effective_order_and_disable_ambiguity(
 class _DrawList:
     def __init__(self) -> None:
         self.lines: list[tuple[object, ...]] = []
+        self.clip_rect = ((0.0, 0.0), (500.0, 500.0))
 
     def add_line(self, *args: object) -> None:
         self.lines.append(args)
+
+    def get_clip_rect_min(self) -> tuple[float, float]:
+        return self.clip_rect[0]
+
+    def get_clip_rect_max(self) -> tuple[float, float]:
+        return self.clip_rect[1]
+
+    def push_clip_rect(
+        self,
+        x_min: float,
+        y_min: float,
+        x_max: float,
+        y_max: float,
+        _intersect: bool,
+    ) -> None:
+        self.clip_rect = ((x_min, y_min), (x_max, y_max))
+
+    def pop_clip_rect(self) -> None:
+        return None
+
+
+class _ClosedPopup:
+    opened = False
+
+    def __enter__(self) -> _ClosedPopup:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+class _DragDropSource:
+    def __init__(self, owner: _DragDropImgui) -> None:
+        self._owner = owner
+        self.dragging = owner.source_dragging
+
+    def __enter__(self) -> _DragDropSource:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        if self.dragging:
+            self._owner.end_source_calls += 1
+
+
+class _DragDropTarget:
+    def __init__(self, owner: _DragDropImgui) -> None:
+        self._owner = owner
+        self.hovered = owner.target_hovered
+
+    def __enter__(self) -> _DragDropTarget:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        if self.hovered:
+            self._owner.end_target_calls += 1
 
 
 class _DragDropImgui:
     SELECTABLE_SPAN_ALL_COLUMNS = 2
     DRAG_DROP_ACCEPT_PEEK_ONLY = 3072
     DRAG_DROP_ACCEPT_NO_DRAW_DEFAULT_RECT = 2048
+    COLOR_TEXT = 0
 
     def __init__(
         self,
@@ -193,15 +248,30 @@ class _DragDropImgui:
     def pop_id(self) -> None:
         pass
 
+    def begin_group(self) -> None:
+        pass
+
+    def end_group(self) -> None:
+        pass
+
     def small_button(self, label: str) -> bool:
         self.small_button_labels.append(label)
         return False
+
+    def begin_popup_context_item(self, _label: str) -> _ClosedPopup:
+        return _ClosedPopup()
 
     def same_line(self, *_args: object) -> None:
         pass
 
     def selectable(self, *_args: object) -> tuple[bool, bool]:
         return False, False
+
+    def push_style_color(self, *_args: object) -> None:
+        pass
+
+    def pop_style_color(self, _count: int = 1) -> None:
+        pass
 
     def is_item_hovered(self) -> bool:
         return self.item_hovered
@@ -221,14 +291,11 @@ class _DragDropImgui:
     def set_tooltip(self, text: str) -> None:
         self.tooltips.append(text)
 
-    def begin_drag_drop_source(self) -> SimpleNamespace:
-        return SimpleNamespace(dragging=self.source_dragging)
+    def begin_drag_drop_source(self) -> _DragDropSource:
+        return _DragDropSource(self)
 
     def set_drag_drop_payload(self, payload_type: str, payload: bytes) -> None:
         self.payloads_set.append((payload_type, payload))
-
-    def end_drag_drop_source(self) -> None:
-        self.end_source_calls += 1
 
     def get_item_rect_min(self) -> tuple[float, float]:
         return 10.0, 20.0
@@ -236,8 +303,8 @@ class _DragDropImgui:
     def get_item_rect_max(self) -> tuple[float, float]:
         return 110.0, 40.0
 
-    def begin_drag_drop_target(self) -> SimpleNamespace:
-        return SimpleNamespace(hovered=self.target_hovered)
+    def begin_drag_drop_target(self) -> _DragDropTarget:
+        return _DragDropTarget(self)
 
     def accept_drag_drop_payload(
         self,
@@ -247,9 +314,6 @@ class _DragDropImgui:
         assert payload_type == EFFECT_STEP_DRAG_PAYLOAD_TYPE
         return self.payload
 
-    def end_drag_drop_target(self) -> None:
-        self.end_target_calls += 1
-
     def get_mouse_position(self) -> tuple[float, float]:
         return 0.0, self.mouse_y
 
@@ -258,6 +322,15 @@ class _DragDropImgui:
 
     def get_color_u32_rgba(self, *_rgba: float) -> int:
         return 1
+
+    def get_window_position(self) -> tuple[float, float]:
+        return 0.0, 0.0
+
+    def get_window_content_region_min(self) -> tuple[float, float]:
+        return 0.0, 0.0
+
+    def get_window_content_region_max(self) -> tuple[float, float]:
+        return 120.0, 100.0
 
 
 class _RealImguiRecorder:
@@ -672,6 +745,7 @@ def test_apply_effect_order_command_is_one_full_history_operation() -> None:
                 ),
             )
         ],
+        observation_complete=False,
     )
     history = ParamStoreHistory(store)
     command = EffectOrderCommand.move(
@@ -718,6 +792,7 @@ def test_store_bridge_emits_command_without_mutating_store(
                 ),
             )
         ],
+        observation_complete=False,
     )
     move = EffectOrderCommand.move(
         chain_id="chain",
@@ -729,7 +804,12 @@ def test_store_bridge_emits_command_without_mutating_store(
     revision = store.revision
     emitted: list[EffectOrderCommand] = []
 
-    def fake_render(rows, **kwargs):
+    def fake_render(*, group_layout, model_rows, **kwargs):
+        rows = [
+            model_rows[item.row_index]
+            for block in group_layout
+            for item in block.items
+        ]
         kwargs["on_effect_order_command"](
             EffectOrderCommand.reset(chain_id="chain")
         )
@@ -737,9 +817,14 @@ def test_store_bridge_emits_command_without_mutating_store(
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
 
+    view = store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=True,
+    )
     assert (
         store_bridge.render_store_parameter_table(
             store,
+            table_view=view,
             on_effect_order_command=emitted.append,
         )
         is False
@@ -776,15 +861,12 @@ def test_effective_order_drives_table_rows_and_copy_code() -> None:
     ][0] == "rotate"
     block = next(
         block
-        for block in group_blocks_from_layout(
-            reordered.rows,
-            reordered.group_layout,
-        )
-        if block.group_id == ("effect_chain", builder.chain_id)
+        for block in reordered.group_layout
+        if block.group_id == (GroupType.EFFECT_CHAIN, builder.chain_id)
     )
     snippet = snippet_for_block(
         block,
-        all_rows=reordered.rows,
+        reordered.rows,
         step_info_by_site=reordered.step_info_by_site,
     )
     assert snippet.index("E.rotate") < snippet.index(".scale")

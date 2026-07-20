@@ -253,12 +253,15 @@ def test_basic_shapes_reject_invalid_dimensions(geometry, message: str) -> None:
 def test_shape_preflight_uses_resource_budget() -> None:
     from grafix.core.realize import RealizeSession
     from grafix.core.resource_budget import ResourceBudget
+    from grafix.core.runtime_limits import RuntimeLimits
 
     with RealizeSession(
-        resource_budget=ResourceBudget(
-            max_output_vertices=4,
-            max_output_lines=1,
-            max_output_bytes=1024,
+        runtime_limits=RuntimeLimits(
+            per_operation=ResourceBudget(
+                max_output_vertices=4,
+                max_output_lines=1,
+                max_output_bytes=1024,
+            )
         )
     ) as session:
         with pytest.raises(RealizeError) as exc_info:

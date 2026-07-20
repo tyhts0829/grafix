@@ -15,13 +15,16 @@ from grafix.core.op_registry import (
     op_defaults_and_order,
 )
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.identity import identity_string
 from grafix.core.parameters.meta_spec import meta_dict_from_user
+from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.realized_geometry import (
     GeomTuple,
     RealizedGeometry,
     concat_realized_geometries,
     realized_geometry_from_tuple,
 )
+from grafix.core.value_validation import exact_bool
 
 PrimitiveFunc = Callable[[tuple[tuple[str, Any], ...]], RealizedGeometry]
 primitive_registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
@@ -73,6 +76,7 @@ def primitive(
         return coords, offsets
     """
 
+    overwrite = exact_bool(overwrite, name="overwrite")
     meta_norm = None if meta is None else meta_dict_from_user(meta)
     if meta_norm is not None:
         reserved = {"activate", "key"} & set(meta_norm)
@@ -83,15 +87,17 @@ def primitive(
     def decorator(
         f: Callable[..., GeomTuple],
     ) -> Callable[..., GeomTuple]:
-        module = str(f.__module__)
-        if meta_norm is None and (
-            module.startswith("grafix.core.primitives.") or module.startswith("core.primitives.")
-        ):
+        module = identity_string(f.__module__, name="primitive module")
+        if meta_norm is None and module.startswith("grafix.core.primitives."):
             raise ValueError(f"組み込み primitive は meta 必須: {f.__module__}.{f.__name__}")
 
         def wrapper(args: tuple[tuple[str, Any], ...]) -> RealizedGeometry:
             params: dict[str, Any] = dict(args)
-            activate = bool(params.pop("activate", True))
+            activate = validate_parameter_value(
+                params.pop("activate", True),
+                kind="bool",
+                choices=None,
+            )
             if not activate:
                 return concat_realized_geometries()
             out = f(**params)

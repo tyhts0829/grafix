@@ -8,6 +8,7 @@ import pytest
 from grafix import E, G
 from grafix.core.realize import RealizeError, RealizeSession, realize
 from grafix.core.resource_budget import ResourceBudget, ResourceLimitError
+from grafix.core.runtime_limits import RuntimeLimits
 
 
 def test_wave_a_primitives_are_discoverable_with_complete_metadata() -> None:
@@ -118,7 +119,9 @@ def test_wave_a_primitives_receive_realize_session_resource_budget() -> None:
     )
 
     for geometry in geometries:
-        with RealizeSession(resource_budget=budget) as session:
+        with RealizeSession(
+            runtime_limits=RuntimeLimits(per_operation=budget, scene=budget)
+        ) as session:
             with pytest.raises(RealizeError) as exc_info:
                 session.realize(geometry)
         assert isinstance(exc_info.value.__cause__, ResourceLimitError)

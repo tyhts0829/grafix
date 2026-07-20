@@ -65,3 +65,19 @@ def test_catalog_loads_all_builtins_and_is_sorted() -> None:
 def test_describe_rejects_unknown_operation(namespace: object) -> None:
     with pytest.raises(KeyError, match="未登録"):
         namespace.describe("does_not_exist")  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("namespace", (G, E))
+@pytest.mark.parametrize("invalid", (1, object()))
+def test_describe_rejects_implicitly_stringifiable_operation_name(
+    namespace: object,
+    invalid: object,
+) -> None:
+    with pytest.raises(TypeError, match="空でない文字列"):
+        namespace.describe(invalid)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("namespace", (G, E))
+def test_describe_rejects_empty_operation_name(namespace: object) -> None:
+    with pytest.raises(ValueError, match="空でない文字列"):
+        namespace.describe("")  # type: ignore[attr-defined]

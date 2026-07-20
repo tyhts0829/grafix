@@ -10,6 +10,8 @@ from functools import lru_cache
 from pathlib import Path
 from types import CodeType, FrameType
 
+from .identity import identity_string
+
 
 @dataclass(frozen=True, slots=True)
 class ParameterKey:
@@ -18,6 +20,11 @@ class ParameterKey:
     op: str
     site_id: str
     arg: str
+
+    def __post_init__(self) -> None:
+        identity_string(self.op, name="ParameterKey.op")
+        identity_string(self.site_id, name="ParameterKey.site_id")
+        identity_string(self.arg, name="ParameterKey.arg")
 
 
 @lru_cache(maxsize=4096)
@@ -42,6 +49,20 @@ def _code_file_id(code: CodeType, module_name: str) -> str:
 def _automatic_site_id(code: CodeType, instruction: int, module_name: str) -> str:
     file_id = _code_file_id(code, module_name)
     return f"{file_id}:{code.co_firstlineno}:{int(instruction)}"
+
+
+def _semantic_key_token(value: str | int, *, name: str) -> str:
+    """str/int の型も identity に含めた衝突しない token を返す。"""
+
+    if isinstance(value, bool):
+        raise TypeError(f"{name} は str|int|None である必要がある")
+    if type(value) is str:
+        if not value:
+            raise ValueError(f"{name} に空文字は指定できません")
+        return f"str:{len(value)}:{value}"
+    if isinstance(value, int):
+        return f"int:{value}"
+    raise TypeError(f"{name} は str|int|None である必要がある")
 
 
 def make_site_id(
@@ -71,12 +92,18 @@ def make_site_id(
     code = frame.f_code
     module_name = str(frame.f_globals.get("__name__", ""))
     if key is not None:
-        semantic_site_id = f"{_code_file_id(code, module_name)}|{key}"
+        semantic_site_id = (
+            f"{_code_file_id(code, module_name)}|"
+            f"{_semantic_key_token(key, name='key')}"
+        )
     else:
         semantic_site_id = _automatic_site_id(code, frame.f_lasti, module_name)
     if instance_key is None:
         return semantic_site_id
-    return f"{semantic_site_id}|instance:{instance_key}"
+    return (
+        f"{semantic_site_id}|instance:"
+        f"{_semantic_key_token(instance_key, name='instance_key')}"
+    )
 
 
 def caller_site_id(
@@ -113,11 +140,11 @@ def validate_parameter_identity(
 ) -> None:
     """parameter identity の型と排他条件を検証する。"""
 
-    if key is not None and not isinstance(key, (str, int)):
-        raise TypeError("parameter key は str|int|None である必要がある")
-    if instance_key is not None and not isinstance(instance_key, (str, int)):
-        raise TypeError("instance_key は str|int|None である必要がある")
-    if not isinstance(shared, bool):
+    if key is not None:
+        _semantic_key_token(key, name="parameter key")
+    if instance_key is not None:
+        _semantic_key_token(instance_key, name="instance_key")
+    if type(shared) is not bool:
         raise TypeError("shared は bool である必要がある")
     if shared and instance_key is not None:
         raise ValueError("instance_key と shared=True は同時に指定できません")

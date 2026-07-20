@@ -207,7 +207,8 @@ def _order_rows_for_display(
 
     def _display_order(row: ParameterRow) -> int:
         # display_order_by_group は (op, site_id) 単位の「観測順（コード順）」の近似。
-        # 見つからない場合は末尾へ回す（未知 group / 互換性のための保険）。
+        # 現在 frame で観測されない reconcile orphan は、編集・relink できるよう
+        # 観測済み group の後ろにまとめて表示する。
         return int(display_order_by_group.get((row.op, row.site_id), 10**9))
 
     # --- Non-style: Preset / Primitive / Effect chain / other を “ブロック” として並べる ---
@@ -254,19 +255,20 @@ def _order_rows_for_display(
         preset_blocks.setdefault((row.op, int(row.ordinal)), []).append(row)
 
     effect_blocks: dict[str, list[ParameterRow]] = {}
-    effect_fallback_rows: list[ParameterRow] = []
+    orphan_effect_rows: list[ParameterRow] = []
     for row in effect_rows:
         # effect は `step_info_by_site` で「どのチェーンの何番目か」を引ける。
-        # 引けないものは（不整合/旧データなど）other へフォールバックし、表示は崩さない。
+        # 現在の effect chain に属さない行は reconcile orphan であり、relink
+        # 操作へ到達できるよう site 単位の独立 block として表示する。
         info = step_info_by_site.get((row.op, row.site_id))
         if info is None:
-            effect_fallback_rows.append(row)
+            orphan_effect_rows.append(row)
             continue
         chain_id, _step_index = info
-        effect_blocks.setdefault(str(chain_id), []).append(row)
+        effect_blocks.setdefault(chain_id, []).append(row)
 
     other_blocks: dict[tuple[str, str], list[ParameterRow]] = {}
-    for row in other_rows + effect_fallback_rows:
+    for row in other_rows + orphan_effect_rows:
         # other は「最小限のまとまり」として (op, site_id) 単位にする。
         # （primitive/effect と違い、意味的なグルーピング規則が無い想定）
         other_blocks.setdefault((row.op, row.site_id), []).append(row)
@@ -276,10 +278,10 @@ def _order_rows_for_display(
     # そのため chain_id ごとに min(display_order) を求め、チェーンの並び順に使う。
     chain_min_display_order: dict[str, int] = {}
     for (op, site_id), (chain_id, _step_index) in step_info_by_site.items():
-        order = int(display_order_by_group.get((str(op), str(site_id)), 10**9))
-        prev = chain_min_display_order.get(str(chain_id))
+        order = int(display_order_by_group.get((op, site_id), 10**9))
+        prev = chain_min_display_order.get(chain_id)
         if prev is None or order < prev:
-            chain_min_display_order[str(chain_id)] = int(order)
+            chain_min_display_order[chain_id] = int(order)
 
     blocks: list[tuple[tuple[int, int, str], list[ParameterRow]]] = []
 
@@ -291,7 +293,7 @@ def _order_rows_for_display(
                 (int(order), 0, f"{op}#{int(ordinal)}"),
                 sorted(
                     block_rows,
-                    key=lambda r: (_preset_arg_index(op, str(r.arg)), str(r.arg)),
+                    key=lambda row: (_preset_arg_index(op, row.arg), row.arg),
                 ),
             )
         )
@@ -306,7 +308,7 @@ def _order_rows_for_display(
                 (int(order), 1, f"{op}#{int(ordinal)}"),
                 sorted(
                     block_rows,
-                    key=lambda r: (_primitive_arg_index(op, str(r.arg)), str(r.arg)),
+                    key=lambda row: (_primitive_arg_index(op, row.arg), row.arg),
                 ),
             )
         )
@@ -314,24 +316,19 @@ def _order_rows_for_display(
     def _step_sort_key(r: ParameterRow) -> tuple[int, int, str]:
         # チェーン内では step_index（= effect 呼び出し順）を優先し、
         # 同一 step 内は arg 名で安定に並べる。
-        info = step_info_by_site.get((r.op, r.site_id))
-        if info is None:
-            # effect_blocks の対象は step_info がある前提だが、
-            # ここは保険として「末尾へ回す」だけに留める（過度に防御しない）。
-            return (10**9, 10**9, str(r.arg))
-        _cid, step_index = info
+        _cid, step_index = step_info_by_site[(r.op, r.site_id)]
         return (
             int(step_index),
-            _effect_arg_index(str(r.op), str(r.arg)),
-            str(r.arg),
+            _effect_arg_index(r.op, r.arg),
+            r.arg,
         )
 
     for chain_id, block_rows in effect_blocks.items():
         # effect チェーンの “ブロック位置” はチェーン内最小の display_order に寄せる。
-        order = int(chain_min_display_order.get(chain_id, 10**9))
+        order = int(chain_min_display_order[chain_id])
         blocks.append(
             (
-                (int(order), 2, str(chain_id)),
+                (int(order), 2, chain_id),
                 sorted(block_rows, key=_step_sort_key),
             )
         )
@@ -343,10 +340,10 @@ def _order_rows_for_display(
         if op in effect_registry:
             ordered = sorted(
                 block_rows,
-                key=lambda r: (_effect_arg_index(op, str(r.arg)), str(r.arg)),
+                key=lambda row: (_effect_arg_index(op, row.arg), row.arg),
             )
         else:
-            ordered = sorted(block_rows, key=lambda r: str(r.arg))
+            ordered = sorted(block_rows, key=lambda row: row.arg)
         blocks.append(
             (
                 (int(order), 3, f"{op}:{site_id}"),
@@ -384,20 +381,20 @@ def _snapshot_with_current_registry_meta(
     overrides: dict[ParameterKey, ParamSnapshotEntry] = {}
     for key, entry in snapshot.items():
         stored_meta, state, ordinal, label = entry
-        op = str(key.op)
+        op = key.op
         code_meta: ParamMeta | None
         code_base: object = ""
         if op in primitive_registry:
             primitive_spec = primitive_registry[op]
-            code_meta = primitive_spec.meta.get(str(key.arg))
-            code_base = primitive_spec.defaults.get(str(key.arg), "")
+            code_meta = primitive_spec.meta.get(key.arg)
+            code_base = primitive_spec.defaults.get(key.arg, "")
         elif op in effect_registry:
             effect_spec = effect_registry[op]
-            code_meta = effect_spec.meta.get(str(key.arg))
-            code_base = effect_spec.defaults.get(str(key.arg), "")
+            code_meta = effect_spec.meta.get(key.arg)
+            code_base = effect_spec.defaults.get(key.arg, "")
         elif op in preset_registry:
             preset_spec = preset_registry[op]
-            code_meta = preset_spec.meta.get(str(key.arg))
+            code_meta = preset_spec.meta.get(key.arg)
         else:
             code_meta = None
         if code_meta is None:
@@ -409,7 +406,7 @@ def _snapshot_with_current_registry_meta(
         if merged_meta == stored_meta:
             continue
         display_state = state
-        if str(merged_meta.kind) != str(stored_meta.kind):
+        if merged_meta.kind != stored_meta.kind:
             display_state = replace(
                 state,
                 ui_value=canonicalize_ui_value_for_meta_change(
@@ -443,7 +440,7 @@ def _build_parameter_table_model(
     snapshot = _snapshot_with_current_registry_meta(snapshot)
     raw_label_by_site: dict[tuple[str, str], str] = {}
     for key, (_meta, _state, _ordinal, label) in snapshot.items():
-        op = str(key.op)
+        op = key.op
         if (
             op not in primitive_registry
             and op not in effect_registry
@@ -453,10 +450,10 @@ def _build_parameter_table_model(
             continue
         if label is None:
             continue
-        label_s = str(label).strip()
+        label_s = label.strip()
         if not label_s:
             continue
-        raw_label_by_site.setdefault((op, str(key.site_id)), label_s)
+        raw_label_by_site.setdefault((op, key.site_id), label_s)
 
     runtime = store._runtime_ref()
     primitive_header_by_group = primitive_header_display_names_from_snapshot(
@@ -481,8 +478,8 @@ def _build_parameter_table_model(
     filtered_rows: list[ParameterRow] = []
 
     for row in rows_from_snapshot(snapshot):
-        op = str(row.op)
-        arg = str(row.arg)
+        op = row.op
+        arg = row.arg
 
         if op in primitive_registry:
             known_args = primitive_known_args_by_op.get(op)
@@ -532,11 +529,11 @@ def _build_parameter_table_model(
 
     gui_steps_by_chain: dict[str, set[tuple[str, str]]] = {}
     for row in rows:
-        step_key = (str(row.op), str(row.site_id))
+        step_key = (row.op, row.site_id)
         step_info = step_info_by_site.get(step_key)
         if step_info is None:
             continue
-        gui_steps_by_chain.setdefault(str(step_info[0]), set()).add(step_key)
+        gui_steps_by_chain.setdefault(step_info[0], set()).add(step_key)
     effect_chain_state_by_id = effect_chain_table_states(
         topologies=store.effect_chain_topologies(),
         step_info_by_site=step_info_by_site,
@@ -548,8 +545,8 @@ def _build_parameter_table_model(
     for key, (_meta, _state, _ordinal, label) in snapshot.items():
         if key.op != LAYER_STYLE_OP:
             continue
-        site_id = str(key.site_id)
-        layer_style_name_by_site_id.setdefault(site_id, str(label) if label else "layer")
+        site_id = key.site_id
+        layer_style_name_by_site_id.setdefault(site_id, label if label else "layer")
 
     group_layout = group_layout_from_rows(
         rows,
@@ -561,9 +558,9 @@ def _build_parameter_table_model(
     )
     keys = tuple(
         ParameterKey(
-            op=str(row.op),
-            site_id=str(row.site_id),
-            arg=str(row.arg),
+            op=row.op,
+            site_id=row.site_id,
+            arg=row.arg,
         )
         for row in rows
     )
@@ -572,7 +569,7 @@ def _build_parameter_table_model(
         for item in block.items:
             row = rows[item.row_index]
             raw_label = raw_label_by_site.get(
-                (str(row.op), str(row.site_id)),
+                (row.op, row.site_id),
                 "",
             )
             search_labels[item.row_index] = " ".join(
@@ -591,7 +588,7 @@ def _build_parameter_table_model(
     mutable_row_indices_by_group: dict[tuple[str, str], list[int]] = {}
     for index, key in enumerate(keys):
         mutable_row_indices_by_group.setdefault(
-            (str(key.op), str(key.site_id)),
+            (key.op, key.site_id),
             [],
         ).append(index)
 
@@ -663,7 +660,7 @@ def _parameter_table_model_for_store(store: ParamStore) -> ParameterTableModel:
         int(effect_registry.revision),
     )
     if _ENSURED_SELECTORS_BY_REVISION.get(store) != selector_revision:
-        ops = {str(key.op) for key in store_snapshot(store)}
+        ops = {key.op for key in store_snapshot(store)}
         for op in ops:
             ensure_selector_spec_registered(op)
         _ENSURED_SELECTORS_BY_REVISION[store] = (
@@ -674,7 +671,7 @@ def _parameter_table_model_for_store(store: ParamStore) -> ParameterTableModel:
     if _ENSURED_OPS_BY_STORE_REVISION.get(store) != revision:
         # GUI に実際に現れた op だけを遅延登録する。全 built-in の eager import は
         # optional dependency を不要に読み、起動時間も増やすため行わない。
-        ops = {str(key.op) for key in store_snapshot(store)}
+        ops = {key.op for key in store_snapshot(store)}
         for op in ops:
             if op not in primitive_registry and op not in effect_registry:
                 ensure_builtin_primitive_registered(op)
@@ -739,20 +736,20 @@ def _visible_mask_for_model(
         return active_mask
 
     loaded = {
-        (str(op), str(site_id))
+        (op, site_id)
         for op, site_id in runtime.loaded_groups
-        if str(op) != STYLE_OP
+        if op != STYLE_OP
     }
     observed = {
-        (str(op), str(site_id))
+        (op, site_id)
         for op, site_id in runtime.observed_groups
-        if str(op) != STYLE_OP
+        if op != STYLE_OP
     }
     hidden_groups = loaded - observed
     if not hidden_groups:
         return active_mask
     return [
-        visible and (str(row.op), str(row.site_id)) not in hidden_groups
+        visible and (row.op, row.site_id) not in hidden_groups
         for row, visible in zip(rows, active_mask, strict=True)
     ]
 
@@ -815,11 +812,11 @@ def _parameter_table_view_from_mask(
     visible_steps_by_chain: dict[str, set[tuple[str, str]]] = {}
     for index in visible_row_indices:
         row = model.rows[index]
-        step_key = (str(row.op), str(row.site_id))
+        step_key = (row.op, row.site_id)
         step_info = model.step_info_by_site.get(step_key)
         if step_info is None:
             continue
-        visible_steps_by_chain.setdefault(str(step_info[0]), set()).add(step_key)
+        visible_steps_by_chain.setdefault(step_info[0], set()).add(step_key)
     effect_chain_state_by_id = MappingProxyType(
         {
             chain_id: state.for_visible_steps(
@@ -903,7 +900,7 @@ def _changed_groups_keep_default_mask(
     for key in changed_keys:
         if key not in model.row_index_by_key:
             return False
-        changed_groups.add((str(key.op), str(key.site_id)))
+        changed_groups.add((key.op, key.site_id))
 
     for group in changed_groups:
         indices = model.row_indices_by_group.get(group)
@@ -1197,8 +1194,8 @@ def _apply_updated_rows_to_store(
         if cc_key is None:
             return set()
         if isinstance(cc_key, int):
-            return {int(cc_key)}
-        return {int(v) for v in cc_key if v is not None}
+            return {cc_key}
+        return {v for v in cc_key if v is not None}
 
     reset_font_index_for: set[tuple[str, str]] = set()
 
@@ -1208,9 +1205,9 @@ def _apply_updated_rows_to_store(
         if before is after or before == after:
             continue
         key = ParameterKey(
-            op=str(before.op),
-            site_id=str(before.site_id),
-            arg=str(before.arg),
+            op=before.op,
+            site_id=before.site_id,
+            arg=before.arg,
         )
         entry = snapshot.get(key)
         if entry is None:
@@ -1276,12 +1273,12 @@ def _apply_updated_rows_to_store(
             and after.ui_value != before.ui_value
             and str(after.ui_value).strip().lower().endswith(".ttc")
         ):
-            reset_font_index_for.add((str(key.op), str(key.site_id)))
+            reset_font_index_for.add((key.op, key.site_id))
 
     for op, site_id in sorted(reset_font_index_for):
         font_index_key = ParameterKey(
-            op=str(op),
-            site_id=str(site_id),
+            op=op,
+            site_id=site_id,
             arg="font_index",
         )
         entry = snapshot.get(font_index_key)
@@ -1312,11 +1309,6 @@ def set_all_parameter_groups_collapsed(
     collapse_keys = parameter_group_collapse_keys(
         list(model.rows),
         group_layout=model.group_layout,
-        primitive_header_by_group=model.primitive_header_by_group,
-        layer_style_name_by_site_id=model.layer_style_name_by_site_id,
-        effect_chain_header_by_id=model.effect_chain_header_by_id,
-        step_info_by_site=model.step_info_by_site,
-        effect_step_ordinal_by_site=model.effect_step_ordinal_by_site,
     )
     headers = store._collapsed_headers_ref()
     before = frozenset(headers)
@@ -1349,12 +1341,8 @@ def clear_all_midi_assignments(store: ParamStore) -> bool:
 def render_store_parameter_table(
     store: ParamStore,
     *,
+    table_view: ParameterTableView,
     metric_scale: float | None = None,
-    show_inactive_params: bool = True,
-    filter_state: ParameterFilterState | None = None,
-    error_keys: AbstractSet[ParameterKey] = frozenset(),
-    favorite_keys: AbstractSet[ParameterKey] | None = None,
-    table_view: ParameterTableView | None = None,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
     on_help_row: Callable[[ParameterRow, bool], None] | None = None,
@@ -1362,18 +1350,6 @@ def render_store_parameter_table(
 ) -> bool:
     """ParamStore を 4 列テーブルとして描画し、変更を store に反映する。"""
 
-    # 行・ヘッダ・順序は (store revision, registry revision) 内で不変。
-    # effective/MIDI/active/loaded はモデル外に置き、描画直前にだけ合成する。
-    # 呼び出し側が前 frame の view を保持していても、cheap cache lookup で
-    # effective/source/favorite/loaded/error の revision/signature を検証する。
-    current_view = parameter_table_view_for_store(
-        store,
-        show_inactive_params=bool(show_inactive_params),
-        filter_state=filter_state,
-        error_keys=error_keys,
-        favorite_keys=favorite_keys,
-    )
-    table_view = current_view
     model = table_view.model
     rows_before = model.rows
     visible_row_indices = table_view.visible_row_indices
@@ -1393,15 +1369,10 @@ def render_store_parameter_table(
     runtime = store._runtime_ref()
     collapsed_before = frozenset(store._collapsed_headers_ref())
     changed, view_rows_after = render_parameter_table(
-        view_rows,
         group_layout=table_view.group_layout,
         model_rows=render_rows,
         metric_scale=metric_scale,
-        primitive_header_by_group=model.primitive_header_by_group,
-        layer_style_name_by_site_id=model.layer_style_name_by_site_id,
-        effect_chain_header_by_id=model.effect_chain_header_by_id,
         step_info_by_site=model.step_info_by_site,
-        effect_step_ordinal_by_site=model.effect_step_ordinal_by_site,
         effect_chain_state_by_id=table_view.effect_chain_state_by_id,
         last_effective_by_key=runtime.last_effective_by_key,
         last_source_by_key=runtime.last_source_by_key,

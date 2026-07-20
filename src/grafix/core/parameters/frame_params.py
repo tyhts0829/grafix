@@ -5,35 +5,89 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_string,
+    exact_string_choice,
+)
+
+from .effects import EffectStepTopology
+from .identity import identity_string
 from .key import ParameterKey
 from .meta import ParamMeta
-from .effects import EffectStepTopology
 from .source import ValueSource
+from .validation import validate_parameter_value
 
 
-@dataclass
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FrameParamRecord:
     """1 引数ぶんの観測・解決結果。"""
 
     key: ParameterKey
     base: Any
     meta: ParamMeta
-    effective: Any | None = None
-    source: ValueSource | None = None
-    explicit: bool = True
-    chain_id: str | None = None
-    step_index: int | None = None
+    effective: Any
+    source: ValueSource
+    explicit: bool
+
+    def __post_init__(self) -> None:
+        """process 間で渡せる canonical な観測レコードへ固定する。"""
+
+        if type(self.key) is not ParameterKey:
+            raise TypeError("key は ParameterKey である必要があります")
+        if type(self.meta) is not ParamMeta:
+            raise TypeError("meta は ParamMeta である必要があります")
+        object.__setattr__(
+            self,
+            "base",
+            validate_parameter_value(
+                self.base,
+                kind=self.meta.kind,
+                choices=self.meta.choices,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "effective",
+            validate_parameter_value(
+                self.effective,
+                kind=self.meta.kind,
+                choices=self.meta.choices,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "source",
+            cast(
+                ValueSource,
+                exact_string_choice(
+                    self.source,
+                    name="source",
+                    choices=("code", "ui", "midi_live", "midi_frozen"),
+                ),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "explicit",
+            exact_bool(self.explicit, name="explicit"),
+        )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class FrameLabelRecord:
     """(op, site_id) に紐づくラベル設定の記録。"""
 
     op: str
     site_id: str
     label: str
+
+    def __post_init__(self) -> None:
+        identity_string(self.op, name="FrameLabelRecord.op")
+        identity_string(self.site_id, name="FrameLabelRecord.site_id")
+        exact_string(self.label, name="FrameLabelRecord.label")
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +96,13 @@ class FrameEffectChainRecord:
 
     chain_id: str
     steps: tuple[EffectStepTopology, ...]
+
+    def __post_init__(self) -> None:
+        identity_string(self.chain_id, name="FrameEffectChainRecord.chain_id")
+        if type(self.steps) is not tuple or not all(
+            type(step) is EffectStepTopology for step in self.steps
+        ):
+            raise TypeError("FrameEffectChainRecord.steps は topology tuple である必要があります")
 
 
 class FrameParamsBuffer:
@@ -59,11 +120,9 @@ class FrameParamsBuffer:
         key: ParameterKey,
         base: Any,
         meta: ParamMeta,
-        effective: Any | None = None,
-        source: ValueSource | None = None,
-        explicit: bool = True,
-        chain_id: str | None = None,
-        step_index: int | None = None,
+        effective: Any,
+        source: ValueSource,
+        explicit: bool,
     ) -> None:
         self._records.append(
             FrameParamRecord(
@@ -72,15 +131,13 @@ class FrameParamsBuffer:
                 meta=meta,
                 effective=effective,
                 source=source,
-                explicit=bool(explicit),
-                chain_id=chain_id,
-                step_index=step_index,
+                explicit=explicit,
             )
         )
 
     def set_label(self, *, op: str, site_id: str, label: str) -> None:
         self._labels.append(
-            FrameLabelRecord(op=str(op), site_id=str(site_id), label=str(label))
+            FrameLabelRecord(op=op, site_id=site_id, label=label)
         )
 
     def record_effect_chain(
@@ -93,7 +150,7 @@ class FrameParamsBuffer:
 
         self._effect_chains.append(
             FrameEffectChainRecord(
-                chain_id=str(chain_id),
+                chain_id=chain_id,
                 steps=tuple(steps),
             )
         )

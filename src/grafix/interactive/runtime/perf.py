@@ -15,11 +15,27 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string,
+    finite_real,
+)
+
 _OTHER_SERIES = "<other>"
 _FRAME_SAMPLE_LIMIT = 256
 _EVENT_LIMIT = 4096
 _TRACE_QUEUE_LIMIT = 128
 _TRACE_CLOSE_TIMEOUT_S = 2.0
+
+
+def _record_name(value: object, *, name: str) -> str:
+    """記録系列名として使える canonical な非空文字列を返す。"""
+
+    normalized = exact_string(value, name=name)
+    if not normalized or normalized != normalized.strip():
+        raise ValueError(f"{name} は前後空白のない非空文字列である必要があります")
+    return normalized
 
 
 def _env_flag(name: str) -> bool:
@@ -51,21 +67,21 @@ def _percentile(values: tuple[int, ...], fraction: float) -> float | None:
 
     if not values:
         return None
-    ordered = sorted(int(value) for value in values)
+    ordered = sorted(values)
     if len(ordered) == 1:
         return float(ordered[0])
-    position = max(0.0, min(1.0, float(fraction))) * (len(ordered) - 1)
-    lower = int(math.floor(position))
-    upper = int(math.ceil(position))
+    position = max(0.0, min(1.0, fraction)) * (len(ordered) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
     weight = position - lower
-    return float(ordered[lower]) * (1.0 - weight) + float(ordered[upper]) * weight
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
 class _TraceWriter:
     """render thread を I/O から分離する bounded JSONL writer。"""
 
     def __init__(self, path: Path) -> None:
-        self._path = Path(path)
+        self._path = path
         self._queue: queue.Queue[str | None] = queue.Queue(
             maxsize=_TRACE_QUEUE_LIMIT
         )
@@ -81,7 +97,7 @@ class _TraceWriter:
 
     @property
     def dropped(self) -> int:
-        return int(self._dropped)
+        return self._dropped
 
     def submit(self, line: str) -> None:
         if self._closed:
@@ -90,7 +106,7 @@ class _TraceWriter:
             self._dropped += 1
             return
         try:
-            self._queue.put_nowait(str(line))
+            self._queue.put_nowait(line)
         except queue.Full:
             self._dropped += 1
 
@@ -102,7 +118,7 @@ class _TraceWriter:
             if footer is not None:
                 try:
                     self._queue.put(
-                        str(footer),
+                        footer,
                         timeout=_TRACE_CLOSE_TIMEOUT_S,
                     )
                 except queue.Full:
@@ -253,18 +269,18 @@ class PerfSnapshot:
     def cache_hit_rate(self) -> float:
         """hit/miss の観測総数に対する hit 比率を返す。"""
 
-        total = int(self.cache_hits) + int(self.cache_misses)
-        return 0.0 if total <= 0 else float(self.cache_hits) / float(total)
+        total = self.cache_hits + self.cache_misses
+        return 0.0 if total <= 0 else self.cache_hits / total
 
     @property
     def preview_fresh_result_ratio(self) -> float:
         """preview 観測 frame に対する fresh result の比率を返す。"""
 
-        samples = int(self.preview_samples)
+        samples = self.preview_samples
         return (
             0.0
             if samples <= 0
-            else float(self.preview_fresh_results) / float(samples)
+            else self.preview_fresh_results / samples
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -336,7 +352,7 @@ class PerfSnapshot:
 class _PerfSection:
     def __init__(self, perf: PerfCollector, name: str) -> None:
         self._perf = perf
-        self._name = str(name)
+        self._name = name
         self._t0_ns = 0
 
     def __enter__(self) -> None:
@@ -344,7 +360,7 @@ class _PerfSection:
 
     def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
         dt = time.perf_counter_ns() - self._t0_ns
-        self._perf._add_section(self._name, int(dt))
+        self._perf._add_section(self._name, dt)
 
 
 class PerfCollector:
@@ -389,25 +405,49 @@ class PerfCollector:
         frame_deadline_ms: float = 1000.0 / 60.0,
         defer_frame_finalize: bool = False,
     ) -> None:
-        self.enabled = bool(enabled)
-        self.print_every = int(print_every) if int(print_every) > 0 else 60
-        self.gpu_finish = bool(gpu_finish)
-        self._top_n = max(1, int(top_n))
-        self._max_series = max(2, int(max_series))
+        self.enabled = exact_bool(enabled, name="enabled")
+        self.print_every = exact_integer(
+            print_every,
+            name="print_every",
+            minimum=1,
+        )
+        self.gpu_finish = exact_bool(gpu_finish, name="gpu_finish")
+        self._top_n = exact_integer(top_n, name="top_n", minimum=1)
+        self._max_series = exact_integer(
+            max_series,
+            name="max_series",
+            minimum=2,
+        )
         self._console_output = (
-            self.enabled if console_output is None else bool(console_output)
+            self.enabled
+            if console_output is None
+            else exact_bool(console_output, name="console_output")
         )
-        self._trace_path = (
-            None if trace_path is None else Path(trace_path).expanduser()
+        if trace_path is None:
+            self._trace_path = None
+        elif isinstance(trace_path, Path):
+            self._trace_path = trace_path.expanduser()
+        else:
+            trace_path_text = exact_string(trace_path, name="trace_path")
+            if not trace_path_text:
+                raise ValueError("trace_path は空にできません")
+            self._trace_path = Path(trace_path_text).expanduser()
+        deadline = finite_real(
+            frame_deadline_ms,
+            name="frame_deadline_ms",
+            minimum=0.0,
+            minimum_inclusive=False,
         )
-        deadline = float(frame_deadline_ms)
-        self._frame_deadline_ns = (
-            0
-            if not math.isfinite(deadline) or deadline <= 0.0
-            else int(deadline * 1_000_000.0)
-        )
+        self._frame_deadline_ns = int(deadline * 1_000_000.0)
+        if self._frame_deadline_ns <= 0:
+            raise ValueError("frame_deadline_ms は1ns以上である必要があります")
+        if snapshot_callback is not None and not callable(snapshot_callback):
+            raise TypeError("snapshot_callback は callable または None である必要があります")
         self._snapshot_callback = snapshot_callback
-        self._defer_frame_finalize = bool(defer_frame_finalize)
+        self._defer_frame_finalize = exact_bool(
+            defer_frame_finalize,
+            name="defer_frame_finalize",
+        )
         self._trace_writer = (
             None if self._trace_path is None else _TraceWriter(self._trace_path)
         )
@@ -491,10 +531,15 @@ class PerfCollector:
         GUI の有無に依存しない JSON Lines trace を有効にする。
         """
 
+        enabled_default = exact_bool(
+            enabled_by_default,
+            name="enabled_by_default",
+        )
+        exact_bool(defer_frame_finalize, name="defer_frame_finalize")
         console_output = _env_flag("GRAFIX_PERF")
         trace_path = _env_path("GRAFIX_PERF_TRACE")
         return cls(
-            enabled=bool(enabled_by_default or console_output or trace_path is not None),
+            enabled=enabled_default or console_output or trace_path is not None,
             print_every=_env_int("GRAFIX_PERF_EVERY", 60),
             gpu_finish=_env_flag("GRAFIX_PERF_GPU_FINISH"),
             console_output=console_output,
@@ -506,9 +551,10 @@ class PerfCollector:
     def section(self, name: str) -> contextlib.AbstractContextManager[None]:
         """``with`` で囲った汎用区間の時間を加算する。"""
 
+        section_name = _record_name(name, name="name")
         if not self.enabled:
             return contextlib.nullcontext()
-        return _PerfSection(self, str(name))
+        return _PerfSection(self, section_name)
 
     @contextlib.contextmanager
     def frame(self) -> Iterator[None]:
@@ -522,7 +568,7 @@ class PerfCollector:
         try:
             yield
         finally:
-            elapsed_ns = int(time.perf_counter_ns() - t0)
+            elapsed_ns = time.perf_counter_ns() - t0
             # production の Frame tail/deadline は full multi-window loop で
             # 統一する。preview core は独立した tail として保持する。
             self.record_duration("preview_core", elapsed_ns)
@@ -533,17 +579,26 @@ class PerfCollector:
     def finish_frame(self, *, deadline_elapsed_ns: int | None = None) -> None:
         """flip/full-loop 後に 1 frame の snapshot と trace window を確定する。"""
 
+        deadline_sample = (
+            None
+            if deadline_elapsed_ns is None
+            else exact_integer(
+                deadline_elapsed_ns,
+                name="deadline_elapsed_ns",
+                minimum=0,
+            )
+        )
         if not self.enabled or not self._pending_frame_elapsed_ns:
             return
         core_elapsed_ns = self._pending_frame_elapsed_ns.popleft()
         deadline_sample_ns = (
             core_elapsed_ns
-            if deadline_elapsed_ns is None
-            else max(0, int(deadline_elapsed_ns))
+            if deadline_sample is None
+            else deadline_sample
         )
         self._add_section("frame", deadline_sample_ns)
         self._frame_samples_ns.append(deadline_sample_ns)
-        deadline_ns = int(self._frame_deadline_ns)
+        deadline_ns = self._frame_deadline_ns
         if deadline_ns > 0 and deadline_sample_ns > deadline_ns:
             self._frame_deadline_misses += 1
             self._frame_consecutive_deadline_misses += 1
@@ -577,22 +632,36 @@ class PerfCollector:
         input 作成 event の revision は、geometry/style の各系列で単調非減少とする。
         """
 
+        event_name = _record_name(name, name="name")
+        normalized_frame_id = (
+            None
+            if frame_id is None
+            else exact_integer(frame_id, name="frame_id", minimum=0)
+        )
+        normalized_revision = (
+            None
+            if revision is None
+            else exact_integer(revision, name="revision", minimum=0)
+        )
+        normalized_timestamp_ns = (
+            None
+            if timestamp_ns is None
+            else exact_integer(timestamp_ns, name="timestamp_ns", minimum=0)
+        )
         if not self.enabled:
             return
-        event_name = str(name)
         event_timestamp_ns = (
             time.monotonic_ns()
-            if timestamp_ns is None
-            else max(0, int(timestamp_ns))
+            if normalized_timestamp_ns is None
+            else normalized_timestamp_ns
         )
-        normalized_revision = None if revision is None else int(revision)
         if len(self._events) == self._events.maxlen:
             self._event_drop_count += 1
         self._events.append(
             PerfEvent(
                 name=event_name,
                 timestamp_ns=event_timestamp_ns,
-                frame_id=None if frame_id is None else int(frame_id),
+                frame_id=normalized_frame_id,
                 revision=normalized_revision,
             )
         )
@@ -629,14 +698,13 @@ class PerfCollector:
         revision: int,
         timestamp_ns: int,
     ) -> None:
-        normalized_revision = int(revision)
-        if pending and normalized_revision < next(reversed(pending)):
+        if pending and revision < next(reversed(pending)):
             raise ValueError(
                 "causal input revision は単調非減少である必要があります: "
-                f"{normalized_revision}"
+                f"{revision}"
             )
-        pending[normalized_revision] = int(timestamp_ns)
-        pending.move_to_end(normalized_revision)
+        pending[revision] = timestamp_ns
+        pending.move_to_end(revision)
         while len(pending) > _EVENT_LIMIT:
             pending.popitem(last=False)
             self._causal_input_drop_count += 1
@@ -647,19 +715,24 @@ class PerfCollector:
         revision: int,
         timestamp_ns: int,
     ) -> None:
-        presented_revision = int(revision)
         matched_revisions: list[int] = []
         for created_revision in pending:
-            if created_revision > presented_revision:
+            if created_revision > revision:
                 break
             matched_revisions.append(created_revision)
+        if any(
+            timestamp_ns < pending[created_revision]
+            for created_revision in matched_revisions
+        ):
+            raise ValueError(
+                "present event の timestamp_ns は対応する input 作成時刻"
+                "以後である必要があります"
+            )
         for created_revision in matched_revisions:
             created_ns = pending.pop(created_revision)
             if len(self._input_to_present_ns) == self._input_to_present_ns.maxlen:
                 self._latency_sample_drop_count += 1
-            self._input_to_present_ns.append(
-                max(0, int(timestamp_ns) - created_ns)
-            )
+            self._input_to_present_ns.append(timestamp_ns - created_ns)
 
     def close(self) -> None:
         """trace writer の残件を flush して終了する。"""
@@ -685,9 +758,9 @@ class PerfCollector:
                         "schema": "grafix.performance.trace.v2",
                         "record_type": "footer",
                         "timestamp_ns": time.monotonic_ns(),
-                        "frame_index": int(self._frame_index),
-                        "records": int(self._trace_records_emitted),
-                        "dropped_records": int(writer.dropped),
+                        "frame_index": self._frame_index,
+                        "records": self._trace_records_emitted,
+                        "dropped_records": writer.dropped,
                         "unflushed_records": 0,
                     },
                     ensure_ascii=False,
@@ -702,40 +775,44 @@ class PerfCollector:
     def record_operation(self, name: str, elapsed_ns: int) -> None:
         """1 operation evaluator の実行時間を記録する。"""
 
+        operation_name = _record_name(name, name="name")
+        elapsed = exact_integer(elapsed_ns, name="elapsed_ns", minimum=0)
         if self.enabled:
             self._add_named(
                 self._operation_sum_ns,
                 self._operation_calls,
-                name,
-                elapsed_ns,
+                operation_name,
+                elapsed,
             )
 
     def record_duration(self, name: str, elapsed_ns: int) -> None:
         """frame 外で完了する flip / full-loop 区間を section に加える。"""
 
+        duration_name = _record_name(name, name="name")
+        elapsed = exact_integer(elapsed_ns, name="elapsed_ns", minimum=0)
         if self.enabled:
-            key = str(name).strip() or "<unnamed>"
-            value = max(0, int(elapsed_ns))
-            self._add_section(key, value)
-            samples = self._duration_samples_ns.get(key)
+            self._add_section(duration_name, elapsed)
+            samples = self._duration_samples_ns.get(duration_name)
             if samples is None:
                 if len(self._duration_samples_ns) >= self._max_series:
-                    key = _OTHER_SERIES
-                    samples = self._duration_samples_ns.get(key)
+                    duration_name = _OTHER_SERIES
+                    samples = self._duration_samples_ns.get(duration_name)
                 if samples is None:
                     samples = deque(maxlen=_FRAME_SAMPLE_LIMIT)
-                    self._duration_samples_ns[key] = samples
-            samples.append(value)
+                    self._duration_samples_ns[duration_name] = samples
+            samples.append(elapsed)
 
     def record_layer(self, name: str, elapsed_ns: int) -> None:
         """1 layer の resolve/realize 時間を記録する。"""
 
+        layer_name = _record_name(name, name="name")
+        elapsed = exact_integer(elapsed_ns, name="elapsed_ns", minimum=0)
         if self.enabled:
             self._add_named(
                 self._layer_sum_ns,
                 self._layer_calls,
-                name,
-                elapsed_ns,
+                layer_name,
+                elapsed,
             )
 
     def record_cache(
@@ -747,19 +824,24 @@ class PerfCollector:
     ) -> None:
         """CPU realize cache の hit/miss/eviction 差分を記録する。"""
 
+        normalized_hits = exact_integer(hits, name="hits", minimum=0)
+        normalized_misses = exact_integer(misses, name="misses", minimum=0)
+        normalized_evictions = exact_integer(
+            evictions,
+            name="evictions",
+            minimum=0,
+        )
         if not self.enabled:
             return
-        self._cache_hits += max(0, int(hits))
-        self._cache_misses += max(0, int(misses))
-        self._cache_evictions += max(0, int(evictions))
+        self._cache_hits += normalized_hits
+        self._cache_misses += normalized_misses
+        self._cache_evictions += normalized_evictions
 
     def record_worker_lag(self, lag_ms: float) -> None:
         """worker task の submit から result 到着までの遅延を記録する。"""
 
+        value = finite_real(lag_ms, name="lag_ms", minimum=0.0)
         if not self.enabled:
-            return
-        value = float(lag_ms)
-        if not math.isfinite(value) or value < 0.0:
             return
         self._worker_lag_sum_ms += value
         self._worker_lag_max_ms = max(self._worker_lag_max_ms, value)
@@ -774,11 +856,29 @@ class PerfCollector:
     ) -> None:
         """preview の freshness と parameter revision 遅延を記録する。"""
 
+        requested = exact_integer(
+            requested_revision,
+            name="requested_revision",
+            minimum=0,
+        )
+        presented = (
+            None
+            if presented_revision is None
+            else exact_integer(
+                presented_revision,
+                name="presented_revision",
+                minimum=0,
+            )
+        )
+        is_fresh = exact_bool(fresh, name="fresh")
+        if presented is not None and presented > requested:
+            raise ValueError(
+                "presented_revision は requested_revision 以下である必要があります"
+            )
         if not self.enabled:
             return
-        requested = max(0, int(requested_revision))
         self._preview_samples += 1
-        if bool(fresh):
+        if is_fresh:
             self._preview_fresh_results += 1
             self._preview_consecutive_stale_frames = 0
         else:
@@ -788,9 +888,9 @@ class PerfCollector:
                 self._preview_consecutive_stale_frames,
             )
 
-        if presented_revision is None:
+        if presented is None:
             return
-        lag = max(0, requested - int(presented_revision))
+        lag = requested - presented
         self._preview_revision_lag_sum += lag
         self._preview_revision_lag_max = max(
             self._preview_revision_lag_max,
@@ -813,12 +913,11 @@ class PerfCollector:
         name: str,
         dt_ns: int,
     ) -> None:
-        key = str(name).strip() or "<unnamed>"
         # 1 slot を overflow 集計用に予約し、動的名が memory を増やし続けないようにする。
-        if key not in sums and len(sums) >= self._max_series - 1:
-            key = _OTHER_SERIES
-        sums[key] = int(sums.get(key, 0)) + max(0, int(dt_ns))
-        calls[key] = int(calls.get(key, 0)) + 1
+        if name not in sums and len(sums) >= self._max_series - 1:
+            name = _OTHER_SERIES
+        sums[name] = sums.get(name, 0) + dt_ns
+        calls[name] = calls.get(name, 0) + 1
 
     def _timings(
         self,
@@ -827,37 +926,35 @@ class PerfCollector:
         *,
         include_frame: bool = True,
     ) -> tuple[PerfTiming, ...]:
-        frames = max(1, int(self._window_frames))
+        frames = max(1, self._window_frames)
         names = (
             name
             for name in sums
             if name != _OTHER_SERIES and (include_frame or name != "frame")
         )
-        ordered = sorted(names, key=lambda name: (-int(sums[name]), name))[
+        ordered = sorted(names, key=lambda name: (-sums[name], name))[
             : self._top_n
         ]
         result: list[PerfTiming] = []
         for name in ordered:
-            total_ns = int(sums[name])
-            count = max(1, int(calls.get(name, 0)))
-            total_ms = float(total_ns) / 1_000_000.0
+            total_ns = sums[name]
+            count = max(1, calls.get(name, 0))
+            total_ms = total_ns / 1_000_000.0
             result.append(
                 PerfTiming(
                     name=name,
                     total_ms=total_ms,
-                    mean_ms=total_ms / float(count),
-                    per_frame_ms=total_ms / float(frames),
+                    mean_ms=total_ms / count,
+                    per_frame_ms=total_ms / frames,
                     calls=count,
-                    calls_per_frame=float(count) / float(frames),
+                    calls_per_frame=count / frames,
                 )
             )
         return tuple(result)
 
     def _refresh_snapshot(self, *, include_events: bool = False) -> None:
-        frames = max(1, int(self._window_frames))
-        frame_ms = (
-            float(self._sum_ns.get("frame", 0)) / float(frames) / 1_000_000.0
-        )
+        frames = max(1, self._window_frames)
+        frame_ms = self._sum_ns.get("frame", 0) / frames / 1_000_000.0
         frame_samples = tuple(self._frame_samples_ns)
         p50_ns = _percentile(frame_samples, 0.50)
         p95_ns = _percentile(frame_samples, 0.95)
@@ -869,19 +966,19 @@ class PerfCollector:
         input_p99_ns = _percentile(input_samples, 0.99)
         input_max_ns = None if not input_samples else max(input_samples)
         writer = self._trace_writer
-        lag_samples = int(self._worker_lag_samples)
-        revision_lag_samples = int(self._preview_revision_lag_samples)
+        lag_samples = self._worker_lag_samples
+        revision_lag_samples = self._preview_revision_lag_samples
         self._snapshot = PerfSnapshot(
-            frame_index=int(self._frame_index),
-            frame_count=int(self._window_frames),
+            frame_index=self._frame_index,
+            frame_count=self._window_frames,
             frame_ms=frame_ms,
             frame_p50_ms=0.0 if p50_ns is None else p50_ns / 1_000_000.0,
             frame_p95_ms=0.0 if p95_ns is None else p95_ns / 1_000_000.0,
             frame_p99_ms=0.0 if p99_ns is None else p99_ns / 1_000_000.0,
             frame_max_ms=0.0 if max_ns is None else max_ns / 1_000_000.0,
             frame_tail_samples=len(frame_samples),
-            frame_deadline_misses=int(self._frame_deadline_misses),
-            frame_max_consecutive_deadline_misses=int(
+            frame_deadline_misses=self._frame_deadline_misses,
+            frame_max_consecutive_deadline_misses=(
                 self._frame_max_consecutive_deadline_misses
             ),
             sections=self._timings(
@@ -896,42 +993,37 @@ class PerfCollector:
             ),
             layers=self._timings(self._layer_sum_ns, self._layer_calls),
             events=tuple(self._events) if include_events else (),
-            trace_dropped_records=(
-                0 if writer is None else int(writer.dropped)
-            ),
-            trace_dropped_events=int(self._event_drop_count),
-            trace_dropped_causal_inputs=int(self._causal_input_drop_count),
-            trace_dropped_latency_samples=int(
-                self._latency_sample_drop_count
-            ),
-            cache_hits=int(self._cache_hits),
-            cache_misses=int(self._cache_misses),
-            cache_evictions=int(self._cache_evictions),
+            trace_dropped_records=0 if writer is None else writer.dropped,
+            trace_dropped_events=self._event_drop_count,
+            trace_dropped_causal_inputs=self._causal_input_drop_count,
+            trace_dropped_latency_samples=self._latency_sample_drop_count,
+            cache_hits=self._cache_hits,
+            cache_misses=self._cache_misses,
+            cache_evictions=self._cache_evictions,
             worker_lag_samples=lag_samples,
             worker_lag_ms=(
                 None
                 if lag_samples <= 0
-                else float(self._worker_lag_sum_ms) / float(lag_samples)
+                else self._worker_lag_sum_ms / lag_samples
             ),
             worker_lag_max_ms=(
-                None if lag_samples <= 0 else float(self._worker_lag_max_ms)
+                None if lag_samples <= 0 else self._worker_lag_max_ms
             ),
-            preview_samples=int(self._preview_samples),
-            preview_fresh_results=int(self._preview_fresh_results),
-            preview_max_consecutive_stale_frames=int(
+            preview_samples=self._preview_samples,
+            preview_fresh_results=self._preview_fresh_results,
+            preview_max_consecutive_stale_frames=(
                 self._preview_max_consecutive_stale_frames
             ),
             preview_revision_lag_samples=revision_lag_samples,
             preview_revision_lag=(
                 None
                 if revision_lag_samples <= 0
-                else float(self._preview_revision_lag_sum)
-                / float(revision_lag_samples)
+                else self._preview_revision_lag_sum / revision_lag_samples
             ),
             preview_revision_lag_max=(
                 None
                 if revision_lag_samples <= 0
-                else int(self._preview_revision_lag_max)
+                else self._preview_revision_lag_max
             ),
             input_to_present_samples=len(input_samples),
             input_to_present_p50_ms=(

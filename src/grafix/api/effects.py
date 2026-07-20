@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 
 from ._param_resolution import resolve_api_params, set_api_label
 from ._operation_selector import (
@@ -31,6 +31,8 @@ from grafix.core.parameters.effects import (
     EffectStepTopology,
     resolve_effective_steps,
 )
+from grafix.core.parameters.identity import identity_string
+from grafix.core.value_validation import exact_bool
 
 # parameters package の初期化後に読み、prune_ops 経由の循環 import を避ける。
 import grafix.core.effect_registry as effect_registry_module
@@ -38,11 +40,7 @@ import grafix.core.effect_registry as effect_registry_module
 from ._op_validation import validate_operation_kwargs
 
 
-class _EffectDefaultTarget(str):
-    """target 省略と明示的な ``"rotate"`` を区別する内部 marker。"""
-
-
-_DEFAULT_TARGET = _EffectDefaultTarget("rotate")
+_DEFAULT_TARGET = cast(str, object())
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +69,7 @@ def _make_effect_selector_step(
 
     count = validate_effect_selector_n_inputs(n_inputs)
     target_s = validate_effect_selector_target(
-        str(target),
+        identity_string(target, name="effect selector target"),
         n_inputs=count,
     )
     frozen_params = freeze_params_by_target(
@@ -81,10 +79,13 @@ def _make_effect_selector_step(
     )
     return _EffectSelectorStep(
         target=target_s,
-        target_explicit=bool(target_explicit),
+        target_explicit=exact_bool(
+            target_explicit,
+            name="effect selector target_explicit",
+        ),
         n_inputs=count,
         params_by_target=frozen_params,
-        site_id=str(site_id),
+        site_id=identity_string(site_id, name="effect selector site_id"),
     )
 
 
@@ -146,9 +147,20 @@ class EffectBuilder:
         recording_enabled = current_param_recording_enabled()
         topology = tuple(code_topology)
         order_snapshot = current_effect_order_snapshot() if recording_enabled else {}
+        order_override = order_snapshot.get(self.chain_id)
+        if order_override is not None:
+            topology_keys = tuple(step.key for step in topology)
+            if (
+                len(order_override) != len(topology_keys)
+                or set(order_override) != set(topology_keys)
+            ):
+                # source reload で code topology が置換された最初の成功観測は
+                # 新 topology を正本とする。context 終了時の merge が旧 override
+                # を削除するまで、この evaluation だけ code order を使用する。
+                order_override = None
         effective_topology = resolve_effective_steps(
             topology,
-            order_snapshot.get(self.chain_id),
+            order_override,
         )
         frame_params = current_frame_params()
         if recording_enabled and frame_params is not None:
@@ -168,8 +180,6 @@ class EffectBuilder:
                     n_inputs=step.n_inputs,
                     params_by_target=step.params_by_target,
                     site_id=step.site_id,
-                    chain_id=self.chain_id,
-                    step_index=int(step_index),
                 )
                 set_api_label(
                     op=selected.selector_op,
@@ -210,8 +220,6 @@ class EffectBuilder:
                 user_params=params,
                 defaults=spec.defaults,
                 meta=spec.meta,
-                chain_id=self.chain_id,
-                step_index=int(step_index),
             )
 
             # E(name="...") で付与されたラベルは、各ステップの (op, site_id) に保存する。
@@ -340,9 +348,15 @@ class EffectBuilder:
             instance_key=instance_key,
             shared=shared,
         )
+        target_explicit = target is not _DEFAULT_TARGET
+        target_name = (
+            identity_string(target, name="effect selector target")
+            if target_explicit
+            else "rotate"
+        )
         step = _make_effect_selector_step(
-            target=str(target),
-            target_explicit=target is not _DEFAULT_TARGET,
+            target=target_name,
+            target_explicit=target_explicit,
             n_inputs=count,
             params_by_target=params_by_target,
             site_id=site_id,
@@ -395,7 +409,7 @@ class EffectNamespace:
             ``name`` が未登録の場合。
         """
 
-        name_s = str(name)
+        name_s = identity_string(name, name="effect name")
         if name_s not in effect_registry_module.effect_registry:
             ensure_builtin_effect_registered(name_s)
         if name_s not in effect_registry_module.effect_registry:
@@ -441,9 +455,15 @@ class EffectNamespace:
             instance_key=instance_key,
             shared=shared,
         )
+        target_explicit = target is not _DEFAULT_TARGET
+        target_name = (
+            identity_string(target, name="effect selector target")
+            if target_explicit
+            else "rotate"
+        )
         step = _make_effect_selector_step(
-            target=str(target),
-            target_explicit=target is not _DEFAULT_TARGET,
+            target=target_name,
+            target_explicit=target_explicit,
             n_inputs=n_inputs,
             params_by_target=params_by_target,
             site_id=site_id,
@@ -515,7 +535,9 @@ class EffectNamespace:
 
     def __call__(self, name: str | None = None) -> "EffectNamespace":
         ns = EffectNamespace()
-        ns._pending_label = name  # type: ignore[attr-defined]
+        ns._pending_label = (
+            None if name is None else identity_string(name, name="effect label")
+        )
         return ns
 
     _pending_label: str | None = None

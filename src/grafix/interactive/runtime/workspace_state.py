@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any, Literal
 
 from grafix.core.atomic_write import atomic_write_text
 from grafix.core.output_paths import output_path_for_draw
+from grafix.core.value_validation import finite_real
 from grafix.interactive.runtime.diagnostics import DiagnosticEvent
 from grafix.interactive.runtime.window_layout import WindowRect
 
@@ -33,9 +33,12 @@ class WorkspaceState:
             _validate_rect(self.inspector_rect, key="inspector_rect")
         if not isinstance(self.inspector_visible, bool):
             raise TypeError("inspector_visible は bool である必要がある")
-        ui_scale = float(self.ui_scale)
-        if not math.isfinite(ui_scale) or ui_scale <= 0.0:
-            raise ValueError("ui_scale は finite な正の値である必要がある")
+        ui_scale = finite_real(
+            self.ui_scale,
+            name="ui_scale",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
         object.__setattr__(self, "ui_scale", ui_scale)
 
 

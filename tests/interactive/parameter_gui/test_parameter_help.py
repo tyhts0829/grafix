@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from grafix import E, G
-from grafix.core.parameters.codec import decode_param_store, encode_param_store
+from grafix.core.parameters.codec import (
+    decode_param_store_result,
+    encode_param_store,
+)
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.view import ParameterRow
@@ -105,7 +108,7 @@ def test_loaded_builtin_meta_is_upgraded_before_gui_help() -> None:
         if item["op"] == "line" and item["arg"] == "length":
             item["ui_min"] = -10.0
             item["ui_max"] = 10.0
-    loaded = decode_param_store(payload)
+    loaded = decode_param_store_result(payload).store
     pre_draw_view = parameter_table_view_for_store(
         loaded,
         show_inactive_params=True,

@@ -5,48 +5,94 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
+import numpy as np
 import pyglet
 import pytest
 
 pyglet.options["shadow_window"] = False
 
 from grafix.core.capture_manifest import capture_manifest_path_for
+from grafix.core.capture_provenance import CaptureProvenanceBuilder
+from grafix.core.export_format import ExportFormat
+from grafix.core.geometry import Geometry
+from grafix.core.layer import Layer
 from grafix.core.output_paths import VersionedPathAllocator, gcode_layer_output_path
+from grafix.core.parameters import ParamStore
 from grafix.core.pipeline import RealizedLayer
+from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.runtime_config import runtime_config
 from grafix.interactive.runtime import export_job_system as export_module
-from grafix.interactive.runtime.draw_window_system import DrawWindowSystem
 from grafix.interactive.runtime.export_job_system import (
+    CaptureExportSnapshot,
     ExportJob,
     ExportJobResult,
     ExportJobStatus,
     ExportJobSystem,
-    ExportKind,
-    FrameExportSnapshot,
+)
+from tests.interactive.runtime.draw_window_system_fixture import (
+    make_draw_window_system,
 )
 
 _WAIT_TIMEOUT_S = 8.0
 
 
-def _snapshot(*layer_names: str) -> FrameExportSnapshot:
-    layers = tuple(
-        cast(RealizedLayer, SimpleNamespace(layer=SimpleNamespace(name=name)))
-        for name in layer_names
+def _realized_layer(name: str, index: int) -> RealizedLayer:
+    geometry = Geometry.create("line")
+    return RealizedLayer(
+        layer=Layer(geometry=geometry, site_id=f"layer:{index}", name=name),
+        realized=RealizedGeometry(
+            coords=np.asarray(
+                ((float(index), 0.0, 0.0), (float(index + 1), 1.0, 0.0)),
+                dtype=np.float32,
+            ),
+            offsets=np.asarray((0, 2), dtype=np.int32),
+        ),
+        cache_key=(geometry.id, (0, 0)),
+        color=(0.0, 0.0, 0.0),
+        thickness=0.001,
     )
-    return FrameExportSnapshot(
+
+
+def _provenance_draw(_t: float) -> tuple[object, ...]:
+    return ()
+
+
+_PROVENANCE_STORE = ParamStore()
+_PROVENANCE_BUILDER = CaptureProvenanceBuilder(
+    _provenance_draw,
+    config=runtime_config(),
+    parameter_source="code",
+    parameter_store_path=None,
+    parameter_load_provenance=_PROVENANCE_STORE.load_provenance,
+)
+
+
+def _snapshot(*layer_names: str) -> CaptureExportSnapshot:
+    capture_t = 1.25
+    layers = tuple(
+        _realized_layer(name, index)
+        for index, name in enumerate(layer_names)
+    )
+    return CaptureExportSnapshot(
         layers=layers,
         canvas_size=(100, 80),
         background_color_rgb01=(1.0, 1.0, 1.0),
-        t=1.25,
+        t=capture_t,
+        provenance=_PROVENANCE_BUILDER.frame(
+            _PROVENANCE_STORE,
+            t=capture_t,
+            frame_index=0,
+            quality="final",
+            origin="interactive",
+        ),
+        gcode_params=runtime_config().gcode,
     )
 
 
 def _staged_output_path(job: ExportJob) -> Path:
-    staging_dir = job.staging_dir
-    assert staging_dir is not None
-    path = staging_dir / job.output_path.name
+    path = job.staging_dir / job.output_path.name
     path.write_bytes(b"complete-in-staging")
     return path
 
@@ -62,16 +108,12 @@ def _staging_then_error_backend(job: ExportJob) -> tuple[Path, ...]:
     raise RuntimeError("backend failed after staging")
 
 
-def _parent_commit_system(
+def _staging_backend_system(
     backend: Any,
     *,
     default_timeout_s: float = 5.0,
 ) -> ExportJobSystem:
-    system = ExportJobSystem(backend=backend, default_timeout_s=default_timeout_s)
-    # Custom backend で cancel/timeout の timing を決定的にするための test seam。
-    # production では既定 `_execute_export_job` の場合だけ自動で True になる。
-    system._uses_parent_commit = True
-    return system
+    return ExportJobSystem(backend=backend, default_timeout_s=default_timeout_s)
 
 
 def _wait_for_staging_file(output_path: Path) -> None:
@@ -103,7 +145,7 @@ def test_default_backend_commits_success_and_removes_staging(tmp_path: Path) -> 
     system = ExportJobSystem()
     try:
         job = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=output_path,
         )
@@ -119,10 +161,10 @@ def test_default_backend_commits_success_and_removes_staging(tmp_path: Path) -> 
 
 def test_cancel_removes_staged_artifact_without_publishing_final(tmp_path: Path) -> None:
     output_path = tmp_path / "cancelled.gcode"
-    system = _parent_commit_system(_staging_then_sleep_backend)
+    system = _staging_backend_system(_staging_then_sleep_backend)
     try:
         job = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=output_path,
         )
@@ -140,13 +182,13 @@ def test_cancel_removes_staged_artifact_without_publishing_final(tmp_path: Path)
 
 def test_timeout_removes_staged_artifact_without_publishing_final(tmp_path: Path) -> None:
     output_path = tmp_path / "timed-out.gcode"
-    system = _parent_commit_system(
+    system = _staging_backend_system(
         _staging_then_sleep_backend,
         default_timeout_s=0.05,
     )
     try:
         job = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=output_path,
         )
@@ -163,10 +205,10 @@ def test_backend_error_removes_staged_artifact_without_publishing_final(
     tmp_path: Path,
 ) -> None:
     output_path = tmp_path / "failed.gcode"
-    system = _parent_commit_system(_staging_then_error_backend)
+    system = _staging_backend_system(_staging_then_error_backend)
     try:
         job = system.submit(
-            kind=ExportKind.GCODE,
+            format=ExportFormat.GCODE,
             snapshot=_snapshot(),
             output_path=output_path,
         )
@@ -189,7 +231,7 @@ def test_parent_commit_never_replaces_a_late_existing_destination(tmp_path: Path
     staged_path.write_bytes(b"new-capture")
     job = ExportJob(
         job_id=1,
-        kind=ExportKind.GCODE,
+        format=ExportFormat.GCODE,
         snapshot=_snapshot(),
         output_path=output_path,
         timeout_s=1.0,
@@ -197,13 +239,13 @@ def test_parent_commit_never_replaces_a_late_existing_destination(tmp_path: Path
     )
     result = ExportJobResult(
         job_id=job.job_id,
-        kind=job.kind,
+        format=job.format,
         status=ExportJobStatus.SUCCESS,
         output_path=job.output_path,
         paths=(staged_path,),
     )
 
-    finalized = export_module._finalize_default_backend_result(job, result)
+    finalized = export_module._finalize_backend_result(job, result)
 
     assert finalized.status is ExportJobStatus.ERROR
     assert "parent-side export commit failed" in (finalized.error or "")
@@ -211,12 +253,12 @@ def test_parent_commit_never_replaces_a_late_existing_destination(tmp_path: Path
     assert not staging_dir.exists()
 
 
-@pytest.mark.parametrize("kind", [ExportKind.PNG, ExportKind.GCODE])
+@pytest.mark.parametrize("format", [ExportFormat.PNG, ExportFormat.GCODE])
 def test_parent_commit_rolls_back_artifact_when_manifest_late_collides(
     tmp_path: Path,
-    kind: ExportKind,
+    format: ExportFormat,
 ) -> None:
-    suffix = ".png" if kind is ExportKind.PNG else ".gcode"
+    suffix = ".png" if format is ExportFormat.PNG else ".gcode"
     output_path = tmp_path / f"capture{suffix}"
     manifest_path = capture_manifest_path_for(output_path)
     manifest_path.write_bytes(b"external manifest")
@@ -226,21 +268,22 @@ def test_parent_commit_rolls_back_artifact_when_manifest_late_collides(
     staged_path.write_bytes(b"new capture")
     job = ExportJob(
         job_id=1,
-        kind=kind,
+        format=format,
         snapshot=_snapshot(),
         output_path=output_path,
         timeout_s=1.0,
         staging_dir=staging_dir,
+        output_size=(100, 80) if format is ExportFormat.PNG else None,
     )
     result = ExportJobResult(
         job_id=job.job_id,
-        kind=job.kind,
+        format=job.format,
         status=ExportJobStatus.SUCCESS,
         output_path=job.output_path,
         paths=(staged_path,),
     )
 
-    finalized = export_module._finalize_default_backend_result(job, result)
+    finalized = export_module._finalize_backend_result(job, result)
 
     assert finalized.status is ExportJobStatus.ERROR
     assert "parent-side export commit failed" in (finalized.error or "")
@@ -271,17 +314,19 @@ def test_gcode_layer_commit_failure_rolls_back_already_published_layers(
 
     job = ExportJob(
         job_id=1,
-        kind=ExportKind.GCODE_LAYERS,
+        format=ExportFormat.GCODE,
         snapshot=snapshot,
         output_path=output_path,
         timeout_s=1.0,
         staging_dir=staging_dir,
+        split_gcode_layers=True,
     )
     result = ExportJobResult(
         job_id=job.job_id,
-        kind=job.kind,
+        format=job.format,
         status=ExportJobStatus.SUCCESS,
         output_path=job.output_path,
+        split_gcode_layers=True,
         paths=staged_paths,
     )
     real_link = os.link
@@ -301,7 +346,7 @@ def test_gcode_layer_commit_failure_rolls_back_already_published_layers(
 
     monkeypatch.setattr(export_module.os, "link", fail_second_link)
 
-    finalized = export_module._finalize_default_backend_result(job, result)
+    finalized = export_module._finalize_backend_result(job, result)
 
     assert finalized.status is ExportJobStatus.ERROR
     assert "simulated second layer commit failure" in (finalized.error or "")
@@ -331,21 +376,23 @@ def test_gcode_layer_late_collision_keeps_external_layer_and_rolls_back_ours(
     final_paths[1].write_bytes(b"external layer")
     job = ExportJob(
         job_id=1,
-        kind=ExportKind.GCODE_LAYERS,
+        format=ExportFormat.GCODE,
         snapshot=snapshot,
         output_path=output_path,
         timeout_s=1.0,
         staging_dir=staging_dir,
+        split_gcode_layers=True,
     )
     result = ExportJobResult(
         job_id=job.job_id,
-        kind=job.kind,
+        format=job.format,
         status=ExportJobStatus.SUCCESS,
         output_path=job.output_path,
+        split_gcode_layers=True,
         paths=staged_paths,
     )
 
-    finalized = export_module._finalize_default_backend_result(job, result)
+    finalized = export_module._finalize_backend_result(job, result)
 
     assert finalized.status is ExportJobStatus.ERROR
     assert not final_paths[0].exists()
@@ -359,11 +406,11 @@ def test_gcode_layer_family_collision_checks_old_names_and_extra_indices(
 ) -> None:
     stale_path = tmp_path / "piece_layer009_old-name.gcode"
     stale_path.write_text("stale partial capture", encoding="utf-8")
-    system = object.__new__(DrawWindowSystem)
+    system = make_draw_window_system()
     system._capture_paths = VersionedPathAllocator()
     system._gcode_output_path = tmp_path / "piece.gcode"
 
-    allocated = system._allocate_gcode_layers_path(_snapshot("new-name"))
+    allocated = system._allocate_gcode_layers_path()
 
     assert allocated == tmp_path / "piece_001.gcode"
     assert stale_path.read_text(encoding="utf-8") == "stale partial capture"

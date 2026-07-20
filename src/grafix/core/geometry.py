@@ -20,8 +20,7 @@ _GeometryRecord = tuple[
     tuple[tuple[str, Any], ...],
 ]
 
-DEFAULT_SCHEMA_VERSION = 2
-
+_GEOMETRY_SIGNATURE_SCHEMA_VERSION = 2
 _SIGNATURE_DOMAIN = b"grafix.geometry.v2\x00"
 _UINT64 = Struct(">Q")
 _FLOAT64 = Struct(">d")
@@ -191,8 +190,6 @@ def compute_geometry_id(
     op: str,
     inputs: Sequence["Geometry"],
     args: tuple[tuple[str, Any], ...],
-    *,
-    schema_version: int = DEFAULT_SCHEMA_VERSION,
 ) -> GeometryId:
     """GeometryId（内容署名）を計算する。
 
@@ -204,16 +201,13 @@ def compute_geometry_id(
         子ノード列。
     args : tuple[tuple[str, Any], ...]
         正規化済み引数タプル。
-    schema_version : int, optional
-        署名スキーマのバージョン。
-
     Returns
     -------
     GeometryId
         内容署名に基づく ID。
     """
     signature = (
-        int(schema_version),
+        _GEOMETRY_SIGNATURE_SCHEMA_VERSION,
         op,
         tuple(g.id for g in inputs),
         args,
@@ -316,7 +310,6 @@ class Geometry:
         *,
         inputs: Sequence["Geometry"] | None = None,
         params: Mapping[str, Any] | None = None,
-        schema_version: int = DEFAULT_SCHEMA_VERSION,
     ) -> "Geometry":
         """演算子名とパラメータから Geometry ノードを生成する。
 
@@ -328,9 +321,6 @@ class Geometry:
             子ノード列。省略時は空とみなす。
         params : Mapping[str, Any] or None, optional
             元の引数辞書。None の場合は空辞書とみなす。
-        schema_version : int, optional
-            署名スキーマのバージョン。
-
         Returns
         -------
         Geometry
@@ -351,7 +341,6 @@ class Geometry:
             op=op,
             inputs=inputs_tuple,
             args=normalized_args,
-            schema_version=schema_version,
         )
         return cls(
             id=geometry_id,

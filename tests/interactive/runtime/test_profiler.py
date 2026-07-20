@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
@@ -11,9 +12,290 @@ from grafix.core.layer import Layer, LayerStyleDefaults
 from grafix.core.parameters import ParamStore
 from grafix.core.pipeline import realize_scene
 from grafix.core.realize import RealizeSession
+from grafix.core.runtime_limits import RuntimeLimits
 from grafix.interactive.runtime.mp_draw import DrawResult
 from grafix.interactive.runtime.perf import PerfCollector
 from grafix.interactive.runtime.scene_runner import SceneRunner
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "match"),
+    [
+        ({"enabled": 1}, TypeError, "enabled"),
+        ({"enabled": False, "print_every": "60"}, TypeError, "print_every"),
+        ({"enabled": False, "print_every": 0}, ValueError, "print_every"),
+        ({"enabled": False, "gpu_finish": 1}, TypeError, "gpu_finish"),
+        ({"enabled": False, "top_n": 0}, ValueError, "top_n"),
+        ({"enabled": False, "max_series": 1}, ValueError, "max_series"),
+        ({"enabled": False, "console_output": 0}, TypeError, "console_output"),
+        ({"enabled": False, "trace_path": object()}, TypeError, "trace_path"),
+        ({"enabled": False, "trace_path": ""}, ValueError, "trace_path"),
+        ({"enabled": False, "frame_deadline_ms": True}, TypeError, "frame_deadline"),
+        ({"enabled": False, "frame_deadline_ms": 0.0}, ValueError, "frame_deadline"),
+        (
+            {"enabled": False, "frame_deadline_ms": float("nan")},
+            ValueError,
+            "frame_deadline",
+        ),
+        (
+            {"enabled": False, "snapshot_callback": object()},
+            TypeError,
+            "snapshot_callback",
+        ),
+        (
+            {"enabled": False, "defer_frame_finalize": 0},
+            TypeError,
+            "defer_frame_finalize",
+        ),
+    ],
+)
+def test_perf_collector_rejects_implicit_configuration_coercion(
+    kwargs: dict[str, object],
+    error: type[Exception],
+    match: str,
+) -> None:
+    with pytest.raises(error, match=match):
+        PerfCollector(**kwargs)  # type: ignore[arg-type]
+
+
+def test_perf_collector_from_env_requires_exact_bool_flags() -> None:
+    with pytest.raises(TypeError, match="enabled_by_default"):
+        PerfCollector.from_env(enabled_by_default=1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="defer_frame_finalize"):
+        PerfCollector.from_env(defer_frame_finalize=0)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    ("invoke", "error", "match"),
+    [
+        (lambda perf: perf.section(1), TypeError, "name"),
+        (lambda perf: perf.section(""), ValueError, "非空文字列"),
+        (lambda perf: perf.section(" scene"), ValueError, "前後空白"),
+        (
+            lambda perf: perf.finish_frame(deadline_elapsed_ns="1"),
+            TypeError,
+            "deadline_elapsed_ns",
+        ),
+        (
+            lambda perf: perf.finish_frame(deadline_elapsed_ns=-1),
+            ValueError,
+            "deadline_elapsed_ns",
+        ),
+        (lambda perf: perf.record_event(1), TypeError, "name"),
+        (lambda perf: perf.record_event(""), ValueError, "非空文字列"),
+        (
+            lambda perf: perf.record_event("event", frame_id="1"),
+            TypeError,
+            "frame_id",
+        ),
+        (
+            lambda perf: perf.record_event("event", frame_id=-1),
+            ValueError,
+            "frame_id",
+        ),
+        (
+            lambda perf: perf.record_event("event", revision=1.0),
+            TypeError,
+            "revision",
+        ),
+        (
+            lambda perf: perf.record_event("event", revision=-1),
+            ValueError,
+            "revision",
+        ),
+        (
+            lambda perf: perf.record_event("event", timestamp_ns=True),
+            TypeError,
+            "timestamp_ns",
+        ),
+        (
+            lambda perf: perf.record_event("event", timestamp_ns=-1),
+            ValueError,
+            "timestamp_ns",
+        ),
+        (
+            lambda perf: perf.record_operation(object(), 1),
+            TypeError,
+            "name",
+        ),
+        (
+            lambda perf: perf.record_operation("operation", "1"),
+            TypeError,
+            "elapsed_ns",
+        ),
+        (
+            lambda perf: perf.record_operation("operation", -1),
+            ValueError,
+            "elapsed_ns",
+        ),
+        (
+            lambda perf: perf.record_duration(object(), 1),
+            TypeError,
+            "name",
+        ),
+        (
+            lambda perf: perf.record_duration("duration", 1.0),
+            TypeError,
+            "elapsed_ns",
+        ),
+        (
+            lambda perf: perf.record_duration("duration", -1),
+            ValueError,
+            "elapsed_ns",
+        ),
+        (
+            lambda perf: perf.record_layer(object(), 1),
+            TypeError,
+            "name",
+        ),
+        (
+            lambda perf: perf.record_layer("layer", True),
+            TypeError,
+            "elapsed_ns",
+        ),
+        (
+            lambda perf: perf.record_layer("layer", -1),
+            ValueError,
+            "elapsed_ns",
+        ),
+        (
+            lambda perf: perf.record_cache(hits=True),
+            TypeError,
+            "hits",
+        ),
+        (
+            lambda perf: perf.record_cache(misses=1.0),
+            TypeError,
+            "misses",
+        ),
+        (
+            lambda perf: perf.record_cache(evictions="1"),
+            TypeError,
+            "evictions",
+        ),
+        (
+            lambda perf: perf.record_cache(hits=-1),
+            ValueError,
+            "hits",
+        ),
+        (
+            lambda perf: perf.record_cache(misses=-1),
+            ValueError,
+            "misses",
+        ),
+        (
+            lambda perf: perf.record_cache(evictions=-1),
+            ValueError,
+            "evictions",
+        ),
+        (
+            lambda perf: perf.record_worker_lag("1"),
+            TypeError,
+            "lag_ms",
+        ),
+        (
+            lambda perf: perf.record_worker_lag(True),
+            TypeError,
+            "lag_ms",
+        ),
+        (
+            lambda perf: perf.record_worker_lag(float("nan")),
+            ValueError,
+            "lag_ms",
+        ),
+        (
+            lambda perf: perf.record_worker_lag(float("inf")),
+            ValueError,
+            "lag_ms",
+        ),
+        (
+            lambda perf: perf.record_worker_lag(-1.0),
+            ValueError,
+            "lag_ms",
+        ),
+        (
+            lambda perf: perf.record_preview_result(
+                requested_revision="1",
+                presented_revision=None,
+                fresh=False,
+            ),
+            TypeError,
+            "requested_revision",
+        ),
+        (
+            lambda perf: perf.record_preview_result(
+                requested_revision=-1,
+                presented_revision=None,
+                fresh=False,
+            ),
+            ValueError,
+            "requested_revision",
+        ),
+        (
+            lambda perf: perf.record_preview_result(
+                requested_revision=1,
+                presented_revision="0",
+                fresh=False,
+            ),
+            TypeError,
+            "presented_revision",
+        ),
+        (
+            lambda perf: perf.record_preview_result(
+                requested_revision=1,
+                presented_revision=-1,
+                fresh=False,
+            ),
+            ValueError,
+            "presented_revision",
+        ),
+        (
+            lambda perf: perf.record_preview_result(
+                requested_revision=1,
+                presented_revision=0,
+                fresh=1,
+            ),
+            TypeError,
+            "fresh",
+        ),
+        (
+            lambda perf: perf.record_preview_result(
+                requested_revision=1,
+                presented_revision=2,
+                fresh=False,
+            ),
+            ValueError,
+            "presented_revision",
+        ),
+    ],
+)
+def test_perf_recording_apis_reject_noncanonical_values_even_when_disabled(
+    enabled: bool,
+    invoke: Callable[[PerfCollector], object],
+    error: type[Exception],
+    match: str,
+) -> None:
+    perf = PerfCollector(enabled=enabled, console_output=False)
+
+    with pytest.raises(error, match=match):
+        invoke(perf)
+
+
+def test_record_event_rejects_negative_causal_latency_instead_of_clamping() -> None:
+    perf = PerfCollector(enabled=True, console_output=False)
+    perf.record_event(
+        "parameter_revision_created",
+        revision=1,
+        timestamp_ns=10,
+    )
+
+    with pytest.raises(ValueError, match="timestamp_ns"):
+        perf.record_event(
+            "preview_presented",
+            revision=1,
+            timestamp_ns=9,
+        )
 
 
 def test_profiler_collects_bounded_operation_layer_and_cache_snapshot() -> None:
@@ -79,7 +361,10 @@ def test_realize_cache_eviction_is_forwarded_to_profiler() -> None:
     first = Geometry.create("polygon", params={"n_sides": 5})
     second = Geometry.create("polygon", params={"n_sides": 6})
 
-    with RealizeSession(max_cache_bytes=100, profiler=perf) as session:
+    with RealizeSession(
+        runtime_limits=RuntimeLimits(cpu_cache_bytes=100),
+        profiler=perf,
+    ) as session:
         with perf.frame():
             realize_scene(lambda _t: first, 0.0, defaults, session=session)
         with perf.frame():
@@ -92,8 +377,10 @@ class _LaggedMpDraw:
     def __init__(self, result: DrawResult) -> None:
         self._result = result
         self._published = False
+        self.last_submitted_frame_id = 0
 
     def submit(self, **_kwargs: object) -> None:
+        self.last_submitted_frame_id += 1
         return
 
     def poll_latest(self) -> DrawResult | None:
@@ -117,9 +404,14 @@ def test_scene_runner_records_worker_submit_to_result_lag() -> None:
     geometry = Geometry.create("polygon", params={"n_sides": 5})
     result = DrawResult(
         frame_id=1,
+        t=0.0,
+        epoch=0,
+        generation=0,
+        snapshot_revision=0,
         layers=[Layer(geometry, site_id="ink", name="Ink")],
         records=[],
         labels=[],
+        effect_chains=[],
         worker_lag_ms=24.5,
     )
     runner = SceneRunner(lambda _t: geometry, perf=perf, n_worker=0)
@@ -135,6 +427,8 @@ def test_scene_runner_records_worker_submit_to_result_lag() -> None:
                     thickness=0.01,
                 ),
                 recording=False,
+                transport_epoch=0,
+                quality="draft",
             )
     finally:
         runner.close()

@@ -68,7 +68,12 @@ def ensure_style_entries(
     for arg, base_value, meta in items:
         key = style_key(arg)
         store._set_meta(key, meta)
-        store._ensure_state(key, base_value=base_value, initial_override=True)
+        store._ensure_state(
+            key,
+            base_value=base_value,
+            explicit=False,
+            initial_override=True,
+        )
         ordinals.get_or_assign(key.op, key.site_id)
 
 

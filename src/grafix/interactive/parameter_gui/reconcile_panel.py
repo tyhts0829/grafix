@@ -62,16 +62,11 @@ def reconcile_orphan_panel_model(
 
     views = [
         ReconcileOrphanView(
-            new_group=(str(orphan.new_group[0]), str(orphan.new_group[1])),
-            candidate_old_groups=tuple(
-                sorted(
-                    (str(group[0]), str(group[1]))
-                    for group in orphan.candidate_old_groups
-                )
-            ),
-            reason=str(orphan.reason),
+            new_group=orphan.new_group,
+            candidate_old_groups=tuple(sorted(orphan.candidate_old_groups)),
+            reason=orphan.reason,
             reason_text=reconcile_reason_text(orphan.reason),
-            score=int(orphan.score),
+            score=orphan.score,
         )
         for orphan in orphans
     ]
@@ -124,12 +119,7 @@ def render_reconcile_orphan_popup(
                 "Relink 1:1"
                 f"##reconcile_{orphan_index}_{candidate_index}"
             )
-            small_button = getattr(imgui, "small_button", None)
-            clicked = (
-                bool(small_button(label))
-                if callable(small_button)
-                else bool(imgui.button(label))
-            )
+            clicked = bool(imgui.small_button(label))
             if clicked and request is None:
                 request = ReconcileMigrationRequest(
                     old_group=old_group,

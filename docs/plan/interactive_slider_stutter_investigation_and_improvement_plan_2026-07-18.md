@@ -453,11 +453,11 @@ fake GL の deterministic state test と、任意実行の実 GL trace を分け
 
 1. 初回 draw 前に受けた pending capture intent を最初の fresh frameへ結合するとき
 2. recording capture の最初の fresh frame
-3. `_final_capture_snapshot()`、thumbnail、明示 export
+3. `final_capture_frame()`、thumbnail、明示 export
 4. shutdown fallback
 5. provenance 無しの snapshot を direct `save_svg()` する直前
 
-通常の key capture は既に `_final_capture_snapshot()` で final 再評価し、そこで
+通常の key capture は既に `final_capture_frame()` で final 再評価し、そこで
 provenance を生成している。
 
 - `src/grafix/interactive/runtime/draw_window_system.py:425-446`

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from fractions import Fraction
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from grafix.core.parameters.autosave import ParamStoreAutosave
-from grafix.core.parameters.codec import dumps_param_store, loads_param_store
+from grafix.core.parameters.codec import (
+    decode_param_store_result,
+    dumps_param_store,
+    encode_param_store,
+    loads_param_store_result,
+)
 from grafix.core.parameters.effects import EffectStepTopology
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.history import ParamStoreHistory
@@ -33,6 +41,10 @@ from grafix.core.parameters.variations import (
 FLOAT_META = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
 EFFECT_CODE_ORDER = (("scale", "scale-site"), ("rotate", "rotate-site"))
 EFFECT_UI_ORDER = tuple(reversed(EFFECT_CODE_ORDER))
+
+
+class _StringSubclass(str):
+    pass
 
 
 def _add_reordered_effect_chain(store: ParamStore) -> None:
@@ -65,6 +77,8 @@ def _add_parameter(
                 key=key,
                 base=value,
                 meta=FLOAT_META,
+                effective=value,
+                source="code",
                 explicit=False,
             )
         ],
@@ -98,6 +112,8 @@ def _add_typed_parameter(
                 key=key,
                 base=value,
                 meta=meta,
+                effective=value,
+                source="code",
                 explicit=False,
             )
         ],
@@ -123,7 +139,7 @@ def _set_typed_value(
         override=override,
         cc_key=cc_key,
     )
-    assert ok is True and error in {None, "choice_coerced"}
+    assert ok is True and error is None
 
 
 def _typed_value(store: ParamStore, key: ParameterKey) -> object:
@@ -147,7 +163,7 @@ def test_create_list_rename_and_delete_advance_revision_on_real_changes() -> Non
         created_at=100.0,
     )
 
-    assert first.name == "quiet"
+    assert first.name == "  quiet  "
     assert first.created_at == 100.0
     assert first.note == "low amplitude"
     assert first.seed == 17
@@ -157,10 +173,10 @@ def test_create_list_rename_and_delete_advance_revision_on_real_changes() -> Non
     assert store.revision == revision + 1
 
     with pytest.raises(ValueError, match="already exists"):
-        create_variation(store, "quiet")
+        create_variation(store, "  quiet  ")
     assert store.revision == revision + 1
 
-    assert rename_variation(store, "quiet", "still").name == "still"
+    assert rename_variation(store, "  quiet  ", "still").name == "still"
     assert [variation.name for variation in list_variations(store)] == ["still"]
     assert store.revision == revision + 2
 
@@ -176,6 +192,8 @@ def test_create_list_rename_and_delete_advance_revision_on_real_changes() -> Non
 @pytest.mark.parametrize(
     "invalid_name",
     (
+        "",
+        " ",
         "line\nbreak",
         "tab\tname",
         "control\x00name",
@@ -197,6 +215,126 @@ def test_variation_names_reject_line_breaks_controls_and_overlong_text(
         rename_variation(store, "valid", invalid_name)
     with pytest.raises(ValueError, match="variation name"):
         duplicate_variation(store, "valid", invalid_name)
+
+
+def test_variation_name_requires_an_exact_untrimmed_string() -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    subclass_name = _StringSubclass("candidate")
+
+    with pytest.raises(TypeError, match="variation name"):
+        create_variation(store, subclass_name)
+
+    create_variation(store, "valid", created_at=100.0)
+    with pytest.raises(TypeError, match="variation name"):
+        rename_variation(store, subclass_name, "renamed")
+    with pytest.raises(TypeError, match="variation name"):
+        duplicate_variation(store, subclass_name, "copy")
+    with pytest.raises(TypeError, match="variation name"):
+        delete_variation(store, subclass_name)
+    with pytest.raises(TypeError, match="variation name"):
+        diff_variation(store, subclass_name)
+    with pytest.raises(TypeError, match="variation name"):
+        restore_variation(store, subclass_name)
+
+    assert [variation.name for variation in list_variations(store)] == ["valid"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("created_at", True),
+        ("created_at", "100.0"),
+        ("created_at", float("inf")),
+        ("created_at", float("nan")),
+        ("t", False),
+        ("t", "1.5"),
+        ("t", float("-inf")),
+        ("note", _StringSubclass("note")),
+        ("note", object()),
+        ("seed", True),
+        ("seed", 17.0),
+        ("seed", "17"),
+        ("thumbnail_path", _StringSubclass("thumb.png")),
+        ("thumbnail_path", 123),
+    ],
+)
+def test_create_variation_rejects_implicit_metadata_coercion(
+    field: str,
+    value: Any,
+) -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    revision = store.revision
+    kwargs: dict[str, Any] = {"created_at": 100.0}
+    kwargs[field] = value
+
+    with pytest.raises((TypeError, ValueError)):
+        create_variation(store, "candidate", **kwargs)
+
+    assert list_variations(store) == ()
+    assert store.revision == revision
+
+
+def test_create_variation_normalizes_only_valid_real_numbers() -> None:
+    store = ParamStore()
+    _add_parameter(store)
+
+    variation = create_variation(
+        store,
+        "candidate",
+        note="  note is preserved  ",
+        t=Fraction(3, 2),
+        thumbnail_path="thumbs//candidate.png",
+        created_at=Fraction(201, 2),
+    )
+
+    assert variation.created_at == 100.5
+    assert type(variation.created_at) is float
+    assert variation.t == 1.5
+    assert type(variation.t) is float
+    assert variation.note == "  note is preserved  "
+    assert variation.thumbnail_path == "thumbs//candidate.png"
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    (True, "200.0", float("inf"), float("nan")),
+)
+def test_duplicate_variation_does_not_precoerce_created_at(
+    created_at: Any,
+) -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    create_variation(store, "source", created_at=100.0)
+    revision = store.revision
+
+    with pytest.raises((TypeError, ValueError)):
+        duplicate_variation(
+            store,
+            "source",
+            "copy",
+            created_at=created_at,
+        )
+
+    assert [variation.name for variation in list_variations(store)] == ["source"]
+    assert store.revision == revision
+
+
+def test_duplicate_variation_accepts_and_normalizes_a_valid_real_timestamp() -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    create_variation(store, "source", created_at=100.0)
+
+    duplicate = duplicate_variation(
+        store,
+        "source",
+        "copy",
+        created_at=Fraction(401, 2),
+    )
+
+    assert duplicate.created_at == 200.5
+    assert type(duplicate.created_at) is float
 
 
 def test_diff_reports_changed_and_new_parameters() -> None:
@@ -249,7 +387,7 @@ def test_codec_roundtrip_keeps_variation_metadata_and_snapshot() -> None:
     )
     _set_value(store, key, 0.95)
 
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
 
     variations = list_variations(loaded)
     assert len(variations) == 1
@@ -263,6 +401,151 @@ def test_codec_roundtrip_keeps_variation_metadata_and_snapshot() -> None:
     assert _value(loaded, key) == pytest.approx(0.25)
 
 
+def test_variation_snapshot_uses_json_arrays_in_direct_codec_roundtrip() -> None:
+    store = ParamStore()
+    key = _add_typed_parameter(
+        store,
+        arg="position",
+        value=(1.0, 2.0, 3.0),
+        meta=ParamMeta(kind="vec3"),
+    )
+    _set_typed_value(
+        store,
+        key,
+        (4.0, 5.0, 6.0),
+        cc_key=(1, None, 3),
+    )
+    create_variation(store, "vector", created_at=123.5)
+
+    payload = encode_param_store(store)
+    snapshot_state = payload["variations"][0]["parameter_snapshot"]["states"][0]
+    assert snapshot_state["ui_value"] == [4.0, 5.0, 6.0]
+    assert snapshot_state["cc_key"] == [1, None, 3]
+
+    variation = list_variations(decode_param_store_result(payload).store)[0]
+    restored_state = variation.parameter_snapshot._states[key]
+    assert restored_state.ui_value == (4.0, 5.0, 6.0)
+    assert restored_state.cc_key == (1, None, 3)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("missing", "missing fields: note"),
+        ("unknown", "unknown fields: legacy_note"),
+    ],
+)
+def test_variation_entry_with_noncanonical_fields_is_dropped(
+    mutation: str,
+    reason: str,
+) -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    create_variation(store, "saved", created_at=123.5)
+    payload = json.loads(dumps_param_store(store))
+    variation = payload["variations"][0]
+    if mutation == "missing":
+        variation.pop("note")
+    else:
+        variation["legacy_note"] = ""
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert list_variations(result.store) == ()
+    assert any(
+        issue.section == "variations"
+        and issue.index == 0
+        and reason in issue.reason
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("missing", "missing fields: collapsed_by_header"),
+        ("unknown", "unknown fields: legacy_collapsed"),
+    ],
+)
+def test_variation_snapshot_with_noncanonical_fields_is_dropped(
+    mutation: str,
+    reason: str,
+) -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    create_variation(store, "saved", created_at=123.5)
+    payload = json.loads(dumps_param_store(store))
+    snapshot = payload["variations"][0]["parameter_snapshot"]
+    if mutation == "missing":
+        snapshot.pop("collapsed_by_header")
+    else:
+        snapshot["legacy_collapsed"] = {}
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert list_variations(result.store) == ()
+    assert any(
+        issue.section == "variations"
+        and issue.index == 0
+        and reason in issue.reason
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("override", "false", "override must be a bool"),
+        ("ui_value", "0.25", "ui_value must be a finite number"),
+        ("cc_key", "7", "cc_key must be an int"),
+    ],
+)
+def test_variation_state_does_not_coerce_wrong_field_types(
+    field: str,
+    value: object,
+    reason: str,
+) -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    create_variation(store, "saved", created_at=123.5)
+    payload = json.loads(dumps_param_store(store))
+    snapshot_state = payload["variations"][0]["parameter_snapshot"]["states"][0]
+    snapshot_state[field] = value
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    variation = list_variations(result.store)[0]
+    assert variation.parameter_snapshot._states == {}
+    assert any(
+        issue.section
+        == "variations[0].parameter_snapshot.states"
+        and issue.index == 0
+        and reason in issue.reason
+        for issue in result.issues
+    )
+
+
+def test_variation_nested_state_with_unknown_field_is_dropped() -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    create_variation(store, "saved", created_at=123.5)
+    payload = json.loads(dumps_param_store(store))
+    snapshot_state = payload["variations"][0]["parameter_snapshot"]["states"][0]
+    snapshot_state["legacy_override"] = False
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    variation = list_variations(result.store)[0]
+    assert variation.parameter_snapshot._states == {}
+    assert any(
+        issue.section
+        == "variations[0].parameter_snapshot.states"
+        and issue.index == 0
+        and "unknown fields: legacy_override" in issue.reason
+        for issue in result.issues
+    )
+
+
 def test_variation_codec_and_restore_include_effect_order_but_diff_does_not() -> None:
     store = ParamStore()
     _add_parameter(store)
@@ -273,7 +556,7 @@ def test_variation_codec_and_restore_include_effect_order_but_diff_does_not() ->
     store._touch()
     assert diff_variation(store, "reordered") == ()
 
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
     assert loaded._effects_ref().effective_order("chain-order") == EFFECT_CODE_ORDER
     assert restore_variation(loaded, "reordered") is True
     assert loaded._effects_ref().effective_order("chain-order") == EFFECT_UI_ORDER
@@ -300,7 +583,7 @@ def test_loaded_variation_does_not_restore_order_after_effect_arity_change() -> 
         ),
     )
     create_variation(store, "old-arity", created_at=100.0)
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
 
     assert loaded._effects_ref().record_chain(
         chain_id="arity-chain",
@@ -356,13 +639,33 @@ def test_parameter_lock_is_persistent_store_ui_state() -> None:
     assert set_parameters_locked(store, [first], locked=True) == ()
     assert store.revision == revision + 1
 
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
     assert locked_parameter_keys(loaded) == (first, second)
 
     loaded_revision = loaded.revision
     assert set_parameters_locked(loaded, [first], locked=False) == (first,)
     assert locked_parameter_keys(loaded) == (second,)
     assert loaded.revision == loaded_revision + 1
+
+
+@pytest.mark.parametrize("locked", (0, 1, "true", None))
+def test_parameter_lock_requires_an_exact_boolean(locked: Any) -> None:
+    store = ParamStore()
+    key = _add_parameter(store)
+
+    with pytest.raises(TypeError, match="locked"):
+        set_parameters_locked(store, [key], locked=locked)
+
+    assert locked_parameter_keys(store) == ()
+
+
+@pytest.mark.parametrize("seed", (True, 1.0, "1", None))
+def test_randomize_requires_an_integer_seed_without_coercion(seed: Any) -> None:
+    store = ParamStore()
+    key = _add_parameter(store)
+
+    with pytest.raises(TypeError, match="seed"):
+        randomize_parameters(store, [key], seed=seed)
 
 
 def test_randomize_is_seeded_scoped_locked_and_one_history_transaction() -> None:
@@ -508,10 +811,16 @@ def test_morph_interpolates_numeric_and_records_one_undoable_operation() -> None
         value=42.0,
         meta=ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
     )
-    for key in keys.values():
+    for name, key in keys.items():
         state = store.get_state(key)
         assert state is not None
-        _set_typed_value(store, key, state.ui_value, cc_key=9)
+        if name in {"float", "int", "choice"}:
+            cc_key: int | tuple[int | None, int | None, int | None] | None = 9
+        elif name == "vec":
+            cc_key = (9, None, None)
+        else:
+            cc_key = None
+        _set_typed_value(store, key, state.ui_value, cc_key=cc_key)
     _set_typed_value(store, keys["float"], 99.0)
     _set_typed_value(store, keys["font"], "locked-current")
     set_parameters_locked(store, [keys["font"]], locked=True)
@@ -582,8 +891,55 @@ def test_morph_endpoints_and_discrete_halfway_policy_are_explicit() -> None:
     assert _typed_value(store, keys["rgb"]) == (255, 110, 0)
 
 
-@pytest.mark.parametrize("amount", [-0.01, 1.01, float("inf"), float("nan")])
+def test_morph_accepts_and_normalizes_a_valid_real_amount() -> None:
+    store, keys = _variation_pair_store()
+
+    morph_variations(
+        store,
+        "A",
+        "B",
+        Fraction(1, 2),
+        keys=keys.values(),
+    )
+
+    assert _typed_value(store, keys["float"]) == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize("amount", [-0.01, 1.01])
 def test_morph_rejects_amount_outside_unit_interval(amount: float) -> None:
     store, keys = _variation_pair_store()
     with pytest.raises(ValueError, match=r"\[0, 1\]"):
         morph_variations(store, "A", "B", amount, keys=keys.values())
+
+
+@pytest.mark.parametrize("amount", (float("inf"), float("nan")))
+def test_morph_rejects_non_finite_amount(amount: float) -> None:
+    store, keys = _variation_pair_store()
+    with pytest.raises(ValueError, match="amount"):
+        morph_variations(store, "A", "B", amount, keys=keys.values())
+
+
+@pytest.mark.parametrize("amount", (True, "0.5", object()))
+def test_morph_rejects_non_real_amount_without_coercion(amount: Any) -> None:
+    store, keys = _variation_pair_store()
+    with pytest.raises(TypeError, match="amount"):
+        morph_variations(store, "A", "B", amount, keys=keys.values())
+
+
+@pytest.mark.parametrize("field", ("a_name", "b_name"))
+def test_morph_requires_exact_variation_names(field: str) -> None:
+    store, keys = _variation_pair_store()
+    names: dict[str, Any] = {
+        "a_name": "A",
+        "b_name": "B",
+    }
+    names[field] = _StringSubclass(names[field])
+
+    with pytest.raises(TypeError, match="variation name"):
+        morph_variations(
+            store,
+            names["a_name"],
+            names["b_name"],
+            0.5,
+            keys=keys.values(),
+        )

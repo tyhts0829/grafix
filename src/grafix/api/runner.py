@@ -17,7 +17,6 @@ from typing import Any, Callable
 import pyglet
 from pyglet.window import key
 
-from grafix.core.layer import LayerStyleDefaults
 from grafix.core.lifecycle import CleanupErrors
 from grafix.core.runtime_config import (
     RuntimeConfigFallback,
@@ -39,9 +38,17 @@ from grafix.core.parameters.persistence import (
     save_param_store_recovery,
 )
 from grafix.core.output_paths import output_path_for_draw
-from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET, ResourceBudget
-from grafix.core.runtime_limits import RuntimeLimitProfiles
+from grafix.core.runtime_limits import (
+    DEFAULT_RUNTIME_LIMIT_PROFILES,
+    RuntimeLimitProfiles,
+)
 from grafix.core.scene import SceneItem
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string_choice,
+    finite_real,
+)
 from grafix.interactive.midi.factory import create_midi_controller
 from grafix.interactive.midi import MidiSession
 from grafix.interactive.midi.midi_controller import (
@@ -49,7 +56,7 @@ from grafix.interactive.midi.midi_controller import (
     maybe_load_frozen_cc_snapshot,
     save_cc_snapshot,
 )
-from grafix.interactive.render_settings import RenderSettings
+from grafix.api.render import RenderOptions
 from grafix.interactive.runtime.draw_window_system import DrawWindowSystem
 from grafix.interactive.runtime.diagnostics import DiagnosticAction, DiagnosticEvent
 from grafix.interactive.runtime.parameter_recovery import (
@@ -92,15 +99,14 @@ def _variation_thumbnail_size(canvas_size: tuple[int, int]) -> tuple[int, int]:
     return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
 
 
-def _draw_variation_thumbnail_status(imgui: object, path: Path) -> None:
+def _draw_variation_thumbnail_status(imgui: Any, path: Path) -> None:
     """texture backend未接続時もmissing/存在済みを区別して表示する。"""
 
-    text_disabled = getattr(imgui, "text_disabled")
     thumbnail_path = Path(path)
     if thumbnail_path.is_file():
-        text_disabled(f"Thumbnail: {thumbnail_path.name}")
+        imgui.text_disabled(f"Thumbnail: {thumbnail_path.name}")
     else:
-        text_disabled(f"Thumbnail unavailable (missing): {thumbnail_path}")
+        imgui.text_disabled(f"Thumbnail unavailable (missing): {thumbnail_path}")
 
 def _run_cleanup_steps(
     steps: list[tuple[str, Callable[[], None]]],
@@ -309,28 +315,16 @@ def _publish_runtime_config_fallback(
 
 
 def _window_content_size(window: Any) -> tuple[int, int] | None:
-    """duck-typed window から現在の logical content size を得る。"""
+    """window から現在の logical content size を得る。"""
 
     # pyglet dpi_scaling="platform" では width/get_size() が framebuffer
     # pixel（Retina なら2倍）なのに対し、set_size() は logical request 単位を
     # 受け取る。layout と setter の単位を揃えるため requested size を優先する。
-    get_requested_size = getattr(window, "get_requested_size", None)
-    if callable(get_requested_size):
-        try:
-            requested_width, requested_height = get_requested_size()
-            width = int(requested_width)
-            height = int(requested_height)
-        except (TypeError, ValueError, OverflowError):
-            pass
-        else:
-            if width > 0 and height > 0:
-                return width, height
-
-    # 古いbackend / test doubleには requested-size APIが無いため従来属性へ戻す。
     try:
-        width = int(window.width)
-        height = int(window.height)
-    except (AttributeError, TypeError, ValueError, OverflowError):
+        requested_width, requested_height = window.get_requested_size()
+        width = int(requested_width)
+        height = int(requested_height)
+    except (TypeError, ValueError, OverflowError):
         return None
     if width <= 0 or height <= 0:
         return None
@@ -338,7 +332,7 @@ def _window_content_size(window: Any) -> tuple[int, int] | None:
 
 
 def _full_screen_bounds(screen: Any) -> WindowRect | None:
-    """pyglet Screen 互換 object を top-left 原点の矩形へ変換する。"""
+    """pyglet Screen を top-left 原点の矩形へ変換する。"""
 
     try:
         bounds = WindowRect(
@@ -347,7 +341,7 @@ def _full_screen_bounds(screen: Any) -> WindowRect | None:
             width=int(screen.width),
             height=int(screen.height),
         )
-    except (AttributeError, TypeError, ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if bounds.width < 2 or bounds.height < 2:
         return None
@@ -355,14 +349,9 @@ def _full_screen_bounds(screen: Any) -> WindowRect | None:
 
 
 def _screen_for_position(window: Any, position: tuple[int, int]) -> Any | None:
-    """preferred point を含む screen を選び、取得不能なら window.screen へ戻す。"""
+    """preferred point を含む screen を選び、無ければ window.screen を返す。"""
 
-    try:
-        display = window.display
-        get_screens = getattr(display, "get_screens", None)
-        screens = list(get_screens()) if callable(get_screens) else []
-    except Exception:
-        screens = []
+    screens = list(window.display.get_screens())
 
     point_x, point_y = int(position[0]), int(position[1])
     for screen in screens:
@@ -372,24 +361,16 @@ def _screen_for_position(window: Any, position: tuple[int, int]) -> Any | None:
         if bounds.x <= point_x < bounds.right and bounds.y <= point_y < bounds.bottom:
             return screen
 
-    try:
-        return window.screen
-    except (AttributeError, TypeError):
-        return None
+    return window.screen
 
 
 def _macos_visible_screen_bounds(screen: Any, full: WindowRect) -> WindowRect | None:
     """Cocoa NSScreen.visibleFrame を pyglet と同じ top-left 座標へ変換する。"""
 
-    ns_screen = getattr(screen, "_ns_screen", None)
-    frame_getter = getattr(ns_screen, "frame", None)
-    visible_getter = getattr(ns_screen, "visibleFrame", None)
-    if not callable(frame_getter) or not callable(visible_getter):
-        return None
-
     try:
-        frame = frame_getter()
-        visible = visible_getter()
+        ns_screen = screen._ns_screen
+        frame = ns_screen.frame()
+        visible = ns_screen.visibleFrame()
         frame_x = float(frame.origin.x)
         frame_y = float(frame.origin.y)
         frame_w = float(frame.size.width)
@@ -444,16 +425,9 @@ def _usable_screen_bounds(window: Any, position: tuple[int, int]) -> WindowRect 
 def _available_screen_bounds(window: Any) -> tuple[WindowRect, ...]:
     """window の display から現在使える screen bounds を返す。"""
 
-    try:
-        get_screens = getattr(window.display, "get_screens", None)
-        screens = list(get_screens()) if callable(get_screens) else []
-    except Exception:
-        screens = []
+    screens = list(window.display.get_screens())
     if not screens:
-        try:
-            screens = [window.screen]
-        except (AttributeError, TypeError):
-            return ()
+        screens = [window.screen]
 
     bounds: list[WindowRect] = []
     for screen in screens:
@@ -503,30 +477,16 @@ def _safe_explicit_layout_bounds(bounds: WindowRect) -> WindowRect | None:
 
 
 def _window_rect(window: Any) -> WindowRect | None:
-    """duck-typed window から logical content rect を取得する。"""
+    """window から logical content rect を取得する。"""
 
     size = _window_content_size(window)
     if size is None:
         return None
-    get_location = getattr(window, "get_location", None)
     try:
-        if callable(get_location):
-            x, y = get_location()
-        else:
-            x, y = window.x, window.y
+        x, y = window.get_location()
         return WindowRect(int(x), int(y), int(size[0]), int(size[1]))
-    except (AttributeError, TypeError, ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError):
         return None
-
-
-def _window_can_apply_rect(window: Any, rect: WindowRect) -> bool:
-    """partial mutation を避けるため rect 適用 API を事前検査する。"""
-
-    size = _window_content_size(window)
-    if size is None or not callable(getattr(window, "set_location", None)):
-        return False
-    target_size = (int(rect.width), int(rect.height))
-    return target_size == size or callable(getattr(window, "set_size", None))
 
 
 def _apply_window_rect(window: Any, rect: WindowRect) -> None:
@@ -551,15 +511,13 @@ def _apply_workspace_layout(
         return False
     clamped = clamp_workspace_state(state, screen_bounds=bounds)
 
-    if not _window_can_apply_rect(preview_window, clamped.preview_rect):
+    if _window_content_size(preview_window) is None:
         return False
     if inspector_window is not None:
         inspector_rect = clamped.inspector_rect
         if inspector_rect is None:
             return False
-        if not _window_can_apply_rect(inspector_window, inspector_rect):
-            return False
-        if not callable(getattr(inspector_window, "set_visible", None)):
+        if _window_content_size(inspector_window) is None:
             return False
 
     _apply_window_rect(preview_window, clamped.preview_rect)
@@ -587,7 +545,7 @@ def _workspace_state_from_windows(
         current_inspector_rect = _window_rect(inspector_window)
         if current_inspector_rect is not None:
             inspector_rect = current_inspector_rect
-        inspector_visible = bool(getattr(inspector_window, "visible", inspector_visible))
+        inspector_visible = bool(inspector_window.visible)
     return WorkspaceState(
         preview_rect=preview_rect,
         inspector_rect=inspector_rect,
@@ -625,17 +583,17 @@ def _apply_initial_window_layout(
     preferred_preview_position: tuple[int, int],
     preferred_parameter_gui_position: tuple[int, int],
 ) -> bool:
-    """実windowへ安全な初期layoutを適用し、stubで計算不能なら False を返す。
-
-    テスト double や古い backend に screen / size API が無い場合は一切変更せず、
-    呼び出し側が従来の config 座標を使えるようにする。実際の mutation が失敗した
-    場合は例外を隠さず、runner の lifecycle cleanup に委ねる。
-    """
+    """実windowへ安全な初期layoutを適用し、計算不能なら False を返す。"""
 
     preview_size = _window_content_size(preview_window)
     gui_size = _window_content_size(parameter_gui_window)
-    usable_bounds = _usable_screen_bounds(preview_window, preferred_preview_position)
-    if preview_size is None or gui_size is None or usable_bounds is None:
+    if preview_size is None or gui_size is None:
+        return False
+    usable_bounds = _usable_screen_bounds(
+        preview_window,
+        preferred_preview_position,
+    )
+    if usable_bounds is None:
         return False
 
     preview_preferred_rect = WindowRect(
@@ -661,11 +619,6 @@ def _apply_initial_window_layout(
         else _safe_explicit_layout_bounds(gui_usable_bounds)
     )
 
-    preview_set_location = getattr(preview_window, "set_location", None)
-    gui_set_location = getattr(parameter_gui_window, "set_location", None)
-    if not callable(preview_set_location) or not callable(gui_set_location):
-        return False
-
     # 明示 config が既に安全なら、single / dual monitor を問わずユーザーの配置と
     # natural size をそのまま尊重する。現在の既定値のように overlap / overflow
     # している場合だけ、以下の single-screen responsive layout へ進む。
@@ -676,8 +629,8 @@ def _apply_initial_window_layout(
         and _rect_is_inside(gui_preferred_rect, gui_safe_bounds)
         and not _rects_overlap(preview_preferred_rect, gui_preferred_rect)
     ):
-        preview_set_location(*preferred_preview_position)
-        gui_set_location(*preferred_parameter_gui_position)
+        preview_window.set_location(*preferred_preview_position)
+        parameter_gui_window.set_location(*preferred_parameter_gui_position)
         return True
 
     try:
@@ -694,21 +647,16 @@ def _apply_initial_window_layout(
 
     preview_target_size = (layout.preview.width, layout.preview.height)
     gui_target_size = (layout.parameter_gui.width, layout.parameter_gui.height)
-    preview_set_size = getattr(preview_window, "set_size", None)
-    gui_set_size = getattr(parameter_gui_window, "set_size", None)
-    if preview_target_size != preview_size and not callable(preview_set_size):
-        return False
-    if gui_target_size != gui_size and not callable(gui_set_size):
-        return False
 
     if preview_target_size != preview_size:
-        assert callable(preview_set_size)
-        preview_set_size(*preview_target_size)
+        preview_window.set_size(*preview_target_size)
     if gui_target_size != gui_size:
-        assert callable(gui_set_size)
-        gui_set_size(*gui_target_size)
-    preview_set_location(layout.preview.x, layout.preview.y)
-    gui_set_location(layout.parameter_gui.x, layout.parameter_gui.y)
+        parameter_gui_window.set_size(*gui_target_size)
+    preview_window.set_location(layout.preview.x, layout.preview.y)
+    parameter_gui_window.set_location(
+        layout.parameter_gui.x,
+        layout.parameter_gui.y,
+    )
     _logger.debug(
         "Applied %s initial window layout: preview=%s gui=%s bounds=%s",
         layout.orientation,
@@ -727,9 +675,7 @@ def _activate_initial_windows(preview_window: Any, parameter_gui_window: Any | N
     except Exception:
         pass
     try:
-        if parameter_gui_window is not None and bool(
-            getattr(parameter_gui_window, "visible", True)
-        ):
+        if parameter_gui_window is not None and bool(parameter_gui_window.visible):
             parameter_gui_window.activate()
     except Exception:
         pass
@@ -768,7 +714,7 @@ def _install_inspector_visibility_shortcut(
         _set_inspector_visible(
             preview_window=preview_window,
             inspector_window=inspector_window,
-            visible=not bool(getattr(inspector_window, "visible", True)),
+            visible=not bool(inspector_window.visible),
         )
         return pyglet.event.EVENT_HANDLED
 
@@ -796,8 +742,7 @@ def run(
     evaluation_timeout: float | None = 5.0,
     fps: float = 60.0,
     seed: int | None = None,
-    resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
-    runtime_limit_profiles: RuntimeLimitProfiles | None = None,
+    runtime_limit_profiles: RuntimeLimitProfiles = DEFAULT_RUNTIME_LIMIT_PROFILES,
 ) -> None:
     """pyglet ウィンドウを生成し `draw(t)` のシーンをリアルタイム描画する。
 
@@ -851,12 +796,9 @@ def run(
         録画機能（V キー）は fps > 0 が必要。
     seed : int or None
         capture manifest に記録する作品 seed。乱数 global state は変更しない。
-    resource_budget : ResourceBudget
-        1 operation が確保できる頂点数・線数・byte 数の上限。コードから極端な値を
-        指定した場合も、大規模配列を確保する前に `ResourceLimitError` で停止する。
-    runtime_limit_profiles : RuntimeLimitProfiles or None
+    runtime_limit_profiles : RuntimeLimitProfiles
         preview/final ごとの per-operation、scene aggregate、CPU/GPU cache、
-        capture queue 上限。指定時は `resource_budget` より優先する。
+        capture queue 上限。
 
     Returns
     -------
@@ -864,6 +806,41 @@ def run(
         preview ウィンドウを閉じると制御を返す。
         Inspector の close はウィンドウを hide し、Cmd/Ctrl+I で再表示できる。
     """
+
+    gui_enabled = exact_bool(parameter_gui, name="parameter_gui")
+    persistence_enabled = exact_bool(
+        parameter_persistence,
+        name="parameter_persistence",
+    )
+    midi_mode_value = exact_string_choice(
+        midi_mode,
+        name="midi_mode",
+        choices=("7bit", "14bit"),
+    )
+    worker_count = exact_integer(n_worker, name="n_worker", minimum=0)
+    timeout = (
+        None
+        if evaluation_timeout is None
+        else finite_real(
+            evaluation_timeout,
+            name="evaluation_timeout",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+    )
+    frame_rate = finite_real(fps, name="fps")
+    preview_scale = finite_real(
+        render_scale,
+        name="render_scale",
+        minimum=0.0,
+        minimum_inclusive=False,
+    )
+    capture_seed = None if seed is None else exact_integer(seed, name="seed")
+    if type(runtime_limit_profiles) is not RuntimeLimitProfiles:
+        raise TypeError(
+            "runtime_limit_profiles は RuntimeLimitProfiles である必要があります"
+        )
+    profiles = runtime_limit_profiles
 
     set_config_path(config_path)
     from grafix.interactive.runtime.source_reload import current_source_reload
@@ -874,7 +851,7 @@ def run(
         config_fallback = None
     except (OSError, RuntimeError, ValueError):
         cfg, config_fallback = runtime_config_with_fallback()
-    if config_fallback is not None and not parameter_gui:
+    if config_fallback is not None and not gui_enabled:
         _logger.error(
             "Runtime config invalid; using packaged defaults: %s\n%s",
             config_fallback.summary,
@@ -885,28 +862,23 @@ def run(
     # preset 行を分類/ヘッダ表示する。
     # mp-draw worker 内で `P.*` が初めて使われても GUI 側では登録が見えないため、
     # GUI 有効時はここで user preset を先に autoload しておく。
-    if parameter_gui:
+    if gui_enabled:
         from grafix.api import presets as _presets
 
-        _presets._autoload_preset_modules()
+        _presets._autoload_preset_modules(cfg)
 
     # pyglet の Window 作成前にオプションを設定する。
     # （vsync はウィンドウ作成時に参照される想定のため、ここで固定しておく）
     # True にすると Parameter GUI のクリックやドラッグが抜ける事がある。
     pyglet.options["vsync"] = False
 
-    # 描画の見た目/サイズに関わる設定値をまとめる。
-    settings = RenderSettings(
+    # headless/export と同じ検証済み描画契約を interactive preview でも使う。
+    options = RenderOptions(
         background_color=background_color,
         line_thickness=line_thickness,
         line_color=line_color,
-        render_scale=render_scale,
         canvas_size=canvas_size,
     )
-
-    # Layer 側で style 未指定のときに使う既定値（プレビューの見た目）。
-    defaults = LayerStyleDefaults(color=line_color, thickness=line_thickness)
-
     # パラメータは「描画」と「GUI」で共有する。
     # GUI で値を変えると、次フレーム以降の parameter_context 参照に反映される。
     default_store_path = default_param_store_path(draw, run_id=run_id)
@@ -917,8 +889,8 @@ def run(
         draw=draw,
         run_id=run_id,
     )
-    preview_width = max(1, int(round(float(canvas_size[0]) * float(render_scale))))
-    preview_height = max(1, int(round(float(canvas_size[1]) * float(render_scale))))
+    preview_width = max(1, int(round(options.canvas_size[0] * preview_scale)))
+    preview_height = max(1, int(round(options.canvas_size[1] * preview_scale)))
     fallback_workspace = WorkspaceState(
         preview_rect=WindowRect(
             int(cfg.window_pos_draw[0]),
@@ -940,14 +912,14 @@ def run(
         fallback=fallback_workspace,
     )
 
-    param_store_path = default_store_path if parameter_persistence else None
+    param_store_path = default_store_path if persistence_enabled else None
     param_store = (
         load_param_store_with_recovery(param_store_path)
         if param_store_path is not None
         else ParamStore()
     )
-    param_history = ParamStoreHistory(param_store) if parameter_gui else None
-    param_snapshot_slots = ParamSnapshotSlots(param_store) if parameter_gui else None
+    param_history = ParamStoreHistory(param_store) if gui_enabled else None
+    param_snapshot_slots = ParamSnapshotSlots(param_store) if gui_enabled else None
     param_autosave = (
         ParamStoreAutosave(
             param_store,
@@ -976,7 +948,7 @@ def run(
         midi_save_dir = midi_path.parent
         midi_controller = create_midi_controller(
             port_name=midi_port_name,
-            mode=str(midi_mode),
+            mode=midi_mode_value,
             profile_name=midi_profile_name,
             save_dir=midi_save_dir,
             priority_inputs=cfg.midi_inputs,
@@ -1003,7 +975,7 @@ def run(
             save_dir=midi_save_dir,
         )
 
-        if parameter_gui:
+        if gui_enabled:
             from grafix.interactive.runtime.monitor import RuntimeMonitor
 
             monitor = RuntimeMonitor()
@@ -1011,7 +983,7 @@ def run(
         def reconnect_midi() -> MidiController | None:
             return create_midi_controller(
                 port_name=midi_port_name,
-                mode=str(midi_mode),
+                mode=midi_mode_value,
                 profile_name=midi_profile_name,
                 save_dir=midi_save_dir,
                 priority_inputs=cfg.midi_inputs,
@@ -1070,22 +1042,21 @@ def run(
         # closer を登録し、後続の set_location/GUI 構築失敗も回収する。
         draw_window = DrawWindowSystem(
             draw,
-            settings=settings,
-            defaults=defaults,
+            options=options,
+            render_scale=preview_scale,
             store=param_store,
             midi_session=midi_session,
             monitor=monitor,
-            fps=float(fps),
-            n_worker=int(n_worker),
-            evaluation_timeout=evaluation_timeout,
+            fps=frame_rate,
+            n_worker=worker_count,
+            evaluation_timeout=timeout,
             run_id=run_id,
-            resource_budget=resource_budget,
-            runtime_limit_profiles=runtime_limit_profiles,
+            runtime_limit_profiles=profiles,
             source_reload=source_reload,
             effective_config=cfg,
-            parameter_source="recovery" if parameter_persistence else "code",
+            parameter_source="recovery" if persistence_enabled else "code",
             parameter_store_path=param_store_path,
-            seed=seed,
+            seed=capture_seed,
         )
         # 正常構築後は DrawWindowSystem が MIDI の save/close を所有する。
         unowned_midi_session = None
@@ -1105,7 +1076,7 @@ def run(
             )
         ]
 
-        if parameter_gui:
+        if gui_enabled:
             # Parameter GUI は依存が重い（pyimgui）なので、使うときだけ遅延 import する。
             from grafix.interactive.parameter_gui.variation_panel import (
                 make_capture_service_thumbnail_capture,
@@ -1132,11 +1103,12 @@ def run(
             )
 
             gui = ParameterGUIWindowSystem(
+                effective_config=cfg,
                 store=param_store,
                 midi_session=midi_session,
                 monitor=monitor,
                 transport=draw_window.transport,
-                transport_fps=float(fps),
+                transport_fps=frame_rate,
                 history=param_history,
                 snapshot_slots=param_snapshot_slots,
                 autosave=param_autosave,
@@ -1144,10 +1116,8 @@ def run(
                 variation_thumbnail_capture=variation_thumbnail_capture,
                 variation_thumbnail_preview=_draw_variation_thumbnail_status,
                 ui_scale=workspace_result.state.ui_scale,
-                on_parameter_revision_created=getattr(
-                    draw_window,
-                    "record_parameter_revision_created",
-                    None,
+                on_parameter_revision_created=(
+                    draw_window.record_parameter_revision_created
                 ),
             )
             closers.append(gui.close)
@@ -1167,7 +1137,8 @@ def run(
                     preferred_parameter_gui_position=cfg.window_pos_parameter_gui,
                 )
             if not layout_applied:
-                # screen / size API を持たない test double や backend では従来設定を維持する。
+                # native screen 情報から安全な配置を算出できない場合は、
+                # session config の Inspector 位置を明示的に適用する。
                 gui.window.set_location(*cfg.window_pos_parameter_gui)
             # Inspector を preview より先に描く。pyglet が配送済みの slider edit を
             # 同じ tick の preview evaluation へ渡し、従来の固定 1-frame 遅延を除く。
@@ -1212,15 +1183,11 @@ def run(
         # --- ループの実行 ---
         # ここで複数ウィンドウを 1 つの pyglet.app.run() で回す。
         loop = MultiWindowLoop(
-            tasks,
-            fps=fps,
+            tuple(tasks),
+            fps=frame_rate,
             on_frame_start=None if monitor is None else monitor.tick_frame,
             on_frame_finished=draw_window.record_full_loop,
-            on_scheduler_jitter=getattr(
-                draw_window,
-                "record_scheduler_jitter",
-                None,
-            ),
+            on_scheduler_jitter=draw_window.record_scheduler_jitter,
         )
         loop.run()
         session_completed_cleanly = True

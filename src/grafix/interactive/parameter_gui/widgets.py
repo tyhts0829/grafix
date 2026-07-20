@@ -4,14 +4,19 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from grafix.core.operation_selector import selector_kind
 from grafix.core.font_resolver import list_font_choices
+from grafix.core.parameters.validation import (
+    validate_param_choices,
+    validate_parameter_value,
+)
 from grafix.core.parameters.view import ParameterRow
+
+from .pyglet_backend import content_region_available_width
 
 WidgetFn = Callable[[ParameterRow], tuple[bool, Any]]
 
@@ -24,7 +29,7 @@ _SEARCHABLE_CHOICE_COUNT = 8
 
 def _query_tokens_and(query: str) -> tuple[str, ...]:
     """フィルタークエリを AND 用トークン列へ正規化して返す。"""
-    tokens = [t for t in str(query).casefold().split() if t]
+    tokens = [t for t in query.casefold().split() if t]
     return tuple(tokens)
 
 
@@ -38,7 +43,7 @@ def _filter_choices_by_query_and(
     out: list[tuple[str, str, bool, str]] = []
     for item in choices:
         _stem, _rel, _is_ttc, search_key = item
-        if all(t in str(search_key).casefold() for t in tokens):
+        if all(t in search_key.casefold() for t in tokens):
             out.append(item)
     return out
 
@@ -52,86 +57,26 @@ def _filter_choice_labels(
 
     tokens = _query_tokens_and(query)
     if not tokens:
-        return [str(choice) for choice in choices]
+        return list(choices)
     return [
-        str(choice)
+        choice
         for choice in choices
-        if all(token in str(choice).casefold() for token in tokens)
+        if all(token in choice.casefold() for token in tokens)
     ]
-
-
-def _content_region_available_width(imgui: Any) -> float | None:
-    """現在の control cell で利用できる幅を backend 互換で返す。"""
-
-    getter = getattr(imgui, "get_content_region_available_width", None)
-    if callable(getter):
-        try:
-            width = float(getter())
-        except (TypeError, ValueError):
-            width = math.nan
-        if math.isfinite(width):
-            return max(0.0, width)
-
-    getter_vec = getattr(imgui, "get_content_region_available", None)
-    if callable(getter_vec):
-        try:
-            width = float(getter_vec()[0])
-        except (IndexError, TypeError, ValueError):
-            return None
-        if math.isfinite(width):
-            return max(0.0, width)
-    return None
-
-
-def _style_spacing_x(imgui: Any, name: str, default: float) -> float:
-    """ImGui style の Vec2 field から正の x 成分を返す。"""
-
-    get_style = getattr(imgui, "get_style", None)
-    if not callable(get_style):
-        return float(default)
-    try:
-        value = getattr(get_style(), name)
-        x_value = getattr(value, "x", None)
-        if x_value is None:
-            x_value = value[0]
-        x = float(x_value)
-    except (AttributeError, IndexError, TypeError, ValueError):
-        return float(default)
-    return x if math.isfinite(x) and x >= 0.0 else float(default)
 
 
 def _choice_radio_layout(
     imgui: Any,
     choices: Sequence[str],
-) -> tuple[float, float] | None:
+) -> tuple[float, float]:
     """radio 群の推定必要幅と item 間隔を返す。"""
 
-    calc_text_size = getattr(imgui, "calc_text_size", None)
-    get_frame_height = getattr(imgui, "get_frame_height", None)
-    if not callable(calc_text_size) or not callable(get_frame_height):
-        return None
-    try:
-        frame_height = float(get_frame_height())
-        text_widths = [float(calc_text_size(str(choice))[0]) for choice in choices]
-    except (IndexError, TypeError, ValueError):
-        return None
-    if (
-        not math.isfinite(frame_height)
-        or frame_height <= 0.0
-        or any(not math.isfinite(width) or width < 0.0 for width in text_widths)
-    ):
-        return None
+    frame_height = float(imgui.get_frame_height())
+    text_widths = [float(imgui.calc_text_size(choice)[0]) for choice in choices]
 
-    inner_spacing = _style_spacing_x(
-        imgui,
-        "item_inner_spacing",
-        max(1.0, frame_height * 0.25),
-    )
-    item_spacing = _style_spacing_x(
-        imgui,
-        "item_spacing",
-        max(1.0, frame_height * 0.35),
-    )
+    style = imgui.get_style()
+    inner_spacing = max(0.0, float(style.item_inner_spacing.x))
+    item_spacing = max(0.0, float(style.item_spacing.x))
     item_widths = [
         frame_height + inner_spacing + text_width for text_width in text_widths
     ]
@@ -147,15 +92,11 @@ def _choice_uses_radio(
 ) -> bool:
     """候補数と実 cell 幅から inline radio を使うか決める。"""
 
-    if not callable(getattr(imgui, "begin_combo", None)):
-        return True
     if force_combo or len(choices) > _MAX_INLINE_CHOICE_COUNT:
         return False
 
-    available_width = _content_region_available_width(imgui)
+    available_width = content_region_available_width(imgui)
     layout = _choice_radio_layout(imgui, choices)
-    if available_width is None or layout is None:
-        return True
     required_width, _item_spacing = layout
     return required_width <= available_width
 
@@ -175,7 +116,7 @@ def _render_choice_radio(
         selected_index = -1
 
     layout = _choice_radio_layout(imgui, choices)
-    item_spacing = 6.0 if layout is None else float(layout[1])
+    item_spacing = float(layout[1])
     for index, choice in enumerate(choices):
         clicked = imgui.radio_button(
             f"{choice}##{index}",
@@ -188,22 +129,8 @@ def _render_choice_radio(
             imgui.same_line(0.0, float(item_spacing))
 
     if selected_index < 0:
-        return bool(changed), str(current_value)
-    return bool(changed), str(choices[int(selected_index)])
-
-
-def _begin_choice_combo(
-    imgui: Any,
-    *,
-    preview: str,
-) -> bool:
-    """flags 対応差を吸収して choice combo を開始する。"""
-
-    flags = int(getattr(imgui, "COMBO_HEIGHT_LARGE", 0))
-    try:
-        return bool(imgui.begin_combo("##value", str(preview), flags=flags))
-    except TypeError:
-        return bool(imgui.begin_combo("##value", str(preview)))
+        return bool(changed), current_value
+    return bool(changed), choices[int(selected_index)]
 
 
 def _render_choice_filter(
@@ -214,25 +141,12 @@ def _render_choice_filter(
     """開いている choice popup の一時 filter を描画して返す。"""
 
     filter_text = _CHOICE_FILTER_BY_KEY.get(key, "")
-    set_width = getattr(imgui, "set_next_item_width", None)
-    if callable(set_width):
-        set_width(-1)
-
-    input_with_hint = getattr(imgui, "input_text_with_hint", None)
-    if callable(input_with_hint):
-        changed, value = input_with_hint(
-            "##choice_filter",
-            "Filter choices",
-            str(filter_text),
-        )
-    else:
-        input_text = getattr(imgui, "input_text", None)
-        if not callable(input_text):
-            return str(filter_text)
-        changed, value = input_text(
-            "Filter##choice_filter",
-            str(filter_text),
-        )
+    imgui.set_next_item_width(-1)
+    changed, value = imgui.input_text_with_hint(
+        "##choice_filter",
+        "Filter choices",
+        str(filter_text),
+    )
     if changed:
         filter_text = str(value)
         _CHOICE_FILTER_BY_KEY[key] = filter_text
@@ -256,22 +170,21 @@ def _render_choice_combo(
         if unavailable and preserve_unavailable
         else current_value
     )
-    value_out = str(current_value)
-    if not _begin_choice_combo(imgui, preview=preview):
-        return bool(changed), value_out
+    value_out = current_value
+    with imgui.begin_combo(
+        "##value",
+        str(preview),
+        flags=imgui.COMBO_HEIGHT_LARGE,
+    ) as combo:
+        if not combo.opened:
+            return bool(changed), value_out
 
-    key = (str(row.op), str(row.site_id), str(row.arg))
-    searchable = len(choices) >= _SEARCHABLE_CHOICE_COUNT
-    try:
-        filter_text = (
-            _render_choice_filter(imgui, key=key)
-            if searchable
-            else ""
-        )
+        key = (row.op, row.site_id, row.arg)
+        searchable = len(choices) >= _SEARCHABLE_CHOICE_COUNT
+        filter_text = _render_choice_filter(imgui, key=key) if searchable else ""
         filtered = _filter_choice_labels(choices, query=filter_text)
         if not filtered:
-            text = getattr(imgui, "text_disabled", None)
-            (text if callable(text) else imgui.text)("No match")
+            imgui.text_disabled("No match")
         else:
             for index, choice in enumerate(filtered):
                 selected = choice == current_value
@@ -280,19 +193,11 @@ def _render_choice_combo(
                     selected,
                 )
                 if clicked:
-                    value_out = str(choice)
+                    value_out = choice
                     changed = True
                     _CHOICE_FILTER_BY_KEY.pop(key, None)
                 if selected:
-                    set_default_focus = getattr(
-                        imgui,
-                        "set_item_default_focus",
-                        None,
-                    )
-                    if callable(set_default_focus):
-                        set_default_focus()
-    finally:
-        imgui.end_combo()
+                    imgui.set_item_default_focus()
     return bool(changed), value_out
 
 
@@ -321,37 +226,25 @@ def _int_slider_range(row: ParameterRow) -> tuple[int, int]:
     # 参照: imgui-cpp/imgui_widgets.cpp の slider_int 実装。
     min_value = max(-1_073_741_824, min(1_073_741_823, min_value))
     max_value = max(-1_073_741_824, min(1_073_741_823, max_value))
-    if min_value > max_value:
-        min_value, max_value = max_value, min_value
     return min_value, max_value
 
 
 def _as_float3(value: Any) -> tuple[float, float, float]:
-    """値を長さ 3 の float タプル `(x, y, z)` に変換して返す。"""
+    """canonical な vec3 値を返す。"""
 
-    try:
-        x, y, z = value  # type: ignore[misc]
-    except Exception as exc:
-        raise ValueError(
-            f"vec3 ui_value must be a length-3 sequence: {value!r}"
-        ) from exc
-    return float(x), float(y), float(z)
+    return cast(
+        tuple[float, float, float],
+        validate_parameter_value(value, kind="vec3", choices=None),
+    )
 
 
 def _as_rgb255(value: Any) -> tuple[int, int, int]:
-    """値を長さ 3 の int タプル `(r, g, b)`（0..255）に変換して返す。"""
+    """canonical な RGB 値を返す。"""
 
-    try:
-        r, g, b = value  # type: ignore[misc]
-    except Exception as exc:
-        raise ValueError(f"rgb ui_value must be a length-3 sequence: {value!r}") from exc
-
-    out: list[int] = []
-    for v in (r, g, b):
-        iv = int(v)
-        iv = max(0, min(255, iv))
-        out.append(iv)
-    return int(out[0]), int(out[1]), int(out[2])
+    return cast(
+        tuple[int, int, int],
+        validate_parameter_value(value, kind="rgb", choices=None),
+    )
 
 
 def widget_float_slider(row: ParameterRow) -> tuple[bool, float]:
@@ -370,11 +263,14 @@ def widget_float_slider(row: ParameterRow) -> tuple[bool, float]:
         変更後の値。
     """
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
-    value = float(row.ui_value)
+    value = cast(
+        float,
+        validate_parameter_value(row.ui_value, kind="float", choices=None),
+    )
     min_value, max_value = _float_slider_range(row)
-    if str(row.arg).endswith("thickness"):
+    if row.arg.endswith("thickness"):
         return imgui.slider_float(
             "##value",
             float(value),
@@ -389,9 +285,12 @@ def widget_float_slider(row: ParameterRow) -> tuple[bool, float]:
 def widget_int_slider(row: ParameterRow) -> tuple[bool, int]:
     """kind=int のスライダーを描画し、(changed, value) を返す。"""
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
-    value = int(row.ui_value)
+    value = cast(
+        int,
+        validate_parameter_value(row.ui_value, kind="int", choices=None),
+    )
     min_value, max_value = _int_slider_range(row)
     return imgui.slider_int("##value", int(value), int(min_value), int(max_value))
 
@@ -399,7 +298,7 @@ def widget_int_slider(row: ParameterRow) -> tuple[bool, int]:
 def widget_vec3_slider(row: ParameterRow) -> tuple[bool, tuple[float, float, float]]:
     """kind=vec3 のスライダーを描画し、(changed, value) を返す。"""
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
     value0, value1, value2 = _as_float3(row.ui_value)
     min_value, max_value = _float_slider_range(row)
@@ -417,7 +316,7 @@ def widget_vec3_slider(row: ParameterRow) -> tuple[bool, tuple[float, float, flo
 def widget_rgb_color_edit3(row: ParameterRow) -> tuple[bool, tuple[int, int, int]]:
     """kind=rgb のカラーピッカーを描画し、(changed, value) を返す。"""
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
     r, g, b = _as_rgb255(row.ui_value)
     rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
@@ -441,18 +340,25 @@ def widget_rgb_color_edit3(row: ParameterRow) -> tuple[bool, tuple[int, int, int
 def widget_bool_checkbox(row: ParameterRow) -> tuple[bool, bool]:
     """kind=bool のチェックボックスを描画し、(changed, value) を返す。"""
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
-    clicked, state = imgui.checkbox("##value", bool(row.ui_value))
+    value = cast(
+        bool,
+        validate_parameter_value(row.ui_value, kind="bool", choices=None),
+    )
+    clicked, state = imgui.checkbox("##value", value)
     return clicked, bool(state)
 
 
 def widget_string_input(row: ParameterRow) -> tuple[bool, str]:
     """kind=str のテキスト入力を描画し、(changed, value) を返す。"""
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
-    value = "" if row.ui_value is None else str(row.ui_value)
+    value = cast(
+        str,
+        validate_parameter_value(row.ui_value, kind="str", choices=None),
+    )
     line_count = int(value.count("\n")) + 1
     visible_lines = max(3, min(8, line_count))
     height = float(imgui.get_text_line_height()) * float(visible_lines) + 8.0
@@ -469,9 +375,9 @@ def widget_font_picker(row: ParameterRow) -> tuple[bool, str]:
     - フィルター結果のプルダウン（表示は stem のみ）
     """
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
-    key = (str(row.op), str(row.site_id), str(row.arg))
+    key = (row.op, row.site_id, row.arg)
     filter_text = _FONT_FILTER_BY_KEY.get(key, "")
 
     # --- filter input ---
@@ -485,7 +391,10 @@ def widget_font_picker(row: ParameterRow) -> tuple[bool, str]:
     choices = list_font_choices()
     filtered = _filter_choices_by_query_and(choices, query=str(filter_text))
 
-    current_value = "" if row.ui_value is None else str(row.ui_value)
+    current_value = cast(
+        str,
+        validate_parameter_value(row.ui_value, kind="font", choices=None),
+    )
     preview = Path(current_value).stem if current_value else ""
     if not preview:
         preview = "(default)"
@@ -495,22 +404,20 @@ def widget_font_picker(row: ParameterRow) -> tuple[bool, str]:
     changed_value = False
     value_out = current_value
 
-    if imgui.begin_combo("##font_combo", str(preview)):
-        try:
+    with imgui.begin_combo("##font_combo", str(preview)) as combo:
+        if combo.opened:
             if not filtered:
                 imgui.text("No match")
             else:
                 for stem, rel, _is_ttc, _search_key in filtered:
-                    selected = str(rel) == str(current_value)
+                    selected = rel == current_value
                     label = f"{stem}##{rel}"
                     clicked, _selected_now = imgui.selectable(label, selected)
                     if clicked:
-                        value_out = str(rel)
+                        value_out = rel
                         changed_value = True
                     if selected:
                         imgui.set_item_default_focus()
-        finally:
-            imgui.end_combo()
 
     return changed_value, str(value_out)
 
@@ -518,27 +425,25 @@ def widget_font_picker(row: ParameterRow) -> tuple[bool, str]:
 def widget_choice_radio(row: ParameterRow) -> tuple[bool, str]:
     """kind=choice を利用可能幅に応じた radio/combo で描画する。"""
 
-    import imgui  # type: ignore[import-untyped]
+    import imgui
 
-    if row.choices is None or not list(row.choices):
-        raise ValueError("choice requires non-empty choices")
-
-    choices = [str(x) for x in row.choices]
-    current_value = str(row.ui_value)
-    preserve_unavailable = (
-        selector_kind(row.op) is not None and str(row.arg) == "target"
+    validated_choices = validate_param_choices("choice", row.choices)
+    assert validated_choices is not None
+    choices = list(validated_choices)
+    current_value = cast(
+        str,
+        validate_parameter_value(row.ui_value, kind="str", choices=None),
+    )
+    unavailable = current_value not in choices
+    selector_target = (
+        selector_kind(row.op) is not None and row.arg == "target"
     )
     changed = False
-    if current_value not in choices and not preserve_unavailable:
-        # 通常 choice は従来どおり先頭へ丸める。table 側はこの自動丸め
-        # だけでは override を有効化しない。
-        current_value = choices[0]
-        changed = True
 
     if _choice_uses_radio(
         imgui,
         choices,
-        force_combo=preserve_unavailable,
+        force_combo=unavailable or selector_target,
     ):
         return _render_choice_radio(
             imgui,
@@ -552,7 +457,7 @@ def widget_choice_radio(row: ParameterRow) -> tuple[bool, str]:
         choices=choices,
         current_value=current_value,
         changed=changed,
-        preserve_unavailable=preserve_unavailable,
+        preserve_unavailable=True,
     )
 
 
@@ -593,9 +498,3 @@ def render_value_widget(row: ParameterRow) -> tuple[bool, Any]:
     if fn is None:
         raise ValueError(f"unknown kind: {row.kind}")
     return fn(row)
-
-
-def widget_registry() -> dict[str, WidgetFn]:
-    """kind→widget 関数マップのコピーを返す。"""
-
-    return dict(_KIND_TO_WIDGET)

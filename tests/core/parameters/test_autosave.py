@@ -23,6 +23,8 @@ def _touch_with_parameter(store: ParamStore, value: float = 0.5) -> ParameterKey
                 key=key,
                 base=value,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                effective=value,
+                source="code",
                 explicit=False,
             )
         ],

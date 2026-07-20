@@ -8,12 +8,23 @@ from grafix.interactive.parameter_gui.table import _render_cc_cell
 
 
 class DummyImGui:
+    COLOR_BUTTON = 0
+    COLOR_BUTTON_HOVERED = 1
+    COLOR_BUTTON_ACTIVE = 2
+    COLOR_TEXT = 3
+
     def __init__(self, *, clicked_ids: set[str] | None = None) -> None:
         self._clicked_ids = set(clicked_ids or set())
         self.buttons: list[str] = []
 
     def table_set_column_index(self, _index: int) -> None:
         return None
+
+    def get_content_region_available_width(self) -> float:
+        return 165.0
+
+    def calc_text_size(self, _text: str) -> tuple[float, float]:
+        return 28.0, 14.0
 
     def button(self, label: str, *_size: float) -> bool:
         self.buttons.append(str(label))
@@ -28,6 +39,15 @@ class DummyImGui:
     def checkbox(self, label: str, value: bool) -> tuple[bool, bool]:
         _ = label
         return False, bool(value)
+
+    def is_item_hovered(self) -> bool:
+        return False
+
+    def is_item_focused(self) -> bool:
+        return False
+
+    def set_tooltip(self, _text: str) -> None:
+        return None
 
 
 def _row(*, kind: str, cc_key, override: bool = False) -> ParameterRow:
@@ -52,13 +72,11 @@ def test_scalar_learn_assign_and_clear() -> None:
     state = MidiLearnState()
     rules = ui_rules_for_row(row)
 
-    changed, cc_key, _override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         DummyImGui(clicked_ids={"cc_learn"}),
         row=row,
         rules=rules,
         cc_key=row.cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=state,
         midi_last_cc_change=(10, 7),
@@ -70,13 +88,11 @@ def test_scalar_learn_assign_and_clear() -> None:
     assert state.last_seen_cc_seq == 10
 
     waiting_imgui = DummyImGui()
-    changed, cc_key, _override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         waiting_imgui,
         row=row,
         rules=rules,
         cc_key=cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=state,
         midi_last_cc_change=(10, 7),
@@ -84,13 +100,11 @@ def test_scalar_learn_assign_and_clear() -> None:
     assert changed is False
     assert waiting_imgui.buttons == ["V...##cc_learn"]
 
-    changed, cc_key, _override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         DummyImGui(),
         row=row,
         rules=rules,
         cc_key=cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=state,
         midi_last_cc_change=(11, 64),
@@ -99,13 +113,11 @@ def test_scalar_learn_assign_and_clear() -> None:
     assert cc_key == 64
     assert state.active_target is None
 
-    changed, cc_key, _override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         DummyImGui(clicked_ids={"cc_learn"}),
         row=row,
         rules=rules,
         cc_key=cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=state,
         midi_last_cc_change=(11, 64),
@@ -120,13 +132,11 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     rules = ui_rules_for_row(row)
 
     waiting_imgui = DummyImGui(clicked_ids={"cc_learn_1"})
-    changed, cc_key, _override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         waiting_imgui,
         row=row,
         rules=rules,
         cc_key=row.cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=state,
         midi_last_cc_change=(5, 10),
@@ -138,13 +148,11 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
 
     # learn 中の同ボタン押下でキャンセル
     waiting_imgui = DummyImGui(clicked_ids={"cc_learn_1"})
-    changed, cc_key, _override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         waiting_imgui,
         row=row,
         rules=rules,
         cc_key=cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=state,
         midi_last_cc_change=(5, 10),
@@ -159,26 +167,22 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     ]
 
     # もう一度 learn してから CC を受信して割当
-    changed, cc_key, _override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         DummyImGui(clicked_ids={"cc_learn_1"}),
         row=row,
         rules=rules,
         cc_key=cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=state,
         midi_last_cc_change=(6, 11),
     )
     assert state.active_component == 1
 
-    changed, cc_key, _override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         DummyImGui(),
         row=row,
         rules=rules,
         cc_key=cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=state,
         midi_last_cc_change=(7, 21),
@@ -188,13 +192,11 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     assert state.active_target is None
 
     # 割当済ボタン押下でクリア（全 None → cc_key=None）
-    changed, cc_key, _override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         DummyImGui(clicked_ids={"cc_learn_1"}),
         row=row,
         rules=rules,
         cc_key=cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=state,
         midi_last_cc_change=(7, 21),

@@ -56,7 +56,8 @@
 ### preset を追加/修正したい
 
 - 実装と登録: `@preset(...)`（`src/grafix/api/preset.py`）
-- 呼び出し: `P.<name>(...)`（`src/grafix/api/presets.py`）
+- 呼び出し: `P.<name>(...)`。label/identity 付きは
+  `P(name=..., key=...).<name>(...)`（`src/grafix/api/presets.py`）
 - IDE 補完（スタブ）更新: `python -m grafix stub`
 
 ### Parameter GUI（param 解決/表示/永続）を触りたい

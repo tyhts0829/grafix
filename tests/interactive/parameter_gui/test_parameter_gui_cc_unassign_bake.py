@@ -26,6 +26,12 @@ class _ClosedPopup:
 class _SourceSwitchImGui:
     """render_parameter_row_4cols を通す最小 ImGui double。"""
 
+    COLOR_BUTTON = 0
+    COLOR_BUTTON_HOVERED = 1
+    COLOR_BUTTON_ACTIVE = 2
+    COLOR_TEXT = 3
+    STYLE_FRAME_PADDING = 4
+
     def push_id(self, _value: str) -> None:
         return None
 
@@ -47,6 +53,24 @@ class _SourceSwitchImGui:
     def button(self, label: str, _width: float = 0.0) -> bool:
         return str(label).endswith("##source_ui")
 
+    def small_button(self, _label: str) -> bool:
+        return False
+
+    def push_style_color(self, *_args: object) -> None:
+        return None
+
+    def pop_style_color(self, _count: int = 1) -> None:
+        return None
+
+    def get_style(self) -> object:
+        return type("_Style", (), {"frame_padding": (4.0, 3.0)})()
+
+    def push_style_var(self, *_args: object) -> None:
+        return None
+
+    def pop_style_var(self, _count: int = 1) -> None:
+        return None
+
     def same_line(self, *_args: float) -> None:
         return None
 
@@ -61,6 +85,15 @@ class _SourceSwitchImGui:
 
     def menu_item(self, *_args: object) -> tuple[bool, bool]:
         return False, False
+
+    def is_item_hovered(self) -> bool:
+        return False
+
+    def is_item_focused(self) -> bool:
+        return False
+
+    def set_tooltip(self, _text: str) -> None:
+        return None
 
     def set_next_item_width(self, _width: float) -> None:
         return None
@@ -90,7 +123,16 @@ def test_source_switch_changes_only_override_and_is_one_undo_unit() -> None:
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=0.2, meta=meta, explicit=True)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.2,
+                meta=meta,
+                effective=0.2,
+                source="code",
+                explicit=True,
+            )
+        ],
     )
     stored_meta = store.get_meta(key)
     assert stored_meta is not None
@@ -130,7 +172,16 @@ def test_code_to_ui_render_store_undo_redo_keeps_midi(monkeypatch) -> None:
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=0.2, meta=meta, explicit=True)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.2,
+                meta=meta,
+                effective=0.2,
+                source="code",
+                explicit=True,
+            )
+        ],
     )
     stored_meta = store.get_meta(key)
     assert stored_meta is not None
@@ -185,6 +236,8 @@ def test_cc_unassign_bakes_scalar_effective_and_enables_override() -> None:
                 key=key,
                 base=0.0,
                 meta=meta_r,
+                effective=0.0,
+                source="code",
                 explicit=True,
             )
         ],
@@ -217,6 +270,8 @@ def test_cc_component_unassign_bakes_vec3_effective_and_keeps_other_cc() -> None
                 key=key,
                 base=(0.0, 0.0, 0.0),
                 meta=meta_p,
+                effective=(0.0, 0.0, 0.0),
+                source="code",
                 explicit=True,
             )
         ],
@@ -256,6 +311,8 @@ def test_cc_reassign_does_not_bake_effective() -> None:
                 key=key,
                 base=0.0,
                 meta=meta_r,
+                effective=0.0,
+                source="code",
                 explicit=True,
             )
         ],
@@ -283,7 +340,16 @@ def test_explicit_reset_to_code_clears_midi_without_baking_effective() -> None:
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=0.2, meta=meta, explicit=True)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.2,
+                meta=meta,
+                effective=0.2,
+                source="code",
+                explicit=True,
+            )
+        ],
     )
     stored_meta = store.get_meta(key)
     assert stored_meta is not None

@@ -4,11 +4,11 @@ from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.view import ParameterRow
-from grafix.interactive.parameter_gui.grouping import group_info_for_row
+from grafix.interactive.parameter_gui.grouping import GroupType, group_info_for_row
 
 
 @preset(meta={"center": ParamMeta(kind="vec3")})
-def grouping_logo(*, center=(0.0, 0.0, 0.0), name=None, key=None) -> Geometry:
+def grouping_logo(*, center=(0.0, 0.0, 0.0)) -> Geometry:
     return Geometry.create(op="concat")
 
 
@@ -32,7 +32,7 @@ def _row(*, op: str, site_id: str, ordinal: int, arg: str) -> ParameterRow:
 def test_group_info_for_row_style_global():
     row = _row(op=STYLE_OP, site_id="__global__", ordinal=1, arg="background_color")
     info = group_info_for_row(row)
-    assert info.group_id == ("style", "global")
+    assert info.group_id == (GroupType.STYLE, "global")
     assert info.header_id == "style"
     assert info.header == "Style"
     assert info.visible_label == "Background color"
@@ -44,7 +44,7 @@ def test_group_info_for_row_style_layer():
         row,
         layer_style_name_by_site_id={"layer:2": "bg"},
     )
-    assert info.group_id == ("style", "global")
+    assert info.group_id == (GroupType.STYLE, "global")
     assert info.header == "Style"
     assert info.visible_label == "Bg 2 · Line color"
 
@@ -55,7 +55,7 @@ def test_group_info_for_row_primitive():
         row,
         primitive_header_by_group={("polygon", 1): "P"},
     )
-    assert info.group_id == ("primitive", ("polygon", 1))
+    assert info.group_id == (GroupType.PRIMITIVE, ("polygon", 1))
     assert info.header_id == "primitive:polygon#1"
     assert info.header == "P"
     assert info.visible_label == "N sides"
@@ -69,7 +69,7 @@ def test_group_info_for_row_effect_chain_uses_step_ordinal():
         effect_chain_header_by_id={"chain:1": "xf"},
         effect_step_ordinal_by_site={("scale", "e:1"): 1},
     )
-    assert info.group_id == ("effect_chain", "chain:1")
+    assert info.group_id == (GroupType.EFFECT_CHAIN, "chain:1")
     assert info.header_id == "effect_chain:chain:1"
     assert info.header == "xf"
     assert info.visible_label == "Auto center"
@@ -81,7 +81,7 @@ def test_group_info_for_row_preset_shows_header_and_uses_display_op():
         row,
         primitive_header_by_group={("preset.grouping_logo", 1): "Logo"},
     )
-    assert info.group_id == ("preset", ("preset.grouping_logo", 1))
+    assert info.group_id == (GroupType.PRESET, ("preset.grouping_logo", 1))
     assert info.header_id == "preset:preset.grouping_logo#1"
     assert info.header == "Logo"
     assert info.visible_label == "Center"

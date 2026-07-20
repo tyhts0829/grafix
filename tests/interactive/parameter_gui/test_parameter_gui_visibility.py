@@ -30,7 +30,7 @@ UI_VISIBLE = {
 
 @preset(
     meta={
-        "base": ParamMeta(kind="choice"),
+        "base": ParamMeta(kind="choice", choices=("square", "ratio_lines")),
         "cell_size": ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
         "ratio": ParamMeta(kind="float", ui_min=1.01, ui_max=10.0),
         "boom": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
@@ -43,8 +43,6 @@ def _vis_preset(
     cell_size: float = 10.0,
     ratio: float = 1.618,
     boom: float = 0.0,
-    name=None,
-    key=None,
 ) -> Geometry:
     return Geometry.create(op="concat")
 
@@ -171,13 +169,15 @@ def test_render_store_parameter_table_filters_rows_passed_to_renderer(monkeypatc
                 key=ParameterKey("preset._vis_preset", "s:1", "base"),
                 base="square",
                 effective="square",
-                meta=ParamMeta(kind="choice"),
+                source="code",
+                meta=ParamMeta(kind="choice", choices=("square", "ratio_lines")),
                 explicit=False,
             ),
             FrameParamRecord(
                 key=ParameterKey("preset._vis_preset", "s:1", "cell_size"),
                 base=10.0,
                 effective=10.0,
+                source="code",
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
                 explicit=False,
             ),
@@ -185,6 +185,7 @@ def test_render_store_parameter_table_filters_rows_passed_to_renderer(monkeypatc
                 key=ParameterKey("preset._vis_preset", "s:1", "ratio"),
                 base=1.618,
                 effective=1.618,
+                source="code",
                 meta=ParamMeta(kind="float", ui_min=1.01, ui_max=10.0),
                 explicit=False,
             ),
@@ -193,16 +194,29 @@ def test_render_store_parameter_table_filters_rows_passed_to_renderer(monkeypatc
 
     captured_args: list[str] = []
 
-    def _fake_render_parameter_table(rows, **_kwargs):
+    def _fake_render_parameter_table(*, group_layout, model_rows, **_kwargs):
+        rows = [
+            model_rows[item.row_index]
+            for block in group_layout
+            for item in block.items
+        ]
         captured_args[:] = [str(r.arg) for r in rows]
         return False, list(rows)
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", _fake_render_parameter_table)
 
-    store_bridge.render_store_parameter_table(store, show_inactive_params=False)
+    active_view = store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=False,
+    )
+    store_bridge.render_store_parameter_table(store, table_view=active_view)
     assert captured_args == ["base", "cell_size"]
 
-    store_bridge.render_store_parameter_table(store, show_inactive_params=True)
+    all_view = store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=True,
+    )
+    store_bridge.render_store_parameter_table(store, table_view=all_view)
     assert captured_args == ["base", "cell_size", "ratio"]
 
 
@@ -217,13 +231,15 @@ def test_search_filter_composes_with_existing_show_inactive_visibility(
                 key=ParameterKey("preset._vis_preset", "s:filter", "base"),
                 base="square",
                 effective="square",
-                meta=ParamMeta(kind="choice"),
+                source="code",
+                meta=ParamMeta(kind="choice", choices=("square", "ratio_lines")),
                 explicit=False,
             ),
             FrameParamRecord(
                 key=ParameterKey("preset._vis_preset", "s:filter", "cell_size"),
                 base=10.0,
                 effective=10.0,
+                source="code",
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=100.0),
                 explicit=False,
             ),
@@ -231,6 +247,7 @@ def test_search_filter_composes_with_existing_show_inactive_visibility(
                 key=ParameterKey("preset._vis_preset", "s:filter", "ratio"),
                 base=1.618,
                 effective=1.618,
+                source="code",
                 meta=ParamMeta(kind="float", ui_min=1.01, ui_max=10.0),
                 explicit=False,
             ),
@@ -239,7 +256,12 @@ def test_search_filter_composes_with_existing_show_inactive_visibility(
     state = ParameterFilterState(query="RATIO", activity="inactive")
     captured_args: list[str] = []
 
-    def fake_render(rows, **_kwargs):
+    def fake_render(*, group_layout, model_rows, **_kwargs):
+        rows = [
+            model_rows[item.row_index]
+            for block in group_layout
+            for item in block.items
+        ]
         captured_args[:] = [str(row.arg) for row in rows]
         return False, list(rows)
 
@@ -253,8 +275,6 @@ def test_search_filter_composes_with_existing_show_inactive_visibility(
     assert (hidden_view.filtered_count, hidden_view.total_count) == (0, 3)
     store_bridge.render_store_parameter_table(
         store,
-        show_inactive_params=False,
-        filter_state=state,
         table_view=hidden_view,
     )
     assert captured_args == []
@@ -267,8 +287,6 @@ def test_search_filter_composes_with_existing_show_inactive_visibility(
     assert (shown_view.filtered_count, shown_view.total_count) == (1, 3)
     store_bridge.render_store_parameter_table(
         store,
-        show_inactive_params=True,
-        filter_state=state,
         table_view=shown_view,
     )
     assert captured_args == ["ratio"]

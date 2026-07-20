@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -14,6 +14,7 @@ from .key import ParameterKey
 from .meta import ParamMeta, merge_code_meta_with_stored_gui_meta
 from .source import ValueSource
 from .state import ParamState, ParamStateSnapshot
+from .validation import validate_cc_key, validate_parameter_value
 from .view import canonicalize_ui_value_for_meta_change
 
 DEFAULT_QUANT_STEP = 1e-3
@@ -22,33 +23,24 @@ DEFAULT_QUANT_STEP = 1e-3
 def _quantize(value: Any, meta: ParamMeta) -> Any:
     """量子化を一元的に行う唯一の関数（Geometry 側では再量子化しない）。"""
     if meta.kind == "float":
-        try:
-            v = float(value)
-        except Exception:
-            return value
-        q = round(v / DEFAULT_QUANT_STEP) * DEFAULT_QUANT_STEP
+        q = round(value / DEFAULT_QUANT_STEP) * DEFAULT_QUANT_STEP
         return q
     if meta.kind == "int":
-        try:
-            return int(value)
-        except Exception:
-            return value
-    if meta.kind.startswith("vec") and isinstance(value, Iterable):
-        quantized = []
-        for v in value:
-            try:
-                fv = float(v)
-            except Exception:
-                quantized.append(v)
-                continue
-            q = round(fv / DEFAULT_QUANT_STEP) * DEFAULT_QUANT_STEP
-            quantized.append(q)
-        return tuple(quantized)
+        return int(value)
+    if meta.kind == "vec3":
+        return tuple(
+            round(component / DEFAULT_QUANT_STEP) * DEFAULT_QUANT_STEP
+            for component in value
+        )
     return value
 
 
 def _choose_value(
-    base_value: Any, state: ParamState | ParamStateSnapshot, meta: ParamMeta
+    base_value: Any,
+    state: ParamState | ParamStateSnapshot,
+    meta: ParamMeta,
+    *,
+    op: str,
 ) -> tuple[Any, ValueSource]:
     """CODE/UI/MIDI から effective 値を選び、(値, source) を返す。
 
@@ -61,6 +53,8 @@ def _choose_value(
     # cc_snapshot は parameter_context で固定された「今フレームの CC 値」。
     # 無い場合（None）や state.cc_key が未設定の場合は CC 経路をスキップする。
     cc_snapshot = current_cc_snapshot()
+    if state.cc_key is not None:
+        validate_cc_key(state.cc_key, kind=meta.kind, op=op)
     if cc_snapshot is not None and state.cc_key is not None:
         # --- scalar CC（cc_key が int の場合）---
         if isinstance(state.cc_key, int) and state.cc_key in cc_snapshot:
@@ -74,12 +68,11 @@ def _choose_value(
             if (
                 meta.kind == "choice"
                 and meta.choices is not None
-                and list(meta.choices)
             ):
                 # 0..1 を choices の index に写像
                 choices = list(meta.choices)
                 idx = min(len(choices) - 1, int(v * len(choices)))
-                return str(choices[int(idx)]), cc_snapshot.source
+                return choices[int(idx)], cc_snapshot.source
 
         # --- vec3 CC（cc_key が (a,b,c) の場合）---
         # 各成分ごとに「CC があれば CC」「なければ override に応じて GUI/base」を選ぶ。
@@ -91,34 +84,29 @@ def _choose_value(
             lo = float(meta.ui_min) if meta.ui_min is not None else 0.0
             hi = float(meta.ui_max) if meta.ui_max is not None else 1.0
 
-            try:
-                bx, by, bz = base_value
-                ux, uy, uz = state.ui_value
-            except Exception:
-                # 想定外の値が来た場合は CC 適用を諦め、通常の経路へフォールバックする。
-                pass
-            else:
-                out: list[Any] = []
-                used_cc = False
-                for cc, b, u in zip(
-                    state.cc_key, (bx, by, bz), (ux, uy, uz), strict=True
-                ):
-                    if cc is not None and cc in cc_snapshot:
-                        used_cc = True
-                        v = float(cc_snapshot[cc])
-                        out.append(lo + (hi - lo) * v)
-                    elif state.override:
-                        out.append(u)
-                    else:
-                        out.append(b)
+            bx, by, bz = base_value
+            ux, uy, uz = state.ui_value
+            out: list[Any] = []
+            used_cc = False
+            for cc, b, u in zip(
+                state.cc_key, (bx, by, bz), (ux, uy, uz), strict=True
+            ):
+                if cc is not None and cc in cc_snapshot:
+                    used_cc = True
+                    v = float(cc_snapshot[cc])
+                    out.append(lo + (hi - lo) * v)
+                elif state.override:
+                    out.append(u)
+                else:
+                    out.append(b)
 
-                # vec3 は「1 成分でも CC が使われたら source=cc」とする。
-                # そうでなければ override の有無で gui/base に分岐する。
-                if used_cc:
-                    return tuple(out), cc_snapshot.source
-                if state.override:
-                    return tuple(out), "ui"
-                return tuple(out), "code"
+            # vec3 は「1 成分でも CC が使われたら source=cc」とする。
+            # そうでなければ override の有無で gui/base に分岐する。
+            if used_cc:
+                return tuple(out), cc_snapshot.source
+            if state.override:
+                return tuple(out), "ui"
+            return tuple(out), "code"
 
     # --- CC を使わない通常経路 ---
     if state.override:
@@ -134,8 +122,6 @@ def resolve_params(
     params: dict[str, Any],
     meta: Mapping[str, ParamMeta],
     site_id: str,
-    chain_id: str | None = None,
-    step_index: int | None = None,
     explicit_args: set[str] | None = None,
 ) -> dict[str, Any]:
     """引数辞書を解決し、Geometry.create 用の値を返す。
@@ -198,14 +184,35 @@ def resolve_params(
                 resolved[arg] = base_value
                 continue
             arg_meta = arg_meta_opt
+            base_value = validate_parameter_value(
+                base_value,
+                kind=arg_meta.kind,
+                choices=arg_meta.choices,
+            )
             # この場では仮の state（ui_value=base）を作るだけ。
             # override の初期値は store 側（フレーム境界のマージ）で explicit/implicit を見て決める。
             state = ParamState(ui_value=base_value)
 
+        base_value = validate_parameter_value(
+            base_value,
+            kind=arg_meta.kind,
+            choices=arg_meta.choices,
+        )
+
         # CODE/UI/MIDI を統合して effective 値と接続由来を決める。
-        effective, source = _choose_value(base_value, state, arg_meta)
+        effective, source = _choose_value(
+            base_value,
+            state,
+            arg_meta,
+            op=op,
+        )
         # 量子化は「署名に入る値」と「実際に使う値」を一致させるため、ここで一元的に行う。
         effective = _quantize(effective, arg_meta)
+        effective = validate_parameter_value(
+            effective,
+            kind=arg_meta.kind,
+            choices=arg_meta.choices,
+        )
         resolved[arg] = effective
 
         if frame_params is not None:
@@ -218,8 +225,6 @@ def resolve_params(
                 effective=effective,
                 source=source,
                 explicit=is_explicit,
-                chain_id=chain_id,
-                step_index=step_index,
             )
 
     return resolved

@@ -11,6 +11,7 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
+from .argument_validation import integer_scalar
 from .util import (
     PlanarFrame,
     RESAMPLE_CLOSED_DISTANCE_EPS,
@@ -337,11 +338,11 @@ def offset_curve(
     g : tuple[np.ndarray, np.ndarray]
         入力実体ジオメトリ（coords, offsets）。
     distance : float, default 1.0
-        隣り合う平行曲線どうしの正の距離。0 以下または非有限なら no-op。
+        隣り合う平行曲線どうしの正の有限な距離。
     side : str, default "both"
         入力方向を基準とする `"left"`、`"right"`、または `"both"`。
     count : int, default 1
-        各側へ `distance` の整数倍で生成する本数。0 以下なら no-op。
+        各側へ `distance` の整数倍で生成する正の本数。
     join : str, default "round"
         角の接続形状。`"round"`、`"mitre"`、`"bevel"` のいずれか。
     keep_original : bool, default False
@@ -360,17 +361,25 @@ def offset_curve(
     left/right は入力 winding に対して定義し、出力を明示的に閉じる。
     """
 
+    distance_f = float(distance)
+    count_i = integer_scalar(count, name="offset_curve: count")
+    if not math.isfinite(distance_f) or distance_f <= 0.0:
+        raise ValueError("offset_curve: distance は正の有限値である必要がある")
+    if count_i <= 0:
+        raise ValueError("offset_curve: count は正の整数である必要がある")
+    if not isinstance(side, str):
+        raise TypeError("offset_curve: side は str である必要がある")
+    if side not in _SIDE_SET:
+        raise ValueError(f"offset_curve: 未知の side です: {side!r}")
+    if not isinstance(join, str):
+        raise TypeError("offset_curve: join は str である必要がある")
+    if join not in _JOIN_STYLE_SET:
+        raise ValueError(f"offset_curve: 未知の join です: {join!r}")
+    side_s = side
+    join_s = join
+
     coords, offsets = g
     if coords.shape[0] == 0:
-        return coords, offsets
-
-    distance_f = float(distance)
-    count_i = int(count)
-    side_s = str(side)
-    join_s = str(join)
-    if not math.isfinite(distance_f) or distance_f <= 0.0 or count_i <= 0:
-        return coords, offsets
-    if side_s not in _SIDE_SET or join_s not in _JOIN_STYLE_SET:
         return coords, offsets
     if not bool(np.all(np.isfinite(coords))):
         raise ValueError("offset_curve: 入力に非有限座標が含まれている")

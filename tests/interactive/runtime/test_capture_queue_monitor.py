@@ -1,19 +1,36 @@
 from __future__ import annotations
 
+import pytest
+
 from grafix.interactive.parameter_gui.monitor_bar import (
     monitor_alert_lines,
     monitor_status_lines,
-    render_monitor_bar,
+    render_monitor_alerts,
+    render_monitor_status,
 )
-from grafix.interactive.runtime.monitor import RuntimeMonitor
+from grafix.interactive.runtime.monitor import MonitorSnapshot, RuntimeMonitor
 
 
 class _Imgui:
+    COLOR_TEXT = 0
+
     def __init__(self) -> None:
         self.lines: list[str] = []
 
     def text(self, value: object) -> None:
         self.lines.append(str(value))
+
+    def text_disabled(self, value: object) -> None:
+        self.lines.append(str(value))
+
+    def text_wrapped(self, value: object) -> None:
+        self.lines.append(str(value))
+
+    def push_style_color(self, *_args: object) -> None:
+        pass
+
+    def pop_style_color(self) -> None:
+        pass
 
     def separator(self) -> None:
         return None
@@ -29,17 +46,22 @@ def test_capture_queue_pressure_and_rejection_are_visible_in_monitor() -> None:
         notice="Capture rejected: PNG; reason=bytes",
     )
     snapshot = monitor.snapshot()
-    imgui = _Imgui()
+    status_imgui = _Imgui()
+    alerts_imgui = _Imgui()
 
-    render_monitor_bar(
-        imgui=imgui,
+    render_monitor_status(
+        imgui=status_imgui,
         snapshot=snapshot,
         midi_status=None,
     )
+    render_monitor_alerts(imgui=alerts_imgui, snapshot=snapshot)
 
-    assert "CAPTURE QUEUE (estimated process-wide): 3/17 · 12.0/256.0 MiB" in imgui.lines
-    assert "Capture rejected: PNG; reason=bytes" in imgui.lines
-    assert "CAPTURE NOTICE" in imgui.lines
+    assert "CAPTURE NOTICE" in status_imgui.lines
+    assert (
+        "CAPTURE QUEUE (estimated process-wide): 3/17 · 12.0/256.0 MiB"
+        in alerts_imgui.lines
+    )
+    assert "Capture rejected: PNG; reason=bytes" in alerts_imgui.lines
 
 
 def test_transport_waiting_shows_rendered_and_target_times() -> None:
@@ -48,16 +70,11 @@ def test_transport_waiting_shows_rendered_and_target_times() -> None:
         t=2.5,
         requested_t=0.0,
         waiting=True,
-        playing=False,
         speed=1.0,
     )
     imgui = _Imgui()
 
-    render_monitor_bar(
-        imgui=imgui,
-        snapshot=monitor.snapshot(),
-        midi_status=None,
-    )
+    render_monitor_alerts(imgui=imgui, snapshot=monitor.snapshot())
 
     assert any(
         "WAIT — rendered 2.500s" in line and "target 0.000s" in line
@@ -67,18 +84,20 @@ def test_transport_waiting_shows_rendered_and_target_times() -> None:
 
 def test_normal_monitor_omits_empty_queue_and_disconnected_midi_noise() -> None:
     monitor = RuntimeMonitor()
-    imgui = _Imgui()
+    status_imgui = _Imgui()
+    alerts_imgui = _Imgui()
 
-    render_monitor_bar(
-        imgui=imgui,
+    render_monitor_status(
+        imgui=status_imgui,
         snapshot=monitor.snapshot(),
         midi_status=None,
     )
+    render_monitor_alerts(imgui=alerts_imgui, snapshot=monitor.snapshot())
 
-    assert len(imgui.lines) == 2
-    assert "FPS" in imgui.lines[0]
-    assert all("CAPTURE QUEUE" not in line for line in imgui.lines)
-    assert all("MIDI" not in line for line in imgui.lines)
+    assert len(status_imgui.lines) == 2
+    assert "FPS" in status_imgui.lines[0]
+    assert all("MIDI" not in line for line in status_imgui.lines)
+    assert alerts_imgui.lines == []
 
 
 def test_compact_status_is_one_line_and_spells_out_wait_state() -> None:
@@ -87,7 +106,6 @@ def test_compact_status_is_one_line_and_spells_out_wait_state() -> None:
         t=1.25,
         requested_t=2.0,
         waiting=True,
-        playing=False,
         speed=0.5,
     )
 
@@ -131,11 +149,7 @@ def test_monitor_wraps_actionable_notices_when_backend_supports_it() -> None:
     )
     imgui = WrappedImgui()
 
-    render_monitor_bar(
-        imgui=imgui,
-        snapshot=monitor.snapshot(),
-        midi_status=None,
-    )
+    render_monitor_alerts(imgui=imgui, snapshot=monitor.snapshot())
 
     assert "wrapped:Capture rejected: queue is full" in imgui.lines
 
@@ -168,3 +182,97 @@ def test_recovered_session_remains_visible_in_status() -> None:
 
     assert status[-1].text == "RECOVERED SESSION  ·  UNSAVED"
     assert status[-1].token == "warning"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"cpu_mem_sample_interval_s": "0.5"},
+        {"fps_sample_interval_s": True},
+        {"diagnostic_center": object()},
+    ],
+)
+def test_runtime_monitor_rejects_noncanonical_constructor_values(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(TypeError):
+        RuntimeMonitor(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"cpu_mem_sample_interval_s": 0.0},
+        {"fps_sample_interval_s": float("inf")},
+    ],
+)
+def test_runtime_monitor_rejects_invalid_sample_intervals(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        RuntimeMonitor(**kwargs)  # type: ignore[arg-type]
+
+
+def test_runtime_monitor_rejects_implicit_setter_coercion() -> None:
+    monitor = RuntimeMonitor()
+
+    with pytest.raises(TypeError, match="vertices"):
+        monitor.set_draw_counts(vertices="1", lines=0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="message"):
+        monitor.set_frame_error(1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="t"):
+        monitor.set_transport(t="0", speed=1.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="waiting"):
+        monitor.set_transport(t=0.0, waiting=1, speed=1.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="request_count"):
+        monitor.set_capture_queue(
+            request_count=1.0,  # type: ignore[arg-type]
+            request_limit=1,
+            retained_bytes=0,
+            byte_limit=1,
+        )
+    with pytest.raises(TypeError, match="status"):
+        monitor.set_autosave(status=1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="active"):
+        monitor.set_recovered_session(1)  # type: ignore[arg-type]
+
+
+def test_runtime_monitor_rejects_negative_counts_instead_of_clamping() -> None:
+    monitor = RuntimeMonitor()
+
+    with pytest.raises(ValueError, match="request_count"):
+        monitor.set_capture_queue(
+            request_count=-1,
+            request_limit=1,
+            retained_bytes=0,
+            byte_limit=1,
+        )
+    with pytest.raises(ValueError, match="vertices"):
+        monitor.set_draw_counts(vertices=-1, lines=0)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"fps": "60.0"},
+        {"vertices": True},
+        {"transport_waiting": 0},
+        {"transport_speed": 0.0},
+        {"diagnostics": []},
+        {"autosave_status": "unknown"},
+        {"profiler": object()},
+    ],
+)
+def test_monitor_snapshot_validates_direct_construction(
+    kwargs: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "fps": 60.0,
+        "cpu_percent": 10.0,
+        "rss_mb": 50.0,
+        "vertices": 3,
+        "lines": 1,
+    }
+    values.update(kwargs)
+    with pytest.raises((TypeError, ValueError)):
+        MonitorSnapshot(**values)  # type: ignore[arg-type]

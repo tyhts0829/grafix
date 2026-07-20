@@ -6,8 +6,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-import math
 import time
+
+from grafix.core.parameters.identity import identity_string
+from grafix.core.value_validation import exact_bool, exact_integer, finite_real
 
 
 TimeSource = Callable[[], float]
@@ -21,18 +23,64 @@ class TimeBookmark:
     t: float
     variation_name: str | None = None
 
+    def __post_init__(self) -> None:
+        name = identity_string(self.name, name="bookmark name")
+        if name != name.strip():
+            raise ValueError("bookmark name の前後に空白は使用できません")
+        object.__setattr__(self, "t", finite_real(self.t, name="bookmark t"))
+        if self.variation_name is not None:
+            variation_name = identity_string(
+                self.variation_name,
+                name="variation_name",
+            )
+            if variation_name != variation_name.strip():
+                raise ValueError("variation_name の前後に空白は使用できません")
 
-@dataclass(frozen=True, slots=True)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TransportSnapshot:
     """プレビューの transport 状態。"""
 
     t: float
     is_playing: bool
     speed: float
-    epoch: int = 0
+    epoch: int
     loop_in: float | None = None
     loop_out: float | None = None
     bookmarks: tuple[TimeBookmark, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "t", finite_real(self.t, name="t"))
+        exact_bool(self.is_playing, name="is_playing")
+        object.__setattr__(
+            self,
+            "speed",
+            finite_real(
+                self.speed,
+                name="speed",
+                minimum=0.0,
+                minimum_inclusive=False,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "epoch",
+            exact_integer(self.epoch, name="epoch", minimum=0),
+        )
+        if (self.loop_in is None) != (self.loop_out is None):
+            raise ValueError("loop_in と loop_out は同時に指定してください")
+        if self.loop_in is not None and self.loop_out is not None:
+            loop_in = finite_real(self.loop_in, name="loop_in")
+            loop_out = finite_real(self.loop_out, name="loop_out")
+            if loop_out <= loop_in:
+                raise ValueError("loop_out は loop_in より大きい必要があります")
+            object.__setattr__(self, "loop_in", loop_in)
+            object.__setattr__(self, "loop_out", loop_out)
+        if not isinstance(self.bookmarks, tuple) or any(
+            not isinstance(bookmark, TimeBookmark)
+            for bookmark in self.bookmarks
+        ):
+            raise TypeError("bookmarks は TimeBookmark の tuple である必要があります")
 
 
 class TransportClock:
@@ -57,18 +105,20 @@ class TransportClock:
         playing: bool = True,
         speed: float = 1.0,
     ) -> None:
+        if not callable(time_source):
+            raise TypeError("time_source は callable である必要があります")
         self._time_source = time_source
-        source_start = float(time_source()) if start_time is None else float(start_time)
-        self._require_finite(source_start, name="start_time")
-
-        timeline_start = float(initial_t)
-        self._require_finite(timeline_start, name="initial_t")
+        source_start = finite_real(
+            time_source() if start_time is None else start_time,
+            name="start_time",
+        )
+        timeline_start = finite_real(initial_t, name="initial_t")
         playback_speed = self._validated_speed(speed)
 
         self._last_source_time = source_start
         self._anchor_source_time = source_start
         self._anchor_t = timeline_start
-        self._is_playing = bool(playing)
+        self._is_playing = exact_bool(playing, name="playing")
         self._speed = playback_speed
         # 非同期 draw の結果が timeline の不連続をまたいで採用されないよう、
         # seek/reset/step ごとに単調増加させる generation。
@@ -80,13 +130,13 @@ class TransportClock:
     def is_playing(self) -> bool:
         """再生中なら `True`。"""
 
-        return bool(self._is_playing)
+        return self._is_playing
 
     @property
     def speed(self) -> float:
         """現在の再生倍率を返す。"""
 
-        return float(self._speed)
+        return self._speed
 
     @property
     def epoch(self) -> int:
@@ -97,7 +147,7 @@ class TransportClock:
         に結び付け、古い generation の結果を破棄できる。
         """
 
-        return int(self._epoch)
+        return self._epoch
 
     @property
     def loop_range(self) -> tuple[float, float] | None:
@@ -115,19 +165,19 @@ class TransportClock:
         """現在のフレーム時刻 `t`（秒）を返す。"""
 
         if not self._is_playing:
-            return float(self._anchor_t)
+            return self._anchor_t
         source_time = self._read_source_time()
         timeline_t = self._timeline_at(source_time)
         loop = self._loop
         if loop is None or timeline_t < loop[1]:
-            return float(timeline_t)
+            return timeline_t
 
         loop_in, loop_out = loop
         wrapped = loop_in + ((timeline_t - loop_in) % (loop_out - loop_in))
         self._anchor_t = wrapped
         self._anchor_source_time = source_time
         self.mark_discontinuity()
-        return float(wrapped)
+        return wrapped
 
     def snapshot(self) -> TransportSnapshot:
         """時刻と再生状態を同じ観測点の snapshot として返す。"""
@@ -147,10 +197,8 @@ class TransportClock:
     def set_loop(self, loop_in: float, loop_out: float) -> None:
         """再生loopの半開区間 ``[loop_in, loop_out)`` を設定する。"""
 
-        start = float(loop_in)
-        end = float(loop_out)
-        self._require_finite(start, name="loop_in")
-        self._require_finite(end, name="loop_out")
+        start = finite_real(loop_in, name="loop_in")
+        end = finite_real(loop_out, name="loop_out")
         if end <= start:
             raise ValueError("loop_out は loop_in より大きい必要がある")
         self._loop = (start, end)
@@ -169,33 +217,34 @@ class TransportClock:
     ) -> TimeBookmark:
         """時刻へbookmarkを保存し、任意でnamed variationと関連付ける。"""
 
-        name_s = str(name).strip()
-        if not name_s:
-            raise ValueError("bookmark name は空にできない")
-        bookmark_t = self.t() if t is None else float(t)
-        self._require_finite(bookmark_t, name="bookmark t")
-        variation = None if variation_name is None else str(variation_name).strip()
-        if variation_name is not None and not variation:
-            raise ValueError("variation_name は空にできない")
-        bookmark = TimeBookmark(name=name_s, t=bookmark_t, variation_name=variation)
+        name_s = identity_string(name, name="bookmark name")
+        bookmark_t = self.t() if t is None else t
+        bookmark = TimeBookmark(
+            name=name_s,
+            t=bookmark_t,
+            variation_name=variation_name,
+        )
         self._bookmarks[name_s] = bookmark
         return bookmark
 
     def remove_bookmark(self, name: str) -> bool:
         """bookmarkを削除し、存在したかを返す。"""
 
-        return self._bookmarks.pop(str(name), None) is not None
+        return self._bookmarks.pop(
+            identity_string(name, name="bookmark name"),
+            None,
+        ) is not None
 
     def seek_bookmark(self, name: str) -> float:
         """bookmarkへseekし、移動後の時刻を返す。"""
 
-        name_s = str(name)
+        name_s = identity_string(name, name="bookmark name")
         try:
             target = self._bookmarks[name_s].t
         except KeyError as exc:
             raise KeyError(f"未登録の bookmark: {name_s!r}") from exc
         self.seek(target)
-        return float(target)
+        return target
 
     def play(self) -> None:
         """現在の `t` から再生を開始する。"""
@@ -243,8 +292,7 @@ class TransportClock:
         を使い、録画の開始・終了時は別途 `mark_discontinuity()` を呼ぶ。
         """
 
-        target = float(t)
-        self._require_finite(target, name="t")
+        target = finite_real(t, name="t")
         self._anchor_t = target
         self._anchor_source_time = self._read_source_time()
 
@@ -255,16 +303,18 @@ class TransportClock:
         操作後の `t` を返す。
         """
 
-        frame_rate = float(fps)
-        if not math.isfinite(frame_rate) or frame_rate <= 0.0:
-            raise ValueError("fps は有限の正の値である必要がある")
-        if isinstance(frames, bool) or not isinstance(frames, int):
-            raise TypeError("frames は int である必要がある")
+        frame_rate = finite_real(
+            fps,
+            name="fps",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+        frame_count = exact_integer(frames, name="frames")
 
         self.pause()
-        self._anchor_t += float(frames) / frame_rate
+        self._anchor_t += frame_count / frame_rate
         self.mark_discontinuity()
-        return float(self._anchor_t)
+        return self._anchor_t
 
     def mark_discontinuity(self) -> int:
         """録画境界など外部の不連続を記録し、新しい epoch を返す。
@@ -274,7 +324,7 @@ class TransportClock:
         """
 
         self._epoch += 1
-        return int(self._epoch)
+        return self._epoch
 
     def set_speed(self, speed: float) -> None:
         """`t` の連続性を保ったまま再生倍率を変える。"""
@@ -289,43 +339,26 @@ class TransportClock:
             self._anchor_source_time = now
         self._speed = playback_speed
 
-    def tick(self) -> None:
-        """フレームを進める（実時間では no-op）。"""
-
-        return
-
     def _read_source_time(self) -> float:
-        now = float(self._time_source())
-        self._require_finite(now, name="time_source()")
+        now = finite_real(self._time_source(), name="time_source()")
         now = max(now, self._last_source_time)
         self._last_source_time = now
         return now
 
     def _timeline_at(self, source_time: float) -> float:
-        return float(
+        return (
             self._anchor_t
-            + (float(source_time) - self._anchor_source_time) * float(self._speed)
+            + (source_time - self._anchor_source_time) * self._speed
         )
 
     @staticmethod
     def _validated_speed(speed: float) -> float:
-        playback_speed = float(speed)
-        if not math.isfinite(playback_speed) or playback_speed <= 0.0:
-            raise ValueError("speed は有限の正の値である必要がある")
-        return playback_speed
-
-    @staticmethod
-    def _require_finite(value: float, *, name: str) -> None:
-        if not math.isfinite(float(value)):
-            raise ValueError(f"{name} は有限値である必要がある")
-
-
-class RealTimeClock(TransportClock):
-    """後方互換のための実時間クロック名。
-
-    従来の `RealTimeClock(start_time=...)` はそのまま利用でき、
-    transport 操作も `TransportClock` と同様に利用できる。
-    """
+        return finite_real(
+            speed,
+            name="speed",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
 
 
 class RecordingClock:
@@ -338,29 +371,31 @@ class RecordingClock:
     """
 
     def __init__(self, *, t0: float, fps: float) -> None:
-        _fps = float(fps)
-        if _fps <= 0:
-            raise ValueError("fps は正の値である必要がある")
-        self._t0 = float(t0)
-        self._fps = _fps
+        self._t0 = finite_real(t0, name="t0")
+        self._fps = finite_real(
+            fps,
+            name="fps",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
         self._frame_index = 0
 
     @property
     def fps(self) -> float:
         """録画 fps を返す。"""
 
-        return float(self._fps)
+        return self._fps
 
     @property
     def frame_index(self) -> int:
         """現在のフレーム番号（0-based）を返す。"""
 
-        return int(self._frame_index)
+        return self._frame_index
 
     def t(self) -> float:
         """現在のフレーム時刻 `t`（秒）を返す。"""
 
-        return float(self._t0 + float(self._frame_index) / float(self._fps))
+        return self._t0 + self._frame_index / self._fps
 
     def tick(self) -> None:
         """フレームを 1 つ進める。"""

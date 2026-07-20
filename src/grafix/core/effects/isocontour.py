@@ -28,6 +28,8 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+
+from .argument_validation import exact_bool, integer_scalar, known_choice
 from .util import (
     DEFAULT_MAX_GRID_CELLS,
     GridSpec,
@@ -44,6 +46,7 @@ from .util import (
 MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
+_MODE_CHOICES = ("inside", "outside", "both")
 
 isocontour_meta = {
     "spacing": ParamMeta(
@@ -66,7 +69,7 @@ isocontour_meta = {
     ),
     "mode": ParamMeta(
         kind="choice",
-        choices=("inside", "outside", "both"),
+        choices=_MODE_CHOICES,
         description="入力境界の内側、外側、または両側のどこから等値線を抽出するか選ぶ。",
     ),
     "grid_pitch": ParamMeta(
@@ -144,6 +147,19 @@ def isocontour(
     tuple[np.ndarray, np.ndarray]
         抽出した等値線のポリライン列（coords, offsets）。
     """
+    mode_s = known_choice(
+        mode,
+        choices=_MODE_CHOICES,
+        name="isocontour: mode",
+    )
+    level_step_i = integer_scalar(
+        level_step,
+        name="isocontour: level_step",
+    )
+    keep_original_b = exact_bool(
+        keep_original,
+        name="isocontour: keep_original",
+    )
     mask_coords, mask_offsets = mask
     if mask_coords.shape[0] == 0:
         return empty_geom()
@@ -164,10 +180,6 @@ def isocontour(
     if not math.isfinite(max_d):
         return empty_geom()
     if max_d < 0.0:
-        return empty_geom()
-
-    mode_s = str(mode)
-    if mode_s not in {"inside", "outside", "both"}:
         return empty_geom()
 
     auto_close = float(auto_close_threshold)
@@ -228,7 +240,7 @@ def isocontour(
 
     # 2) `sin()` の 0 交差を取ることで複数レベルの等値線を一括抽出する。
     #    spacing_eff を大きくすると「間引き」になり、密度調整に使える。
-    level_step_i = max(1, int(level_step))
+    level_step_i = max(1, level_step_i)
     spacing_eff = float(spacing_f) * float(level_step_i)
     field = np.sin(np.pi * (sdf - float(phase_f)) / spacing_eff).astype(np.float64, copy=False)
 
@@ -259,7 +271,7 @@ def isocontour(
         out = frame.to_world(v3).astype(np.float32, copy=False)
         out_lines.append(out)
 
-    if bool(keep_original):
+    if keep_original_b:
         # 生成結果に元の入力を足すオプション（デバッグ・比較用途）。
         for i in range(int(mask_offsets.size) - 1):
             s = int(mask_offsets[i])

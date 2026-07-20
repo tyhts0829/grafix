@@ -171,20 +171,20 @@ def manual_migrate_orphan(
 def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -> None:
     """old_group の GUI 状態/メタを new_group へ可能な範囲で移す。"""
 
-    old_op, old_site_id = old_group
-    new_op, new_site_id = new_group
-    if str(old_op) != str(new_op):
+    old_op, old_site_id = _normalize_group(old_group, name="old_group")
+    new_op, new_site_id = _normalize_group(new_group, name="new_group")
+    if old_op != new_op:
         raise ValueError(f"op mismatch: {old_group!r} -> {new_group!r}")
-    op = str(old_op)
+    op = old_op
 
     labels = store._labels_ref()
     ordinals = store._ordinals_ref()
 
-    old_label = labels.get(op, str(old_site_id))
-    if old_label is not None and labels.get(op, str(new_site_id)) is None:
-        labels.set(op, str(new_site_id), old_label)
+    old_label = labels.get(op, old_site_id)
+    if old_label is not None and labels.get(op, new_site_id) is None:
+        labels.set(op, new_site_id, old_label)
 
-    ordinals.migrate(op, str(old_site_id), str(new_site_id))
+    ordinals.migrate(op, old_site_id, new_site_id)
 
     collapsed = store._collapsed_headers_ref()
     old_collapse_key = f"primitive:{op}:{old_site_id}"
@@ -194,8 +194,8 @@ def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -
 
     locked = store._locked_keys_ref()
     favorites = set(store._favorite_keys_snapshot())
-    for old_key in _group_keys(store, op=op, site_id=str(old_site_id)):
-        new_key = ParameterKey(op=op, site_id=str(new_site_id), arg=str(old_key.arg))
+    for old_key in _group_keys(store, op=op, site_id=old_site_id):
+        new_key = ParameterKey(op=op, site_id=new_site_id, arg=old_key.arg)
         old_meta = store._meta.get(old_key)
         new_meta = store._meta.get(new_key)
         if old_meta is None or new_meta is None:
@@ -206,13 +206,16 @@ def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -
         old_state = store._states.get(old_key)
         new_state = store._states.get(new_key)
         if old_state is not None and new_state is not None:
-            new_state.override = bool(old_state.override)
+            old_explicit = store._explicit_by_key[old_key]
+            new_explicit = store._explicit_by_key[new_key]
+            old_override = bool(old_state.override)
+            new_state.override = (
+                not new_explicit
+                if old_override == (not old_explicit)
+                else old_override
+            )
             new_state.ui_value = old_state.ui_value
             new_state.cc_key = old_state.cc_key
-
-        old_explicit = store._explicit_by_key.get(old_key)
-        if old_explicit is not None and new_key not in store._explicit_by_key:
-            store._explicit_by_key[new_key] = bool(old_explicit)
 
         if old_key in locked:
             locked.discard(old_key)
@@ -238,18 +241,18 @@ def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -
 def _group_keys(store: ParamStore, *, op: str, site_id: str) -> list[ParameterKey]:
     keys: set[ParameterKey] = set()
     for key in store._states.keys():
-        if str(key.op) == str(op) and str(key.site_id) == str(site_id):
+        if key.op == op and key.site_id == site_id:
             keys.add(key)
     for key in store._meta.keys():
-        if str(key.op) == str(op) and str(key.site_id) == str(site_id):
+        if key.op == op and key.site_id == site_id:
             keys.add(key)
     for key in store._locked_keys_ref():
-        if str(key.op) == str(op) and str(key.site_id) == str(site_id):
+        if key.op == op and key.site_id == site_id:
             keys.add(key)
     for key in store._favorite_keys_ref():
-        if str(key.op) == str(op) and str(key.site_id) == str(site_id):
+        if key.op == op and key.site_id == site_id:
             keys.add(key)
-    return sorted(keys, key=lambda k: str(k.arg))
+    return sorted(keys, key=lambda key: key.arg)
 
 
 def _normalize_group(group: GroupKey, *, name: str) -> GroupKey:
@@ -259,7 +262,7 @@ def _normalize_group(group: GroupKey, *, name: str) -> GroupKey:
         or not all(isinstance(part, str) and part for part in group)
     ):
         raise TypeError(f"{name} must be a non-empty (op, site_id) tuple[str, str]")
-    return str(group[0]), str(group[1])
+    return group
 
 
 __all__ = [

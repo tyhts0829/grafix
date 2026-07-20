@@ -75,9 +75,6 @@ class LayerNamespace:
 
         resolved_name = self._pending_name
 
-        if thickness is not None and thickness <= 0:
-            raise ValueError("thickness は正の値である必要がある")
-
         # geometry_or_list を Geometry のリストに正規化する。
         geometries: list[Geometry]
         if isinstance(geometry_or_list, Geometry):

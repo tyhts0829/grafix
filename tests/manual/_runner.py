@@ -8,18 +8,12 @@ from __future__ import annotations
 
 import sys
 import time
-import warnings
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
+from typing import Callable
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-warnings.filterwarnings(
-    "ignore",
-    message="distutils Version classes are deprecated",
-    category=DeprecationWarning,
-)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 
 class PygletImGuiContext:
@@ -60,8 +54,8 @@ class PygletImGuiContext:
         self._stop()
 
 
-def _import_gui_modules() -> tuple[ModuleType, ModuleType, ModuleType]:
-    """pyglet/imgui を読み込み、統合モジュールも返す。"""
+def _import_gui_modules() -> tuple[ModuleType, ModuleType]:
+    """pyglet/imgui を読み込む。"""
 
     try:
         import imgui
@@ -69,12 +63,7 @@ def _import_gui_modules() -> tuple[ModuleType, ModuleType, ModuleType]:
     except Exception as exc:
         raise SystemExit(f"pyglet または pyimgui を import できない: {exc}")
 
-    try:
-        from imgui.integrations import pyglet as imgui_pyglet
-    except Exception as exc:
-        raise SystemExit(f"pyimgui の pyglet 統合を初期化できない: {exc}")
-
-    return pyglet, imgui, imgui_pyglet
+    return pyglet, imgui
 
 
 def _require_display(pyglet_mod: ModuleType) -> None:
@@ -92,15 +81,6 @@ def _require_display(pyglet_mod: ModuleType) -> None:
         raise SystemExit(f"ディスプレイが取得できないため終了: {exc}")
     else:
         test_window.close()
-
-
-def _create_renderer(imgui_pyglet: ModuleType, gui_window: object) -> object:
-    """pyimgui の pyglet レンダラーを生成する。"""
-
-    factory: Callable[..., object] | None = getattr(imgui_pyglet, "create_renderer", None)
-    if callable(factory):
-        return factory(gui_window)
-    return imgui_pyglet.PygletRenderer(gui_window)
 
 
 def run_pyglet_imgui(
@@ -136,7 +116,7 @@ def run_pyglet_imgui(
         リサイズ可否。
     """
 
-    pyglet_mod, imgui_mod, imgui_pyglet = _import_gui_modules()
+    pyglet_mod, imgui_mod = _import_gui_modules()
     pyglet_mod.options["vsync"] = vsync
     _require_display(pyglet_mod)
 
@@ -155,10 +135,12 @@ def run_pyglet_imgui(
     )
     window.clearcolor = clear_color
 
-    renderer: Any = _create_renderer(imgui_pyglet, window)
-    font_texture = getattr(renderer, "refresh_font_texture", None)
-    if callable(font_texture):
-        font_texture()
+    from grafix.interactive.parameter_gui.pyglet_backend import (
+        create_imgui_pyglet_renderer,
+    )
+
+    renderer = create_imgui_pyglet_renderer(window)
+    renderer.refresh_font_texture()
 
     running = True
     prev_time = time.monotonic()
@@ -209,8 +191,6 @@ def run_pyglet_imgui(
             if fps > 0:
                 time.sleep(1 / fps)
     finally:
-        shutdown = getattr(renderer, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
+        renderer.shutdown()
         imgui_mod.destroy_context(gui_context)
         window.close()

@@ -50,7 +50,7 @@ def draw(t):
     # ====================================================================
     primitive = G(name="primitive").polyhedron(
         activate=True,
-        type_index=3,
+        kind="dodecahedron",
         center=(31.319, 65.385, 0.0),
         scale=34.768,
     )
@@ -65,7 +65,7 @@ def draw(t):
     primitive = e_primitive(primitive)
     filled_primitive = G(name="filled_primitive").polyhedron(
         activate=True,
-        type_index=3,
+        kind="dodecahedron",
         center=(74.176, 66.484, 0.0),
         scale=34.768,
     )
@@ -91,7 +91,7 @@ def draw(t):
     filled_primitive = e_filled_primitive(filled_primitive)
     displaced_primitive = G(name="displaced_primitive").polyhedron(
         activate=True,
-        type_index=3,
+        kind="dodecahedron",
         center=(117.033, 65.934, 0.0),
         scale=33.677,
     )

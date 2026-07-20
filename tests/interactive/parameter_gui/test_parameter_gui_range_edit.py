@@ -27,6 +27,8 @@ def _add_range_parameter(
                 key=key,
                 base=0.5,
                 meta=ParamMeta(kind=kind, ui_min=0.0, ui_max=2.0),
+                effective=0.5,
+                source="code",
                 explicit=False,
             )
         ],

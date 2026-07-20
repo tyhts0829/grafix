@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.history import ParamStoreHistory
 from grafix.core.parameters.key import ParameterKey
@@ -75,6 +77,9 @@ class _RenderImgui:
     def button(self, label: str) -> bool:
         return str(label).rpartition("##")[2] == self.clicked_id
 
+    def small_button(self, label: str) -> bool:
+        return str(label).rpartition("##")[2] == self.clicked_id
+
 
 def test_popup_never_selects_a_candidate_without_explicit_click() -> None:
     imgui = _RenderImgui()
@@ -148,6 +153,8 @@ def _ambiguous_store() -> tuple[ParamStore, ParameterKey]:
             key=ParameterKey("circle", site, "radius"),
             base=base,
             meta=meta,
+            effective=base,
+            source="code",
             explicit=False,
         )
         for site, base in (("old-a", 1.0), ("old-b", 8.0), ("new", 2.0))
@@ -161,25 +168,29 @@ def _ambiguous_store() -> tuple[ParamStore, ParameterKey]:
 
 
 def _gui_for_store(
+    gui: ParameterGUI,
     store: ParamStore,
     *,
     clicked_candidate: str | None,
-) -> tuple[ParameterGUI, _ControlImgui, ParamStoreHistory]:
-    gui = ParameterGUI.__new__(ParameterGUI)
+) -> tuple[Any, _ControlImgui, ParamStoreHistory]:
     history = ParamStoreHistory(store)
     imgui = _ControlImgui(clicked_candidate=clicked_candidate)
-    gui._store = store
-    gui._history = history
-    gui._imgui = imgui
-    gui._reconcile_error = None
-    gui._parameter_table_view = None
-    gui._favorite_parameter_keys = frozenset()
-    return gui, imgui, history
+    gui_state = cast(Any, gui)
+    gui_state._store = store
+    gui_state._history = history
+    gui_state._imgui = imgui
+    gui_state._reconcile_error = None
+    gui_state._parameter_table_view = None
+    gui_state._favorite_parameter_keys = frozenset()
+    return gui_state, imgui, history
 
 
-def test_gui_requires_click_then_refreshes_list_and_records_undo() -> None:
+def test_gui_requires_click_then_refreshes_list_and_records_undo(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     store, new_key = _ambiguous_store()
     gui, imgui, history = _gui_for_store(
+        initialized_parameter_gui,
         store,
         clicked_candidate="reconcile_0_1",
     )
@@ -197,9 +208,15 @@ def test_gui_requires_click_then_refreshes_list_and_records_undo() -> None:
     assert restored is not None and restored.ui_value == 2.0
 
 
-def test_gui_review_without_candidate_click_does_not_migrate() -> None:
+def test_gui_review_without_candidate_click_does_not_migrate(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     store, new_key = _ambiguous_store()
-    gui, _imgui, history = _gui_for_store(store, clicked_candidate=None)
+    gui, _imgui, history = _gui_for_store(
+        initialized_parameter_gui,
+        store,
+        clicked_candidate=None,
+    )
 
     assert gui._render_reconcile_orphan_control() is False
 

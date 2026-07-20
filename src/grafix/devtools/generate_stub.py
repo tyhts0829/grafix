@@ -29,9 +29,11 @@ import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, assert_never
 
 from grafix.core.atomic_write import atomic_write_text
+from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.validation import ParamKind
 
 DEFAULT_PROJECT_STUB_PATH = Path("typings/grafix/api/__init__.pyi")
 
@@ -65,11 +67,14 @@ _RESOLVABLE_TYPE_IDENTS = {
     # stub imports / aliases
     "Any",
     "Callable",
+    "EffectFunc",
     "Geometry",
     "Layer",
+    "OpCatalogEntry",
     "Path",
     "Literal",
     "Mapping",
+    "PrimitiveFunc",
     "SceneItem",
     "Sequence",
     "Vec3",
@@ -190,74 +195,58 @@ def _parse_numpy_doc(doc: str) -> tuple[str | None, dict[str, str]]:
     return summary, out
 
 
-def _meta_hint(meta: Any) -> str | None:
-    """`ParamMeta` 風オブジェクトから、docstring 用の短いヒント文字列を作る。
+def _meta_hint(meta: ParamMeta | None) -> str | None:
+    """`ParamMeta` から、docstring 用の短いヒント文字列を作る。
 
     stub 側の docstring は「型」よりも「UI/値の制約」が助けになることが多いので、
     semantic metadata と既存の range/choices を寄せ集めて 1 行にする。
     """
-    kind = getattr(meta, "kind", None)
-    ui_min = getattr(meta, "ui_min", None)
-    ui_max = getattr(meta, "ui_max", None)
-    choices = getattr(meta, "choices", None)
-    display_name = getattr(meta, "display_name", None)
-    description = getattr(meta, "description", None)
-    unit = getattr(meta, "unit", None)
-    step = getattr(meta, "step", None)
-    value_format = getattr(meta, "format", None)
-    scale = getattr(meta, "scale", None)
-    category = getattr(meta, "category", None)
-    advanced = bool(getattr(meta, "advanced", False))
-    recommended_range = getattr(meta, "recommended_range", None)
+    if meta is None:
+        return None
 
     parts: list[str] = []
-    if description:
-        parts.append(str(description))
-    if display_name:
-        parts.append(f"display {str(display_name)!r}")
-    if kind:
-        parts.append(str(kind))
+    if meta.description:
+        parts.append(meta.description)
+    if meta.display_name:
+        parts.append(f"display {meta.display_name!r}")
+    parts.append(meta.kind)
 
-    if ui_min is not None or ui_max is not None:
-        if ui_min is not None and ui_max is not None:
-            parts.append(f"range [{ui_min}, {ui_max}]")
-        elif ui_min is not None:
-            parts.append(f"min {ui_min}")
-        elif ui_max is not None:
-            parts.append(f"max {ui_max}")
+    if meta.ui_min is not None or meta.ui_max is not None:
+        if meta.ui_min is not None and meta.ui_max is not None:
+            parts.append(f"range [{meta.ui_min}, {meta.ui_max}]")
+        elif meta.ui_min is not None:
+            parts.append(f"min {meta.ui_min}")
+        elif meta.ui_max is not None:
+            parts.append(f"max {meta.ui_max}")
 
-    try:
-        recommended = list(recommended_range) if recommended_range is not None else []
-    except Exception:
-        recommended = []
-    if len(recommended) == 2:
-        parts.append(f"recommended [{recommended[0]}, {recommended[1]}]")
+    if meta.recommended_range is not None:
+        lower, upper = meta.recommended_range
+        parts.append(f"recommended [{lower}, {upper}]")
 
-    if unit:
-        parts.append(f"unit {unit}")
-    if step is not None:
-        parts.append(f"step {step}")
-    if scale:
-        parts.append(f"scale {scale}")
-    if value_format:
-        parts.append(f"format {value_format!r}")
-    if category:
-        parts.append(f"category {category!r}")
-    if advanced:
+    if meta.unit:
+        parts.append(f"unit {meta.unit}")
+    if meta.step is not None:
+        parts.append(f"step {meta.step}")
+    if meta.scale:
+        parts.append(f"scale {meta.scale}")
+    if meta.format:
+        parts.append(f"format {meta.format!r}")
+    if meta.category:
+        parts.append(f"category {meta.category!r}")
+    if meta.advanced:
         parts.append("advanced")
 
-    try:
-        seq = list(choices) if choices is not None else []
-    except Exception:
-        seq = []
-    if seq:
-        preview = ", ".join(map(repr, seq[:6]))
-        parts.append(f"choices {{ {preview}{' …' if len(seq) > 6 else ''} }}")
+    if meta.choices is not None:
+        choices = tuple(meta.choices)
+        preview = ", ".join(map(repr, choices[:6]))
+        parts.append(
+            f"choices {{ {preview}{' …' if len(choices) > 6 else ''} }}"
+        )
 
     return ", ".join(parts) if parts else None
 
 
-def _type_for_kind(kind: str) -> str:
+def _type_for_kind(kind: ParamKind) -> str:
     """`ParamMeta.kind` から、スタブに書く型名（文字列）を決める。"""
     if kind == "float":
         return "float"
@@ -275,18 +264,16 @@ def _type_for_kind(kind: str) -> str:
         return "Vec3"
     if kind == "rgb":
         return "tuple[int, int, int]"
-    return "Any"
+    assert_never(kind)
 
 
-def _type_for_meta(meta: Any, *, fallback: str | None = None) -> str:
+def _type_for_meta(meta: ParamMeta) -> str:
     """choice metadata は ``Literal``、それ以外は通常の kind 型へ変換する。"""
 
-    choices = getattr(meta, "choices", None)
-    if str(getattr(meta, "kind", "")) == "choice" and choices:
-        return f"Literal[{', '.join(repr(str(choice)) for choice in choices)}]"
-    if fallback is not None:
-        return fallback
-    return _type_for_kind(str(getattr(meta, "kind", "")))
+    if meta.kind == "choice":
+        assert meta.choices is not None
+        return f"Literal[{', '.join(repr(choice) for choice in meta.choices)}]"
+    return _type_for_kind(meta.kind)
 
 
 def _type_str_from_annotation(annotation: Any) -> str | None:
@@ -333,7 +320,7 @@ def _type_str_from_impl_param(impl: Any, param_name: str) -> str | None:
     """実装関数 `impl` のシグネチャから `param_name` の型注釈を取り出す。"""
     try:
         sig = inspect.signature(impl)
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
     p = sig.parameters.get(param_name)
@@ -342,11 +329,9 @@ def _type_str_from_impl_param(impl: Any, param_name: str) -> str | None:
     return _type_str_from_annotation(p.annotation)
 
 
-def _type_str_for_code_owned_param(*, impl: Any | None, param_name: str) -> str:
+def _type_str_for_code_owned_param(*, impl: Any, param_name: str) -> str:
     """GUI metadataを持たないcode-owned引数の公開annotationを返す。"""
 
-    if impl is None:
-        return "Any"
     type_str = _type_str_from_impl_param(impl, param_name)
     if type_str is None:
         return "Any"
@@ -366,38 +351,44 @@ def _operation_param_order(spec: Any) -> list[str]:
     return list(dict.fromkeys((*wrapper_owned, *accepted)))
 
 
-def _type_str_for_effect_param(*, impl: Any | None, param_name: str, meta: Any) -> str:
+def _type_str_for_effect_param(
+    *,
+    impl: Any,
+    param_name: str,
+    meta: ParamMeta,
+) -> str:
     """effect の param に対する型文字列を決める。
 
-    - 実装関数が見つかれば、その型注釈（文字列化）を優先
+    - 実装関数の型注釈（文字列化）を優先
     - 取れなければ `ParamMeta.kind` からのフォールバック型
     - `vec3` は `tuple[float, float, float]` でも `Vec3` に寄せる
     """
-    kind = str(getattr(meta, "kind", ""))
     fallback = _type_for_meta(meta)
-    if kind == "choice":
-        return fallback
-    if impl is None:
+    if meta.kind == "choice":
         return fallback
 
     type_str = _type_str_from_impl_param(impl, param_name)
     if type_str is None:
         return fallback
 
-    if kind == "vec3":
+    if meta.kind == "vec3":
         type_str = _VEC3_TUPLE_RE.sub("Vec3", type_str)
     return type_str
 
 
-def _type_str_for_preset_param(*, impl: Any, param_name: str, meta: Any) -> str:
+def _type_str_for_preset_param(
+    *,
+    impl: Any,
+    param_name: str,
+    meta: ParamMeta,
+) -> str:
     """preset 関数の param に対する型文字列を決める。
 
     preset は user code 由来のため、スタブ側で解決不能な型名を出力しないように
     `_normalize_type_str()` + `_is_resolvable_type_str()` でフィルタし、ダメなら `Any` に倒す。
     """
-    kind = str(getattr(meta, "kind", ""))
     fallback = _type_for_meta(meta)
-    if kind == "choice":
+    if meta.kind == "choice":
         return fallback
 
     type_str = _type_str_from_impl_param(impl, param_name)
@@ -410,45 +401,55 @@ def _type_str_for_preset_param(*, impl: Any, param_name: str, meta: Any) -> str:
     return type_str_norm
 
 
-def _resolve_impl_callable(kind: str, name: str) -> Any | None:
-    """registry provenance から元の実装 callable を最善で見つける。
+def _resolve_impl_callable(kind: str, name: str) -> Any:
+    """registry の ``module:qualname`` provenance から実装 callable を解決する。"""
 
-    project-local operation も対象にするため、まず ``module:qualname`` provenance を使う。
-    古い built-in spec の fallback として従来の module 命名規則も試す。
-    """
     operation_spec: Any
     if kind == "primitive":
         from grafix.core.primitive_registry import primitive_registry
 
         operation_spec = primitive_registry[name]
-        module_name = f"grafix.core.primitives.{name}"
     elif kind == "effect":
         from grafix.core.effect_registry import effect_registry
 
         operation_spec = effect_registry[name]
-        module_name = f"grafix.core.effects.{name}"
     else:
         raise ValueError(f"unknown kind: {kind!r}")
 
     provenance = str(operation_spec.provenance)
-    provenance_module, separator, qualname = provenance.partition(":")
-    if separator and "<locals>" not in qualname:
-        try:
-            value: Any = importlib.import_module(provenance_module)
-            for part in qualname.split("."):
-                value = getattr(value, part)
-            if callable(value):
-                return value
-        except Exception:
-            pass
+    module_name, separator, qualname = provenance.partition(":")
+    if not separator or not module_name or not qualname or "<locals>" in qualname:
+        raise ValueError(
+            f"{kind} {name!r} の provenance が不正です: {provenance!r}"
+        )
 
     try:
-        mod = importlib.import_module(module_name)
-    except Exception:
-        return None
+        value: Any = importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        missing_module = str(exc.name)
+        if module_name == missing_module or module_name.startswith(
+            f"{missing_module}."
+        ):
+            raise ValueError(
+                f"{kind} {name!r} の provenance module が存在しません: "
+                f"{provenance!r}"
+            ) from exc
+        raise
 
-    fn = getattr(mod, name, None)
-    return fn if callable(fn) else None
+    for part in qualname.split("."):
+        try:
+            value = getattr(value, part)
+        except AttributeError as exc:
+            raise ValueError(
+                f"{kind} {name!r} の provenance attribute が存在しません: "
+                f"{provenance!r}"
+            ) from exc
+    if not callable(value):
+        raise ValueError(
+            f"{kind} {name!r} の provenance は callable ではありません: "
+            f"{provenance!r}"
+        )
+    return value
 
 
 def _source_is_within(source: str | Path | None, roots: tuple[Path, ...]) -> bool:
@@ -503,7 +504,7 @@ def _render_docstring(
     summary: str | None,
     param_order: list[str],
     parsed_param_docs: dict[str, str],
-    meta_by_name: dict[str, Any],
+    meta_by_name: dict[str, ParamMeta],
 ) -> list[str]:
     """stub のメソッド docstring（複数行）を組み立てる。
 
@@ -519,8 +520,7 @@ def _render_docstring(
     arg_lines: list[str] = []
     for p in param_order:
         meta = meta_by_name.get(p)
-        meta_description = getattr(meta, "description", None)
-        if isinstance(meta_description, str) and meta_description.strip():
+        if meta is not None and meta.description and meta.description.strip():
             desc = _meta_hint(meta)
         else:
             desc = parsed_param_docs.get(p)
@@ -543,7 +543,7 @@ def _render_operation_docstring(
     summary: str | None,
     param_order: list[str],
     parsed_param_docs: dict[str, str],
-    meta_by_name: dict[str, Any],
+    meta_by_name: dict[str, ParamMeta],
 ) -> list[str]:
     """operation 引数と共通 identity 引数の説明を含む docstring を組み立てる。"""
 
@@ -605,6 +605,16 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
     lines.append('        """ラベル付き primitive 名前空間を返す。"""\n')
     lines.append("        ...\n")
     lines.append(
+        "    def catalog(self) -> tuple[OpCatalogEntry[PrimitiveFunc], ...]:\n"
+    )
+    lines.append('        """登録済み primitive の catalog を名前順で返す。"""\n')
+    lines.append("        ...\n")
+    lines.append(
+        "    def describe(self, name: str) -> OpCatalogEntry[PrimitiveFunc]:\n"
+    )
+    lines.append('        """primitive の catalog entry を名前で取得する。"""\n')
+    lines.append("        ...\n")
+    lines.append(
         _render_method(
             indent="    ",
             name="select",
@@ -632,7 +642,7 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
         if prim == "select":
             continue
         spec = primitive_registry[prim]
-        meta_by_name: dict[str, Any] = dict(spec.meta)
+        meta_by_name: dict[str, ParamMeta] = dict(spec.meta)
         param_order = _operation_param_order(spec)
         impl = _resolve_impl_callable("primitive", prim)
 
@@ -651,7 +661,7 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
         else:
             params = [*_PARAMETER_IDENTITY_STUB_PARAMS, "**params: Any"]
 
-        doc = inspect.getdoc(impl) if impl is not None else spec.doc
+        doc = inspect.getdoc(impl) or spec.doc
         parsed_summary, parsed_docs = _parse_numpy_doc(doc or "")
         doc_lines = _render_operation_docstring(
             summary=parsed_summary,
@@ -715,7 +725,7 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
         impl = _resolve_impl_callable("effect", eff)
 
         spec = effect_registry[eff]
-        meta_by_name: dict[str, Any] = dict(spec.meta)
+        meta_by_name: dict[str, ParamMeta] = dict(spec.meta)
         param_order = _operation_param_order(spec)
 
         params: list[str] = []
@@ -737,7 +747,7 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
         else:
             params = [*_PARAMETER_IDENTITY_STUB_PARAMS, "**params: Any"]
 
-        doc = inspect.getdoc(impl) if impl is not None else spec.doc
+        doc = inspect.getdoc(impl) or spec.doc
         parsed_summary, parsed_docs = _parse_numpy_doc(doc or "")
         doc_lines = _render_operation_docstring(
             summary=parsed_summary,
@@ -767,6 +777,16 @@ def _render_e_protocol(effect_names: list[str]) -> str:
 
     lines.append("    def __call__(self, name: str | None = None) -> _E:\n")
     lines.append('        """ラベル付き effect 名前空間を返す。"""\n')
+    lines.append("        ...\n")
+    lines.append(
+        "    def catalog(self) -> tuple[OpCatalogEntry[EffectFunc], ...]:\n"
+    )
+    lines.append('        """登録済み effect の catalog を名前順で返す。"""\n')
+    lines.append("        ...\n")
+    lines.append(
+        "    def describe(self, name: str) -> OpCatalogEntry[EffectFunc]:\n"
+    )
+    lines.append('        """effect の catalog entry を名前で取得する。"""\n')
     lines.append("        ...\n")
     lines.append(
         _render_method(
@@ -800,7 +820,7 @@ def _render_e_protocol(effect_names: list[str]) -> str:
         impl = _resolve_impl_callable("effect", eff)
 
         spec = effect_registry[eff]
-        meta_by_name: dict[str, Any] = dict(spec.meta)
+        meta_by_name: dict[str, ParamMeta] = dict(spec.meta)
         param_order = _operation_param_order(spec)
 
         params: list[str] = []
@@ -822,7 +842,7 @@ def _render_e_protocol(effect_names: list[str]) -> str:
         else:
             params = [*_PARAMETER_IDENTITY_STUB_PARAMS, "**params: Any"]
 
-        doc = inspect.getdoc(impl) if impl is not None else spec.doc
+        doc = inspect.getdoc(impl) or spec.doc
         parsed_summary, parsed_docs = _parse_numpy_doc(doc or "")
         doc_lines = _render_operation_docstring(
             summary=parsed_summary,
@@ -879,8 +899,8 @@ def _render_p_protocol(preset_names: list[str]) -> str:
     lines.append(
         "    def __call__(\n"
         "        self,\n"
-        "        name: str | None = None,\n"
         "        *,\n"
+        "        name: str | None = None,\n"
         "        key: str | int | None = None,\n"
         "        instance_key: str | int | None = None,\n"
         "        shared: bool = False,\n"
@@ -888,20 +908,16 @@ def _render_p_protocol(preset_names: list[str]) -> str:
     )
     lines.append('        """ラベル付き preset 名前空間を返す。"""\n')
     lines.append("        ...\n\n")
-    lines.append("    def __getattr__(self, name: str) -> Callable[..., SceneItem]:\n")
-    lines.append('        """preset を `P.<name>(...)` で呼び出す。"""\n')
-    lines.append("        ...\n\n")
-
     from grafix.core.preset_registry import preset_op, preset_registry  # type: ignore[import]
 
     for preset_name in preset_names:
-        impl = preset_registry.get(preset_name)
-        if impl is None:
+        op = preset_op(preset_name)
+        if op not in preset_registry:
             continue
 
-        op = preset_op(preset_name)
         spec = preset_registry[op]
-        meta_by_name: dict[str, Any] = dict(spec.meta)
+        impl = spec.func
+        meta_by_name: dict[str, ParamMeta] = dict(spec.meta)
         param_order = [p for p in spec.param_order if _is_valid_identifier(p)]
 
         params: list[str] = []
@@ -910,16 +926,8 @@ def _render_p_protocol(preset_names: list[str]) -> str:
                 pm = meta_by_name[p]
                 type_str = _type_str_for_preset_param(impl=impl, param_name=p, meta=pm)
                 params.append(f"{p}: {type_str} = ...")
-        # @preset wrapper が全 preset に追加する予約引数も補完へ出す。
-        params.extend(
-            (
-                "name: str | None = ...",
-                *_PARAMETER_IDENTITY_STUB_PARAMS,
-            )
-        )
-
         parsed_summary, parsed_docs = _parse_numpy_doc(inspect.getdoc(impl) or "")
-        doc_lines = _render_operation_docstring(
+        doc_lines = _render_docstring(
             summary=parsed_summary,
             param_order=param_order,
             parsed_param_docs=parsed_docs,
@@ -960,13 +968,15 @@ def generate_stubs_str(
     from grafix.core.builtins import ensure_builtin_ops_registered
 
     ensure_builtin_ops_registered()
+    from grafix.core.runtime_config import runtime_config  # type: ignore[import]
+
+    cfg = runtime_config()
     presets = importlib.import_module("grafix.api.presets")
-    presets._autoload_preset_modules()  # type: ignore[attr-defined]
+    presets._autoload_preset_modules(cfg)  # type: ignore[attr-defined]
 
     from grafix.core.primitive_registry import primitive_registry  # type: ignore[import]
     from grafix.core.effect_registry import effect_registry  # type: ignore[import]
     from grafix.core.preset_registry import preset_registry  # type: ignore[import]
-    from grafix.core.runtime_config import runtime_config  # type: ignore[import]
 
     roots = tuple(Path(root).expanduser().resolve(strict=False) for root in source_roots)
 
@@ -992,7 +1002,6 @@ def generate_stubs_str(
     # user presets は、preset dir ごとに「パス由来のハッシュで作った擬似パッケージ名」
     # (`grafix_user_presets_<hash>`) 以下に import される設計。
     # ここではその prefix と一致する関数だけをスタブ対象にする。
-    cfg = runtime_config()
     preset_pkg_prefixes: tuple[str, ...] = tuple(
         f"grafix_user_presets_{hashlib.sha256(str(Path(d).resolve(strict=False)).encode('utf-8')).hexdigest()[:10]}."
         for d in cfg.preset_module_dirs
@@ -1033,8 +1042,11 @@ def generate_stubs_str(
     lines.append("from pathlib import Path\n")
     lines.append("from typing import Any, Literal, Protocol, TypeAlias\n\n")
 
+    lines.append("from grafix.core.effect_registry import EffectFunc\n")
     lines.append("from grafix.core.geometry import Geometry\n")
     lines.append("from grafix.core.layer import Layer\n")
+    lines.append("from grafix.core.op_registry import OpCatalogEntry\n")
+    lines.append("from grafix.core.primitive_registry import PrimitiveFunc\n")
     lines.append("from grafix.core.scene import SceneItem\n\n")
 
     lines.append("Vec3: TypeAlias = tuple[float, float, float]\n\n")
@@ -1097,8 +1109,7 @@ def generate_stubs_str(
         "    evaluation_timeout: float | None = ...,\n"
         "    fps: float = ...,\n"
         "    seed: int | None = ...,\n"
-        "    resource_budget: ResourceBudget = ...,\n"
-        "    runtime_limit_profiles: RuntimeLimitProfiles | None = ...,\n"
+        "    runtime_limit_profiles: RuntimeLimitProfiles = ...,\n"
         ") -> None:\n"
         '    """`draw(t)` を既定の background 1 worker で評価し、リアルタイム描画する。\n\n'
         "    `n_worker=0` の場合だけ同期評価し、`>=1` は background worker 数を表す。\n"

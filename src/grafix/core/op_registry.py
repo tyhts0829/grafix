@@ -6,9 +6,16 @@ import inspect
 from collections.abc import Callable, ItemsView, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, TypeVar, cast
 
+from grafix.core.parameters.identity import identity_string
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string,
+    exact_string_choice,
+)
 
 OpKind = Literal["primitive", "effect"]
 CachePolicy = Literal["content", "none"]
@@ -39,38 +46,81 @@ class OpSpec(Generic[EvaluatorT]):
     def __post_init__(self) -> None:
         """mutable な入力 mapping をコピーし、spec 全体を不変にする。"""
 
-        n_inputs = int(self.n_inputs)
-        if self.kind == "primitive":
+        kind = exact_string_choice(
+            self.kind,
+            name="kind",
+            choices=("primitive", "effect"),
+        )
+        if kind == "primitive":
+            n_inputs = exact_integer(self.n_inputs, name="n_inputs", minimum=0)
             if n_inputs != 0:
                 raise ValueError("primitive の n_inputs は 0 である必要がある")
-        elif self.kind == "effect":
-            if n_inputs < 1:
-                raise ValueError("effect の n_inputs は 1 以上である必要がある")
         else:
-            raise ValueError(f"未対応の operation kind: {self.kind!r}")
+            n_inputs = exact_integer(self.n_inputs, name="n_inputs", minimum=1)
 
         object.__setattr__(self, "meta", MappingProxyType(dict(self.meta)))
         object.__setattr__(self, "defaults", MappingProxyType(dict(self.defaults)))
-        object.__setattr__(self, "param_order", tuple(str(name) for name in self.param_order))
+        object.__setattr__(
+            self,
+            "param_order",
+            tuple(
+                identity_string(name, name="param_order item")
+                for name in self.param_order
+            ),
+        )
         object.__setattr__(self, "ui_visible", MappingProxyType(dict(self.ui_visible)))
         object.__setattr__(self, "n_inputs", n_inputs)
-        object.__setattr__(self, "description", str(self.description))
-        object.__setattr__(self, "doc", str(self.doc))
-        object.__setattr__(self, "source", None if self.source is None else str(self.source))
-        object.__setattr__(self, "provenance", str(self.provenance))
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(
+            self,
+            "description",
+            exact_string(self.description, name="description"),
+        )
+        object.__setattr__(self, "doc", exact_string(self.doc, name="doc"))
+        object.__setattr__(
+            self,
+            "source",
+            (
+                None
+                if self.source is None
+                else exact_string(self.source, name="source")
+            ),
+        )
+        object.__setattr__(
+            self,
+            "provenance",
+            exact_string(self.provenance, name="provenance"),
+        )
         object.__setattr__(
             self,
             "accepted_args",
-            tuple(str(name) for name in self.accepted_args),
+            tuple(
+                identity_string(name, name="accepted_args item")
+                for name in self.accepted_args
+            ),
         )
         object.__setattr__(
             self,
             "required_args",
-            tuple(str(name) for name in self.required_args),
+            tuple(
+                identity_string(name, name="required_args item")
+                for name in self.required_args
+            ),
         )
-        object.__setattr__(self, "accepts_var_kwargs", bool(self.accepts_var_kwargs))
-        if self.cache_policy not in {"content", "none"}:
-            raise ValueError("cache_policy は 'content' または 'none' である必要がある")
+        object.__setattr__(
+            self,
+            "accepts_var_kwargs",
+            exact_bool(self.accepts_var_kwargs, name="accepts_var_kwargs"),
+        )
+        object.__setattr__(
+            self,
+            "cache_policy",
+            exact_string_choice(
+                self.cache_policy,
+                name="cache_policy",
+                choices=("content", "none"),
+            ),
+        )
 
         unknown_required = set(self.required_args) - set(self.accepted_args)
         if unknown_required:
@@ -84,6 +134,9 @@ class OpCatalogEntry(Generic[EvaluatorT]):
 
     name: str
     spec: OpSpec[EvaluatorT]
+
+    def __post_init__(self) -> None:
+        identity_string(self.name, name="operation name")
 
     @property
     def kind(self) -> OpKind:
@@ -162,9 +215,14 @@ class OpRegistry(Generic[EvaluatorT]):
     """operation 名から immutable :class:`OpSpec` を引くレジストリ。"""
 
     def __init__(self, *, kind: OpKind) -> None:
-        if kind not in {"primitive", "effect"}:
-            raise ValueError(f"未対応の operation kind: {kind!r}")
-        self._kind = kind
+        self._kind: OpKind = cast(
+            OpKind,
+            exact_string_choice(
+                kind,
+                name="registry kind",
+                choices=("primitive", "effect"),
+            ),
+        )
         self._specs: dict[str, OpSpec[EvaluatorT]] = {}
         self._revision = 0
 
@@ -189,9 +247,12 @@ class OpRegistry(Generic[EvaluatorT]):
     ) -> None:
         """spec を登録する。既存 operation の置換は明示指定を必須とする。"""
 
-        name_s = str(name)
+        name_s = identity_string(name, name=f"{self._kind} name")
+        replace = exact_bool(replace, name="replace")
         if name_s == "concat":
             raise ValueError("'concat' は Grafix 内部予約 operation のため登録できない")
+        if not isinstance(spec, OpSpec):
+            raise TypeError("spec は OpSpec である必要があります")
         if spec.kind != self._kind:
             raise ValueError(f"{self._kind} registry に {spec.kind} spec は登録できない")
         if name_s in self._specs and not replace:
@@ -201,7 +262,7 @@ class OpRegistry(Generic[EvaluatorT]):
         self._revision += 1
 
     def __contains__(self, name: object) -> bool:
-        return isinstance(name, str) and name in self._specs
+        return type(name) is str and name in self._specs
 
     def __getitem__(self, name: str) -> OpSpec[EvaluatorT]:
         return self._specs[name]
@@ -226,14 +287,14 @@ class OpRegistry(Generic[EvaluatorT]):
 
         candidate: OpRegistry[EvaluatorT] = OpRegistry(kind=self._kind)
         for name, spec in specs.items():
-            candidate.register(str(name), spec)
+            candidate.register(name, spec)
         self._specs = dict(candidate._specs)
         self._revision += 1
 
     def describe(self, name: str) -> OpCatalogEntry[EvaluatorT]:
         """登録済み operation の catalog entry を返す。"""
 
-        name_s = str(name)
+        name_s = identity_string(name, name=f"{self._kind} name")
         return OpCatalogEntry(name=name_s, spec=self._specs[name_s])
 
     def catalog(self) -> tuple[OpCatalogEntry[EvaluatorT], ...]:
@@ -285,7 +346,7 @@ def op_callable_catalog_fields(
     signature = inspect.signature(func)
     parameters = tuple(signature.parameters.values())
     if kind == "effect":
-        parameters = parameters[int(n_inputs) :]
+        parameters = parameters[n_inputs:]
 
     accepted_args = tuple(
         parameter.name

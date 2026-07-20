@@ -1,14 +1,7 @@
-from grafix.interactive.parameter_gui.labeling import format_layer_style_row_label
 from grafix.interactive.parameter_gui.store_bridge import _order_rows_for_display
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.view import ParameterRow
-
-
-def test_format_layer_style_row_label():
-    assert (
-        format_layer_style_row_label("bg", 1, "line_color") == "bg#1 line_color"
-    )
 
 
 def test_order_rows_for_display_places_style_layer_rows_under_style():

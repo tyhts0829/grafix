@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 from grafix.core.parameters import ParamMeta, ParamStore, ParameterKey
-from grafix.core.parameters.codec import dumps_param_store, loads_param_store
-from grafix.core.parameters.frame_params import FrameParamRecord
+from grafix.core.parameters.codec import (
+    dumps_param_store,
+    loads_param_store_result,
+)
+from grafix.core.parameters.effect_order_ops import merge_frame_effect_chains
+from grafix.core.parameters.effects import EffectStepTopology
+from grafix.core.parameters.frame_params import (
+    FrameEffectChainRecord,
+    FrameParamRecord,
+)
 from grafix.core.parameters.invariants import assert_invariants
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.prune_ops import prune_groups
@@ -15,6 +23,8 @@ def _polyhedron_records(site_id: str) -> list[FrameParamRecord]:
             key=ParameterKey(op="polyhedron", site_id=site_id, arg="type_index"),
             base=0,
             meta=meta,
+            effective=0,
+            source="code",
             explicit=False,
         )
     ]
@@ -30,7 +40,7 @@ def test_ui_collapsed_headers_are_preserved_on_json_roundtrip():
         }
     )
 
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
     assert loaded._collapsed_headers_ref() == {
         "style:global",
         "primitive:circle:c:1",
@@ -48,7 +58,7 @@ def test_reconcile_migrates_collapsed_header_state_for_primitive_groups():
     original._collapsed_headers_ref().add(f"primitive:polyhedron:{old_site_id}")
 
     # 永続化ロード相当（loaded_groups を持つ状態にする）
-    store = loads_param_store(dumps_param_store(original))
+    store = loads_param_store_result(dumps_param_store(original)).store
 
     # 新 site_id のグループを観測（=site_id がズレた状態を再現）
     merge_frame_params(store, _polyhedron_records(new_site_id))
@@ -66,6 +76,16 @@ def test_prune_removes_collapsed_header_state_for_removed_groups_and_unused_chai
     merge_frame_params(store, _polyhedron_records("p0"))
     store._collapsed_headers_ref().add("primitive:polyhedron:p0")
 
+    merge_frame_effect_chains(
+        store,
+        [
+            FrameEffectChainRecord(
+                chain_id="c1",
+                steps=(EffectStepTopology("scale", "s0", 1, 0),),
+            )
+        ],
+        observation_complete=False,
+    )
     merge_frame_params(
         store,
         [
@@ -73,9 +93,9 @@ def test_prune_removes_collapsed_header_state_for_removed_groups_and_unused_chai
                 key=ParameterKey(op="scale", site_id="s0", arg="x"),
                 base=0.0,
                 meta=meta,
+                effective=0.0,
+                source="code",
                 explicit=True,
-                chain_id="c1",
-                step_index=0,
             )
         ],
     )
@@ -87,4 +107,3 @@ def test_prune_removes_collapsed_header_state_for_removed_groups_and_unused_chai
     assert "primitive:polyhedron:p0" not in collapsed
     assert "effect_chain:c1" not in collapsed
     assert_invariants(store)
-

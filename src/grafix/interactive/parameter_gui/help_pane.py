@@ -28,7 +28,7 @@ def parameter_help_content(row: ParameterRow) -> ParameterHelpContent:
     """``row`` から metadata 欠損を補った Help 内容を返す。"""
 
     display_name = "" if row.display_name is None else str(row.display_name).strip()
-    title = display_name or str(row.arg).replace("_", " ").strip().title()
+    title = display_name or row.arg.replace("_", " ").strip().title()
     description = "" if row.description is None else str(row.description).strip()
     unit = "" if row.unit is None else str(row.unit).strip()
     recommended = row.recommended_range
@@ -38,7 +38,7 @@ def parameter_help_content(row: ParameterRow) -> ParameterHelpContent:
         else f"{float(recommended[0]):g} – {float(recommended[1]):g}"
     )
     return ParameterHelpContent(
-        title=title or str(row.arg),
+        title=title or row.arg,
         identity=selector_help_identity(row.op, row.arg) or f"{row.op}.{row.arg}",
         description=description or NO_DESCRIPTION,
         unit=unit or NOT_SPECIFIED,
@@ -58,11 +58,7 @@ def render_parameter_help_pane(imgui, row: ParameterRow | None) -> None:
     content = parameter_help_content(row)
     imgui.same_line()
     imgui.text(f"{content.title}  ·  {content.identity}")
-    text_wrapped = getattr(imgui, "text_wrapped", None)
-    if callable(text_wrapped):
-        text_wrapped(content.description)
-    else:
-        imgui.text(content.description)
+    imgui.text_wrapped(content.description)
     imgui.text_disabled(
         f"Unit: {content.unit}    Recommended: {content.recommended_range}"
     )

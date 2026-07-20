@@ -8,18 +8,11 @@ from __future__ import annotations
 
 import sys
 import time
-import warnings
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-warnings.filterwarnings(
-    "ignore",
-    message="distutils Version classes are deprecated",
-    category=DeprecationWarning,
-)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 
 def _import_gui_modules() -> tuple[ModuleType, ModuleType]:
@@ -50,25 +43,12 @@ def _require_display(pyglet_mod: ModuleType) -> None:
         test_window.close()
 
 
-def _create_renderer(imgui_pyglet: ModuleType, gui_window) -> object:
-    """pyimgui の pyglet レンダラーを生成する。"""
-
-    factory: Callable | None = getattr(imgui_pyglet, "create_renderer", None)
-    if callable(factory):
-        return factory(gui_window)
-    return imgui_pyglet.PygletRenderer(gui_window)
-
-
 def main() -> None:
     """pyglet の描画と pyimgui GUI が別ウィンドウで同居できることを確認する。"""
 
     pyglet_mod, imgui_mod = _import_gui_modules()
     pyglet_mod.options["vsync"] = True
     _require_display(pyglet_mod)
-    try:
-        from imgui.integrations import pyglet as imgui_pyglet
-    except Exception as exc:
-        raise SystemExit(f"pyimgui の pyglet 統合を初期化できない: {exc}")
 
     gui_context = imgui_mod.create_context()
     imgui_mod.style_colors_dark()
@@ -95,10 +75,12 @@ def main() -> None:
     )
     gui_window.clearcolor = (0.97, 0.97, 0.97, 1.0)
 
-    renderer: Any = _create_renderer(imgui_pyglet, gui_window)
-    font_texture = getattr(renderer, "refresh_font_texture", None)
-    if callable(font_texture):
-        font_texture()
+    from grafix.interactive.parameter_gui.pyglet_backend import (
+        create_imgui_pyglet_renderer,
+    )
+
+    renderer = create_imgui_pyglet_renderer(gui_window)
+    renderer.refresh_font_texture()
 
     batch = pyglet_mod.graphics.Batch()
     circle = pyglet_mod.shapes.Circle(
@@ -183,9 +165,7 @@ def main() -> None:
             frames += 1
             time.sleep(1 / 60)
     finally:
-        shutdown = getattr(renderer, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
+        renderer.shutdown()
         imgui_mod.destroy_context(gui_context)
         draw_window.close()
         gui_window.close()

@@ -21,6 +21,7 @@ from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.devtools.benchmarks.schema import (
+    BenchmarkOutput,
     ContractResult,
     Metric,
     evaluate_contract,
@@ -28,7 +29,7 @@ from grafix.devtools.benchmarks.schema import (
 )
 from grafix.interactive.parameter_gui import store_bridge
 from grafix.interactive.parameter_gui.group_blocks import (
-    group_blocks_from_rows,
+    group_layout_from_rows,
     visible_group_layout,
 )
 from grafix.interactive.parameter_gui.parameter_filter import ParameterFilterState
@@ -65,15 +66,6 @@ class ParameterHotPathScenario:
     initial_merge_ms: float
 
 
-@dataclass(frozen=True, slots=True)
-class ParameterHotPathResult:
-    """runner 境界へ返す semantic output と typed metric。"""
-
-    value: dict[str, object]
-    metrics: tuple[Metric, ...]
-    contracts: tuple[ContractResult, ...]
-
-
 def make_parameter_hot_path_scenario(
     parameters: dict[str, Any],
 ) -> ParameterHotPathScenario:
@@ -108,6 +100,7 @@ def make_parameter_hot_path_scenario(
             meta=meta,
             explicit=False,
             effective=float(index),
+            source="code",
         )
         for index in range(rows)
     ]
@@ -178,7 +171,7 @@ def make_parameter_hot_path_scenario(
 
 def run_parameter_hot_path_scenario(
     scenario: ParameterHotPathScenario,
-) -> ParameterHotPathResult:
+) -> BenchmarkOutput:
     """指定 hot path を self-sampling し、semantic contract と共に返す。"""
 
     if scenario.operation == "layout_reuse":
@@ -194,49 +187,43 @@ def run_parameter_hot_path_scenario(
 
 def _run_layout_reuse(
     scenario: ParameterHotPathScenario,
-) -> ParameterHotPathResult:
+) -> BenchmarkOutput:
     model = store_bridge._parameter_table_model_for_store(scenario.store)
     visible_mask = (True,) * len(model.rows)
-    legacy_ms: list[float] = []
+    build_ms: list[float] = []
     reuse_ms: list[float] = []
-    legacy_blocks = -1
+    built_layout = None
     reused_layout = None
 
     for _ in range(scenario.samples):
         started = time.perf_counter_ns()
-        legacy = group_blocks_from_rows(
-            list(model.rows),
+        built_layout = group_layout_from_rows(
+            model.rows,
             primitive_header_by_group=model.primitive_header_by_group,
             layer_style_name_by_site_id=model.layer_style_name_by_site_id,
             effect_chain_header_by_id=model.effect_chain_header_by_id,
             step_info_by_site=model.step_info_by_site,
             effect_step_ordinal_by_site=model.effect_step_ordinal_by_site,
         )
-        legacy_ms.append((time.perf_counter_ns() - started) / 1_000_000.0)
-        legacy_blocks = len(legacy)
+        build_ms.append((time.perf_counter_ns() - started) / 1_000_000.0)
 
         started = time.perf_counter_ns()
         reused_layout = visible_group_layout(model.group_layout, visible_mask)
         reuse_ms.append((time.perf_counter_ns() - started) / 1_000_000.0)
 
+    assert built_layout is not None
     assert reused_layout is not None
-    row_index_by_identity = {
-        id(row): index for index, row in enumerate(model.rows)
-    }
-    legacy_signature = tuple(
+    built_signature = tuple(
         (
             block.group_id,
             block.header_id,
             block.header,
             tuple(
-                (
-                    row_index_by_identity[id(item.row)],
-                    item.visible_label,
-                )
+                (item.row_index, item.visible_label)
                 for item in block.items
             ),
         )
-        for block in legacy
+        for block in built_layout
     )
     layout_signature = tuple(
         (
@@ -250,23 +237,23 @@ def _run_layout_reuse(
         )
         for block in reused_layout
     )
-    legacy_digest = _digest_items(legacy_signature)
+    built_digest = _digest_items(built_signature)
     layout_digest = _digest_items(layout_signature)
     distribution = summarize_distribution(reuse_ms)
     p95 = distribution.p95 if distribution.p95 is not None else distribution.max
     assert p95 is not None
-    return ParameterHotPathResult(
+    return BenchmarkOutput(
         value={
             "operation": scenario.operation,
             "rows": scenario.rows,
             "samples": scenario.samples,
-            "legacy_blocks": legacy_blocks,
+            "built_blocks": len(built_layout),
             "layout_blocks": len(reused_layout),
             "layout_identity_reused": reused_layout is model.group_layout,
             "layout_digest": layout_digest,
         },
         metrics=(
-            _distribution_metric("parameter_layout.legacy_regroup", legacy_ms),
+            _distribution_metric("parameter_layout.build", build_ms),
             _distribution_metric("parameter_layout.stable_reuse", reuse_ms),
             _gauge_metric(
                 "parameter_layout.blocks",
@@ -288,16 +275,16 @@ def _run_layout_reuse(
                 "hard",
                 len(reused_layout),
                 "eq",
-                legacy_blocks,
-                "prebuilt layout must preserve legacy grouping cardinality",
+                len(built_layout),
+                "prebuilt layout must preserve canonical grouping cardinality",
             ),
             _contract(
                 "parameter_layout.semantic_layout_exact",
                 "hard",
                 layout_digest,
                 "eq",
-                legacy_digest,
-                "row/header/label layout must match the regrouped reference",
+                built_digest,
+                "reused row/header/label layout must match a canonical rebuild",
             ),
             _contract(
                 "parameter_layout.reference_p95",
@@ -313,7 +300,7 @@ def _run_layout_reuse(
 
 def _run_merge_steady(
     scenario: ParameterHotPathScenario,
-) -> ParameterHotPathResult:
+) -> BenchmarkOutput:
     store = scenario.store
     runtime = store._runtime_ref()
     revision_before = int(store.revision)
@@ -337,7 +324,7 @@ def _run_merge_steady(
     p95 = distribution.p95 if distribution.p95 is not None else distribution.max
     assert p95 is not None
     semantic_digest_after = _store_semantic_digest(store)
-    return ParameterHotPathResult(
+    return BenchmarkOutput(
         value={
             "operation": scenario.operation,
             "rows": scenario.rows,
@@ -420,7 +407,7 @@ def _run_merge_steady(
 
 def _run_snapshot_one(
     scenario: ParameterHotPathScenario,
-) -> ParameterHotPathResult:
+) -> BenchmarkOutput:
     store = scenario.store
     key = scenario.target_key
     meta = scenario.target_meta
@@ -471,7 +458,7 @@ def _run_snapshot_one(
     distribution = summarize_distribution(elapsed_ms)
     p95 = distribution.p95 if distribution.p95 is not None else distribution.max
     assert p95 is not None
-    return ParameterHotPathResult(
+    return BenchmarkOutput(
         value={
             "operation": scenario.operation,
             "rows": scenario.rows,
@@ -578,7 +565,7 @@ def _run_snapshot_one(
 
 def _run_visibility(
     scenario: ParameterHotPathScenario,
-) -> ParameterHotPathResult:
+) -> BenchmarkOutput:
     store = scenario.store
     search = scenario.operation == "visibility_search"
     build_count_before = int(store_bridge.parameter_table_model_build_count())
@@ -782,7 +769,7 @@ def _run_visibility(
                 "dynamic source/MIDI search reference target is 8 ms p95",
             )
         )
-    return ParameterHotPathResult(
+    return BenchmarkOutput(
         value={
             "operation": scenario.operation,
             "rows": scenario.rows,
@@ -802,7 +789,7 @@ def _run_visibility(
 
 def _run_favorite_view(
     scenario: ParameterHotPathScenario,
-) -> ParameterHotPathResult:
+) -> BenchmarkOutput:
     store = scenario.store
     expected_keys = tuple(record.key for record in scenario.records)
     expected_digest = _digest_items(_key_token(key) for key in expected_keys)
@@ -828,7 +815,7 @@ def _run_favorite_view(
     distribution = summarize_distribution(elapsed_ms)
     p95 = distribution.p95 if distribution.p95 is not None else distribution.max
     assert p95 is not None
-    return ParameterHotPathResult(
+    return BenchmarkOutput(
         value={
             "operation": scenario.operation,
             "rows": scenario.rows,
@@ -945,17 +932,15 @@ def _fresh_equivalent_records(
     return [
         FrameParamRecord(
             key=ParameterKey(
-                op=str(record.key.op),
-                site_id=str(record.key.site_id),
-                arg=str(record.key.arg),
+                op=record.key.op,
+                site_id=record.key.site_id,
+                arg=record.key.arg,
             ),
             base=record.base,
             meta=record.meta,
             effective=record.effective,
             source=record.source,
             explicit=bool(record.explicit),
-            chain_id=record.chain_id,
-            step_index=record.step_index,
         )
         for record in records
     ]
@@ -1055,7 +1040,6 @@ def _contract(
 
 
 __all__ = [
-    "ParameterHotPathResult",
     "ParameterHotPathScenario",
     "make_parameter_hot_path_scenario",
     "run_parameter_hot_path_scenario",

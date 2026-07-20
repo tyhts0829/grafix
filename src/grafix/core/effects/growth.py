@@ -321,14 +321,18 @@ def _sample_sdf_grid_numba(
 
 
 @njit(cache=True, parallel=True, fastmath=True)
-def _evaluate_sdf_points_numba(
+def _evaluate_growth_sdf_points_numba(
     points_xy: np.ndarray,
     ring_vertices: np.ndarray,
     ring_offsets: np.ndarray,
     ring_mins: np.ndarray,
     ring_maxs: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """点列に対して signed distance と外向き法線（距離増加方向）を返す。"""
+    """growth の seed 判定用 SDF と外向き法線を返す。
+
+    多数の離れた ring を扱うため bbox 下限で走査を省略し、growth の反復用途に
+    合わせて fastmath を使う。warp の bit-exact な基準 kernel とは数値契約が異なる。
+    """
     n = int(points_xy.shape[0])
     n_rings = int(ring_offsets.shape[0]) - 1
 
@@ -819,7 +823,7 @@ def _sample_seed_centers_xy(
         xs = rng.uniform(bx0, bx1, size=(batch,))
         ys = rng.uniform(by0, by1, size=(batch,))
         pts = np.stack([xs, ys], axis=1).astype(np.float64, copy=False)
-        d, _gx, _gy = _evaluate_sdf_points_numba(
+        d, _gx, _gy = _evaluate_growth_sdf_points_numba(
             pts, ring_vertices, ring_offsets, ring_mins, ring_maxs
         )
         for i in range(batch):

@@ -54,6 +54,8 @@ def _add_parameter(
                 key=key,
                 base=value,
                 meta=FLOAT_META,
+                effective=value,
+                source="code",
                 explicit=False,
             )
         ],

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from grafix.api import E, G
+from grafix.core.effects.partition import partition as partition_impl
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
@@ -27,6 +28,25 @@ def partition_test_square() -> GeomTuple:
     )
     offsets = np.array([0, 4], dtype=np.int32)
     return coords, offsets
+
+
+def test_partition_rejects_invalid_control_parameters() -> None:
+    base = realize(G.partition_test_square())
+    geometry = (base.coords, base.offsets)
+
+    with pytest.raises(ValueError, match="mode"):
+        partition_impl(geometry, mode="unknown")
+    with pytest.raises(ValueError, match="site_count"):
+        partition_impl(geometry, site_count=0)
+    with pytest.raises(ValueError, match="site_density_base"):
+        partition_impl(geometry, site_density_base=(1.1, 0.0, 0.0))
+    with pytest.raises(TypeError, match="site_density_slope"):
+        partition_impl(
+            geometry,
+            site_density_slope=[0.0, 0.0, 0.0],  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="pivot"):
+        partition_impl(geometry, pivot=(0.0, float("nan"), 0.0))
 
 
 @primitive

@@ -116,7 +116,7 @@ def draw(t):
     # ====================================================================
     g = G.polyhedron(
         activate=True,
-        type_index=3,
+        kind="dodecahedron",
         center=(45.652, 159.78300000000002, 0.0),
         scale=62.887,
     )

@@ -21,8 +21,10 @@ from grafix.core.resource_budget import (
     ResourceLimitError,
     current_resource_budget,
     ensure_geometry_output,
+    ensure_resource_usage,
     resource_budget_context,
 )
+from grafix.core.runtime_limits import RuntimeLimits
 
 
 def _two_point_line() -> tuple[np.ndarray, np.ndarray]:
@@ -48,12 +50,123 @@ def _cause_chain(error: BaseException) -> list[BaseException]:
     return out
 
 
+def _limits_for_budget(budget: ResourceBudget) -> RuntimeLimits:
+    return RuntimeLimits(per_operation=budget, scene=budget)
+
+
+@pytest.mark.parametrize("value", [True, 1.5, "1"])
+def test_resource_budget_rejects_non_integer_limits(value: object) -> None:
+    with pytest.raises(TypeError, match="max_output_vertices.*整数"):
+        ResourceBudget(max_output_vertices=value)  # type: ignore[arg-type]
+
+
 def test_resource_budget_rejects_negative_limits() -> None:
     with pytest.raises(ValueError, match="max_output_vertices"):
         ResourceBudget(max_output_vertices=-1)
 
-    with pytest.raises(TypeError, match="整数"):
-        ResourceBudget(max_output_vertices=1.5)  # type: ignore[arg-type]
+
+@pytest.mark.parametrize(
+    ("vertices", "lines", "scratch_bytes", "field"),
+    [
+        (True, 1, 0, "vertices"),
+        (1.5, 1, 0, "vertices"),
+        ("1", 1, 0, "vertices"),
+        (1, True, 0, "lines"),
+        (1, 1.5, 0, "lines"),
+        (1, "1", 0, "lines"),
+        (1, 1, True, "scratch_bytes"),
+        (1, 1, 1.5, "scratch_bytes"),
+        (1, 1, "1", "scratch_bytes"),
+    ],
+)
+def test_ensure_geometry_output_rejects_implicit_integer_conversion(
+    vertices: object,
+    lines: object,
+    scratch_bytes: object,
+    field: str,
+) -> None:
+    with pytest.raises(TypeError, match=field):
+        ensure_geometry_output(
+            "demo",
+            vertices=vertices,  # type: ignore[arg-type]
+            lines=lines,  # type: ignore[arg-type]
+            scratch_bytes=scratch_bytes,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("vertices", "lines", "byte_size", "field"),
+    [
+        (True, 1, 1, "vertices"),
+        (1.5, 1, 1, "vertices"),
+        ("1", 1, 1, "vertices"),
+        (1, True, 1, "lines"),
+        (1, 1.5, 1, "lines"),
+        (1, "1", 1, "lines"),
+        (1, 1, True, "byte_size"),
+        (1, 1, 1.5, "byte_size"),
+        (1, 1, "1", "byte_size"),
+    ],
+)
+def test_ensure_resource_usage_rejects_implicit_integer_conversion(
+    vertices: object,
+    lines: object,
+    byte_size: object,
+    field: str,
+) -> None:
+    with pytest.raises(TypeError, match=field):
+        ensure_resource_usage(
+            "demo",
+            vertices=vertices,  # type: ignore[arg-type]
+            lines=lines,  # type: ignore[arg-type]
+            byte_size=byte_size,  # type: ignore[arg-type]
+        )
+
+
+class _StringSubclass(str):
+    """exact str 境界を検証するための非 canonical 文字列。"""
+
+
+@pytest.mark.parametrize("invalid", [1, _StringSubclass("demo")])
+def test_resource_guards_reject_non_exact_operation_name(invalid: object) -> None:
+    checks: tuple[Callable[[], None], ...] = (
+        lambda: ensure_geometry_output(
+            invalid,  # type: ignore[arg-type]
+            vertices=1,
+            lines=1,
+        ),
+        lambda: ensure_resource_usage(
+            invalid,  # type: ignore[arg-type]
+            vertices=1,
+            lines=1,
+            byte_size=32,
+        ),
+    )
+    for check in checks:
+        with pytest.raises(TypeError, match="op.*str"):
+            check()
+
+
+@pytest.mark.parametrize("invalid", [1, _StringSubclass("hint")])
+def test_resource_guards_reject_non_exact_hint(invalid: object) -> None:
+    checks: tuple[Callable[[], None], ...] = (
+        lambda: ensure_geometry_output(
+            "demo",
+            vertices=1,
+            lines=1,
+            hint=invalid,  # type: ignore[arg-type]
+        ),
+        lambda: ensure_resource_usage(
+            "demo",
+            vertices=1,
+            lines=1,
+            byte_size=32,
+            hint=invalid,  # type: ignore[arg-type]
+        ),
+    )
+    for check in checks:
+        with pytest.raises(TypeError, match="hint.*str"):
+            check()
 
 
 def test_resource_budget_types_are_available_from_root_api() -> None:
@@ -139,7 +252,7 @@ def test_realize_session_applies_its_budget_to_builtin_operation() -> None:
         max_output_bytes=10_000_000,
     )
 
-    with RealizeSession(resource_budget=budget) as session:
+    with RealizeSession(runtime_limits=_limits_for_budget(budget)) as session:
         with pytest.raises(RealizeError) as exc_info:
             session.realize(geometry)
 
@@ -154,7 +267,7 @@ def test_concat_uses_the_session_budget() -> None:
         max_output_bytes=10_000_000,
     )
 
-    with RealizeSession(resource_budget=budget) as session:
+    with RealizeSession(runtime_limits=_limits_for_budget(budget)) as session:
         with pytest.raises(RealizeError) as exc_info:
             session.realize(geometry)
 
@@ -183,7 +296,7 @@ def test_postflight_rejects_and_does_not_cache_large_custom_primitive() -> None:
         max_output_bytes=10_000,
     )
 
-    with RealizeSession(resource_budget=budget) as session:
+    with RealizeSession(runtime_limits=_limits_for_budget(budget)) as session:
         for _ in range(2):
             with pytest.raises(RealizeError) as exc_info:
                 session.realize(geometry)
@@ -223,7 +336,7 @@ def test_postflight_rejects_and_does_not_cache_large_custom_effect() -> None:
         max_output_bytes=10_000,
     )
 
-    with RealizeSession(resource_budget=budget) as session:
+    with RealizeSession(runtime_limits=_limits_for_budget(budget)) as session:
         for _ in range(2):
             with pytest.raises(RealizeError) as exc_info:
                 session.realize(geometry)
@@ -273,7 +386,7 @@ def test_postflight_accepts_custom_outputs_at_the_budget_limit() -> None:
         max_output_bytes=44,
     )
 
-    with RealizeSession(resource_budget=budget) as session:
+    with RealizeSession(runtime_limits=_limits_for_budget(budget)) as session:
         first = session.realize(geometry)
         second = session.realize(geometry)
         stats = session.stats()
@@ -297,7 +410,7 @@ def test_postflight_preserves_builtin_output_within_budget() -> None:
         max_output_bytes=32,
     )
 
-    with RealizeSession(resource_budget=budget) as session:
+    with RealizeSession(runtime_limits=_limits_for_budget(budget)) as session:
         result = session.realize(geometry)
 
     np.testing.assert_allclose(

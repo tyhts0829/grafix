@@ -10,7 +10,7 @@ def draw(t):
     g = G.sphere(
         activate=True,
         subdivisions=0,
-        type_index=2,
+        style="icosphere",
         center=(74.0, 92.935, 0.0),
         scale=86.102,
     )

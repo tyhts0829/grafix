@@ -9,10 +9,12 @@ from typing import Literal, TypeAlias
 from weakref import WeakKeyDictionary
 
 from grafix.core.parameters.effects import EffectStepKey, EffectStepTopology
+from grafix.core.parameters.identity import group_key, identity_string
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.view import ParameterRow
+from grafix.core.value_validation import exact_integer
 
 from .group_blocks import GroupBlockLayout
 
@@ -49,10 +51,33 @@ class EffectChainTableState:
     order_overridden: bool
     disabled_reason: str | None = None
 
+    def __post_init__(self) -> None:
+        identity_string(self.chain_id, name="EffectChainTableState.chain_id")
+        if not isinstance(self.steps, tuple):
+            raise TypeError("EffectChainTableState.steps は tuple である必要があります")
+        steps = tuple(group_key(step, name="effect step") for step in self.steps)
+        if not isinstance(self.n_inputs, tuple):
+            raise TypeError("EffectChainTableState.n_inputs は tuple である必要があります")
+        n_inputs = tuple(
+            exact_integer(value, name="n_inputs", minimum=1)
+            for value in self.n_inputs
+        )
+        if len(steps) != len(n_inputs):
+            raise ValueError("steps と n_inputs の要素数が一致しません")
+        if not isinstance(self.order_overridden, bool):
+            raise TypeError("order_overridden は bool である必要があります")
+        if self.disabled_reason is not None and not isinstance(
+            self.disabled_reason,
+            str,
+        ):
+            raise TypeError("disabled_reason は str または None である必要があります")
+        object.__setattr__(self, "steps", steps)
+        object.__setattr__(self, "n_inputs", n_inputs)
+
     def step_index(self, step: EffectStepKey) -> int | None:
         """effective order 内の index を返す。未登録または重複時は None。"""
 
-        normalized = (str(step[0]), str(step[1]))
+        normalized = group_key(step, name="step")
         matches = [
             index for index, candidate in enumerate(self.steps) if candidate == normalized
         ]
@@ -62,7 +87,7 @@ class EffectChainTableState:
         """multi-input 制約により移動できないstepならTrueを返す。"""
 
         index = self.step_index(step)
-        return index is not None and int(self.n_inputs[index]) > 1
+        return index is not None and self.n_inputs[index] > 1
 
     def can_move(
         self,
@@ -78,7 +103,7 @@ class EffectChainTableState:
         target_index = self.step_index(target)
         if source_index is None or target_index is None or source_index == target_index:
             return False
-        if int(self.n_inputs[source_index]) > 1:
+        if self.n_inputs[source_index] > 1:
             return False
 
         order = list(self.steps)
@@ -90,10 +115,7 @@ class EffectChainTableState:
         if tuple(order) == self.steps:
             return False
 
-        n_inputs_by_step = {
-            step: int(n_inputs)
-            for step, n_inputs in zip(self.steps, self.n_inputs, strict=True)
-        }
+        n_inputs_by_step = dict(zip(self.steps, self.n_inputs, strict=True))
         return all(
             n_inputs_by_step[step] <= 1 or index == 0
             for index, step in enumerate(order)
@@ -108,14 +130,15 @@ class EffectChainTableState:
         """Move Up/Down用の(target, placement)を返す。"""
 
         source_index = self.step_index(source)
-        if source_index is None or direction not in {-1, 1}:
+        direction_value = exact_integer(direction, name="direction")
+        if source_index is None or direction_value not in {-1, 1}:
             return None
-        target_index = source_index + int(direction)
+        target_index = source_index + direction_value
         if target_index < 0 or target_index >= len(self.steps):
             return None
         target = self.steps[target_index]
         placement: Literal["before", "after"] = (
-            "before" if direction < 0 else "after"
+            "before" if direction_value < 0 else "after"
         )
         if not self.can_move(source, target, placement):
             return None
@@ -130,7 +153,8 @@ class EffectChainTableState:
         if self.disabled_reason is not None:
             return self
         normalized_visible = {
-            (str(op), str(site_id)) for op, site_id in visible_steps
+            group_key(step, name="visible effect step")
+            for step in visible_steps
         }
         if normalized_visible == set(self.steps):
             return self
@@ -147,14 +171,11 @@ def effect_chain_table_states(
     """core topologyとGUI-visible stepからchain描画状態を構築する。"""
 
     states: dict[str, EffectChainTableState] = {}
-    for chain_id_raw, topology in topologies.items():
-        chain_id = str(chain_id_raw)
-        code_steps = tuple(
-            (str(step.op), str(step.site_id))
-            for step in topology
-        )
+    for chain_id, topology in topologies.items():
+        identity_string(chain_id, name="chain_id")
+        code_steps = tuple(step.key for step in topology)
         n_inputs_by_step = {
-            (str(step.op), str(step.site_id)): int(step.n_inputs)
+            step.key: step.n_inputs
             for step in topology
         }
         duplicate = any(count > 1 for count in Counter(code_steps).values())
@@ -162,10 +183,10 @@ def effect_chain_table_states(
         indexed_effective: list[tuple[int, int, EffectStepKey]] = []
         for code_index, step in enumerate(code_steps):
             info = step_info_by_site.get(step)
-            if info is None or str(info[0]) != chain_id:
+            if info is None or info[0] != chain_id:
                 indexed_effective = []
                 break
-            indexed_effective.append((int(info[1]), int(code_index), step))
+            indexed_effective.append((info[1], code_index, step))
         if len(indexed_effective) == len(code_steps):
             effective_steps = tuple(
                 step for _index, _code_index, step in sorted(indexed_effective)
@@ -182,15 +203,15 @@ def effect_chain_table_states(
             disabled_reason = EFFECT_ORDER_TOPOLOGY_REASON
         else:
             gui_steps = {
-                (str(op), str(site_id))
-                for op, site_id in gui_steps_by_chain.get(chain_id, frozenset())
+                group_key(step, name="GUI effect step")
+                for step in gui_steps_by_chain.get(chain_id, frozenset())
             }
             if gui_steps != set(code_steps):
                 disabled_reason = EFFECT_ORDER_INCOMPLETE_REASON
 
         n_inputs = tuple(n_inputs_by_step.get(step, 1) for step in effective_steps)
         if disabled_reason is None and any(
-            int(count) > 1 and index != 0
+            count > 1 and index != 0
             for index, count in enumerate(n_inputs)
         ):
             disabled_reason = EFFECT_ORDER_MULTI_INPUT_REASON

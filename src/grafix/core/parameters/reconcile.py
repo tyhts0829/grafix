@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
 from typing import Literal
 
+from grafix.core.value_validation import exact_integer
+
+from .identity import group_key
 from .key import ParameterKey
 from .meta import ParamMeta
 
@@ -65,16 +68,16 @@ def build_group_fingerprints(
     label_by_group: dict[GroupKey, str | None] = {}
 
     for key, (meta, _state, _ordinal, label) in snapshot.items():
-        group = (str(key.op), str(key.site_id))
-        args_by_group.setdefault(group, set()).add(str(key.arg))
-        kinds_by_group.setdefault(group, {})[str(key.arg)] = str(meta.kind)
+        group = (key.op, key.site_id)
+        args_by_group.setdefault(group, set()).add(key.arg)
+        kinds_by_group.setdefault(group, {})[key.arg] = meta.kind
         if group not in label_by_group:
-            label_by_group[group] = str(label) if label is not None else None
+            label_by_group[group] = label
 
     out: dict[GroupKey, GroupFingerprint] = {}
     for group, args in args_by_group.items():
         out[group] = GroupFingerprint(
-            op=str(group[0]),
+            op=group[0],
             args=frozenset(args),
             kind_by_arg=kinds_by_group.get(group, {}),
             label=label_by_group.get(group),
@@ -126,8 +129,9 @@ def plan_group_reconciliation(
       自動採用する。最高点も同点なら該当 fresh を orphan とする。
     """
 
-    stale_list = sorted([(str(op), str(site_id)) for op, site_id in stale])
-    fresh_list = sorted([(str(op), str(site_id)) for op, site_id in fresh])
+    stale_list = sorted(group_key(group, name="stale group") for group in stale)
+    fresh_list = sorted(group_key(group, name="fresh group") for group in fresh)
+    minimum_score = exact_integer(min_score, name="min_score")
 
     stale_by_op: dict[str, list[GroupKey]] = {}
     for op, site_id in stale_list:
@@ -149,10 +153,10 @@ def plan_group_reconciliation(
                 continue
 
             score = _match_score(stale_fp, fresh_fp)
-            if score < int(min_score):
+            if score < minimum_score:
                 continue
 
-            scored.append((int(score), stale_group))
+            scored.append((score, stale_group))
 
         if not scored:
             continue
@@ -243,23 +247,6 @@ def plan_group_reconciliation(
     return ReconcilePlan(matches=tuple(matches), orphans=tuple(available_orphans))
 
 
-def match_groups(
-    *,
-    stale: Sequence[GroupKey],
-    fresh: Sequence[GroupKey],
-    fingerprints: Mapping[GroupKey, GroupFingerprint],
-    min_score: int = 15,
-) -> dict[GroupKey, GroupKey]:
-    """曖昧候補を除いた ``stale -> fresh`` の 1:1 対応を返す。"""
-
-    return plan_group_reconciliation(
-        stale=stale,
-        fresh=fresh,
-        fingerprints=fingerprints,
-        min_score=min_score,
-    ).mapping()
-
-
 __all__ = [
     "GroupFingerprint",
     "GroupKey",
@@ -267,6 +254,5 @@ __all__ = [
     "ReconcileOrphanReason",
     "ReconcilePlan",
     "build_group_fingerprints",
-    "match_groups",
     "plan_group_reconciliation",
 ]

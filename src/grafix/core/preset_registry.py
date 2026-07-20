@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
+from grafix.core.parameters.identity import identity_string
+from grafix.core.parameters.key import validate_parameter_identity
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.scene import SceneItem
 
@@ -17,10 +19,30 @@ _PRESET_PREFIX = "preset."
 
 
 @dataclass(frozen=True, slots=True)
+class PresetIdentity:
+    """`P(...)` が preset invoker へ渡す呼び出し identity。"""
+
+    name: str | None
+    key: str | int | None
+    instance_key: str | int | None
+    shared: bool
+
+    def __post_init__(self) -> None:
+        if self.name is not None:
+            identity_string(self.name, name="preset label")
+        validate_parameter_identity(
+            key=self.key,
+            instance_key=self.instance_key,
+            shared=self.shared,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PresetSpec:
     """preset 1 種類ぶんの静的情報。"""
 
     func: Callable[..., SceneItem]
+    invoker: Callable[..., SceneItem]
     display_op: str
     meta: Mapping[str, ParamMeta]
     param_order: tuple[str, ...]
@@ -31,15 +53,25 @@ class PresetSpec:
 
         if not callable(self.func):
             raise TypeError("preset func は callable である必要があります")
+        if not callable(self.invoker):
+            raise TypeError("preset invoker は callable である必要があります")
+        identity_string(self.display_op, name="preset display_op")
         object.__setattr__(self, "meta", MappingProxyType(dict(self.meta)))
-        object.__setattr__(self, "param_order", tuple(str(arg) for arg in self.param_order))
+        object.__setattr__(
+            self,
+            "param_order",
+            tuple(
+                identity_string(arg, name="preset param_order item")
+                for arg in self.param_order
+            ),
+        )
         object.__setattr__(self, "ui_visible", MappingProxyType(dict(self.ui_visible)))
 
 
 def preset_op(name: str) -> str:
     """callable 名を ParameterKey 用の canonical preset op にする。"""
 
-    return _PRESET_PREFIX + str(name)
+    return _PRESET_PREFIX + identity_string(name, name="preset name")
 
 
 class PresetRegistry:
@@ -53,12 +85,13 @@ class PresetRegistry:
     def revision(self) -> int:
         """登録または一括置換ごとに増える単調 revision。"""
 
-        return int(self._revision)
+        return self._revision
 
     def _register(
         self,
         name: str,
         func: Callable[..., SceneItem],
+        invoker: Callable[..., SceneItem],
         *,
         display_op: str,
         meta: dict[str, ParamMeta],
@@ -73,25 +106,29 @@ class PresetRegistry:
         このメソッドはデコレータ実装の内部からのみ呼ぶ。
         """
 
-        name_s = str(name)
+        name_s = identity_string(name, name="preset name")
         op = preset_op(name_s)
         if op in self._items:
             raise ValueError(f"preset '{name_s}' は既に登録されている")
         spec = PresetSpec(
             func=func,
-            display_op=str(display_op),
+            invoker=invoker,
+            display_op=identity_string(display_op, name="preset display_op"),
             meta=dict(meta),
-            param_order=tuple(str(a) for a in param_order),
+            param_order=tuple(
+                identity_string(arg, name="preset param_order item")
+                for arg in param_order
+            ),
             ui_visible={} if ui_visible is None else dict(ui_visible),
         )
         self._items[op] = spec
         self._revision += 1
 
     def __contains__(self, op: object) -> bool:
-        return str(op) in self._items
+        return isinstance(op, str) and op in self._items
 
     def __getitem__(self, op: str) -> PresetSpec:
-        return self._items[str(op)]
+        return self._items[op]
 
     def items(self) -> ItemsView[str, PresetSpec]:
         """登録済みpreset specのviewを返す。"""
@@ -105,16 +142,9 @@ class PresetRegistry:
         for op, spec in specs.items():
             if not isinstance(spec, PresetSpec):
                 raise TypeError("preset spec は PresetSpec である必要があります")
-            normalized[str(op)] = spec
+            normalized[identity_string(op, name="preset op")] = spec
         self._items = normalized
         self._revision += 1
-
-    def get(self, name: str) -> Callable[..., SceneItem] | None:
-        """name に対応する callable preset を返す。未登録なら None を返す。"""
-
-        # P.<name> の hot lookup では helper call を挟まず、一度の dict lookup にする。
-        spec = self._items.get(_PRESET_PREFIX + str(name))
-        return None if spec is None else spec.func
 
 
 preset_registry = PresetRegistry()
@@ -122,7 +152,10 @@ preset_registry = PresetRegistry()
 
 
 __all__ = [
+    "PresetIdentity",
     "PresetRegistry",
+    "PresetSpec",
     "UiVisiblePred",
+    "preset_op",
     "preset_registry",
 ]

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
+from grafix.core.effects.buffer import buffer as buffer_impl
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
 
@@ -33,6 +35,30 @@ def test_buffer_distance_zero_is_noop() -> None:
     expected = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
     np.testing.assert_allclose(realized.coords, expected, rtol=0.0, atol=1e-6)
     assert realized.offsets.tolist() == [0, 2]
+
+
+@pytest.mark.parametrize("quad_segs", [0, -1, 257])
+def test_buffer_rejects_quad_segs_outside_supported_range(
+    quad_segs: int,
+) -> None:
+    base = realize(G.buffer_test_segment_xy())
+
+    with pytest.raises(ValueError, match="quad_segs"):
+        buffer_impl(
+            (base.coords, base.offsets),
+            distance=0.1,
+            quad_segs=quad_segs,
+        )
+
+
+def test_buffer_rejects_unknown_join_and_nonfinite_distance() -> None:
+    base = realize(G.buffer_test_segment_xy())
+    geometry = (base.coords, base.offsets)
+
+    with pytest.raises(ValueError, match="join"):
+        buffer_impl(geometry, join="unknown")
+    with pytest.raises(ValueError, match="distance"):
+        buffer_impl(geometry, distance=float("nan"))
 
 
 def test_buffer_expands_bounds_xy() -> None:

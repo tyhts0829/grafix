@@ -20,14 +20,11 @@ from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.primitive_registry import primitive_registry
 from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
 from grafix.core.resource_budget import (
-    DEFAULT_RESOURCE_BUDGET,
-    ResourceBudget,
     ensure_geometry_output,
     resource_budget_context,
 )
 from grafix.core.runtime_limits import (
-    DEFAULT_CPU_CACHE_BYTES,
-    DEFAULT_CPU_CACHE_ENTRIES,
+    DEFAULT_FINAL_RUNTIME_LIMITS,
     RuntimeLimits,
 )
 
@@ -37,8 +34,6 @@ RegistryRevision: TypeAlias = tuple[int, int]
 GeometryCacheKey: TypeAlias = tuple[GeometryId, RegistryRevision]
 """CPU/GPU cache で共有する、operation 実装の世代を含むキー。"""
 
-DEFAULT_MAX_CACHE_BYTES = DEFAULT_CPU_CACHE_BYTES
-DEFAULT_MAX_CACHE_ENTRIES = DEFAULT_CPU_CACHE_ENTRIES
 _MAX_PREPARED_GEOMETRIES = 4096
 
 
@@ -120,14 +115,8 @@ class RealizeSession:
 
     Parameters
     ----------
-    max_cache_bytes : int, optional
-        cache に保持する配列の合計 byte 上限。0 は cache を無効化する。
-    max_cache_entries : int, optional
-        cache に保持する評価結果の件数上限。0 は cache を無効化する。
-    resource_budget : ResourceBudget, optional
-        各 operation が大規模配列を確保する前に適用する頂点・線・byte 上限。
-    runtime_limits : RuntimeLimits or None, optional
-        operation/scene/cache 上限。指定時は個別の cache/budget 引数より優先する。
+    runtime_limits : RuntimeLimits, optional
+        operation/scene/cache/capture 上限。既定は final 用の標準 profile。
     profiler : PerformanceRecorder or None, optional
         operation/layer/cache の実測値を受け取る recorder。
 
@@ -140,40 +129,13 @@ class RealizeSession:
     def __init__(
         self,
         *,
-        max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
-        max_cache_entries: int = DEFAULT_MAX_CACHE_ENTRIES,
-        resource_budget: ResourceBudget = DEFAULT_RESOURCE_BUDGET,
-        runtime_limits: RuntimeLimits | None = None,
+        runtime_limits: RuntimeLimits = DEFAULT_FINAL_RUNTIME_LIMITS,
         profiler: PerformanceRecorder | None = None,
     ) -> None:
-        if runtime_limits is not None:
-            if not isinstance(runtime_limits, RuntimeLimits):
-                raise TypeError("runtime_limits は RuntimeLimits である必要がある")
-            max_cache_bytes = int(runtime_limits.cpu_cache_bytes)
-            max_cache_entries = int(runtime_limits.cpu_cache_entries)
-            resource_budget = runtime_limits.per_operation
-        max_bytes = int(max_cache_bytes)
-        if max_bytes < 0:
-            raise ValueError("max_cache_bytes は 0 以上である必要がある")
-        max_entries = int(max_cache_entries)
-        if max_entries < 0:
-            raise ValueError("max_cache_entries は 0 以上である必要がある")
-        if not isinstance(resource_budget, ResourceBudget):
-            raise TypeError("resource_budget は ResourceBudget である必要がある")
+        if not isinstance(runtime_limits, RuntimeLimits):
+            raise TypeError("runtime_limits は RuntimeLimits である必要がある")
 
-        self._max_cache_bytes = max_bytes
-        self._max_cache_entries = max_entries
-        self._resource_budget = resource_budget
-        self._runtime_limits = (
-            runtime_limits
-            if runtime_limits is not None
-            else RuntimeLimits(
-                per_operation=resource_budget,
-                scene=resource_budget,
-                cpu_cache_bytes=max_bytes,
-                cpu_cache_entries=max_entries,
-            )
-        )
+        self._runtime_limits = runtime_limits
         self._profiler = profiler
         self._lock = threading.Lock()
         self._cache_transaction_local = threading.local()
@@ -193,24 +155,6 @@ class RealizeSession:
 
     def __exit__(self, *_exc_info: object) -> None:
         self.close()
-
-    @property
-    def max_cache_bytes(self) -> int:
-        """cache の byte 上限を返す。"""
-
-        return self._max_cache_bytes
-
-    @property
-    def max_cache_entries(self) -> int:
-        """cache の entry 数上限を返す。"""
-
-        return self._max_cache_entries
-
-    @property
-    def resource_budget(self) -> ResourceBudget:
-        """operation の配列確保前検査に使う resource budget を返す。"""
-
-        return self._resource_budget
 
     @property
     def runtime_limits(self) -> RuntimeLimits:
@@ -306,7 +250,7 @@ class RealizeSession:
         if cached is not None:
             return cached, key
 
-        cacheable = self._is_geometry_cacheable(geometry, revision)
+        cacheable = self._geometry_cacheability(geometry, revision)
         result = self._realize(geometry, revision, cacheable=cacheable)
         if cacheable:
             result_key = key
@@ -317,15 +261,6 @@ class RealizeSession:
                 generation = self._uncached_generation
             result_key = (f"{geometry.id}:uncached:{generation}", revision)
         return result, result_key
-
-    def _is_geometry_cacheable(
-        self,
-        geometry: Geometry,
-        revision: RegistryRevision,
-    ) -> bool:
-        """node自身と全入力がcontent cache契約かを返す。"""
-
-        return self._geometry_cacheability(geometry, revision)
 
     def _geometry_cacheability(
         self,
@@ -448,7 +383,7 @@ class RealizeSession:
                             current_cacheable = (
                                 True
                                 if started.cacheable
-                                else self._is_geometry_cacheable(current, revision)
+                                else self._geometry_cacheability(current, revision)
                             )
                             started.next_input = 1
                             continue
@@ -469,7 +404,7 @@ class RealizeSession:
                     current_cacheable = (
                         True
                         if parent.cacheable
-                        else self._is_geometry_cacheable(current, revision)
+                        else self._geometry_cacheability(current, revision)
                     )
                     parent.next_input += 1
                     continue
@@ -664,7 +599,7 @@ class RealizeSession:
         try:
             yield
         finally:
-            profiler.record_operation(str(op), time.perf_counter_ns() - started_ns)
+            profiler.record_operation(op, time.perf_counter_ns() - started_ns)
 
     def _evaluate_geometry_node(
         self,
@@ -672,7 +607,7 @@ class RealizeSession:
         realized_inputs: Sequence[RealizedGeometry],
     ) -> RealizedGeometry:
         op = geometry.op
-        with resource_budget_context(self._resource_budget):
+        with resource_budget_context(self._runtime_limits.per_operation):
             if op == "concat":
                 def evaluate() -> RealizedGeometry:
                     ensure_geometry_output(
@@ -731,16 +666,18 @@ class RealizeSession:
         result: RealizedGeometry,
     ) -> None:
         size = result.byte_size
-        if size > self._max_cache_bytes:
+        cache_byte_limit = self._runtime_limits.cpu_cache_bytes
+        cache_entry_limit = self._runtime_limits.cpu_cache_entries
+        if size > cache_byte_limit:
             emit_operation_diagnostic(
                 op="runtime.cpu_cache",
                 original_value=size,
-                effective_value=self._max_cache_bytes,
+                effective_value=cache_byte_limit,
                 reason="result exceeded the CPU cache limit and was not cached",
                 severity="warning",
             )
             return
-        if self._max_cache_entries == 0:
+        if cache_entry_limit == 0:
             return
 
         previous = self._cache.pop(key, None)
@@ -748,11 +685,11 @@ class RealizeSession:
             self._cache_bytes -= previous.byte_size
 
         projected_bytes = self._cache_bytes + size
-        byte_limit_reached = projected_bytes > self._max_cache_bytes
+        byte_limit_reached = projected_bytes > cache_byte_limit
         evicted_count = 0
         while self._cache and (
-            len(self._cache) >= self._max_cache_entries
-            or self._cache_bytes + size > self._max_cache_bytes
+            len(self._cache) >= cache_entry_limit
+            or self._cache_bytes + size > cache_byte_limit
         ):
             _, evicted = self._cache.popitem(last=False)
             self._cache_bytes -= evicted.byte_size
@@ -766,7 +703,7 @@ class RealizeSession:
             emit_operation_diagnostic(
                 op="runtime.cpu_cache",
                 original_value=projected_bytes,
-                effective_value=self._max_cache_bytes,
+                effective_value=cache_byte_limit,
                 reason=f"CPU cache limit evicted {evicted_count} entrie(s)",
                 severity="info",
             )
@@ -794,8 +731,6 @@ def realize(
 
 __all__ = [
     "CacheStats",
-    "DEFAULT_MAX_CACHE_BYTES",
-    "DEFAULT_MAX_CACHE_ENTRIES",
     "GeometryCacheKey",
     "PerformanceRecorder",
     "RealizeError",

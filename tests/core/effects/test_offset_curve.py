@@ -264,16 +264,14 @@ def test_offset_curve_rejects_nonplanar_or_rank_zero_input() -> None:
         (1.0, 0),
     ],
 )
-def test_offset_curve_invalid_growth_parameter_is_identity(
+def test_offset_curve_rejects_invalid_growth_parameter(
     distance: float,
     count: int,
 ) -> None:
     geometry = _geometry([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)])
 
-    result = offset_curve(geometry, distance=distance, count=count)
-
-    assert result[0] is geometry[0]
-    assert result[1] is geometry[1]
+    with pytest.raises(ValueError):
+        offset_curve(geometry, distance=distance, count=count)
 
 
 def test_offset_curve_empty_is_identity_and_nonfinite_geometry_is_rejected() -> None:

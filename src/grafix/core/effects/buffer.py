@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Literal, cast
 
 import numpy as np
@@ -10,7 +9,8 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
-from .util import empty_geom
+from .argument_validation import integer_scalar
+from .util import canonical_planar_frame, close_curve, empty_geom
 
 buffer_meta = {
     "join": ParamMeta(
@@ -43,143 +43,6 @@ buffer_meta = {
 _JOIN_STYLE_SET = {"mitre", "round", "bevel"}
 _AUTO_CLOSE_THRESHOLD = 1e-3
 _QUAD_SEGS_MAX = 256
-
-
-@dataclass(frozen=True, slots=True)
-class _PlaneBasis:
-    """平面の 2D 基底を表現する（3D <-> 2D 変換用）。"""
-
-    origin: np.ndarray  # (3,)
-    u: np.ndarray  # (3,)
-    v: np.ndarray  # (3,)
-
-
-def _close_curve(points: np.ndarray, threshold: float) -> np.ndarray:
-    """端点が閾値以内なら、始点を終端に複製して閉じる。"""
-    if points.shape[0] < 2:
-        return points
-    dist = float(np.linalg.norm(points[0] - points[-1]))
-    if dist <= float(threshold):
-        return np.concatenate([points[:-1], points[0:1]], axis=0)
-    return points
-
-
-def _fit_plane_basis(points: np.ndarray) -> _PlaneBasis:
-    """点群の推定平面を返す（2 点は安定な補助平面を作る）。"""
-    p = points.astype(np.float64, copy=False)
-    n = int(p.shape[0])
-
-    if n <= 0:
-        return _PlaneBasis(
-            origin=np.zeros((3,), dtype=np.float64),
-            u=np.array([1.0, 0.0, 0.0], dtype=np.float64),
-            v=np.array([0.0, 1.0, 0.0], dtype=np.float64),
-        )
-
-    origin = p.mean(axis=0)
-    if n == 1:
-        return _PlaneBasis(
-            origin=np.asarray(origin, dtype=np.float64),
-            u=np.array([1.0, 0.0, 0.0], dtype=np.float64),
-            v=np.array([0.0, 1.0, 0.0], dtype=np.float64),
-        )
-
-    if n == 2:
-        d = p[1] - p[0]
-        d_norm = float(np.linalg.norm(d))
-        if not np.isfinite(d_norm) or d_norm <= 0.0:
-            return _PlaneBasis(
-                origin=np.asarray(origin, dtype=np.float64),
-                u=np.array([1.0, 0.0, 0.0], dtype=np.float64),
-                v=np.array([0.0, 1.0, 0.0], dtype=np.float64),
-            )
-
-        # 2 点だけの場合、平面は一意に決まらない。
-        # 旧実装の「XY へ射影→復元」に近い体験に寄せるため、
-        # もっとも変化が小さい軸を「法線」扱いして主平面（XY/XZ/YZ）へ寄せる。
-        abs_d = np.abs(d)
-        if float(abs_d[2]) <= float(abs_d[0]) and float(abs_d[2]) <= float(abs_d[1]):
-            normal = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        elif float(abs_d[1]) <= float(abs_d[0]) and float(abs_d[1]) <= float(abs_d[2]):
-            normal = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-        else:
-            normal = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-
-        d_in_plane = d - float(np.dot(d, normal)) * normal
-        u_norm = float(np.linalg.norm(d_in_plane))
-        if not np.isfinite(u_norm) or u_norm <= 0.0:
-            return _PlaneBasis(
-                origin=np.asarray(origin, dtype=np.float64),
-                u=np.array([1.0, 0.0, 0.0], dtype=np.float64),
-                v=np.array([0.0, 1.0, 0.0], dtype=np.float64),
-            )
-        u_axis = d_in_plane / u_norm
-        v_axis = np.cross(normal, u_axis)
-
-        return _PlaneBasis(origin=np.asarray(origin, dtype=np.float64), u=u_axis, v=v_axis)
-
-    centered = p - origin
-    _u, s, vh = np.linalg.svd(centered, full_matrices=False)
-
-    # 3 点以上でも、実質的に 1 次元（ほぼ一直線）の場合は平面が一意に決まらない。
-    # 2 点ケースと同様に、主平面（XY/XZ/YZ）へ寄せた安定な補助平面を作る。
-    if s.shape[0] >= 2:
-        s0 = float(s[0])
-        s1 = float(s[1])
-        if np.isfinite(s0) and s0 > 0.0 and (not np.isfinite(s1) or s1 <= 1e-8 * s0):
-            d = vh[0]
-            abs_d = np.abs(d)
-            if float(abs_d[2]) <= float(abs_d[0]) and float(abs_d[2]) <= float(abs_d[1]):
-                normal = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-            elif float(abs_d[1]) <= float(abs_d[0]) and float(abs_d[1]) <= float(abs_d[2]):
-                normal = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-            else:
-                normal = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-
-            d_in_plane = d - float(np.dot(d, normal)) * normal
-            u_norm = float(np.linalg.norm(d_in_plane))
-            if not np.isfinite(u_norm) or u_norm <= 0.0:
-                return _PlaneBasis(
-                    origin=np.asarray(origin, dtype=np.float64),
-                    u=np.array([1.0, 0.0, 0.0], dtype=np.float64),
-                    v=np.array([0.0, 1.0, 0.0], dtype=np.float64),
-                )
-            u_axis = d_in_plane / u_norm
-            v_axis = np.cross(normal, u_axis)
-            return _PlaneBasis(origin=origin, u=u_axis, v=v_axis)
-
-    normal = vh[-1]
-    n_norm = float(np.linalg.norm(normal))
-    if not np.isfinite(n_norm) or n_norm <= 0.0:
-        normal = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-    else:
-        normal = normal / n_norm
-
-    ref = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-    if abs(float(np.dot(ref, normal))) > 0.9:
-        ref = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-    u_axis = ref - float(np.dot(ref, normal)) * normal
-    u_norm = float(np.linalg.norm(u_axis))
-    if not np.isfinite(u_norm) or u_norm <= 0.0:
-        ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        u_axis = ref - float(np.dot(ref, normal)) * normal
-        u_norm = float(np.linalg.norm(u_axis))
-    u_axis = u_axis / u_norm
-    v_axis = np.cross(normal, u_axis)
-
-    return _PlaneBasis(origin=origin, u=u_axis, v=v_axis)
-
-
-def _project_to_2d(points: np.ndarray, basis: _PlaneBasis) -> np.ndarray:
-    p = points.astype(np.float64, copy=False) - basis.origin
-    x = p @ basis.u
-    y = p @ basis.v
-    return np.stack([x, y], axis=1)
-
-
-def _lift_to_3d(coords_2d: np.ndarray, basis: _PlaneBasis) -> np.ndarray:
-    xy = coords_2d.astype(np.float64, copy=False)
-    return basis.origin[None, :] + xy[:, 0:1] * basis.u[None, :] + xy[:, 1:2] * basis.v[None, :]
 
 
 def _extract_vertices_2d(buffered, *, which: str) -> list[np.ndarray]:
@@ -274,46 +137,53 @@ def buffer(
 
     Notes
     -----
-    旧実装の挙動を最小限で踏襲する:
     - 端点が近い線は自動で閉じる（閾値 `1e-3`）。
     - distance==0 は no-op 扱いとする。
+    - rank 1 の直線には world axis から決めた補助平面を使う。
+    - rank 2/3 の有限入力は canonical best-fit plane へ射影して処理する。
+      `partition` と異なり、平面残差による拒否は行わない。
     """
-    coords, offsets = g
-    if coords.shape[0] == 0:
-        return coords, offsets
-
     d = float(distance)
-    if not np.isfinite(d) or d == 0.0:
+    if not np.isfinite(d):
+        raise ValueError("buffer: distance は有限値である必要がある")
+    if not isinstance(join, str):
+        raise TypeError("buffer: join は str である必要がある")
+    if join not in _JOIN_STYLE_SET:
+        raise ValueError(f"buffer: 未知の join です: {join!r}")
+    quad_segs_i = integer_scalar(quad_segs, name="buffer: quad_segs")
+    if not 1 <= quad_segs_i <= _QUAD_SEGS_MAX:
+        raise ValueError(
+            f"buffer: quad_segs は 1 以上 {_QUAD_SEGS_MAX} 以下である必要がある"
+        )
+
+    coords, offsets = g
+    if coords.shape[0] == 0 or d == 0.0:
         return coords, offsets
     abs_d = abs(d)
 
-    join_style_raw = str(join)
-    if join_style_raw not in _JOIN_STYLE_SET:
-        return coords, offsets
-    join_style = cast(Literal["mitre", "round", "bevel"], join_style_raw)
-
-    quad_segs_i = int(quad_segs)
-    if quad_segs_i < 1:
-        quad_segs_i = 1
-    if quad_segs_i > _QUAD_SEGS_MAX:
-        quad_segs_i = _QUAD_SEGS_MAX
+    join_style = cast(Literal["mitre", "round", "bevel"], join)
 
     # ローカル import（effect 未使用時に shapely import を避ける）
     from shapely.geometry import LineString, MultiLineString  # type: ignore[import-not-found]
 
     out_lines: list[np.ndarray] = []
     if bool(union):
-        basis = _fit_plane_basis(coords)
+        frame = canonical_planar_frame(
+            coords,
+            offsets,
+            allow_linear=True,
+        )
 
         lines2: list[np.ndarray] = []
-        for i in range(int(offsets.size) - 1):
-            s = int(offsets[i])
-            e = int(offsets[i + 1])
-            line3 = coords[s:e]
-            if line3.shape[0] < 2:
-                continue
-            line3 = _close_curve(line3, _AUTO_CLOSE_THRESHOLD)
-            lines2.append(_project_to_2d(line3, basis))
+        if frame.valid:
+            for i in range(int(offsets.size) - 1):
+                s = int(offsets[i])
+                e = int(offsets[i + 1])
+                line3 = coords[s:e]
+                if line3.shape[0] < 2:
+                    continue
+                line3 = close_curve(line3, _AUTO_CLOSE_THRESHOLD)
+                lines2.append(frame.project(line3))
 
         if lines2:
             buffered = MultiLineString(lines2).buffer(  # type: ignore[arg-type]
@@ -325,7 +195,7 @@ def buffer(
             for v2 in _extract_vertices_2d(buffered, which=which):
                 if v2.shape[0] < 2:
                     continue
-                v3 = _lift_to_3d(v2[:, :2], basis).astype(np.float32, copy=False)
+                v3 = frame.lift(v2[:, :2]).astype(np.float32, copy=False)
                 out_lines.append(v3)
     else:
         for i in range(int(offsets.size) - 1):
@@ -335,9 +205,11 @@ def buffer(
             if line3.shape[0] < 2:
                 continue
 
-            line3 = _close_curve(line3, _AUTO_CLOSE_THRESHOLD)
-            basis = _fit_plane_basis(line3)
-            line2 = _project_to_2d(line3, basis)
+            line3 = close_curve(line3, _AUTO_CLOSE_THRESHOLD)
+            frame = canonical_planar_frame(line3, allow_linear=True)
+            if not frame.valid:
+                continue
+            line2 = frame.project(line3)
 
             buffered = LineString(line2).buffer(  # type: ignore[arg-type]
                 abs_d,
@@ -348,7 +220,7 @@ def buffer(
             for v2 in _extract_vertices_2d(buffered, which=which):
                 if v2.shape[0] < 2:
                     continue
-                v3 = _lift_to_3d(v2[:, :2], basis).astype(np.float32, copy=False)
+                v3 = frame.lift(v2[:, :2]).astype(np.float32, copy=False)
                 out_lines.append(v3)
 
     if keep_original:

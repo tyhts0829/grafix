@@ -15,6 +15,14 @@ from grafix.interactive.parameter_gui import store_bridge
 from grafix.interactive.parameter_gui.parameter_filter import ParameterFilterState
 
 
+def _layout_rows(group_layout, model_rows):
+    return [
+        model_rows[item.row_index]
+        for block in group_layout
+        for item in block.items
+    ]
+
+
 def _store_with_rows(count: int) -> tuple[ParamStore, list[FrameParamRecord]]:
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=float(count))
     records = [
@@ -28,6 +36,7 @@ def _store_with_rows(count: int) -> tuple[ParamStore, list[FrameParamRecord]]:
             meta=meta,
             explicit=False,
             effective=float(index),
+            source="code",
         )
         for index in range(count)
     ]
@@ -41,21 +50,26 @@ def test_1000_rows_reuse_one_table_model_for_60_frames(monkeypatch) -> None:
     store_bridge.clear_parameter_table_model_cache()
     render_calls = 0
 
-    def fake_render(rows, **_kwargs):
+    def fake_render(*, group_layout, model_rows, **_kwargs):
         nonlocal render_calls
         render_calls += 1
+        rows = _layout_rows(group_layout, model_rows)
         assert len(rows) == 1_000
-        assert _kwargs["group_layout"] is first.group_layout
+        assert group_layout is first.group_layout
         return False, list(rows)
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
 
     first = store_bridge._parameter_table_model_for_store(store)
     for _ in range(60):
+        view = store_bridge.parameter_table_view_for_store(
+            store,
+            show_inactive_params=True,
+        )
         assert (
             store_bridge.render_store_parameter_table(
                 store,
-                show_inactive_params=True,
+                table_view=view,
             )
             is False
         )
@@ -216,8 +230,8 @@ def test_search_trigram_index_preserves_partial_and_dynamic_matches() -> None:
     assert dynamic.filtered_count == 1
 
 
-@pytest.mark.parametrize("query", ("-", "cc-", "c-", "midi-", "idi-", "di-", "i-"))
-def test_search_index_preserves_partial_negative_midi_matches(query: str) -> None:
+@pytest.mark.parametrize("query", ("127", "cc 127", "cc", "midi"))
+def test_search_index_matches_valid_midi_cc(query: str) -> None:
     store, records = _store_with_rows(3)
     store_bridge.clear_parameter_table_model_cache()
     assert update_state_from_ui(
@@ -225,7 +239,7 @@ def test_search_index_preserves_partial_negative_midi_matches(query: str) -> Non
         records[0].key,
         records[0].base,
         meta=records[0].meta,
-        cc_key=-1,
+        cc_key=127,
     )[0]
 
     view = store_bridge.parameter_table_view_for_store(
@@ -244,15 +258,19 @@ def test_unchanged_render_does_not_consume_returned_rows(monkeypatch) -> None:
         def __iter__(self):
             raise AssertionError("unchanged rows should not be restored")
 
-    def fake_render(_rows, **_kwargs):
+    def fake_render(**_kwargs):
         return False, RowsThatMustNotBeConsumed()
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
 
+    view = store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=True,
+    )
     assert (
         store_bridge.render_store_parameter_table(
             store,
-            show_inactive_params=True,
+            table_view=view,
         )
         is False
     )
@@ -262,13 +280,20 @@ def test_changed_render_refreshes_only_value_without_model_rebuild(monkeypatch) 
     store, records = _store_with_rows(1_000)
     store_bridge.clear_parameter_table_model_cache()
 
-    def fake_render(rows, **_kwargs):
+    def fake_render(*, group_layout, model_rows, **_kwargs):
+        rows = _layout_rows(group_layout, model_rows)
         updated = list(rows)
         updated[0] = replace(updated[0], ui_value=123.5)
         return True, updated
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
-    assert store_bridge.render_store_parameter_table(store) is True
+    view = store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=True,
+    )
+    assert (
+        store_bridge.render_store_parameter_table(store, table_view=view) is True
+    )
 
     model = store_bridge._parameter_table_model_for_store(store)
     index = model.row_index_by_key[records[0].key]
@@ -282,20 +307,23 @@ def test_filtered_render_keeps_model_indices_for_layout_and_applies_visible_edit
     store, records = _store_with_rows(3)
     store_bridge.clear_parameter_table_model_cache()
 
-    def fake_render(rows, **kwargs):
+    def fake_render(*, group_layout, model_rows, **_kwargs):
+        rows = _layout_rows(group_layout, model_rows)
         assert [row.arg for row in rows] == ["value_0001"]
-        model_rows = kwargs["model_rows"]
-        layout = kwargs["group_layout"]
-        assert model_rows[layout[0].items[0].row_index] is rows[0]
+        assert model_rows[group_layout[0].items[0].row_index] is rows[0]
         updated = [replace(rows[0], ui_value=99.0)]
         return True, updated
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
+    view = store_bridge.parameter_table_view_for_store(
+        store,
+        show_inactive_params=True,
+        filter_state=ParameterFilterState(query="value_0001"),
+    )
     assert (
         store_bridge.render_store_parameter_table(
             store,
-            show_inactive_params=True,
-            filter_state=ParameterFilterState(query="value_0001"),
+            table_view=view,
         )
         is True
     )
@@ -480,6 +508,7 @@ def test_default_active_view_reevaluates_only_changed_parameter_group(
             meta=meta,
             explicit=False,
             effective=float(index),
+            source="code",
         )
         for index in range(100)
     ]
@@ -543,15 +572,14 @@ def test_favorite_is_view_overlay_and_does_not_rebuild_static_model(
 
     captured_favorite: list[bool] = []
 
-    def fake_render(rows, **_kwargs):
+    def fake_render(*, group_layout, model_rows, **_kwargs):
+        rows = _layout_rows(group_layout, model_rows)
         captured_favorite[:] = [bool(row.favorite) for row in rows]
         return False, list(rows)
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
     store_bridge.render_store_parameter_table(
         store,
-        show_inactive_params=True,
-        filter_state=ParameterFilterState(favorite_only=True),
         table_view=favorite_view,
     )
     assert captured_favorite == [True]

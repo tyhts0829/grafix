@@ -7,7 +7,14 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import Literal
+
+from .validation import (
+    ParamKind,
+    validate_param_choices,
+    validate_param_kind,
+    validate_param_range,
+)
 
 ParamScale = Literal["linear", "log"]
 
@@ -39,9 +46,9 @@ class ParamMeta:
     GUI・stub generator へ伝える semantic hint である。
     """
 
-    kind: str  # "float" | "int" | "bool" | "str" | "font" | "choice" | "vec3" | "rgb"
-    ui_min: Any | None = None
-    ui_max: Any | None = None
+    kind: ParamKind
+    ui_min: int | float | None = None
+    ui_max: int | float | None = None
     choices: Sequence[str] | None = None
     display_name: str | None = None
     description: str | None = None
@@ -56,12 +63,20 @@ class ParamMeta:
     def __post_init__(self) -> None:
         """semantic hint を検証・正規化し、可変参照を残さない。"""
 
-        if self.choices is not None:
-            object.__setattr__(
-                self,
-                "choices",
-                tuple(str(choice) for choice in self.choices),
-            )
+        kind = validate_param_kind(self.kind)
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(
+            self,
+            "choices",
+            validate_param_choices(kind, self.choices),
+        )
+        ui_min, ui_max = validate_param_range(
+            kind,
+            self.ui_min,
+            self.ui_max,
+        )
+        object.__setattr__(self, "ui_min", ui_min)
+        object.__setattr__(self, "ui_max", ui_max)
 
         for field, value in (
             ("display_name", self.display_name),
@@ -132,11 +147,13 @@ def merge_code_meta_with_stored_gui_meta(
         return stored_meta
     if _code_owned_fields(code_meta) == _code_owned_fields(stored_meta):
         return stored_meta
-    return replace(
-        code_meta,
-        ui_min=stored_meta.ui_min,
-        ui_max=stored_meta.ui_max,
-    )
+    if code_meta.kind == stored_meta.kind:
+        return replace(
+            code_meta,
+            ui_min=stored_meta.ui_min,
+            ui_max=stored_meta.ui_max,
+        )
+    return code_meta
 
 
 __all__ = [

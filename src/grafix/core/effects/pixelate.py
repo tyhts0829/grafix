@@ -8,7 +8,8 @@ from numba import njit  # type: ignore[attr-defined, import-untyped]
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import empty_geom
+from .argument_validation import finite_vec3
+from .util import empty_geom, round_half_away_from_zero
 
 MAX_TOTAL_VERTICES = 10_000_000
 
@@ -25,12 +26,6 @@ pixelate_meta = {
         description="X と Y が同時に変わる格子移動を直角の二線分へ分解する順序。",
     ),
 }
-
-
-def _round_half_away_from_zero(values: np.ndarray) -> np.ndarray:
-    """0.5 境界を絶対値方向へ丸める（half away from zero）。"""
-    return np.sign(values) * np.floor(np.abs(values) + 0.5)
-
 
 @njit(cache=True)
 def _pixelate_line_length(ix: np.ndarray, iy: np.ndarray, iz: np.ndarray) -> int:
@@ -248,7 +243,7 @@ def pixelate(
     g : tuple[np.ndarray, np.ndarray]
         入力実体ジオメトリ（coords, offsets）。
     step : tuple[float, float, float], default (1.0, 1.0, 1.0)
-        各軸の格子間隔 (sx, sy, sz)。いずれかが 0 以下なら no-op。
+        各軸の正の有限な格子間隔 (sx, sy, sz)。
     corner : {"auto","xy","yx"}, default "auto"
         対角（x と y が同時に動く）を 2 手へ分解するときの順序。
         `"auto"` は major axis first（現状互換）。
@@ -265,23 +260,25 @@ def pixelate(
     - Z は `step[2]` でスナップした後、各入力セグメントの階段ステップ数に沿って線形補間する。
     - 対角の分解順序は `corner` に従う。
     """
+    sx, sy, sz = finite_vec3(step, name="pixelate: step")
+    if not all(value > 0.0 for value in (sx, sy, sz)):
+        raise ValueError("pixelate: step は正の有限値3要素である必要がある")
+
+    if not isinstance(corner, str):
+        raise TypeError("pixelate: corner は str である必要がある")
+    if corner not in {"auto", "xy", "yx"}:
+        raise ValueError(f"pixelate: 未知の corner です: {corner!r}")
+    corner_s = corner
+    corner_mode = 0 if corner_s == "auto" else 1 if corner_s == "xy" else 2
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    sx, sy, sz = float(step[0]), float(step[1]), float(step[2])
-    if sx <= 0.0 or sy <= 0.0 or sz <= 0.0:
-        return coords, offsets
-
-    corner_s = str(corner)
-    if corner_s not in {"auto", "xy", "yx"}:
-        return coords, offsets
-    corner_mode = 0 if corner_s == "auto" else 1 if corner_s == "xy" else 2
-
     step_vec = np.array([sx, sy, sz], dtype=np.float64)
     coords64 = coords.astype(np.float64, copy=False)
     q = coords64 / step_vec
-    q_rounded = _round_half_away_from_zero(q)
+    q_rounded = round_half_away_from_zero(q)
     grid = q_rounded.astype(np.int64, copy=False)
 
     ix_all = grid[:, 0]

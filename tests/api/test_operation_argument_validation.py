@@ -37,6 +37,30 @@ def test_valid_choice_and_reserved_arguments_are_accepted() -> None:
     assert effect.steps[0][0] == "scale"
 
 
+@pytest.mark.parametrize("invalid", ["false", "true", 0, 1, None])
+def test_primitive_and_effect_require_exact_bool_activate(invalid: object) -> None:
+    with pytest.raises(TypeError, match="exact bool"):
+        G.line(activate=invalid)
+    with pytest.raises(TypeError, match="exact bool"):
+        E.scale(activate=invalid)
+    with pytest.raises(TypeError, match="exact bool"):
+        E.scale().rotate(activate=invalid)
+
+
+@pytest.mark.parametrize("invalid", ["false", 1])
+def test_operation_selectors_require_exact_bool_activate(invalid: object) -> None:
+    with pytest.raises(TypeError, match="exact bool"):
+        G.select(
+            target="line",
+            params_by_target={"line": {"activate": invalid}},
+        )
+    with pytest.raises(TypeError, match="exact bool"):
+        E.select(
+            target="scale",
+            params_by_target={"scale": {"activate": invalid}},
+        )
+
+
 def test_var_keyword_operation_keeps_dynamic_authoring_contract() -> None:
     spec = OpSpec(
         evaluator=lambda: None,

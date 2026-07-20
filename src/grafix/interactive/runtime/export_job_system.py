@@ -19,27 +19,31 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from math import isfinite
 from pathlib import Path
 from typing import Any
 
 from grafix.core.capture_provenance import CaptureProvenance
+from grafix.core.export_format import ExportFormat
+from grafix.core.gcode_params import GCodeParams
 from grafix.core.lifecycle import CleanupErrors
 from grafix.core.pipeline import RealizedLayer
-from grafix.core.resource_budget import DEFAULT_RESOURCE_BUDGET
-from grafix.core.runtime_config import GCodeExportConfig
-from grafix.core.runtime_limits import RuntimeLimits
+from grafix.core.runtime_limits import DEFAULT_FINAL_RUNTIME_LIMITS, RuntimeLimits
+from grafix.core.value_validation import (
+    exact_integer,
+    exact_string_choice,
+    finite_real,
+    positive_integer_pair,
+    rgb01_tuple,
+)
 from grafix.export.capture import CaptureService
 
 _WORKER_JOIN_TIMEOUT_S = 0.5
 _PARENT_TIMEOUT_GRACE_S = 0.25
 _COMPLETED_RESULT_LIMIT = 64
-_DEFAULT_PENDING_JOB_LIMIT = 16
-_DEFAULT_MAX_RETAINED_BYTES = int(DEFAULT_RESOURCE_BUDGET.max_output_bytes)
 # 1つのin-flight snapshotは、親のimmutable geometry、multiprocessing Queueの
 # serialization buffer、workerでunpickleしたgeometryの最大3世代を同時に持ち得る。
 # pending jobにも同じ係数を保守的に課し、queue全体がprocessをまたいでbudget内に
-# 収まる契約にする（Python objectの小さなoverheadは従来どおり推定外）。
+# 収まる契約にする（Python objectの小さなoverheadは推定対象外）。
 _SNAPSHOT_PROCESS_COPY_FACTOR = 3
 
 # 親 process と spawn worker はそれぞれ独立した service instance を持つ。
@@ -51,21 +55,44 @@ class ExportQueueFullError(RuntimeError):
 
     def __init__(
         self,
-        message: str | None = None,
         *,
-        reason: str = "unknown",
-        request_count: int = 0,
-        request_limit: int = 0,
-        retained_bytes: int = 0,
-        requested_bytes: int = 0,
-        byte_limit: int = 0,
+        reason: str,
+        request_count: int,
+        request_limit: int,
+        retained_bytes: int,
+        requested_bytes: int,
+        byte_limit: int,
     ) -> None:
-        self.reason = str(reason)
-        self.request_count = int(request_count)
-        self.request_limit = int(request_limit)
-        self.retained_bytes = int(retained_bytes)
-        self.requested_bytes = int(requested_bytes)
-        self.byte_limit = int(byte_limit)
+        self.reason = exact_string_choice(
+            reason,
+            name="reason",
+            choices=("count", "bytes"),
+        )
+        self.request_count = exact_integer(
+            request_count,
+            name="request_count",
+            minimum=0,
+        )
+        self.request_limit = exact_integer(
+            request_limit,
+            name="request_limit",
+            minimum=0,
+        )
+        self.retained_bytes = exact_integer(
+            retained_bytes,
+            name="retained_bytes",
+            minimum=0,
+        )
+        self.requested_bytes = exact_integer(
+            requested_bytes,
+            name="requested_bytes",
+            minimum=0,
+        )
+        self.byte_limit = exact_integer(
+            byte_limit,
+            name="byte_limit",
+            minimum=0,
+        )
         projected = self.retained_bytes + self.requested_bytes
         detail = (
             "capture queue が満杯のため rejected: "
@@ -75,15 +102,7 @@ class ExportQueueFullError(RuntimeError):
             f"projected={projected / (1024 * 1024):.1f} MiB, "
             f"limit={self.byte_limit / (1024 * 1024):.1f} MiB"
         )
-        super().__init__(detail if message is None else str(message))
-
-
-class ExportKind(StrEnum):
-    """非同期 export の種類。"""
-
-    PNG = "png"
-    GCODE = "gcode"
-    GCODE_LAYERS = "gcode_layers"
+        super().__init__(detail)
 
 
 class ExportJobStatus(StrEnum):
@@ -96,38 +115,52 @@ class ExportJobStatus(StrEnum):
     WORKER_DIED = "worker_died"
 
 
-@dataclass(frozen=True, slots=True)
+def _path(value: object, *, name: str) -> Path:
+    """暗黙 Path 化を行わず Path instance を返す。"""
+
+    if not isinstance(value, Path):
+        raise TypeError(f"{name} は Path である必要があります")
+    return value
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FrameExportSnapshot:
     """export 対象となる 1 フレーム分の不変データ。"""
 
     layers: tuple[RealizedLayer, ...]
     canvas_size: tuple[int, int]
     background_color_rgb01: tuple[float, float, float]
-    t: float = 0.0
+    t: float
     provenance: CaptureProvenance | None = None
-    gcode_config: GCodeExportConfig | None = None
+    gcode_params: GCodeParams | None = None
 
     def __post_init__(self) -> None:
-        layers = tuple(self.layers)
-        canvas_size = (int(self.canvas_size[0]), int(self.canvas_size[1]))
-        if canvas_size[0] <= 0 or canvas_size[1] <= 0:
-            raise ValueError("canvas_size は正の (width, height) である必要がある")
-        background = tuple(float(value) for value in self.background_color_rgb01)
-        if len(background) != 3:
-            raise ValueError("background_color_rgb01 は RGB 3 要素である必要がある")
-        object.__setattr__(self, "layers", layers)
+        if type(self.layers) is not tuple or not all(
+            isinstance(layer, RealizedLayer) for layer in self.layers
+        ):
+            raise TypeError("layers は RealizedLayer の tuple である必要があります")
+        canvas_size = positive_integer_pair(self.canvas_size, name="canvas_size")
+        background = rgb01_tuple(
+            self.background_color_rgb01,
+            name="background_color_rgb01",
+        )
+        capture_t = finite_real(self.t, name="t")
+        if self.provenance is not None and not isinstance(
+            self.provenance,
+            CaptureProvenance,
+        ):
+            raise TypeError("provenance は CaptureProvenance または None である必要があります")
+        if self.gcode_params is not None and not isinstance(
+            self.gcode_params,
+            GCodeParams,
+        ):
+            raise TypeError("gcode_params は GCodeParams または None である必要があります")
+
+        object.__setattr__(self, "t", capture_t)
         object.__setattr__(self, "canvas_size", canvas_size)
         object.__setattr__(self, "background_color_rgb01", background)
-        capture_t = float(self.t)
-        if not isfinite(capture_t):
-            raise ValueError("t は有限値である必要がある")
-        object.__setattr__(self, "t", capture_t)
-        if self.provenance is not None and float(self.provenance.frame.t) != capture_t:
+        if self.provenance is not None and self.provenance.frame.t != capture_t:
             raise ValueError("provenance.frame.t は snapshot.t と一致する必要があります")
-        if self.gcode_config is not None and not isinstance(
-            self.gcode_config, GCodeExportConfig
-        ):
-            raise TypeError("gcode_config は GCodeExportConfig または None である必要があります")
 
     @property
     def retained_bytes(self) -> int:
@@ -136,36 +169,57 @@ class FrameExportSnapshot:
         return estimate_snapshot_retained_bytes(self)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CaptureExportSnapshot(FrameExportSnapshot):
+    """capture/export 境界を越えられる provenance 必須 snapshot。"""
+
+    provenance: CaptureProvenance
+
+    def __post_init__(self) -> None:
+        FrameExportSnapshot.__post_init__(self)
+        if not isinstance(self.provenance, CaptureProvenance):
+            raise TypeError("capture snapshot には CaptureProvenance が必要です")
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: FrameExportSnapshot,
+    ) -> CaptureExportSnapshot:
+        """preview snapshot の provenance invariant を一度だけ検査して昇格する。"""
+
+        provenance = snapshot.provenance
+        if provenance is None:
+            raise ValueError("capture snapshot の provenance がありません")
+        if isinstance(snapshot, cls):
+            return snapshot
+        return cls(
+            layers=snapshot.layers,
+            canvas_size=snapshot.canvas_size,
+            background_color_rgb01=snapshot.background_color_rgb01,
+            t=snapshot.t,
+            provenance=provenance,
+            gcode_params=snapshot.gcode_params,
+        )
+
+
 def estimate_snapshot_retained_bytes(snapshot: FrameExportSnapshot) -> int:
     """snapshot が参照する geometry array の重複を除いた byte 数を返す。
 
     ``RealizedGeometry`` は immutable なので、同じ array を複数 layer が共有する場合は
     物理メモリも共有される。配列 identity ごとに一度だけ数え、Python object の小さな
-    overhead は含めない。test double / 旧実装で配列が見えない layer は 0 bytes とする。
+    overhead は含めない。
     """
 
     seen_arrays: set[int] = set()
     total = 0
     for layer in snapshot.layers:
-        realized = getattr(layer, "realized", None)
-        if realized is None:
-            continue
-        found_array = False
-        for name in ("coords", "offsets"):
-            array = getattr(realized, name, None)
-            nbytes = getattr(array, "nbytes", None)
-            if array is None or nbytes is None:
-                continue
-            found_array = True
+        realized = layer.realized
+        for array in (realized.coords, realized.offsets):
             identity = id(array)
             if identity in seen_arrays:
                 continue
             seen_arrays.add(identity)
-            total += max(0, int(nbytes))
-        if not found_array:
-            # RealizedGeometry 互換 object が array を公開せず byte_size だけを持つ場合。
-            byte_size = getattr(realized, "byte_size", 0)
-            total += max(0, int(byte_size))
+            total += int(array.nbytes)
     return int(total)
 
 
@@ -187,77 +241,145 @@ class ExportQueueStatus:
     byte_limit: int
 
 
+def _normalize_output_size(
+    format: ExportFormat,
+    output_size: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    """PNG 専用の出力寸法を検査して正規化する。"""
+
+    if format is ExportFormat.PNG:
+        if output_size is None:
+            raise ValueError("PNG export には output_size が必要です")
+    elif output_size is not None:
+        raise ValueError("output_size は PNG export にのみ指定できます")
+    if output_size is None:
+        return None
+    return positive_integer_pair(output_size, name="output_size")
+
+
 @dataclass(frozen=True, slots=True)
 class ExportJob:
     """worker へ渡す不変 export request。"""
 
     job_id: int
-    kind: ExportKind
-    snapshot: FrameExportSnapshot
+    format: ExportFormat
+    snapshot: CaptureExportSnapshot
     output_path: Path
     timeout_s: float
-    # 後方互換のため request には残すが、PNG の中間 SVG 保存先としては使用しない。
-    svg_output_path: Path | None = None
+    staging_dir: Path = field(compare=False, repr=False)
+    split_gcode_layers: bool = False
     output_size: tuple[int, int] | None = None
     deadline_monotonic: float | None = field(default=None, compare=False, repr=False)
-    # 既定 backend の非同期実行時だけ親 process が sibling staging dir を設定する。
-    # None の場合は `_execute_export_job()` を直接呼ぶ従来 semantics（output_path へ保存）。
-    staging_dir: Path | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        if int(self.job_id) <= 0:
-            raise ValueError("job_id は 1 以上である必要がある")
-        timeout_s = float(self.timeout_s)
-        if not isfinite(timeout_s) or timeout_s <= 0.0:
-            raise ValueError("timeout_s は正である必要がある")
-        object.__setattr__(self, "job_id", int(self.job_id))
-        object.__setattr__(self, "kind", ExportKind(self.kind))
-        object.__setattr__(self, "output_path", Path(self.output_path))
-        object.__setattr__(self, "timeout_s", timeout_s)
-        if self.svg_output_path is not None:
-            object.__setattr__(self, "svg_output_path", Path(self.svg_output_path))
-        if self.output_size is not None:
-            output_size = (int(self.output_size[0]), int(self.output_size[1]))
-            if output_size[0] <= 0 or output_size[1] <= 0:
-                raise ValueError("output_size は正の (width, height) である必要がある")
-            object.__setattr__(self, "output_size", output_size)
-        if self.deadline_monotonic is not None:
-            object.__setattr__(
-                self,
-                "deadline_monotonic",
-                float(self.deadline_monotonic),
+        if not isinstance(self.format, ExportFormat):
+            raise TypeError("format は ExportFormat である必要があります")
+        if type(self.split_gcode_layers) is not bool:
+            raise TypeError("split_gcode_layers は bool である必要があります")
+        if (
+            self.split_gcode_layers
+            and self.format is not ExportFormat.GCODE
+        ):
+            raise ValueError(
+                "split_gcode_layers は G-code export にのみ指定できます"
             )
-        if self.staging_dir is not None:
-            object.__setattr__(self, "staging_dir", Path(self.staging_dir))
+        if not isinstance(self.snapshot, CaptureExportSnapshot):
+            raise TypeError(
+                "snapshot は CaptureExportSnapshot である必要があります"
+            )
+        if (
+            self.format is ExportFormat.GCODE
+            and self.snapshot.gcode_params is None
+        ):
+            raise ValueError(
+                "G-code export snapshot には gcode_params が必要です"
+            )
+        job_id = exact_integer(self.job_id, name="job_id", minimum=1)
+        output_path = _path(self.output_path, name="output_path")
+        staging_dir = _path(self.staging_dir, name="staging_dir")
+        normalized_output_size = _normalize_output_size(
+            self.format,
+            self.output_size,
+        )
+        timeout_s = finite_real(
+            self.timeout_s,
+            name="timeout_s",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+        deadline = (
+            None
+            if self.deadline_monotonic is None
+            else finite_real(
+                self.deadline_monotonic,
+                name="deadline_monotonic",
+            )
+        )
+        object.__setattr__(self, "job_id", job_id)
+        object.__setattr__(self, "output_path", output_path)
+        object.__setattr__(self, "timeout_s", timeout_s)
+        object.__setattr__(self, "staging_dir", staging_dir)
+        object.__setattr__(self, "output_size", normalized_output_size)
+        object.__setattr__(self, "deadline_monotonic", deadline)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ExportJobResult:
     """export job の終端結果。"""
 
     job_id: int
-    kind: ExportKind
+    format: ExportFormat
     status: ExportJobStatus
     output_path: Path
+    split_gcode_layers: bool = False
     paths: tuple[Path, ...] = ()
     error: str | None = None
     worker_pid: int | None = None
     worker_exitcode: int | None = None
-    # 既存 positional field の意味を変えないよう、新 metadata は末尾へ追加する。
     manifest_path: Path | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "job_id", int(self.job_id))
-        object.__setattr__(self, "kind", ExportKind(self.kind))
-        object.__setattr__(self, "status", ExportJobStatus(self.status))
-        object.__setattr__(self, "output_path", Path(self.output_path))
-        object.__setattr__(self, "paths", tuple(Path(path) for path in self.paths))
-        if self.manifest_path is not None:
-            object.__setattr__(self, "manifest_path", Path(self.manifest_path))
-        if self.worker_pid is not None:
-            object.__setattr__(self, "worker_pid", int(self.worker_pid))
-        if self.worker_exitcode is not None:
-            object.__setattr__(self, "worker_exitcode", int(self.worker_exitcode))
+        if not isinstance(self.format, ExportFormat):
+            raise TypeError("format は ExportFormat である必要があります")
+        if type(self.split_gcode_layers) is not bool:
+            raise TypeError("split_gcode_layers は bool である必要があります")
+        if (
+            self.split_gcode_layers
+            and self.format is not ExportFormat.GCODE
+        ):
+            raise ValueError(
+                "split_gcode_layers は G-code export にのみ指定できます"
+            )
+        if not isinstance(self.status, ExportJobStatus):
+            raise TypeError("status は ExportJobStatus である必要があります")
+        job_id = exact_integer(self.job_id, name="job_id", minimum=1)
+        output_path = _path(self.output_path, name="output_path")
+        if type(self.paths) is not tuple or not all(
+            isinstance(path, Path) for path in self.paths
+        ):
+            raise TypeError("paths は Path の tuple である必要があります")
+        if self.error is not None and type(self.error) is not str:
+            raise TypeError("error は str または None である必要があります")
+        worker_pid = (
+            None
+            if self.worker_pid is None
+            else exact_integer(self.worker_pid, name="worker_pid", minimum=1)
+        )
+        worker_exitcode = (
+            None
+            if self.worker_exitcode is None
+            else exact_integer(self.worker_exitcode, name="worker_exitcode")
+        )
+        manifest_path = (
+            None
+            if self.manifest_path is None
+            else _path(self.manifest_path, name="manifest_path")
+        )
+        object.__setattr__(self, "job_id", job_id)
+        object.__setattr__(self, "output_path", output_path)
+        object.__setattr__(self, "worker_pid", worker_pid)
+        object.__setattr__(self, "worker_exitcode", worker_exitcode)
+        object.__setattr__(self, "manifest_path", manifest_path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,11 +392,9 @@ ExportBackend = Callable[[ExportJob], Sequence[Path]]
 
 
 def _job_work_output_path(job: ExportJob) -> Path:
-    """worker が書く path を返す。非同期既定 backend では staging 内へ隔離する。"""
+    """worker が書く private staging path を返す。"""
 
     staging_dir = job.staging_dir
-    if staging_dir is None:
-        return job.output_path
     staging_dir.mkdir(parents=True, exist_ok=True)
     return staging_dir / job.output_path.name
 
@@ -282,34 +402,45 @@ def _job_work_output_path(job: ExportJob) -> Path:
 def _cleanup_job_staging(job: ExportJob) -> None:
     """job-private staging directory を best-effort で削除する。"""
 
-    staging_dir = job.staging_dir
-    if staging_dir is not None:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+    shutil.rmtree(job.staging_dir, ignore_errors=True)
+
+
+def _validate_staged_paths(
+    job: ExportJob,
+    paths: Sequence[str | Path],
+) -> tuple[Path, ...]:
+    """backend の成果物が job-private staging 配下だけを指すことを検証する。"""
+
+    staging_dir = job.staging_dir.resolve(strict=False)
+    staged_paths = tuple(Path(path) for path in paths)
+    for path in staged_paths:
+        resolved = path.resolve(strict=False)
+        if resolved == staging_dir or not resolved.is_relative_to(staging_dir):
+            raise ValueError(
+                "export backend は staging directory 内の path だけを返せます: "
+                f"path={path}, staging={job.staging_dir}"
+            )
+    return staged_paths
 
 
 def _commit_staged_outputs(
     job: ExportJob,
     staged_paths: Sequence[Path],
-) -> tuple[tuple[Path, ...], Path | None]:
+) -> tuple[tuple[Path, ...], Path]:
     """成果物と manifest を上書きなしの一世代として親側で公開する。"""
-
-    staging_dir = job.staging_dir
-    if staging_dir is None:
-        return tuple(Path(path) for path in staged_paths), None
 
     published = _CAPTURE_SERVICE.publish_staged(
         job.snapshot,
         job.output_path,
-        staged_paths,
-        mode=job.kind.value,
+        _validate_staged_paths(job, staged_paths),
+        format=job.format,
+        split_gcode_layers=job.split_gcode_layers,
         output_size=job.output_size,
     )
-    if published is None:
-        return (), None
     return published.artifact_paths, published.manifest_path
 
 
-def _finalize_default_backend_result(
+def _finalize_backend_result(
     job: ExportJob,
     result: ExportJobResult,
 ) -> ExportJobResult:
@@ -327,9 +458,10 @@ def _finalize_default_backend_result(
     except Exception:
         return ExportJobResult(
             job_id=result.job_id,
-            kind=result.kind,
+            format=result.format,
             status=ExportJobStatus.ERROR,
             output_path=result.output_path,
+            split_gcode_layers=result.split_gcode_layers,
             error="parent-side export commit failed:\n" + traceback.format_exc(),
             worker_pid=result.worker_pid,
             worker_exitcode=result.worker_exitcode,
@@ -342,19 +474,20 @@ def _execute_export_job(job: ExportJob) -> tuple[Path, ...]:
     """既定 backend として PNG/G-code job を同期実行する。"""
 
     work_output_path = _job_work_output_path(job)
-    gcode_config = (
-        job.snapshot.gcode_config
-        if job.kind in {ExportKind.GCODE, ExportKind.GCODE_LAYERS}
+    gcode_params = (
+        job.snapshot.gcode_params
+        if job.format is ExportFormat.GCODE
         else None
     )
     return _CAPTURE_SERVICE.encode(
         job.snapshot,
         work_output_path,
-        mode=job.kind.value,
+        format=job.format,
+        split_gcode_layers=job.split_gcode_layers,
         output_size=job.output_size,
         timeout_s=job.timeout_s,
         deadline_monotonic=job.deadline_monotonic,
-        gcode_config=gcode_config,
+        gcode_params=gcode_params,
     )
 
 
@@ -372,28 +505,31 @@ def _export_worker_main(
             if job is None:
                 return
             try:
-                paths = tuple(Path(path) for path in backend(job))
+                paths = _validate_staged_paths(job, backend(job))
                 result = ExportJobResult(
                     job_id=job.job_id,
-                    kind=job.kind,
+                    format=job.format,
                     status=ExportJobStatus.SUCCESS,
                     output_path=job.output_path,
+                    split_gcode_layers=job.split_gcode_layers,
                     paths=paths,
                 )
             except TimeoutError:
                 result = ExportJobResult(
                     job_id=job.job_id,
-                    kind=job.kind,
+                    format=job.format,
                     status=ExportJobStatus.TIMEOUT,
                     output_path=job.output_path,
+                    split_gcode_layers=job.split_gcode_layers,
                     error=traceback.format_exc(),
                 )
             except Exception:
                 result = ExportJobResult(
                     job_id=job.job_id,
-                    kind=job.kind,
+                    format=job.format,
                     status=ExportJobStatus.ERROR,
                     output_path=job.output_path,
+                    split_gcode_layers=job.split_gcode_layers,
                     error=traceback.format_exc(),
                 )
             try:
@@ -428,29 +564,22 @@ class ExportJobSystem:
         *,
         backend: ExportBackend = _execute_export_job,
         default_timeout_s: float = 30.0,
-        max_pending_jobs: int = _DEFAULT_PENDING_JOB_LIMIT,
-        max_retained_bytes: int = _DEFAULT_MAX_RETAINED_BYTES,
-        runtime_limits: RuntimeLimits | None = None,
+        runtime_limits: RuntimeLimits = DEFAULT_FINAL_RUNTIME_LIMITS,
     ) -> None:
-        if runtime_limits is not None:
-            if not isinstance(runtime_limits, RuntimeLimits):
-                raise TypeError("runtime_limits は RuntimeLimits である必要があります")
-            max_pending_jobs = int(runtime_limits.capture_queue_pending_jobs)
-            max_retained_bytes = int(runtime_limits.capture_queue_bytes)
-        timeout_s = float(default_timeout_s)
-        if not isfinite(timeout_s) or timeout_s <= 0.0:
-            raise ValueError("default_timeout_s は正である必要がある")
-        if int(max_pending_jobs) < 0:
-            raise ValueError("max_pending_jobs は 0 以上である必要がある")
-        if isinstance(max_retained_bytes, bool) or int(max_retained_bytes) < 0:
-            raise ValueError("max_retained_bytes は 0 以上の整数である必要がある")
+        if not isinstance(runtime_limits, RuntimeLimits):
+            raise TypeError("runtime_limits は RuntimeLimits である必要があります")
+        timeout_s = finite_real(
+            default_timeout_s,
+            name="default_timeout_s",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
 
         self._ctx = mp.get_context("spawn")
         self._backend = backend
-        self._uses_parent_commit = backend is _execute_export_job
         self._default_timeout_s = timeout_s
-        self._max_pending_jobs = int(max_pending_jobs)
-        self._max_retained_bytes = int(max_retained_bytes)
+        self._max_pending_jobs = int(runtime_limits.capture_queue_pending_jobs)
+        self._max_retained_bytes = int(runtime_limits.capture_queue_bytes)
         self._task_q: mp.Queue[ExportJob | None]
         self._result_q: mp.Queue[_WorkerMessage]
         self._proc: mp_process.BaseProcess | None = None
@@ -567,15 +696,6 @@ class ExportJobSystem:
         error = self._admission_error(snapshot)
         if error is not None:
             raise error
-
-    def can_submit_snapshot(self, snapshot: FrameExportSnapshot) -> bool:
-        """件数と aggregate bytes の両方で snapshot を受理できるなら True。"""
-
-        try:
-            self.ensure_can_submit(snapshot)
-        except (ExportQueueFullError, RuntimeError):
-            return False
-        return True
 
     def _retain_job(self, job: ExportJob) -> None:
         if job.job_id in self._retained_job_ids:
@@ -718,9 +838,10 @@ class ExportJobSystem:
     ) -> ExportJobResult:
         return ExportJobResult(
             job_id=job.job_id,
-            kind=job.kind,
+            format=job.format,
             status=status,
             output_path=job.output_path,
+            split_gcode_layers=job.split_gcode_layers,
             error=error,
             worker_pid=worker_pid,
             worker_exitcode=worker_exitcode,
@@ -732,16 +853,6 @@ class ExportJobSystem:
             deadline_monotonic=time.monotonic() + job.timeout_s,
         )
         try:
-            if self._uses_parent_commit:
-                output_parent = job.output_path.parent
-                output_parent.mkdir(parents=True, exist_ok=True)
-                staging_dir = Path(
-                    tempfile.mkdtemp(
-                        prefix=f".{job.output_path.stem}.export-{job.job_id}-",
-                        dir=output_parent,
-                    )
-                )
-                dispatched = replace(dispatched, staging_dir=staging_dir)
             if self._proc is None:
                 self._start_worker()
             self._task_q.put_nowait(dispatched)
@@ -770,8 +881,7 @@ class ExportJobSystem:
             current = self._in_flight
             if current is None or message.job_id != current.job_id:
                 continue
-            if self._uses_parent_commit:
-                message = _finalize_default_backend_result(current, message)
+            message = _finalize_backend_result(current, message)
             self._completed.append(message)
             self._in_flight = None
             self._release_job(current)
@@ -839,33 +949,63 @@ class ExportJobSystem:
     def submit(
         self,
         *,
-        kind: ExportKind | str,
-        snapshot: FrameExportSnapshot,
+        format: ExportFormat,
+        snapshot: CaptureExportSnapshot,
         output_path: str | Path,
+        split_gcode_layers: bool = False,
         timeout_s: float | None = None,
-        svg_output_path: str | Path | None = None,
         output_size: tuple[int, int] | None = None,
     ) -> ExportJob:
         """job を bounded FIFO へ投入する。満杯なら明示的に拒否する。"""
 
         if self._closed:
             raise RuntimeError("ExportJobSystem は close 済みです")
+        if not isinstance(snapshot, CaptureExportSnapshot):
+            raise TypeError(
+                "snapshot は CaptureExportSnapshot である必要があります"
+            )
+        if not isinstance(format, ExportFormat):
+            raise TypeError("format は ExportFormat である必要があります")
+        if type(split_gcode_layers) is not bool:
+            raise TypeError("split_gcode_layers は bool である必要があります")
+        if split_gcode_layers and format is not ExportFormat.GCODE:
+            raise ValueError(
+                "split_gcode_layers は G-code export にのみ指定できます"
+            )
+        normalized_output_size = _normalize_output_size(
+            format,
+            output_size,
+        )
         self._service()
 
         error = self._admission_error(snapshot)
         if error is not None:
             raise error
 
-        self._next_job_id += 1
-        job = ExportJob(
-            job_id=self._next_job_id,
-            kind=ExportKind(kind),
-            snapshot=snapshot,
-            output_path=Path(output_path),
-            timeout_s=self._default_timeout_s if timeout_s is None else float(timeout_s),
-            svg_output_path=None if svg_output_path is None else Path(svg_output_path),
-            output_size=output_size,
+        output = Path(output_path)
+        next_job_id = self._next_job_id + 1
+        output.parent.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(
+            tempfile.mkdtemp(
+                prefix=f".{output.stem}.export-{next_job_id}-",
+                dir=output.parent,
+            )
         )
+        try:
+            job = ExportJob(
+                job_id=next_job_id,
+                format=format,
+                snapshot=snapshot,
+                output_path=output,
+                timeout_s=self._default_timeout_s if timeout_s is None else timeout_s,
+                staging_dir=staging_dir,
+                split_gcode_layers=split_gcode_layers,
+                output_size=normalized_output_size,
+            )
+        except BaseException:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
+        self._next_job_id = next_job_id
 
         self._retain_job(job)
 
@@ -887,6 +1027,11 @@ class ExportJobSystem:
     def cancel(self, job_id: int | None = None) -> bool:
         """指定 job（None なら全 job）を取消し、終端結果を poll 可能にする。"""
 
+        target_job_id = (
+            None
+            if job_id is None
+            else exact_integer(job_id, name="job_id", minimum=1)
+        )
         if self._closed:
             return False
         self._service()
@@ -894,7 +1039,7 @@ class ExportJobSystem:
 
         kept: deque[ExportJob] = deque()
         for pending in self._pending:
-            if job_id is None or pending.job_id == int(job_id):
+            if target_job_id is None or pending.job_id == target_job_id:
                 self._completed.append(
                     self._terminal_result(
                         pending,
@@ -903,13 +1048,16 @@ class ExportJobSystem:
                     )
                 )
                 self._release_job(pending)
+                _cleanup_job_staging(pending)
                 cancelled = True
             else:
                 kept.append(pending)
         self._pending = kept
 
         current = self._in_flight
-        if current is not None and (job_id is None or current.job_id == int(job_id)):
+        if current is not None and (
+            target_job_id is None or current.job_id == target_job_id
+        ):
             self._completed.append(
                 self._terminal_result(
                     current,
@@ -969,20 +1117,20 @@ class ExportJobSystem:
         try:
             errors.attempt(lambda: self._close_queues(cancel_pending=had_in_flight))
         finally:
-            if current is not None:
-                _cleanup_job_staging(current)
+            for job in jobs_to_cancel:
+                _cleanup_job_staging(job)
 
         errors.raise_if_any()
 
 
 __all__ = [
+    "CaptureExportSnapshot",
     "ExportJob",
     "ExportJobResult",
     "ExportJobStatus",
     "ExportJobSystem",
     "ExportQueueStatus",
     "ExportQueueFullError",
-    "ExportKind",
     "FrameExportSnapshot",
     "estimate_snapshot_retained_bytes",
 ]

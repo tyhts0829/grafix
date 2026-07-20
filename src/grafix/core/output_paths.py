@@ -11,7 +11,12 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from grafix.core.runtime_config import output_root_dir, runtime_config
+from grafix.core.runtime_config import runtime_config
+from grafix.core.value_validation import (
+    exact_integer,
+    exact_string,
+    finite_real,
+)
 
 
 class VersionedPathAllocator:
@@ -31,9 +36,11 @@ class VersionedPathAllocator:
     """
 
     def __init__(self, *, minimum_digits: int = 3) -> None:
-        digits = int(minimum_digits)
-        if digits <= 0:
-            raise ValueError("minimum_digits は 1 以上である必要がある")
+        digits = exact_integer(
+            minimum_digits,
+            name="minimum_digits",
+            minimum=1,
+        )
         self._minimum_digits = digits
         self._reserved: set[str] = set()
         self._lock = threading.Lock()
@@ -59,7 +66,10 @@ class VersionedPathAllocator:
     def allocate(self, base_path: str | Path) -> Path:
         """未使用の ``base_path`` またはその連番版を予約して返す。"""
 
-        base = Path(base_path)
+        if isinstance(base_path, Path):
+            base = base_path
+        else:
+            base = Path(exact_string(base_path, name="base_path"))
         if not base.name:
             raise ValueError("base_path はファイル名を含む必要がある")
 
@@ -77,7 +87,7 @@ class VersionedPathAllocator:
 def _sanitize_run_id(run_id: str) -> str:
     """run_id をファイル名の一部として使える形に正規化して返す。"""
 
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(run_id))
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", run_id)
 
 
 def _run_id_suffix(run_id: str | None) -> str:
@@ -85,7 +95,7 @@ def _run_id_suffix(run_id: str | None) -> str:
 
     if run_id is None:
         return ""
-    s = str(run_id).strip()
+    s = exact_string(run_id, name="run_id").strip()
     if not s:
         return ""
     sanitized = _sanitize_run_id(s)
@@ -97,9 +107,12 @@ def _run_id_suffix(run_id: str | None) -> str:
 def _fmt_canvas_dim_for_filename(value: float | int) -> str:
     """canvas の寸法をファイル名に埋め込むための短い表現にして返す。"""
 
-    v = float(value)
-    if v <= 0:
-        raise ValueError("canvas_size は正の値である必要がある")
+    v = finite_real(
+        value,
+        name="canvas_size item",
+        minimum=0.0,
+        minimum_inclusive=False,
+    )
     if abs(v - round(v)) < 1e-9:
         return str(int(round(v)))
 
@@ -112,6 +125,8 @@ def _canvas_size_suffix(canvas_size: tuple[float | int, float | int] | None) -> 
 
     if canvas_size is None:
         return ""
+    if type(canvas_size) is not tuple or len(canvas_size) != 2:
+        raise TypeError("canvas_size は2要素の tuple である必要がある")
     w, h = canvas_size
     return f"_{_fmt_canvas_dim_for_filename(w)}x{_fmt_canvas_dim_for_filename(h)}"
 
@@ -121,7 +136,7 @@ def _layer_name_suffix(layer_name: str | None, *, max_len: int) -> str:
 
     if layer_name is None:
         return ""
-    s = str(layer_name).strip()
+    s = exact_string(layer_name, name="layer_name").strip()
     if not s:
         return ""
 
@@ -131,9 +146,8 @@ def _layer_name_suffix(layer_name: str | None, *, max_len: int) -> str:
     if not sanitized:
         return ""
 
-    max_len_i = int(max_len)
-    if max_len_i > 0 and len(sanitized) > max_len_i:
-        sanitized = sanitized[:max_len_i].rstrip("_")
+    if len(sanitized) > max_len:
+        sanitized = sanitized[:max_len].rstrip("_")
     if not sanitized:
         return ""
 
@@ -158,16 +172,25 @@ def gcode_layer_output_path(
     - layer index は 1 始まりで渡す想定。
     """
 
-    idx = int(layer_index)
-    if idx <= 0:
-        raise ValueError("layer_index は 1 以上である必要がある")
-
-    total = int(n_layers)
+    if not isinstance(base_path, Path):
+        raise TypeError("base_path は Path である必要がある")
+    idx = exact_integer(layer_index, name="layer_index", minimum=1)
+    total = exact_integer(n_layers, name="n_layers", minimum=1)
+    if idx > total:
+        raise ValueError("layer_index は n_layers 以下である必要がある")
+    max_name_len = exact_integer(
+        max_layer_name_len,
+        name="max_layer_name_len",
+        minimum=1,
+    )
     # 例: 12 レイヤなら layer001..layer012 / 1000 レイヤなら layer0001..layer1000
-    width = max(3, len(str(total))) if total > 0 else 3
+    width = max(3, len(str(total)))
 
-    idx_txt = f"{idx:0{int(width)}d}"
-    suffix = f"_layer{idx_txt}{_layer_name_suffix(layer_name, max_len=int(max_layer_name_len))}"
+    idx_txt = f"{idx:0{width}d}"
+    suffix = (
+        f"_layer{idx_txt}"
+        f"{_layer_name_suffix(layer_name, max_len=max_name_len)}"
+    )
 
     # suffixes は壊さず、末尾の拡張子だけを使う（通常 `.gcode`）。
     return base_path.with_name(f"{base_path.stem}{suffix}{base_path.suffix}")
@@ -194,7 +217,7 @@ def _draw_source_path(draw: Callable[[float], object]) -> Path | None:
 
     try:
         found = inspect.getsourcefile(draw) or inspect.getfile(draw)
-    except Exception:
+    except TypeError:
         found = None
 
     if found and not _is_pseudo_filename(str(found)):
@@ -227,20 +250,20 @@ def _resolve_sketch_root_dir(sketch_dir: Path, *, source_path: Path) -> Path | N
     if sketch_dir_p.is_absolute():
         root = sketch_dir_p.resolve(strict=False)
         try:
-            _ = source_resolved.relative_to(root)
-        except Exception:
+            source_resolved.relative_to(root)
+        except ValueError:
             return None
         return root
 
-    # まずは cwd 基準で従来通り試す。
+    # 相対 sketch_dir は、まず cwd 基準で解決する。
     root = sketch_dir_p.resolve(strict=False)
     try:
-        _ = source_resolved.relative_to(root)
+        source_resolved.relative_to(root)
         return root
-    except Exception:
+    except ValueError:
         pass
 
-    # cwd がプロジェクトルートでないケース向けのフォールバック。
+    # cwd がプロジェクトルートでなければ source の ancestor から解決する。
     # 例: sketch_dir="sketch" で、source が ".../sketch/generated/foo.py" にある場合など。
     return _find_ancestor_dir_ending_with(source_resolved.parent, sketch_dir_p)
 
@@ -257,7 +280,7 @@ def _project_root_dir_from_sketch_root(sketch_root: Path, sketch_dir: Path) -> P
         return None
     try:
         return sketch_root.parents[n_parts - 1]
-    except Exception:
+    except IndexError:
         return None
 
 
@@ -280,9 +303,14 @@ def output_path_for_draw(
     - `canvas_size` が指定されている場合は `_800x800` のような接尾辞をファイル名へ付与する。
     """
 
-    ext_norm = str(ext).lstrip(".").strip()
+    kind_name = exact_string(kind, name="kind")
+    if not kind_name:
+        raise ValueError("kind は空でない必要がある")
+    ext_norm = exact_string(ext, name="ext").lstrip(".").strip()
     if not ext_norm:
         raise ValueError("ext は空でない必要がある")
+    if not callable(draw):
+        raise TypeError("draw は callable である必要がある")
 
     cfg = runtime_config()
     suffix = _run_id_suffix(run_id)
@@ -304,11 +332,11 @@ def output_path_for_draw(
 
     # output_dir / sketch_dir が相対パスの場合、cwd に依存してズレることがある。
     # cwd がプロジェクトルートでない場合だけ、project_root を推定して補正する。
-    out_root = output_root_dir()
+    out_root = Path(cfg.output_dir)
     if not out_root.is_absolute() and project_root is not None:
         if Path.cwd().resolve(strict=False) != project_root.resolve(strict=False):
             out_root = project_root / out_root
-    base_dir = out_root / str(kind)
+    base_dir = out_root / kind_name
 
     filename = f"{stem}{_canvas_size_suffix(canvas_size)}{suffix}.{ext_norm}"
     if rel_parent is None:

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
+from grafix.core.effects.pixelate import pixelate as pixelate_impl
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple
@@ -171,12 +173,27 @@ def test_pixelate_nonuniform_step_negative_direction() -> None:
     _assert_axis_aligned_xy(realized.coords)
 
 
-def test_pixelate_step_non_positive_is_noop() -> None:
+def test_pixelate_rejects_nonpositive_step() -> None:
     g = G.pixelate_test_noop_input()
-    realized = realize(E.pixelate(step=(0.0, 1.0, 1.0))(g))
-    expected = np.array([[0.1, 0.2, 0.3], [1.1, 1.2, 1.3]], dtype=np.float32)
-    np.testing.assert_allclose(realized.coords, expected, rtol=0.0, atol=1e-6)
-    assert realized.offsets.tolist() == [0, 2]
+    base = realize(g)
+
+    with pytest.raises(ValueError, match="step"):
+        pixelate_impl(
+            (base.coords, base.offsets),
+            step=(0.0, 1.0, 1.0),
+        )
+
+
+def test_pixelate_rejects_invalid_step_shape_and_corner() -> None:
+    base = realize(G.pixelate_test_noop_input())
+    geometry = (base.coords, base.offsets)
+
+    with pytest.raises(TypeError, match="step"):
+        pixelate_impl(geometry, step=[1.0, 1.0, 1.0])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="step"):
+        pixelate_impl(geometry, step=(1.0, 1.0))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="corner"):
+        pixelate_impl(geometry, corner="diagonal")
 
 
 def test_pixelate_empty_and_single_point() -> None:

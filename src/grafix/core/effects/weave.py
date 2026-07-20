@@ -16,7 +16,7 @@ from grafix.core.effect_registry import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import PlanarFrame, pack_polylines
+from .util import PlanarFrame, pack_polylines, planarity_threshold
 
 weave_meta = {
     "num_candidate_lines": ParamMeta(
@@ -42,8 +42,6 @@ weave_meta = {
 MAX_NUM_CANDIDATE_LINES = 500
 MAX_RELAXATION_ITERATIONS = 50
 MAX_STEP = 0.5
-_PLANAR_EPS_ABS = 1e-6
-_PLANAR_EPS_REL = 1e-5
 
 
 def _iter_polylines(coords: np.ndarray, offsets: np.ndarray):
@@ -57,12 +55,6 @@ def _is_closed_polyline(vertices: np.ndarray) -> bool:
     if vertices.shape[0] < 2:
         return False
     return bool(np.allclose(vertices[0], vertices[-1], rtol=0.0, atol=1e-6))
-
-
-def _planarity_threshold(points: np.ndarray) -> float:
-    points64 = points.astype(np.float64, copy=False)
-    diagonal = float(np.linalg.norm(np.ptp(points64, axis=0)))
-    return max(_PLANAR_EPS_ABS, _PLANAR_EPS_REL * diagonal)
 
 
 @effect(meta=weave_meta)
@@ -174,7 +166,7 @@ def _webify_single_polyline(
 ) -> list[np.ndarray]:
     """単一ポリラインからウェブ状の線分群を生成して 3D に戻す。"""
     frame = PlanarFrame.from_points(vertices)
-    if not frame.is_planar(_planarity_threshold(vertices)):
+    if not frame.is_planar(planarity_threshold(vertices)):
         emit_operation_diagnostic(
             op="weave.input",
             original_value="nonplanar_polyline",

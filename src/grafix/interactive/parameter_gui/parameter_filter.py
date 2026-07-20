@@ -91,9 +91,9 @@ def parameter_static_search_corpus(row: ParameterRow, label: str) -> str:
             row_label,
             ("G.select" if selector_kind(row.op) == "primitive" else "E.select")
             if selector
-            else str(row.op),
+            else row.op,
             " ".join(selector_terms),
-            str(row.site_id),
+            row.site_id,
             str(row.display_name or ""),
             str(row.description or ""),
             str(row.unit or ""),

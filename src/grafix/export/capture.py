@@ -7,24 +7,28 @@ import shutil
 import tempfile
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
-from enum import StrEnum
-from math import isfinite
 from pathlib import Path
 from typing import Protocol
 
-from grafix.core.capture_provenance import CaptureProvenance
 from grafix.core.capture_manifest import (
     CaptureManifest,
     PublishedCaptureGeneration,
     capture_manifest_path_for,
     publish_capture_generation,
 )
+from grafix.core.capture_provenance import CaptureProvenance
+from grafix.core.export_format import ExportFormat
+from grafix.core.export_result import ExportResult
+from grafix.core.gcode_params import GCodeParams
 from grafix.core.output_paths import VersionedPathAllocator, gcode_layer_output_path
 from grafix.core.pipeline import RealizedLayer
-from grafix.core.runtime_config import GCodeExportConfig, RuntimeConfig
-from grafix.export.gcode import GCodeParams, export_gcode
-from grafix.export.image import png_output_size, rasterize_svg_to_png
+from grafix.core.value_validation import (
+    exact_integer,
+    finite_real,
+    positive_integer_pair,
+)
+from grafix.export.gcode import export_gcode
+from grafix.export.image import rasterize_svg_to_png
 from grafix.export.svg import export_svg
 
 _DEFAULT_ENCODE_TIMEOUT_S = 30.0
@@ -47,89 +51,21 @@ class CaptureFrame(Protocol):
     def t(self) -> float: ...
 
     @property
-    def provenance(self) -> CaptureProvenance | None: ...
+    def provenance(self) -> CaptureProvenance: ...
 
 
-class CaptureMode(StrEnum):
-    """encoder と manifest を選ぶ内部 capture mode。"""
+def _validate_split_gcode_layers(
+    format: ExportFormat,
+    split_gcode_layers: bool,
+) -> None:
+    """layer 分割 option と export format の組み合わせを検査する。"""
 
-    SVG = "svg"
-    PNG = "png"
-    GCODE = "gcode"
-    GCODE_LAYERS = "gcode_layers"
-
-    @classmethod
-    def from_path(cls, path: str | Path) -> CaptureMode:
-        """path suffix から単一成果物の capture mode を返す。"""
-
-        suffix = Path(path).suffix.casefold()
-        if suffix not in (".svg", ".png", ".gcode"):
-            raise ValueError(f"未対応または未指定の export suffix です: {suffix!r}")
-        return cls(suffix[1:])
-
-    def validate_path(self, path: str | Path) -> Path:
-        """mode と path suffix の一致を検証し、Path を返す。"""
-
-        target = Path(path)
-        suffix_mode = self.from_path(target)
-        artifact_mode = CaptureMode.GCODE if self is CaptureMode.GCODE_LAYERS else self
-        if suffix_mode is not artifact_mode:
-            raise ValueError(
-                "export format と path suffix が一致しません: "
-                f"format={artifact_mode.value!r}, suffix={target.suffix!r}"
-            )
-        return target
-
-
-@dataclass(frozen=True, slots=True)
-class CaptureResult:
-    """CaptureService が公開した単一成果物と manifest。"""
-
-    path: Path
-    mode: CaptureMode
-    manifest_path: Path
-
-
-def _coerce_mode(mode: CaptureMode | str) -> CaptureMode:
-    if isinstance(mode, CaptureMode):
-        return mode
-    try:
-        return CaptureMode(str(mode).strip().casefold())
-    except ValueError as exc:
-        raise ValueError(f"未対応の capture mode です: {mode!r}") from exc
-
-
-def _gcode_params(config: GCodeExportConfig | None) -> GCodeParams | None:
-    """親 process で確定した immutable config を encoder parameter へ写す。"""
-
-    if config is None:
-        return None
-    if not isinstance(config, GCodeExportConfig):
-        raise TypeError("gcode_config は GCodeExportConfig または None である必要があります")
-    return GCodeParams(
-        travel_feed=config.travel_feed,
-        draw_feed=config.draw_feed,
-        z_up=config.z_up,
-        z_down=config.z_down,
-        y_down=config.y_down,
-        origin=config.origin,
-        decimals=config.decimals,
-        paper_margin_mm=config.paper_margin_mm,
-        bed_x_range=config.bed_x_range,
-        bed_y_range=config.bed_y_range,
-        bridge_draw_distance=config.bridge_draw_distance,
-        optimize_travel=config.optimize_travel,
-        allow_reverse=config.allow_reverse,
-        canvas_height_mm=config.canvas_height_mm,
-    )
-
-
-def _frame_runtime_config(frame: CaptureFrame) -> RuntimeConfig | None:
-    """公開 Frame が保持する session 固定 config を構造的に取得する。"""
-
-    metadata = getattr(frame, "metadata", None)
-    config = getattr(metadata, "effective_config", None)
-    return config if isinstance(config, RuntimeConfig) else None
+    if type(split_gcode_layers) is not bool:
+        raise TypeError("split_gcode_layers は bool である必要があります")
+    if split_gcode_layers and format is not ExportFormat.GCODE:
+        raise ValueError(
+            "split_gcode_layers は G-code export にのみ指定できます"
+        )
 
 
 class CaptureService:
@@ -149,9 +85,11 @@ class CaptureService:
         path_allocator: VersionedPathAllocator | None = None,
         max_publish_retries: int = _DEFAULT_PUBLISH_RETRIES,
     ) -> None:
-        retries = int(max_publish_retries)
-        if retries <= 0:
-            raise ValueError("max_publish_retries は 1 以上である必要があります")
+        retries = exact_integer(
+            max_publish_retries,
+            name="max_publish_retries",
+            minimum=1,
+        )
         if path_allocator is not None and not isinstance(
             path_allocator, VersionedPathAllocator
         ):
@@ -164,11 +102,12 @@ class CaptureService:
         frame: CaptureFrame,
         path: str | Path,
         *,
-        mode: CaptureMode | str,
+        format: ExportFormat,
+        split_gcode_layers: bool = False,
         output_size: tuple[int, int] | None = None,
         timeout_s: float = _DEFAULT_ENCODE_TIMEOUT_S,
         deadline_monotonic: float | None = None,
-        gcode_config: GCodeExportConfig | None = None,
+        gcode_params: GCodeParams | None = None,
     ) -> tuple[Path, ...]:
         """frame を指定 path へ encode し、生成した path 列を返す。
 
@@ -176,11 +115,16 @@ class CaptureService:
         完成後に :meth:`publish_staged` で generation を確定する。
         """
 
-        capture_mode = _coerce_mode(mode)
-        output_path = capture_mode.validate_path(path)
+        if not isinstance(format, ExportFormat):
+            raise TypeError("format は ExportFormat である必要があります")
+        _validate_split_gcode_layers(format, split_gcode_layers)
+        ExportFormat.resolve(path, format)
+        output_path = Path(path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if capture_mode is CaptureMode.SVG:
+        if format is ExportFormat.SVG:
+            if output_size is not None or gcode_params is not None:
+                raise ValueError("SVG encode に形式外の出力設定は指定できません")
             return (
                 export_svg(
                     frame.layers,
@@ -189,13 +133,23 @@ class CaptureService:
                 ),
             )
 
-        if capture_mode is CaptureMode.PNG:
-            timeout = float(timeout_s)
-            if not isfinite(timeout) or timeout <= 0.0:
-                raise ValueError("timeout_s は正の有限値である必要があります")
-            deadline = None if deadline_monotonic is None else float(deadline_monotonic)
-            if deadline is not None and not isfinite(deadline):
-                raise ValueError("deadline_monotonic は有限値である必要があります")
+        if format is ExportFormat.PNG:
+            if gcode_params is not None:
+                raise ValueError("PNG encode に gcode_params は指定できません")
+            if output_size is None:
+                raise ValueError("PNG encode には output_size が必要です")
+            output_size = positive_integer_pair(output_size, name="output_size")
+            timeout = finite_real(
+                timeout_s,
+                name="timeout_s",
+                minimum=0.0,
+                minimum_inclusive=False,
+            )
+            deadline = (
+                None
+                if deadline_monotonic is None
+                else finite_real(deadline_monotonic, name="deadline_monotonic")
+            )
 
             with tempfile.TemporaryDirectory(
                 prefix=f".{output_path.stem}.png-intermediate-",
@@ -209,24 +163,34 @@ class CaptureService:
                 png_path = rasterize_svg_to_png(
                     svg_path,
                     output_path,
-                    output_size=output_size or png_output_size(frame.canvas_size),
+                    output_size=output_size,
                     background_color_rgb01=frame.background_color_rgb01,
                     timeout_s=remaining,
                 )
             return (png_path,)
 
-        if capture_mode is CaptureMode.GCODE:
-            params = _gcode_params(gcode_config)
+        if not split_gcode_layers:
+            if output_size is not None:
+                raise ValueError("G-code encode に output_size は指定できません")
+            if gcode_params is None:
+                raise ValueError("G-code encode には gcode_params が必要です")
+            if not isinstance(gcode_params, GCodeParams):
+                raise TypeError("gcode_params は GCodeParams である必要があります")
             return (
                 export_gcode(
                     frame.layers,
                     output_path,
                     canvas_size=frame.canvas_size,
-                    params=params,
+                    params=gcode_params,
                 ),
             )
 
-        params = _gcode_params(gcode_config)
+        if output_size is not None:
+            raise ValueError("layer 別 G-code encode に output_size は指定できません")
+        if gcode_params is None:
+            raise ValueError("layer 別 G-code encode には gcode_params が必要です")
+        if not isinstance(gcode_params, GCodeParams):
+            raise TypeError("gcode_params は GCodeParams である必要があります")
         paths: list[Path] = []
         for index, layer in enumerate(frame.layers, start=1):
             layer_path = gcode_layer_output_path(
@@ -239,7 +203,7 @@ class CaptureService:
                 [layer],
                 layer_path,
                 canvas_size=frame.canvas_size,
-                params=params,
+                params=gcode_params,
             )
             paths.append(layer_path)
         return tuple(paths)
@@ -249,13 +213,17 @@ class CaptureService:
         frame: CaptureFrame,
         path: str | Path,
         *,
-        mode: CaptureMode | str,
+        format: ExportFormat,
+        split_gcode_layers: bool = False,
     ) -> tuple[Path, ...]:
-        """mode と layer 構成から正式な成果物 path 列を返す。"""
+        """format と layer 構成から正式な成果物 path 列を返す。"""
 
-        capture_mode = _coerce_mode(mode)
-        output_path = capture_mode.validate_path(path)
-        if capture_mode is not CaptureMode.GCODE_LAYERS:
+        if not isinstance(format, ExportFormat):
+            raise TypeError("format は ExportFormat である必要があります")
+        _validate_split_gcode_layers(format, split_gcode_layers)
+        ExportFormat.resolve(path, format)
+        output_path = Path(path)
+        if not split_gcode_layers:
             return (output_path,)
         return tuple(
             gcode_layer_output_path(
@@ -273,37 +241,48 @@ class CaptureService:
         path: str | Path,
         staged_paths: Sequence[str | Path],
         *,
-        mode: CaptureMode | str,
+        format: ExportFormat,
+        split_gcode_layers: bool = False,
         overwrite: bool = False,
         output_size: tuple[int, int] | None = None,
-    ) -> PublishedCaptureGeneration | None:
+    ) -> PublishedCaptureGeneration:
         """完成済み staging と manifest を一つの generation として公開する。"""
 
-        capture_mode = _coerce_mode(mode)
-        output_path = capture_mode.validate_path(path)
+        if not isinstance(format, ExportFormat):
+            raise TypeError("format は ExportFormat である必要があります")
+        _validate_split_gcode_layers(format, split_gcode_layers)
+        if type(overwrite) is not bool:
+            raise TypeError("overwrite は bool である必要があります")
+        ExportFormat.resolve(path, format)
+        output_path = Path(path)
         staged = tuple(Path(staged_path) for staged_path in staged_paths)
-        finals = self.final_paths(frame, output_path, mode=capture_mode)
+        finals = self.final_paths(
+            frame,
+            output_path,
+            format=format,
+            split_gcode_layers=split_gcode_layers,
+        )
         if len(staged) != len(finals):
             raise ValueError(
                 "staged artifact 数が期待値と一致しません: "
                 f"got={len(staged)}, expected={len(finals)}"
             )
-        # layer の無い per-layer G-code は従来どおり成果物も空 manifest も作らない。
         if not finals:
-            return None
+            raise ValueError("layer 別 G-code capture には 1 layer 以上必要です")
 
-        dimensions = output_size
-        if dimensions is None:
-            dimensions = (
-                png_output_size(frame.canvas_size)
-                if capture_mode is CaptureMode.PNG
-                else frame.canvas_size
-            )
+        if format is ExportFormat.PNG:
+            if output_size is None:
+                raise ValueError("PNG publish には output_size が必要です")
+            dimensions = positive_integer_pair(output_size, name="output_size")
+        else:
+            if output_size is not None:
+                raise ValueError("output_size は PNG publish にのみ指定できます")
+            dimensions = frame.canvas_size
 
         manifest = CaptureManifest(
-            t=float(frame.t),
+            t=frame.t,
             canvas_size=frame.canvas_size,
-            format=capture_mode.value,
+            format=format.value,
             artifact_paths=finals,
             provenance=frame.provenance,
             output_size=dimensions,
@@ -313,7 +292,7 @@ class CaptureService:
             artifact_paths=finals,
             manifest_path=capture_manifest_path_for(output_path),
             manifest=manifest,
-            overwrite=bool(overwrite),
+            overwrite=overwrite,
         )
 
     def _allocate_path(self, base_path: Path) -> Path:
@@ -330,10 +309,10 @@ class CaptureService:
         path: str | Path,
         *,
         overwrite: bool = False,
+        split_gcode_layers: bool = False,
         output_size: tuple[int, int] | None = None,
-        png_scale: float | None = None,
-        gcode_config: GCodeExportConfig | None = None,
-    ) -> CaptureResult:
+        gcode_params: GCodeParams | None = None,
+    ) -> ExportResult:
         """CaptureFrame を suffix から推論した形式で安全に保存する。
 
         ``overwrite=False`` では既存 artifact/manifest を避けて version path を予約し、
@@ -341,14 +320,19 @@ class CaptureService:
         private sibling staging で行い、成功した artifact と manifest だけを公開する。
         """
 
+        if type(overwrite) is not bool:
+            raise TypeError("overwrite は bool である必要があります")
         requested_path = Path(path)
-        mode = CaptureMode.from_path(requested_path)
-        if output_size is not None and mode is not CaptureMode.PNG:
+        format = ExportFormat.from_path(requested_path)
+        _validate_split_gcode_layers(format, split_gcode_layers)
+        if output_size is not None and format is not ExportFormat.PNG:
             raise ValueError("output_size は PNG capture だけに指定できます")
+        if gcode_params is not None and format is not ExportFormat.GCODE:
+            raise ValueError("gcode_params は G-code capture だけに指定できます")
+        if gcode_params is not None and not isinstance(gcode_params, GCodeParams):
+            raise TypeError("gcode_params は GCodeParams である必要があります")
         if output_size is not None:
-            output_size = (int(output_size[0]), int(output_size[1]))
-            if output_size[0] <= 0 or output_size[1] <= 0:
-                raise ValueError("output_size は正の (width, height) である必要があります")
+            output_size = positive_integer_pair(output_size, name="output_size")
         requested_path.parent.mkdir(parents=True, exist_ok=True)
         staging_dir = Path(
             tempfile.mkdtemp(
@@ -358,33 +342,19 @@ class CaptureService:
         )
         staged_output = staging_dir / requested_path.name
         try:
-            frame_config = _frame_runtime_config(frame)
-            effective_png_scale = (
-                frame_config.png_scale
-                if png_scale is None and frame_config is not None
-                else png_scale
-            )
-            effective_gcode_config = gcode_config
-            if effective_gcode_config is None:
-                snapshot_gcode_config = getattr(frame, "gcode_config", None)
-                if snapshot_gcode_config is not None:
-                    effective_gcode_config = snapshot_gcode_config
-                elif frame_config is not None:
-                    effective_gcode_config = frame_config.gcode
-            if mode is CaptureMode.PNG:
-                effective_output_size = output_size or png_output_size(
-                    frame.canvas_size,
-                    scale=effective_png_scale,
-                )
-            else:
-                effective_output_size = frame.canvas_size
+            if format is ExportFormat.PNG:
+                if output_size is None:
+                    raise ValueError("PNG export には output_size が必要です")
+            if format is ExportFormat.GCODE and gcode_params is None:
+                raise ValueError("G-code export には gcode_params が必要です")
             staged_paths = self.encode(
                 frame,
                 staged_output,
-                mode=mode,
-                output_size=effective_output_size,
-                gcode_config=(
-                    effective_gcode_config if mode is CaptureMode.GCODE else None
+                format=format,
+                split_gcode_layers=split_gcode_layers,
+                output_size=output_size,
+                gcode_params=(
+                    gcode_params if format is ExportFormat.GCODE else None
                 ),
             )
             if overwrite:
@@ -392,14 +362,14 @@ class CaptureService:
                     frame,
                     requested_path,
                     staged_paths,
-                    mode=mode,
+                    format=format,
+                    split_gcode_layers=split_gcode_layers,
                     overwrite=True,
-                    output_size=effective_output_size,
+                    output_size=output_size,
                 )
-                assert published is not None
-                return CaptureResult(
+                return ExportResult(
                     path=published.artifact_paths[0],
-                    mode=mode,
+                    format=format,
                     manifest_path=published.manifest_path,
                 )
 
@@ -411,16 +381,16 @@ class CaptureService:
                         frame,
                         output_path,
                         staged_paths,
-                        mode=mode,
-                        output_size=effective_output_size,
+                        format=format,
+                        split_gcode_layers=split_gcode_layers,
+                        output_size=output_size,
                     )
                 except FileExistsError as exc:
                     last_collision = exc
                     continue
-                assert published is not None
-                return CaptureResult(
+                return ExportResult(
                     path=published.artifact_paths[0],
-                    mode=mode,
+                    format=format,
                     manifest_path=published.manifest_path,
                 )
             raise FileExistsError(
@@ -431,4 +401,4 @@ class CaptureService:
             shutil.rmtree(staging_dir, ignore_errors=True)
 
 
-__all__ = ["CaptureFrame", "CaptureMode", "CaptureResult", "CaptureService"]
+__all__ = ["CaptureFrame", "CaptureService"]

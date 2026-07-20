@@ -18,7 +18,7 @@ K = TypeVar("K", bound=Hashable)
 def operation_display_name(op: str) -> str:
     """内部 selector 名を公開 API 名へ置き換えた operation 表示名を返す。"""
 
-    return "select" if selector_kind(str(op)) is not None else str(op)
+    return "select" if selector_kind(op) is not None else op
 
 
 def humanize_identifier(value: str) -> str:
@@ -27,7 +27,7 @@ def humanize_identifier(value: str) -> str:
     内部 key と ImGui ID は変更せず、表示文字列だけを整える。
     """
 
-    text = " ".join(str(value).replace("_", " ").replace("#", " #").split())
+    text = " ".join(value.replace("_", " ").replace("#", " #").split())
     if not text:
         return ""
     return text[0].upper() + text[1:]
@@ -37,18 +37,6 @@ def format_contextual_row_label(op: str, ordinal: int, arg: str) -> str:
     """Effect 等、親内で operation 名も必要な行の表示ラベルを返す。"""
 
     return f"{humanize_identifier(op)} {int(ordinal)} · {humanize_identifier(arg)}"
-
-
-def format_param_row_label(op: str, ordinal: int, arg: str) -> str:
-    """パラメータ行の表示ラベル `"{op}#{ordinal} {arg}"` を返す。"""
-
-    return f"{str(op)}#{int(ordinal)} {arg}"
-
-
-def format_layer_style_row_label(layer_name: str, ordinal: int, arg: str) -> str:
-    """Layer style 行の表示ラベル `"{layer_name}#{ordinal} {arg}"` を返す。"""
-
-    return f"{layer_name}#{int(ordinal)} {arg}"
 
 
 def dedup_display_names_in_order(items: list[tuple[K, str]]) -> dict[K, str]:
@@ -82,25 +70,25 @@ def primitive_header_display_names_from_snapshot(
     base_name_by_group: dict[GroupKey, str] = {}
     site_id_by_group: dict[GroupKey, str] = {}
     for key, (_meta, _state, ordinal, label) in snapshot.items():
-        if not is_primitive_op(str(key.op)):
+        if not is_primitive_op(key.op):
             continue
-        group_key = (str(key.op), int(ordinal))
+        group_key = (key.op, int(ordinal))
         if group_key in base_name_by_group:
             continue
         if label:
-            base_name = str(label)
+            base_name = label
         else:
-            base_name = operation_display_name(str(key.op))
+            base_name = operation_display_name(key.op)
         base_name_by_group[group_key] = base_name
-        site_id_by_group[group_key] = str(key.site_id)
+        site_id_by_group[group_key] = key.site_id
 
     def _sort_key(group_key: GroupKey) -> tuple[int, str, int]:
         op, ordinal = group_key
         site_id = site_id_by_group.get(group_key, "")
         order = 10**9
         if display_order_by_group is not None:
-            order = int(display_order_by_group.get((str(op), str(site_id)), 10**9))
-        return (int(order), str(op), int(ordinal))
+            order = int(display_order_by_group.get((op, site_id), 10**9))
+        return (int(order), op, int(ordinal))
 
     ordered = [(k, base_name_by_group[k]) for k in sorted(base_name_by_group, key=_sort_key)]
     return dedup_display_names_in_order(ordered)
@@ -116,7 +104,7 @@ def effect_step_ordinals_by_site(
 
     steps_by_chain: dict[str, list[tuple[int, str, str]]] = {}
     for (op, site_id), (chain_id, step_index) in step_info_by_site.items():
-        steps_by_chain.setdefault(str(chain_id), []).append((int(step_index), op, site_id))
+        steps_by_chain.setdefault(chain_id, []).append((int(step_index), op, site_id))
 
     out: dict[EffectStepKey, int] = {}
     for chain_id, steps in steps_by_chain.items():
@@ -141,28 +129,31 @@ def effect_chain_header_display_names_from_snapshot(
     # - そうでない場合: 無名チェーンとして扱う
     label_by_chain: dict[str, str | None] = {}
     for key, (_meta, _state, _ordinal, label) in snapshot.items():
-        op = str(key.op)
+        op = key.op
         if not is_effect_op(op):
             continue
-        step = step_info_by_site.get((op, str(key.site_id)))
+        step = step_info_by_site.get((op, key.site_id))
         if step is None:
             continue
         chain_id, _step_index = step
         if chain_id in label_by_chain:
             continue
-        label_by_chain[chain_id] = None if label is None else str(label)
+        label_by_chain[chain_id] = label
 
     # 表示順は “コード順（観測順）” に寄せる。
     chain_min_display_order: dict[str, int] = {}
     for (op, site_id), (chain_id, _step_index) in step_info_by_site.items():
-        order = int(display_order_by_group.get((str(op), str(site_id)), 10**9))
-        prev = chain_min_display_order.get(str(chain_id))
+        order = int(display_order_by_group.get((op, site_id), 10**9))
+        prev = chain_min_display_order.get(chain_id)
         if prev is None or order < prev:
-            chain_min_display_order[str(chain_id)] = int(order)
+            chain_min_display_order[chain_id] = int(order)
 
     chain_ids_sorted = sorted(
         label_by_chain.keys(),
-        key=lambda cid: (int(chain_min_display_order.get(str(cid), 10**9)), str(cid)),
+        key=lambda chain_id: (
+            int(chain_min_display_order.get(chain_id, 10**9)),
+            chain_id,
+        ),
     )
 
     # effect#N は “無名チェーンだけ” を対象に 1..K へ正規化する。
@@ -172,7 +163,7 @@ def effect_chain_header_display_names_from_snapshot(
     for chain_id in chain_ids_sorted:
         label = label_by_chain.get(chain_id)
         if label:
-            base_name_by_chain[chain_id] = str(label)
+            base_name_by_chain[chain_id] = label
             continue
         unnamed_count += 1
         base_name_by_chain[chain_id] = f"effect#{unnamed_count}"

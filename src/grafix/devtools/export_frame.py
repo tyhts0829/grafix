@@ -39,7 +39,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--format",
-        choices=tuple(item.value for item in ExportFormat),
+        type=ExportFormat,
+        choices=tuple(ExportFormat),
         default=None,
         help="出力形式。--out 指定時は suffix から推論し、省略時は PNG",
     )
@@ -92,7 +93,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
     if args.out is None:
         args.export_format = (
-            ExportFormat.PNG if args.format is None else ExportFormat(args.format)
+            ExportFormat.PNG if args.format is None else args.format
         )
     else:
         try:
@@ -148,12 +149,14 @@ def _default_output_path(
     export_format: ExportFormat,
     run_id: str | None,
     canvas_size: tuple[int, int],
+    png_scale: float,
 ) -> Path:
     """形式ごとの既存出力規則を使って要求 base path を返す。"""
 
     if export_format is ExportFormat.PNG:
         return default_png_output_path(
             draw,
+            scale=png_scale,
             run_id=run_id,
             canvas_size=canvas_size,
         )
@@ -170,8 +173,7 @@ def _print_result(*, t: float, result: ExportResult) -> None:
     """要求 path ではなく CaptureService が確定した実 path を表示する。"""
 
     print(f"Saved {result.format.value.upper()}: {result.path} (t={float(t)})")
-    if result.manifest_path is not None:
-        print(f"Manifest: {result.manifest_path}")
+    print(f"Manifest: {result.manifest_path}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -185,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     canvas_size = (int(canvas_w), int(canvas_h))
     run_id = None if args.run_id is None else str(args.run_id)
     parameter_source = _parameter_source(args.parameter_source)
-    export_format = ExportFormat(args.export_format)
+    export_format = cast(ExportFormat, args.export_format)
 
     with RenderSession(
         draw,
@@ -202,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
                 export_format=export_format,
                 run_id=run_id,
                 canvas_size=canvas_size,
+                png_scale=session.config.png_scale,
             )
             if explicit_path is None
             else explicit_path

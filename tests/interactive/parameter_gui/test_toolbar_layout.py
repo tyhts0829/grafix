@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -108,9 +109,13 @@ def test_toolbar_and_drawer_allow_workspace_ui_scale_below_one() -> None:
     assert drawer.gap == 7.5
 
 
-def test_real_pyimgui_can_render_toolbar_children_and_closed_midi_popup() -> None:
+def test_real_pyimgui_can_render_toolbar_children_and_closed_midi_popup(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     imgui = pytest.importorskip("imgui")
-    context = imgui.create_context()
+    gui = cast(Any, initialized_parameter_gui)
+    context = gui._context
+    imgui.set_current_context(context)
     try:
         io = imgui.get_io()
         io.display_size = (800.0, 1000.0)
@@ -119,7 +124,6 @@ def test_real_pyimgui_can_render_toolbar_children_and_closed_midi_popup() -> Non
         imgui.new_frame()
         imgui.begin("toolbar smoke")
 
-        gui = ParameterGUI.__new__(ParameterGUI)
         gui._imgui = imgui
         gui._transport = None
         gui._history = None
@@ -136,4 +140,4 @@ def test_real_pyimgui_can_render_toolbar_children_and_closed_midi_popup() -> Non
         imgui.render()
         assert imgui.get_draw_data() is not None
     finally:
-        imgui.destroy_context(context)
+        imgui.set_current_context(context)

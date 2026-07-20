@@ -11,7 +11,7 @@ import pytest
 from grafix.api import E, G
 from grafix.core.effects.warp import (
     _build_ring_edge_invariants,
-    _evaluate_sdf_points_numba,
+    _evaluate_warp_sdf_points_numba,
     _evaluate_signed_distances_numba,
     warp,
 )
@@ -188,7 +188,7 @@ def test_warp_pruned_distance_kernel_matches_full_sdf_bits() -> None:
         axis=0,
     )
 
-    expected, _, _ = _evaluate_sdf_points_numba(
+    expected, _, _ = _evaluate_warp_sdf_points_numba(
         points_xy,
         ring_vertices,
         ring_offsets,
@@ -221,7 +221,7 @@ def test_warp_distance_only_thread_counts_are_exact() -> None:
     xs = np.linspace(-110.0, 110.0, num=513, dtype=np.float64)
     points_xy = np.stack((xs, 37.0 * np.sin(xs * 0.043)), axis=1)
     edge_invariants = _build_ring_edge_invariants(ring_vertices)
-    expected, _, _ = _evaluate_sdf_points_numba(
+    expected, _, _ = _evaluate_warp_sdf_points_numba(
         points_xy,
         ring_vertices,
         ring_offsets,

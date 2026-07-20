@@ -22,7 +22,7 @@ def param_store_load_diagnostic_events(
     *,
     primary_path: Path,
 ) -> tuple[DiagnosticEvent, ...]:
-    """ParamStore load 時の migration/quarantine 情報を共通診断へ変換する。"""
+    """ParamStore load 時の recovery/quarantine 情報を共通診断へ変換する。"""
 
     events: list[DiagnosticEvent] = []
     for item in store.load_diagnostics:
@@ -100,7 +100,8 @@ class ParamStoreRecoverySession:
     def __post_init__(self) -> None:
         if not isinstance(self.store, ParamStore):
             raise TypeError("store は ParamStore である必要があります")
-        self.primary_path = Path(self.primary_path)
+        if not isinstance(self.primary_path, Path):
+            raise TypeError("primary_path は Path である必要があります")
 
     @property
     def recovery_path(self) -> Path:

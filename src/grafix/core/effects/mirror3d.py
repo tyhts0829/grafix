@@ -10,17 +10,21 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+
+from .argument_validation import exact_bool, integer_scalar, known_choice
 from .util import empty_geom
 
 EPS = 1e-6
 INCLUDE_BOUNDARY = True
 _PACKED_POLYHEDRAL_MIN_SOURCE_LINES = 32
 _PACKED_DEDUP_MIN_LINES = 64
+_MODE_CHOICES = ("azimuth", "polyhedral")
+_GROUP_CHOICES = ("T", "O", "I")
 
 mirror3d_meta = {
     "mode": ParamMeta(
         kind="choice",
-        choices=("azimuth", "polyhedral"),
+        choices=_MODE_CHOICES,
         description="任意軸まわりの放射対称と正多面体の回転対称から複製方式を選ぶ。",
     ),
     "n_azimuth": ParamMeta(
@@ -60,7 +64,7 @@ mirror3d_meta = {
     ),
     "group": ParamMeta(
         kind="choice",
-        choices=("T", "O", "I"),
+        choices=_GROUP_CHOICES,
         description="正多面体対称に使う四面体、八面体、二十面体の回転群を選ぶ。",
     ),
     "use_reflection": ParamMeta(
@@ -75,7 +79,7 @@ mirror3d_meta = {
 
 def _mode_is(name: str):
     def _pred(v) -> bool:
-        return str(v.get("mode", "azimuth")) == name
+        return v.get("mode", "azimuth") == name
 
     return _pred
 
@@ -86,8 +90,8 @@ mirror3d_ui_visible = {
     "phi0": _mode_is("azimuth"),
     "mirror_equator": _mode_is("azimuth"),
     "source_side": lambda v: (
-        str(v.get("mode", "azimuth")) == "azimuth"
-        and bool(v.get("mirror_equator", False))
+        v.get("mode", "azimuth") == "azimuth"
+        and v.get("mirror_equator", False) is True
     ),
     "group": _mode_is("polyhedral"),
     "use_reflection": _mode_is("polyhedral"),
@@ -137,6 +141,31 @@ def mirror3d(
     show_planes : bool, default False
         対称面を可視化用の十字線として出力に追加する。
     """
+    mode_s = known_choice(
+        mode,
+        choices=_MODE_CHOICES,
+        name="mirror3d: mode",
+    )
+    n_azimuth_i = integer_scalar(
+        n_azimuth,
+        name="mirror3d: n_azimuth",
+    )
+    mirror_equator_b = exact_bool(
+        mirror_equator,
+        name="mirror3d: mirror_equator",
+    )
+    source_side_b = exact_bool(source_side, name="mirror3d: source_side")
+    group_s = known_choice(
+        group,
+        choices=_GROUP_CHOICES,
+        name="mirror3d: group",
+    )
+    use_reflection_b = exact_bool(
+        use_reflection,
+        name="mirror3d: use_reflection",
+    )
+    show_planes_b = exact_bool(show_planes, name="mirror3d: show_planes")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
@@ -154,28 +183,27 @@ def mirror3d(
     if float(np.linalg.norm(ax)) <= 0.0:
         return coords, offsets
 
-    mode_s = str(mode)
     if mode_s == "azimuth":
         out_lines = _mirror3d_azimuth(
             coords,
             offsets,
-            n_azimuth=int(n_azimuth),
+            n_azimuth=n_azimuth_i,
             center=c,
             axis=ax,
             phi0_deg=float(phi0),
-            mirror_equator=bool(mirror_equator),
-            source_side=bool(source_side),
+            mirror_equator=mirror_equator_b,
+            source_side=source_side_b,
         )
-        if show_planes:
+        if show_planes_b:
             out_lines.extend(
                 _show_planes_azimuth(
                     out_lines=out_lines,
                     coords=coords,
                     center=c,
                     axis=ax,
-                    n_azimuth=int(n_azimuth),
+                    n_azimuth=n_azimuth_i,
                     phi0=float(phi0),
-                    mirror_equator=bool(mirror_equator),
+                    mirror_equator=mirror_equator_b,
                 )
             )
     elif mode_s == "polyhedral":
@@ -183,16 +211,15 @@ def mirror3d(
             coords,
             offsets,
             center=c,
-            group=str(group),
-            use_reflection=bool(use_reflection),
+            group=group_s,
+            use_reflection=use_reflection_b,
         )
-        if show_planes:
+        if show_planes_b:
             out_lines.extend(
                 _show_planes_polyhedral(out_lines=out_lines, coords=coords, center=c)
             )
     else:
-        return coords, offsets
-
+        raise AssertionError(f"unreachable mirror3d mode: {mode_s!r}")
     uniq = _dedup_lines(out_lines)
     if not uniq:
         return empty_geom()
@@ -271,11 +298,7 @@ def _mirror3d_polyhedral(
     group: str,
     use_reflection: bool,
 ) -> list[np.ndarray]:
-    gname = str(group).upper()
-    if gname not in {"T", "O", "I"}:
-        return []
-
-    mats = _polyhedral_rotation_mats(gname)
+    mats = _polyhedral_rotation_mats(group)
     if not mats:
         return []
 
@@ -498,7 +521,7 @@ def _show_planes_azimuth(
     phi0: float,
     mirror_equator: bool,
 ) -> list[np.ndarray]:
-    n = max(1, int(n_azimuth))
+    n = max(1, n_azimuth)
     if out_lines:
         all_pts = np.vstack(out_lines).astype(np.float32, copy=False)
     else:

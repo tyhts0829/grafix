@@ -179,7 +179,7 @@ def _measure_slider_sequence(
     key = next(
         key
         for key in store_snapshot(store)
-        if key.op == str(op) and key.arg == str(arg)
+        if key.op == op and key.arg == arg
     )
     meta = store.get_meta(key)
     if meta is None:
@@ -230,6 +230,9 @@ def _measure_slider_sequence(
                 t=float(frame),
                 snapshot_revision=final_revision,
                 snapshot=final_snapshot,
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
             )
             submitted += 1
             result = mp_draw.poll_latest()
@@ -272,6 +275,9 @@ def _measure_slider_sequence(
                 t=float(frames),
                 snapshot_revision=final_revision,
                 snapshot=final_snapshot,
+                effect_order_snapshot={},
+                epoch=0,
+                quality="draft",
             )
             submitted += 1
             time.sleep(0.0002)
@@ -446,7 +452,14 @@ def _measure_mp(
     startup_ns = time.perf_counter_ns() - startup_started
     try:
         first_started = time.perf_counter_ns()
-        mp_draw.submit(t=0.0, snapshot_revision=0, snapshot={})
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=0,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         _wait_for_completed(mp_draw, target=1)
         first_ns = time.perf_counter_ns() - first_started
 
@@ -465,6 +478,9 @@ def _measure_mp(
                     t=float(submitted + 1),
                     snapshot_revision=0,
                     snapshot={},
+                    effect_order_snapshot={},
+                    epoch=0,
+                    quality="draft",
                 )
                 submitted += 1
                 completed = mp_draw.completed_result_count - baseline

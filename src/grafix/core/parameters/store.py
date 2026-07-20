@@ -156,7 +156,7 @@ class ParamStore:
 
     @property
     def load_diagnostics(self) -> tuple[ParamStoreLoadDiagnostic, ...]:
-        """load 中の migration/quarantine 診断を返す。"""
+        """load 中の recovery/quarantine 診断を返す。"""
 
         return self._runtime.load_diagnostics
 
@@ -205,11 +205,6 @@ class ParamStore:
 
         return self._effects.order_overrides()
 
-    def effect_order_state_by_chain(self) -> dict[str, EffectOrder | None]:
-        """既知chainごとのGUI順状態を返す。"""
-
-        return self._effects.order_state_by_chain()
-
     def chain_ordinals(self) -> dict[str, int]:
         """chain_id -> ordinal のコピーを返す。"""
 
@@ -224,10 +219,15 @@ class ParamStore:
         key: ParameterKey,
         *,
         base_value: Any,
+        explicit: bool,
         initial_override: bool | None = None,
     ) -> ParamState:
         """ParamState を確保し、無ければ base_value で初期化して返す。"""
 
+        if type(explicit) is not bool:
+            raise TypeError("explicit must be an exact bool")
+        if initial_override is not None and type(initial_override) is not bool:
+            raise TypeError("initial_override must be an exact bool or None")
         state = self._states.get(key)
         if state is not None:
             return state
@@ -235,13 +235,11 @@ class ParamStore:
         self._observe_history_key_before(key)
         state = ParamState(ui_value=base_value)
         if initial_override is not None:
-            state.override = bool(initial_override)
+            state.override = initial_override
         self._states[key] = state
+        self._explicit_by_key[key] = explicit
         self._touch()
         return state
-
-    def _get_meta_ref(self, key: ParameterKey) -> ParamMeta | None:
-        return self._meta.get(key)
 
     def _set_meta(self, key: ParameterKey, meta: ParamMeta) -> None:
         if self._meta.get(key) == meta:
@@ -254,10 +252,11 @@ class ParamStore:
         return self._explicit_by_key.get(key)
 
     def _set_explicit(self, key: ParameterKey, value: bool) -> None:
-        normalized = bool(value)
-        if self._explicit_by_key.get(key) == normalized:
+        if type(value) is not bool:
+            raise TypeError("explicit must be an exact bool")
+        if self._explicit_by_key.get(key) == value:
             return
-        self._explicit_by_key[key] = normalized
+        self._explicit_by_key[key] = value
         self._touch()
 
     def _labels_ref(self) -> ParamLabels:

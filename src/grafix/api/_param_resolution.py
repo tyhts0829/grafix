@@ -9,6 +9,7 @@ from typing import Any
 
 from grafix.core.parameters import current_frame_params, current_param_store, resolve_params
 from grafix.core.parameters.context import current_param_recording_enabled
+from grafix.core.parameters.identity import identity_string
 from grafix.core.parameters.labels_ops import set_label
 from grafix.core.parameters.meta import ParamMeta
 
@@ -48,8 +49,6 @@ def resolve_api_params(
     user_params: dict[str, Any],
     defaults: Mapping[str, Any],
     meta: Mapping[str, ParamMeta],
-    chain_id: str | None = None,
-    step_index: int | None = None,
     explicit_args: set[str] | None = None,
 ) -> dict[str, Any]:
     """API 層の kwargs を解決し、Geometry.create 用の値を返す。
@@ -63,7 +62,10 @@ def resolve_api_params(
     resolved_explicit_args = (
         set(user_params)
         if explicit_args is None
-        else {str(arg) for arg in explicit_args}
+        else {
+            identity_string(arg, name="explicit argument")
+            for arg in explicit_args
+        }
     )
     base_params = dict(defaults)
     base_params.update(user_params)
@@ -74,8 +76,6 @@ def resolve_api_params(
             meta=meta,
             site_id=site_id,
             explicit_args=resolved_explicit_args,
-            chain_id=chain_id,
-            step_index=step_index,
         )
     return base_params
 

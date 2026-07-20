@@ -71,7 +71,7 @@ def export_svg(
     layers: Sequence[RealizedLayer],
     path: str | Path,
     *,
-    canvas_size: tuple[int, int] | None = None,
+    canvas_size: tuple[int, int],
 ) -> Path:
     """Layer 列を SVG として保存する。
 
@@ -81,23 +81,16 @@ def export_svg(
         realize 済みの Layer 列。
     path : str or Path
         出力先パス。
-    canvas_size : tuple[int, int] or None, optional
-        キャンバス寸法。現在は None を許容しない（将来 bbox 対応を追加する想定）。
+    canvas_size : tuple[int, int]
+        キャンバス寸法。
 
     Returns
     -------
     Path
         保存先パス（正規化済み）。
 
-    Raises
-    ------
-    ValueError
-        canvas_size が None の場合。
     """
     _path = Path(path)
-    if canvas_size is None:
-        raise ValueError("canvas_size=None は未対応（現在は必須）")
-
     canvas_w, canvas_h = canvas_size
     if canvas_w <= 0 or canvas_h <= 0:
         raise ValueError("canvas_size は正の値である必要がある")

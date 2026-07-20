@@ -36,7 +36,7 @@ def test_explicit_key_discards_instruction_location() -> None:
     second = caller_site_id(skip=1, key="stable")
 
     assert first == second
-    assert first.endswith("|stable")
+    assert first.endswith("|str:6:stable")
 
 
 def test_explicit_key_rejects_unsupported_types() -> None:
@@ -47,7 +47,22 @@ def test_explicit_key_rejects_unsupported_types() -> None:
 def test_instance_key_is_appended_to_semantic_key() -> None:
     site_id = caller_site_id(skip=1, key="petal", instance_key=7)
 
-    assert site_id.endswith("|petal|instance:7")
+    assert site_id.endswith("|str:5:petal|instance:int:7")
+
+
+def test_string_and_integer_semantic_keys_do_not_collide() -> None:
+    integer = caller_site_id(skip=1, key=1)
+    string = caller_site_id(skip=1, key="1")
+
+    assert integer != string
+    assert integer.endswith("|int:1")
+    assert string.endswith("|str:1:1")
+
+
+@pytest.mark.parametrize("value", [True, ""])
+def test_semantic_keys_reject_bool_and_empty_string(value: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        caller_site_id(skip=1, key=value)  # type: ignore[arg-type]
 
 
 def test_shared_semantic_site_rejects_instance_key() -> None:

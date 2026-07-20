@@ -9,12 +9,13 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, cast
 
 import numpy as np
 
 from grafix.core.font_resolver import resolve_font_path
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple, empty_geom_tuple
 
@@ -102,7 +103,7 @@ class TextRenderer:
         """TTFont を取得する（キャッシュ）。"""
         from fontTools.ttLib import TTFont  # type: ignore[import-untyped]
 
-        idx = int(font_index)
+        idx = font_index
         if idx < 0:
             idx = 0
 
@@ -131,22 +132,22 @@ class TextRenderer:
         cmap: Any = _UNSET,
     ) -> tuple:
         """平坦化済みのグリフコマンド（`RecordingPen.value` 互換タプル）を返す。"""
-        from fontPens.flattenPen import FlattenPen  # type: ignore[import-untyped]
         from fontTools.pens.recordingPen import (  # type: ignore[import-untyped]
             DecomposingRecordingPen,
-            RecordingPen,
         )
+
+        from ._text_flatten import flatten_recording
 
         resolved = font_path
         key = (
-            f"{resolved}|{int(font_index)}|{char}|{round(float(flat_seg_len_units), 6)}"
+            f"{resolved}|{font_index}|{char}|{round(float(flat_seg_len_units), 6)}"
         )
         cached = cls._glyph_cache.get(key)
         if cached is not None:
             return cached
 
         font_obj = (
-            cls.get_font(resolved, int(font_index)) if tt_font is None else tt_font
+            cls.get_font(resolved, font_index) if tt_font is None else tt_font
         )
         cmap_obj = font_obj.getBestCmap() if cmap is _UNSET else cmap
         if cmap_obj is None:
@@ -188,15 +189,10 @@ class TextRenderer:
             cls._glyph_cache.set(key, tuple())
             return tuple()
 
-        flat = RecordingPen()
-        flatten_pen = FlattenPen(
-            flat,
-            approximateSegmentLength=int(round(float(flat_seg_len_units))),
-            segmentLines=True,
+        result = flatten_recording(
+            rec,
+            approximate_segment_length=int(round(float(flat_seg_len_units))),
         )
-        rec.replay(flatten_pen)
-
-        result = tuple(flat.value)
         cls._glyph_cache.set(key, result)
         return result
 
@@ -215,7 +211,7 @@ class TextRenderer:
 
         resolved = font_path
         key = (
-            f"{resolved}|{int(font_index)}|{char}|"
+            f"{resolved}|{font_index}|{char}|"
             f"{round(float(flat_seg_len_units), 6)}"
         )
         cached = cls._glyph_polyline_cache.get(key)
@@ -225,7 +221,7 @@ class TextRenderer:
         commands = cls.get_glyph_commands(
             char=char,
             font_path=resolved,
-            font_index=int(font_index),
+            font_index=font_index,
             flat_seg_len_units=float(flat_seg_len_units),
             tt_font=tt_font,
             cmap=cmap,
@@ -253,25 +249,6 @@ def _get_space_advance_em(tt_font: Any) -> float:
         return float(space_width) / float(tt_font["head"].unitsPerEm)  # type: ignore[index]
     except Exception:
         return 0.25
-
-
-def _get_char_advance_em(char: str, tt_font: Any) -> float:
-    """1em を 1.0 とした advance の比率を返す。"""
-    space_advance = _get_space_advance_em(tt_font)
-    if char == " ":
-        return space_advance
-
-    cmap = tt_font.getBestCmap()
-    if cmap is None:
-        return space_advance
-    glyph_name = cmap.get(ord(char))
-    if glyph_name is None:
-        return space_advance
-    try:
-        advance_width = tt_font["hmtx"].metrics[glyph_name][0]  # type: ignore[index]
-        return float(advance_width) / float(tt_font["head"].unitsPerEm)  # type: ignore[index]
-    except Exception:
-        return space_advance
 
 
 class _CallLocalFontMetrics:
@@ -529,6 +506,8 @@ def _pack_text_geometry(
     return coords, offsets
 
 
+_TEXT_ALIGN_CHOICES = ("left", "center", "right")
+
 text_meta = {
     "text": ParamMeta(
         kind="str",
@@ -546,7 +525,7 @@ text_meta = {
     ),
     "text_align": ParamMeta(
         kind="choice",
-        choices=("left", "center", "right"),
+        choices=_TEXT_ALIGN_CHOICES,
         description="各行の輪郭を左揃え・中央揃え・右揃えのいずれで配置するか選択します。",
     ),
     "letter_spacing_em": ParamMeta(
@@ -602,9 +581,9 @@ text_meta = {
 }
 
 TEXT_UI_VISIBLE = {
-    "box_width": lambda v: bool(v.get("use_bounding_box")),
-    "box_height": lambda v: bool(v.get("use_bounding_box")),
-    "show_bounding_box": lambda v: bool(v.get("use_bounding_box")),
+    "box_width": lambda v: v.get("use_bounding_box") is True,
+    "box_height": lambda v: v.get("use_bounding_box") is True,
+    "show_bounding_box": lambda v: v.get("use_bounding_box") is True,
 }
 
 
@@ -613,7 +592,7 @@ def text(
     *,
     text: str = "HELLO",
     font: str = DEFAULT_FONT,
-    font_index: int | float = 0,
+    font_index: int = 0,
     text_align: str = "left",
     letter_spacing_em: float = 0.0,
     line_height: float = 1.2,
@@ -637,7 +616,7 @@ def text(
         1) `font` が実在パスならそのファイル
         2) config.yaml の `font_dirs`（先頭から）
         3) grafix 同梱フォント（Google Sans / Noto Sans JP）
-    font_index : int | float, optional
+    font_index : int, optional
         `.ttc` の subfont 番号（0 以上）。`.ttf/.otf` では無視される。
     text_align : str, optional
         行揃え（`left|center|right`）。
@@ -676,11 +655,46 @@ def text(
     `box_width/box_height` は「出力座標系（scale 適用後）」で指定し、内部で em 座標へ換算して折り返し/枠を生成する。
     `y=0` をボックス上辺として扱えるように、1 行目のベースラインは常にフォントの ascent 分だけ下げる。
     """
-    fi = int(font_index)
+    text_s = cast(
+        str,
+        validate_parameter_value(text, kind="str", choices=None),
+    )
+    font_s = cast(
+        str,
+        validate_parameter_value(font, kind="font", choices=None),
+    )
+    fi = cast(
+        int,
+        validate_parameter_value(font_index, kind="int", choices=None),
+    )
+    text_align_s = cast(
+        str,
+        validate_parameter_value(
+            text_align,
+            kind="choice",
+            choices=_TEXT_ALIGN_CHOICES,
+        ),
+    )
+    use_bb = cast(
+        bool,
+        validate_parameter_value(
+            use_bounding_box,
+            kind="bool",
+            choices=None,
+        ),
+    )
+    show_bounding_box_b = cast(
+        bool,
+        validate_parameter_value(
+            show_bounding_box,
+            kind="bool",
+            choices=None,
+        ),
+    )
     if fi < 0:
         fi = 0
 
-    font_path = resolve_font_path(font)
+    font_path = resolve_font_path(font_s)
     tt_font = TEXT_RENDERER.get_font(font_path, fi)
     units_per_em = float(tt_font["head"].unitsPerEm)  # type: ignore[index]
     metrics = _CallLocalFontMetrics(tt_font)
@@ -695,8 +709,7 @@ def text(
     flat_seg_len_em = tol_max_em * (tol_min_em / tol_max_em) ** q
     seg_len_units = max(1.0, flat_seg_len_em * units_per_em)
 
-    lines = str(text).split("\n")
-    use_bb = bool(use_bounding_box)
+    lines = text_s.split("\n")
     s_f = float(scale)
     s_abs = abs(s_f)
     bw = float(box_width)
@@ -726,9 +739,9 @@ def text(
         if line_str:
             width_em -= float(letter_spacing_em)
 
-        if text_align == "center":
+        if text_align_s == "center":
             x_em = -width_em / 2.0
-        elif text_align == "right":
+        elif text_align_s == "right":
             x_em = -width_em
         else:
             x_em = 0.0
@@ -755,14 +768,20 @@ def text(
             y_em += float(line_height)
 
     extra_polylines: list[np.ndarray] = []
-    if use_bb and bool(show_bounding_box) and bw > 0.0 and bh > 0.0 and s_abs > 0.0:
+    if (
+        use_bb
+        and show_bounding_box_b
+        and bw > 0.0
+        and bh > 0.0
+        and s_abs > 0.0
+    ):
         bw_em = bw / s_abs
         bh_em = bh / s_abs
 
-        if text_align == "center":
+        if text_align_s == "center":
             x0 = -bw_em / 2.0
             x1 = bw_em / 2.0
-        elif text_align == "right":
+        elif text_align_s == "right":
             x0 = -bw_em
             x1 = 0.0
         else:

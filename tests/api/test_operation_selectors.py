@@ -9,7 +9,10 @@ from grafix import E, G
 from grafix.api._operation_selector import (
     PRIMITIVE_SELECTOR_OP,
     effect_selector_op,
+    resolve_effect_selection,
+    resolve_primitive_selection,
 )
+from grafix.api.effects import _make_effect_selector_step
 from grafix.core.effect_registry import effect, effect_registry
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.primitive_registry import primitive, primitive_registry
@@ -198,6 +201,42 @@ def test_e_select_rejects_non_positive_arity(n_inputs: int) -> None:
         E.rotate().select(n_inputs=n_inputs)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("invalid", [0, 1, "", None, object()])
+def test_selector_resolution_rejects_non_bool_target_explicit(
+    invalid: object,
+) -> None:
+    with pytest.raises(TypeError, match="target_explicit.*bool"):
+        resolve_primitive_selection(
+            target="circle",
+            target_explicit=invalid,  # type: ignore[arg-type]
+            params_by_target=(),
+            site_id="strict-primitive-selector",
+        )
+
+    with pytest.raises(TypeError, match="target_explicit.*bool"):
+        resolve_effect_selection(
+            target="rotate",
+            target_explicit=invalid,  # type: ignore[arg-type]
+            n_inputs=1,
+            params_by_target=(),
+            site_id="strict-effect-selector",
+        )
+
+
+@pytest.mark.parametrize("invalid", [0, 1, "", None, object()])
+def test_effect_selector_step_rejects_non_bool_target_explicit(
+    invalid: object,
+) -> None:
+    with pytest.raises(TypeError, match="target_explicit.*bool"):
+        _make_effect_selector_step(
+            target="rotate",
+            target_explicit=invalid,  # type: ignore[arg-type]
+            n_inputs=1,
+            params_by_target=None,
+            site_id="strict-effect-selector-step",
+        )
+
+
 def test_e_select_reports_target_and_arity_when_no_candidates_exist() -> None:
     with pytest.raises(ValueError) as exc_info:
         E.select(target="rotate", n_inputs=99)
@@ -276,6 +315,34 @@ def test_select_rejects_unknown_target(
     assert target in message
     assert kind in message
     assert "利用可能な候補" in message
+
+
+@pytest.mark.parametrize("namespace", (G, E))
+@pytest.mark.parametrize("invalid", (1, object()))
+def test_select_rejects_implicitly_stringifiable_target(
+    namespace: object,
+    invalid: object,
+) -> None:
+    with pytest.raises(TypeError, match="空でない文字列"):
+        namespace.select(target=invalid)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("namespace", (G, E))
+def test_select_rejects_empty_target(namespace: object) -> None:
+    with pytest.raises(ValueError, match="空でない文字列"):
+        namespace.select(target="")  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("namespace", (G, E))
+@pytest.mark.parametrize("invalid", (1, object(), ""))
+def test_select_rejects_noncanonical_params_by_target_key(
+    namespace: object,
+    invalid: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match="空でない文字列"):
+        namespace.select(  # type: ignore[attr-defined]
+            params_by_target={invalid: {}},
+        )
 
 
 def test_select_validates_unknown_target_kwargs() -> None:

@@ -68,3 +68,28 @@ def test_generated_stub_exposes_primitive_and_effect_selectors() -> None:
         "params_by_target: Mapping[str, Mapping[str, Any]] | None = ..."
     )
     assert builder_select.endswith("-> _EffectBuilder:")
+
+
+def test_generated_stub_exposes_operation_catalogs_with_exact_types() -> None:
+    stub = generate_stubs_str()
+
+    assert _protocol_method_signature(
+        stub,
+        protocol="_G",
+        method="catalog",
+    ) == "def catalog(self) -> tuple[OpCatalogEntry[PrimitiveFunc], ...]:"
+    assert _protocol_method_signature(
+        stub,
+        protocol="_G",
+        method="describe",
+    ) == "def describe(self, name: str) -> OpCatalogEntry[PrimitiveFunc]:"
+    assert _protocol_method_signature(
+        stub,
+        protocol="_E",
+        method="catalog",
+    ) == "def catalog(self) -> tuple[OpCatalogEntry[EffectFunc], ...]:"
+    assert _protocol_method_signature(
+        stub,
+        protocol="_E",
+        method="describe",
+    ) == "def describe(self, name: str) -> OpCatalogEntry[EffectFunc]:"

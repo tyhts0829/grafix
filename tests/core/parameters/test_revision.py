@@ -27,6 +27,7 @@ def _record(index: int, *, value: float | None = None) -> FrameParamRecord:
         meta=ParamMeta(kind="float", ui_min=0.0, ui_max=10_000.0),
         explicit=False,
         effective=base,
+        source="code",
     )
 
 
@@ -155,14 +156,6 @@ def test_effective_revision_advances_once_only_when_final_snapshot_changes() -> 
     )
     assert runtime.effective_revision == 3
 
-    # effective/source を持たない観測は runtime snapshot を変更しない。
-    merge_frame_params(
-        store,
-        [replace(first, effective=None, source=None)],
-    )
-    assert runtime.effective_revision == 3
-
-
 def test_stable_merge_skips_initial_value_canonicalization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -243,8 +236,6 @@ def test_structure_change_leaves_stable_cache_with_latest_schema() -> None:
     first = replace(
         _record(1),
         source="code",
-        chain_id="chain-a",
-        step_index=0,
     )
     merge_frame_params(store, [first])
 
@@ -254,8 +245,6 @@ def test_structure_change_leaves_stable_cache_with_latest_schema() -> None:
         base=2,
         effective=2,
         meta=changed_meta,
-        chain_id="chain-b",
-        step_index=3,
     )
     merge_frame_params(store, [changed])
     merge_frame_params(store, [changed])
@@ -263,7 +252,7 @@ def test_structure_change_leaves_stable_cache_with_latest_schema() -> None:
     meta = store.get_meta(first.key)
     assert meta is not None
     assert meta.kind == "int"
-    assert store.get_effect_step(first.key.op, first.key.site_id) == ("chain-b", 3)
+    assert store.get_effect_step(first.key.op, first.key.site_id) is None
 
 
 def test_failed_merge_restores_effective_snapshot_and_revision(

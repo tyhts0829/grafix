@@ -11,16 +11,20 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from functools import lru_cache
+from typing import cast
 
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple, empty_geom_tuple
 
 _NUMPY_RNG_MAX_NODES = 32
 _MAX_CACHED_BEZIER_SAMPLES = 64
 _NUMBA_RNG_KERNEL: Callable[[np.ndarray], np.ndarray] | None = None
+_STROKE_STYLE_CHOICES = ("line", "bezier")
+_TEXT_ALIGN_CHOICES = ("left", "center", "right")
 
 asemic_meta = {
     "text": ParamMeta(
@@ -72,7 +76,7 @@ asemic_meta = {
     ),
     "stroke_style": ParamMeta(
         kind="choice",
-        choices=("line", "bezier"),
+        choices=_STROKE_STYLE_CHOICES,
         description="骨格を折れ線のまま描くか、Bézier 曲線で滑らかに描くか選択します。",
     ),
     "bezier_samples": ParamMeta(
@@ -90,7 +94,7 @@ asemic_meta = {
     # --- layout params ---
     "text_align": ParamMeta(
         kind="choice",
-        choices=("left", "center", "right"),
+        choices=_TEXT_ALIGN_CHOICES,
         description="各行の擬似字形を左揃え・中央揃え・右揃えのいずれで配置するか選択します。",
     ),
     "glyph_advance_em": ParamMeta(
@@ -153,11 +157,11 @@ asemic_meta = {
 }
 
 ASEMIC_UI_VISIBLE = {
-    "bezier_samples": lambda v: str(v.get("stroke_style", "bezier")) == "bezier",
-    "bezier_tension": lambda v: str(v.get("stroke_style", "bezier")) == "bezier",
-    "box_width": lambda v: bool(v.get("use_bounding_box")),
-    "box_height": lambda v: bool(v.get("use_bounding_box")),
-    "show_bounding_box": lambda v: bool(v.get("use_bounding_box")),
+    "bezier_samples": lambda v: v.get("stroke_style", "bezier") == "bezier",
+    "bezier_tension": lambda v: v.get("stroke_style", "bezier") == "bezier",
+    "box_width": lambda v: v.get("use_bounding_box") is True,
+    "box_height": lambda v: v.get("use_bounding_box") is True,
+    "show_bounding_box": lambda v: v.get("use_bounding_box") is True,
 }
 
 
@@ -177,7 +181,7 @@ def _best_candidate_points(
     if n <= 0:
         return np.zeros((0, 2), dtype=np.float64)
 
-    k = int(candidates)
+    k = candidates
     if k <= 0:
         k = 1
 
@@ -290,8 +294,8 @@ def _random_walk_strokes(
     if n <= 0:
         return []
 
-    s_min = int(stroke_min)
-    s_max = int(stroke_max)
+    s_min = stroke_min
+    s_max = stroke_max
     if s_min < 0:
         s_min = 0
     if s_max < 0:
@@ -299,8 +303,8 @@ def _random_walk_strokes(
     if s_min > s_max:
         s_min, s_max = s_max, s_min
 
-    w_min = int(walk_min_steps)
-    w_max = int(walk_max_steps)
+    w_min = walk_min_steps
+    w_max = walk_max_steps
     if w_min < 1:
         w_min = 1
     if w_max < 1:
@@ -373,7 +377,7 @@ def _make_bezier_basis(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """cubic Bézier係数を生成する。"""
 
-    samples = max(2, int(samples_per_segment))
+    samples = max(2, samples_per_segment)
     ts = np.linspace(0.0, 1.0, num=samples, dtype=np.float64)
     u = 1.0 - ts
     basis = (
@@ -402,7 +406,7 @@ def _sample_bezier(points: np.ndarray, *, samples_per_segment: int, tension: flo
     if n < 2:
         return points
 
-    samples = int(samples_per_segment)
+    samples = samples_per_segment
     if samples < 2:
         samples = 2
 
@@ -555,31 +559,29 @@ def _generate_asemic_glyph(
     bezier_tension: float,
 ) -> tuple[np.ndarray, ...]:
     """1 文字分のストローク（ポリライン列）を生成して返す（1em=1.0, 左上起点）。"""
-    nodes = int(n_nodes)
+    nodes = n_nodes
     if nodes < 2:
         return ()
 
-    rng = np.random.default_rng(int(seed))
+    rng = np.random.default_rng(seed)
 
-    pts = _best_candidate_points(rng, n=nodes, candidates=int(candidates))
+    pts = _best_candidate_points(rng, n=nodes, candidates=candidates)
     adjacency = _build_rng_adjacency(
         pts,
-        use_numpy=str(stroke_style) != "line",
+        use_numpy=stroke_style != "line",
     )
     strokes = _random_walk_strokes(
         rng,
         adjacency=adjacency,
-        stroke_min=int(stroke_min),
-        stroke_max=int(stroke_max),
-        walk_min_steps=int(walk_min_steps),
-        walk_max_steps=int(walk_max_steps),
+        stroke_min=stroke_min,
+        stroke_max=stroke_max,
+        walk_min_steps=walk_min_steps,
+        walk_max_steps=walk_max_steps,
     )
     if not strokes:
         return ()
 
-    style = str(stroke_style)
-    if style not in {"line", "bezier"}:
-        style = "bezier"
+    style = stroke_style
 
     polylines: list[np.ndarray] = []
     for path in strokes:
@@ -587,7 +589,7 @@ def _generate_asemic_glyph(
         if style == "bezier":
             poly = _sample_bezier(
                 poly,
-                samples_per_segment=int(bezier_samples),
+                samples_per_segment=bezier_samples,
                 tension=float(bezier_tension),
             )
 
@@ -709,6 +711,74 @@ def asemic(
     tuple[np.ndarray, np.ndarray]
         文章のポリライン列（coords, offsets）。
     """
+    text_s = cast(
+        str,
+        validate_parameter_value(text, kind="str", choices=None),
+    )
+    seed_i = cast(
+        int,
+        validate_parameter_value(seed, kind="int", choices=None),
+    )
+    n_nodes_i = cast(
+        int,
+        validate_parameter_value(n_nodes, kind="int", choices=None),
+    )
+    candidates_i = cast(
+        int,
+        validate_parameter_value(candidates, kind="int", choices=None),
+    )
+    stroke_min_i = cast(
+        int,
+        validate_parameter_value(stroke_min, kind="int", choices=None),
+    )
+    stroke_max_i = cast(
+        int,
+        validate_parameter_value(stroke_max, kind="int", choices=None),
+    )
+    walk_min_steps_i = cast(
+        int,
+        validate_parameter_value(walk_min_steps, kind="int", choices=None),
+    )
+    walk_max_steps_i = cast(
+        int,
+        validate_parameter_value(walk_max_steps, kind="int", choices=None),
+    )
+    stroke_style_s = cast(
+        str,
+        validate_parameter_value(
+            stroke_style,
+            kind="choice",
+            choices=_STROKE_STYLE_CHOICES,
+        ),
+    )
+    bezier_samples_i = cast(
+        int,
+        validate_parameter_value(bezier_samples, kind="int", choices=None),
+    )
+    text_align_s = cast(
+        str,
+        validate_parameter_value(
+            text_align,
+            kind="choice",
+            choices=_TEXT_ALIGN_CHOICES,
+        ),
+    )
+    use_bb = cast(
+        bool,
+        validate_parameter_value(
+            use_bounding_box,
+            kind="bool",
+            choices=None,
+        ),
+    )
+    show_bounding_box_b = cast(
+        bool,
+        validate_parameter_value(
+            show_bounding_box,
+            kind="bool",
+            choices=None,
+        ),
+    )
     try:
         cx, cy, cz = center
     except Exception as exc:
@@ -720,16 +790,11 @@ def asemic(
     except Exception as exc:
         raise ValueError("asemic の scale は float である必要がある") from exc
 
-    base_seed = int(seed)
+    base_seed = seed_i
     glyph_adv = float(glyph_advance_em)
     space_adv = float(space_advance_em)
 
-    text_align_s = str(text_align)
-    if text_align_s not in {"left", "center", "right"}:
-        text_align_s = "left"
-
-    lines = str(text).split("\n")
-    use_bb = bool(use_bounding_box)
+    lines = text_s.split("\n")
     s_abs = abs(float(s_f))
     bw = float(box_width)
     bh = float(box_height)
@@ -768,7 +833,7 @@ def asemic(
             x_em = 0.0
 
         cur_x_em = float(x_em)
-        for ch in str(line_str):
+        for ch in line_str:
             if ch != " ":
                 cached = glyph_cache.get(ch)
                 if cached is None:
@@ -777,15 +842,15 @@ def asemic(
                     else:
                         seed_char = _stable_hash64(f"{base_seed}|{ch}")
                         cached = _generate_asemic_glyph(
-                            seed=int(seed_char),
-                            n_nodes=int(n_nodes),
-                            candidates=int(candidates),
-                            stroke_min=int(stroke_min),
-                            stroke_max=int(stroke_max),
-                            walk_min_steps=int(walk_min_steps),
-                            walk_max_steps=int(walk_max_steps),
-                            stroke_style=str(stroke_style),
-                            bezier_samples=int(bezier_samples),
+                            seed=seed_char,
+                            n_nodes=n_nodes_i,
+                            candidates=candidates_i,
+                            stroke_min=stroke_min_i,
+                            stroke_max=stroke_max_i,
+                            walk_min_steps=walk_min_steps_i,
+                            walk_max_steps=walk_max_steps_i,
+                            stroke_style=stroke_style_s,
+                            bezier_samples=bezier_samples_i,
                             bezier_tension=float(bezier_tension),
                         )
                     glyph_cache[ch] = cached
@@ -805,7 +870,13 @@ def asemic(
         if li < len(lines) - 1:
             y_em += float(line_height)
 
-    if use_bb and bool(show_bounding_box) and bw > 0.0 and bh > 0.0 and s_abs > 0.0:
+    if (
+        use_bb
+        and show_bounding_box_b
+        and bw > 0.0
+        and bh > 0.0
+        and s_abs > 0.0
+    ):
         bw_em = bw / s_abs
         bh_em = bh / s_abs
 

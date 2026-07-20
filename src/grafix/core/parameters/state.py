@@ -29,8 +29,10 @@ class ParamStateSnapshot:
     def from_state(cls, state: ParamState) -> ParamStateSnapshot:
         """mutable な store state を読み取り専用値へコピーする。"""
 
+        if type(state.override) is not bool:
+            raise TypeError("state.override must be an exact bool")
         return cls(
-            override=bool(state.override),
+            override=state.override,
             ui_value=state.ui_value,
             cc_key=state.cc_key,
         )

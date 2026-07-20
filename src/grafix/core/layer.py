@@ -9,8 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from grafix.core.geometry import Geometry
+from grafix.core.value_validation import exact_string, finite_real, rgb01_tuple
 
 ColorRGB = tuple[float, float, float]
+
+
+def _color_rgb01(value: object, *, field: str) -> ColorRGB:
+    """内部 Layer 用の RGB01 tuple を検証して返す。"""
+
+    return rgb01_tuple(value, name=field)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +30,32 @@ class Layer:
     thickness: float | None = None
     name: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.geometry, Geometry):
+            raise TypeError("Layer.geometry は Geometry である必要があります")
+        site_id = exact_string(self.site_id, name="Layer.site_id")
+        if not site_id:
+            raise ValueError("Layer.site_id は空にできません")
+        if self.color is not None:
+            object.__setattr__(
+                self,
+                "color",
+                _color_rgb01(self.color, field="Layer.color"),
+            )
+        if self.thickness is not None:
+            object.__setattr__(
+                self,
+                "thickness",
+                finite_real(
+                    self.thickness,
+                    name="Layer.thickness",
+                    minimum=0.0,
+                    minimum_inclusive=False,
+                ),
+            )
+        if self.name is not None:
+            exact_string(self.name, name="Layer.name")
+
 
 @dataclass(frozen=True, slots=True)
 class LayerStyleDefaults:
@@ -30,6 +63,23 @@ class LayerStyleDefaults:
 
     color: ColorRGB
     thickness: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "color",
+            _color_rgb01(self.color, field="LayerStyleDefaults.color"),
+        )
+        object.__setattr__(
+            self,
+            "thickness",
+            finite_real(
+                self.thickness,
+                name="LayerStyleDefaults.thickness",
+                minimum=0.0,
+                minimum_inclusive=False,
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +89,25 @@ class ResolvedLayer:
     layer: Layer
     color: ColorRGB
     thickness: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.layer, Layer):
+            raise TypeError("ResolvedLayer.layer は Layer である必要があります")
+        object.__setattr__(
+            self,
+            "color",
+            _color_rgb01(self.color, field="ResolvedLayer.color"),
+        )
+        object.__setattr__(
+            self,
+            "thickness",
+            finite_real(
+                self.thickness,
+                name="ResolvedLayer.thickness",
+                minimum=0.0,
+                minimum_inclusive=False,
+            ),
+        )
 
 
 def resolve_layer_style(layer: Layer, defaults: LayerStyleDefaults) -> ResolvedLayer:
@@ -56,16 +125,14 @@ def resolve_layer_style(layer: Layer, defaults: LayerStyleDefaults) -> ResolvedL
     ResolvedLayer
         色と線幅を欠損なく持つ Layer 表現。
 
-    Raises
-    ------
-    ValueError
-        thickness が正の値でない場合。
     """
 
-    thickness = layer.thickness if layer.thickness is not None else defaults.thickness
-    if thickness <= 0:
-        raise ValueError("thickness は正の値である必要がある")
+    if not isinstance(layer, Layer):
+        raise TypeError("layer は Layer である必要があります")
+    if not isinstance(defaults, LayerStyleDefaults):
+        raise TypeError("defaults は LayerStyleDefaults である必要があります")
 
+    thickness = layer.thickness if layer.thickness is not None else defaults.thickness
     color = layer.color if layer.color is not None else defaults.color
 
     return ResolvedLayer(layer=layer, color=color, thickness=thickness)

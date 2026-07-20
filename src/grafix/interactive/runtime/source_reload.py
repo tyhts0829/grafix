@@ -22,6 +22,13 @@ from grafix.core.op_registry import OpRegistry, OpSpec
 from grafix.core.preset_registry import PresetRegistry, PresetSpec
 from grafix.core.primitive_registry import PrimitiveFunc
 from grafix.core.scene import SceneItem
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string,
+    exact_string_choice,
+    finite_real,
+)
 
 ReloadStatus = Literal["unchanged", "reloaded", "failed"]
 SourceFingerprint = tuple[int, int] | tuple[Literal["missing"]]
@@ -37,6 +44,28 @@ class SourceReloadResult:
     summary: str | None = None
     details: str | None = None
     source: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "status",
+            exact_string_choice(
+                self.status,
+                name="status",
+                choices=("unchanged", "reloaded", "failed"),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "generation",
+            exact_integer(self.generation, name="generation", minimum=-1),
+        )
+        if not callable(self.draw):
+            raise TypeError("draw は callable である必要があります")
+        for name in ("summary", "details", "source"):
+            value = getattr(self, name)
+            if value is not None:
+                exact_string(value, name=name)
 
 
 @dataclass(slots=True)
@@ -222,10 +251,22 @@ class ReloadedDraw:
         draw_attribute: str,
         loaded_draw: Callable[[float], SceneItem] | None = None,
     ) -> None:
-        self._path = Path(path)
-        self._source_bytes = bytes(source_bytes)
-        self._module_name = str(module_name)
-        self._draw_attribute = str(draw_attribute)
+        if not isinstance(path, Path):
+            raise TypeError("path は Path である必要があります")
+        if type(source_bytes) is not bytes:
+            raise TypeError("source_bytes は bytes である必要があります")
+        module_name = exact_string(module_name, name="module_name")
+        draw_attribute = exact_string(draw_attribute, name="draw_attribute")
+        if not module_name:
+            raise ValueError("module_name は空にできません")
+        if not draw_attribute:
+            raise ValueError("draw_attribute は空にできません")
+        if loaded_draw is not None and not callable(loaded_draw):
+            raise TypeError("loaded_draw は callable または None である必要があります")
+        self._path = path
+        self._source_bytes = source_bytes
+        self._module_name = module_name
+        self._draw_attribute = draw_attribute
         self._loaded_draw = loaded_draw
 
     def __call__(self, t: float) -> SceneItem:
@@ -240,7 +281,7 @@ class ReloadedDraw:
             )
             draw = _validate_draw(module, attribute=self._draw_attribute)
             self._loaded_draw = draw
-        return draw(float(t))
+        return draw(finite_real(t, name="t"))
 
     @property
     def __grafix_source_path__(self) -> Path:
@@ -266,11 +307,13 @@ class ReloadedDraw:
 
     def __setstate__(self, state: tuple[Path, bytes, str, str]) -> None:
         path, source_bytes, module_name, draw_attribute = state
-        self._path = Path(path)
-        self._source_bytes = bytes(source_bytes)
-        self._module_name = str(module_name)
-        self._draw_attribute = str(draw_attribute)
-        self._loaded_draw = None
+        ReloadedDraw.__init__(
+            self,
+            path=path,
+            source_bytes=source_bytes,
+            module_name=module_name,
+            draw_attribute=draw_attribute,
+        )
 
 
 def _unavailable_draw(_t: float) -> SceneItem:
@@ -318,12 +361,21 @@ class SourceReloadController:
     """mtime pollingでsketchをtransactionalにreloadする。"""
 
     def __init__(self, path: str | Path, *, draw_attribute: str = "draw") -> None:
-        source_path = Path(path).expanduser().resolve(strict=False)
+        if isinstance(path, Path):
+            path_input = path
+        else:
+            path_text = exact_string(path, name="path")
+            if not path_text:
+                raise ValueError("path は空にできません")
+            path_input = Path(path_text)
+        source_path = path_input.expanduser().resolve(strict=False)
         if not source_path.is_file():
             raise FileNotFoundError(f"sketch sourceが見つかりません: {source_path}")
-        attribute = str(draw_attribute).strip()
+        attribute = exact_string(draw_attribute, name="draw_attribute")
         if not attribute:
             raise ValueError("draw_attributeは空にできません")
+        if attribute != attribute.strip():
+            raise ValueError("draw_attributeの前後に空白は使用できません")
 
         self._path = source_path
         self._draw_attribute = attribute
@@ -375,6 +427,11 @@ class SourceReloadController:
     ) -> SourceReloadResult:
         """source変更時だけreloadし、失敗時はlast-good drawを返す。"""
 
+        force = exact_bool(force, name="force")
+        retain_rollback = exact_bool(
+            retain_rollback,
+            name="retain_rollback",
+        )
         if self._closed:
             raise RuntimeError("SourceReloadControllerはclose済みです")
         # 前回の呼び出し側が明示確定を忘れても、次のpollまで正常に進んだ
@@ -390,7 +447,7 @@ class SourceReloadController:
             )
         # 同じ壊れたsourceを毎frame実行しない。次のmtime/size変更か明示forceまで待つ。
         self._last_fingerprint = fingerprint
-        return self._reload(retain_rollback=bool(retain_rollback))
+        return self._reload(retain_rollback=retain_rollback)
 
     def _reload(self, *, retain_rollback: bool) -> SourceReloadResult:
         self._attempt += 1
@@ -469,7 +526,7 @@ class SourceReloadController:
     def accept_generation(self, generation: int) -> None:
         """transactional reloadを確定し、直前moduleを解放する。"""
 
-        expected = int(generation)
+        expected = exact_integer(generation, name="generation", minimum=0)
         state = self._rollback_state
         if state is None:
             if expected != self._generation:
@@ -491,7 +548,7 @@ class SourceReloadController:
     def rollback_generation(self, generation: int) -> Callable[[float], SceneItem]:
         """worker swap失敗時にregistry/callableを直前generationへ戻す。"""
 
-        expected = int(generation)
+        expected = exact_integer(generation, name="generation", minimum=0)
         state = self._rollback_state
         if (
             state is None

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
+from grafix.core.effects.collapse import collapse as collapse_impl
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
@@ -60,6 +62,31 @@ def test_collapse_intensity_zero_is_noop() -> None:
     expected = realize(g)
     np.testing.assert_allclose(realized.coords, expected.coords, rtol=0.0, atol=1e-6)
     assert realized.offsets.tolist() == expected.offsets.tolist()
+
+
+def test_collapse_rejects_negative_growth_parameters() -> None:
+    base = realize(G.collapse_test_line2_x_a())
+    geometry = (base.coords, base.offsets)
+
+    with pytest.raises(ValueError, match="intensity"):
+        collapse_impl(geometry, intensity=-1.0)
+    with pytest.raises(ValueError, match="subdivisions"):
+        collapse_impl(geometry, subdivisions=-1)
+
+
+def test_collapse_rejects_invalid_mask_vectors() -> None:
+    base = realize(G.collapse_test_line2_x_a())
+    geometry = (base.coords, base.offsets)
+
+    with pytest.raises(ValueError, match="intensity_mask_base"):
+        collapse_impl(geometry, intensity_mask_base=(-0.1, 1.0, 1.0))
+    with pytest.raises(TypeError, match="intensity_mask_slope"):
+        collapse_impl(
+            geometry,
+            intensity_mask_slope=[0.0, 0.0, 0.0],  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="pivot"):
+        collapse_impl(geometry, pivot=(0.0, float("inf"), 0.0))
 
 
 def test_collapse_outputs_non_connected_segments() -> None:

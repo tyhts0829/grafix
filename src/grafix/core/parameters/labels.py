@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from .identity import identity_string
+
 MAX_LABEL_LENGTH = 64
 
 
@@ -16,27 +18,45 @@ class ParamLabels:
     def get(self, op: str, site_id: str) -> str | None:
         """ラベルを返す。未登録なら None。"""
 
-        return self._by_group.get((str(op), str(site_id)))
+        return self._by_group.get(
+            (
+                identity_string(op, name="op"),
+                identity_string(site_id, name="site_id"),
+            )
+        )
 
     def set(self, op: str, site_id: str, label: str) -> None:
         """ラベルを設定（上書き可）する。"""
 
-        self._by_group[(str(op), str(site_id))] = self._trim(str(label))
+        if not isinstance(label, str):
+            raise TypeError("label は文字列である必要があります")
+        self._by_group[
+            (
+                identity_string(op, name="op"),
+                identity_string(site_id, name="site_id"),
+            )
+        ] = self._trim(label)
 
     def delete(self, op: str, site_id: str) -> None:
         """指定グループのラベルを削除する。"""
 
-        self._by_group.pop((str(op), str(site_id)), None)
+        self._by_group.pop(
+            (
+                identity_string(op, name="op"),
+                identity_string(site_id, name="site_id"),
+            ),
+            None,
+        )
 
     def as_dict(self) -> dict[tuple[str, str], str]:
         """内部辞書のコピーを返す。"""
 
         return dict(self._by_group)
 
-    def replace_from_items(self, items: list[tuple[tuple[str, str], str]]) -> None:
-        """(group, label) の列で内部辞書を置き換える。"""
+    def replace(self, labels: dict[tuple[str, str], str]) -> None:
+        """検証済みラベルのコピーで内部辞書を置き換える。"""
 
-        self._by_group = {group: self._trim(label) for group, label in items}
+        self._by_group = dict(labels)
 
     @staticmethod
     def _trim(label: str) -> str:
@@ -44,4 +64,3 @@ class ParamLabels:
 
 
 __all__ = ["ParamLabels", "MAX_LABEL_LENGTH"]
-

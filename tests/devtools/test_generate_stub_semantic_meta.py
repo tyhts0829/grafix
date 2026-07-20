@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
+import pytest
+
 from grafix.core.parameters.meta import ParamMeta
 from grafix.devtools.generate_stub import (
     _meta_hint,
     _render_docstring,
+    _type_for_kind,
+    _type_for_meta,
     generate_stubs_str,
 )
 
@@ -29,6 +35,16 @@ def test_meta_hint_includes_semantic_parameter_information() -> None:
         "recommended [0.2, 5.0], unit mm, step 0.1, scale log, format '%.2f', "
         "category 'Stroke', advanced"
     )
+
+
+def test_meta_helpers_use_canonical_param_meta_contract() -> None:
+    assert _meta_hint(None) is None
+    assert _type_for_meta(
+        ParamMeta(kind="choice", choices=("alpha", "beta"))
+    ) == "Literal['alpha', 'beta']"
+
+    with pytest.raises(AssertionError):
+        _type_for_kind(cast(Any, "future-kind"))
 
 
 def test_param_meta_description_takes_priority_over_callable_docstring() -> None:

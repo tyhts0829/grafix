@@ -1,12 +1,8 @@
-from pathlib import Path
-
-from grafix import E, G, P, run
+from grafix import E, G, run
 
 # A5
 CANVAS_WIDTH = 148
 CANVAS_HEIGHT = 210
-
-from grafix import E, G, run
 
 
 def draw(t: float):

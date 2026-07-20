@@ -38,7 +38,16 @@ def _store(value: float) -> tuple[ParamStore, ParameterKey]:
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=0.2, meta=meta, explicit=False)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.2,
+                meta=meta,
+                effective=0.2,
+                source="code",
+                explicit=False,
+            )
+        ],
     )
     ok, error = update_state_from_ui(
         store,
@@ -74,6 +83,14 @@ def test_recovered_session_diagnostic_has_decision_actions(tmp_path: Path) -> No
         "discard",
         "compare",
     )
+
+
+def test_recovery_session_rejects_implicit_path_coercion() -> None:
+    with pytest.raises(TypeError, match="primary_path"):
+        ParamStoreRecoverySession(
+            ParamStore(),
+            "params.json",  # type: ignore[arg-type]
+        )
 
 
 def test_keep_promotes_recovered_state_and_removes_journal(tmp_path: Path) -> None:

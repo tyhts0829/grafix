@@ -9,16 +9,22 @@ import pytest
 
 from grafix.core.parameters import ParamStore
 from grafix.interactive.parameter_gui import gui as gui_module
+from grafix.interactive.parameter_gui.store_bridge import (
+    parameter_table_view_for_store,
+)
 from grafix.interactive.parameter_gui.theme import apply_parameter_gui_theme
 
 
 def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
     monkeypatch: pytest.MonkeyPatch,
+    initialized_parameter_gui: gui_module.ParameterGUI,
 ) -> None:
     """Help/telemetry の行数が変わっても root scrollbar と table rect は不変。"""
 
     imgui = pytest.importorskip("imgui")
-    context = imgui.create_context()
+    parameter_gui = cast(Any, initialized_parameter_gui)
+    context = parameter_gui._context
+    imgui.set_current_context(context)
     try:
         io = imgui.get_io()
         io.display_size = (1100.0, 1000.0)
@@ -45,7 +51,6 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
         )
         monitor.snapshot = lambda: monitor.current
 
-        parameter_gui = object.__new__(gui_module.ParameterGUI)
         parameter_gui._closed = False
         parameter_gui._prev_time = time.monotonic()
         parameter_gui._imgui = imgui
@@ -89,7 +94,14 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
 
         parameter_gui._render_toolbar_area = render_toolbar_area
         parameter_gui._render_midi_clear_notice = lambda: False
-        parameter_gui._render_parameter_table_toolbar = lambda: False
+        def render_parameter_table_toolbar() -> bool:
+            parameter_gui._parameter_table_view = parameter_table_view_for_store(
+                parameter_gui._store,
+                show_inactive_params=False,
+            )
+            return False
+
+        parameter_gui._render_parameter_table_toolbar = render_parameter_table_toolbar
         parameter_gui._render_reconcile_orphan_control = lambda: False
         parameter_gui._maybe_preview_range_edit_by_midi = lambda: None
         parameter_gui._render_range_edit_mode = lambda: False
@@ -176,4 +188,4 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
         assert table_rects[0] == pytest.approx(table_rects[2])
         assert root_scroll_maxima == pytest.approx([0.0, 0.0, 0.0])
     finally:
-        imgui.destroy_context(context)
+        imgui.set_current_context(context)

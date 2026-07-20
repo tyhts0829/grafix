@@ -192,25 +192,25 @@ def test_drop_probability_clamps_range() -> None:
     assert out_over.offsets.tolist() == [0]
 
 
-def test_drop_probability_non_finite_is_noop_in_impl() -> None:
+@pytest.mark.parametrize(
+    "probability_base",
+    [
+        (float("nan"), 0.0, 0.0),
+        (float("inf"), 0.0, 0.0),
+    ],
+)
+def test_drop_probability_non_finite_is_rejected(
+    probability_base: tuple[float, float, float],
+) -> None:
     g = G.drop_test_lines5()
     base = realize(g)
 
-    out_nan_coords, out_nan_offsets = drop_impl(
-        (base.coords, base.offsets),
-        probability_base=(float("nan"), 0.0, 0.0),
-        probability_slope=(0.0, 0.0, 0.0),
-    )
-    np.testing.assert_allclose(out_nan_coords, base.coords, rtol=0.0, atol=0.0)
-    assert out_nan_offsets.tolist() == base.offsets.tolist()
-
-    out_inf_coords, out_inf_offsets = drop_impl(
-        (base.coords, base.offsets),
-        probability_base=(float("inf"), 0.0, 0.0),
-        probability_slope=(0.0, 0.0, 0.0),
-    )
-    np.testing.assert_allclose(out_inf_coords, base.coords, rtol=0.0, atol=0.0)
-    assert out_inf_offsets.tolist() == base.offsets.tolist()
+    with pytest.raises(ValueError, match="probability_base"):
+        drop_impl(
+            (base.coords, base.offsets),
+            probability_base=probability_base,
+            probability_slope=(0.0, 0.0, 0.0),
+        )
 
 
 def test_drop_unknown_keep_mode_is_rejected_eagerly() -> None:

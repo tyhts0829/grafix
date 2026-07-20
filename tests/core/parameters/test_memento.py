@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from grafix.core.parameters.frame_params import FrameParamRecord
+from grafix.core.parameters.effect_order_ops import merge_frame_effect_chains
+from grafix.core.parameters.frame_params import (
+    FrameEffectChainRecord,
+    FrameParamRecord,
+)
 from grafix.core.parameters.effects import EffectStepTopology
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.labels_ops import set_label
@@ -36,6 +40,16 @@ def _record_effect_chain(store: ParamStore) -> None:
 def _populated_store() -> tuple[ParamStore, ParameterKey]:
     store = ParamStore()
     key = ParameterKey(op="wobble", site_id="site-1", arg="amount")
+    merge_frame_effect_chains(
+        store,
+        [
+            FrameEffectChainRecord(
+                chain_id="chain-1",
+                steps=(EffectStepTopology("wobble", "site-1", 1, 0),),
+            )
+        ],
+        observation_complete=False,
+    )
     merge_frame_params(
         store,
         [
@@ -43,9 +57,9 @@ def _populated_store() -> tuple[ParamStore, ParameterKey]:
                 key=key,
                 base=0.25,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                effective=0.25,
+                source="code",
                 explicit=True,
-                chain_id="chain-1",
-                step_index=2,
             )
         ],
     )
@@ -81,7 +95,6 @@ def test_memento_restores_gui_state_but_keeps_code_owned_structure_and_runtime()
             kind="float",
             ui_min=-10.0,
             ui_max=10.0,
-            choices=("current-code-choice",),
         ),
     )
     store._set_explicit(key, False)
@@ -100,17 +113,16 @@ def test_memento_restores_gui_state_but_keeps_code_owned_structure_and_runtime()
     assert restored.ui_value == 0.75
     assert restored.override is True
     assert restored.cc_key == 17
-    # range は GUI-owned なので戻るが、kind/choices は現在の code を保つ。
+    # range は GUI-owned なので戻るが、kind は現在の code を保つ。
     assert store.get_meta(key) == ParamMeta(
         kind="float",
         ui_min=0.0,
         ui_max=1.0,
-        choices=("current-code-choice",),
     )
     assert store._get_explicit_ref(key) is False
     assert store.get_label(key.op, key.site_id) == "current code label"
     assert store.get_ordinal(key.op, key.site_id) == 1
-    assert store.get_effect_step(key.op, key.site_id) == ("chain-1", 2)
+    assert store.get_effect_step(key.op, key.site_id) == ("chain-1", 0)
     assert store.chain_ordinals() == {"chain-1": 1}
     assert store._collapsed_headers_ref() == {"effect_chain:chain-1"}
     assert id(store._runtime_ref()) == runtime_identity
@@ -133,6 +145,8 @@ def test_memento_merge_preserves_a_parameter_discovered_after_capture() -> None:
                 key=new_key,
                 base=2.0,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=8.0),
+                effective=2.0,
+                source="code",
                 explicit=False,
             )
         ],

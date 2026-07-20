@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping
-from typing import Any
+from dataclasses import dataclass
+from enum import Enum
 
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.style import STYLE_OP
@@ -16,11 +16,23 @@ from grafix.core.preset_registry import preset_registry
 from .labeling import format_contextual_row_label, humanize_identifier
 
 
+class GroupType(Enum):
+    """Parameter GUI が描画する group の種別。"""
+
+    STYLE = "style"
+    PRESET = "preset"
+    PRIMITIVE = "primitive"
+    EFFECT_CHAIN = "effect_chain"
+
+
+GroupId = tuple[GroupType, object]
+
+
 @dataclass(frozen=True, slots=True)
 class GroupInfo:
     """GUI のヘッダ行と、行ラベルの決定結果。"""
 
-    group_id: tuple[str, Any]
+    group_id: GroupId
     header_id: str
     header: str | None
     visible_label: str
@@ -55,7 +67,7 @@ def group_info_for_row(
                 display_arg,
             )
         return GroupInfo(
-            group_id=("style", "global"),
+            group_id=(GroupType.STYLE, "global"),
             header_id="style",
             header="Style",
             visible_label=visible_label,
@@ -76,7 +88,7 @@ def group_info_for_row(
             step_ordinal = int(effect_step_ordinal_by_site.get(step_key, step_ordinal))
         visible_label = humanize_identifier(display_arg)
         return GroupInfo(
-            group_id=("effect_chain", chain_id),
+            group_id=(GroupType.EFFECT_CHAIN, chain_id),
             header_id=f"effect_chain:{chain_id}",
             header=header,
             visible_label=visible_label,
@@ -90,7 +102,7 @@ def group_info_for_row(
         )
         visible_label = humanize_identifier(display_arg)
         return GroupInfo(
-            group_id=("preset", group_key),
+            group_id=(GroupType.PRESET, group_key),
             header_id=f"preset:{group_key[0]}#{group_key[1]}",
             header=header,
             visible_label=visible_label,
@@ -101,7 +113,7 @@ def group_info_for_row(
     header = None if primitive_header_by_group is None else primitive_header_by_group.get(group_key)
     visible_label = humanize_identifier(display_arg)
     return GroupInfo(
-        group_id=("primitive", group_key),
+        group_id=(GroupType.PRIMITIVE, group_key),
         header_id=f"primitive:{group_key[0]}#{group_key[1]}",
         header=header,
         visible_label=visible_label,

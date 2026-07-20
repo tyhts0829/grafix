@@ -47,6 +47,8 @@ def test_sync_scene_runner_publishes_to_common_diagnostic_center() -> None:
             cc_snapshot=None,
             defaults=_defaults(),
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         )
     finally:
         runner.close()
@@ -62,7 +64,14 @@ def test_sync_scene_runner_publishes_to_common_diagnostic_center() -> None:
 def test_mp_draw_result_carries_worker_diagnostics_separately() -> None:
     mp_draw = MpDraw(_diagnostic_draw, n_worker=1)
     try:
-        mp_draw.submit(t=0.0, snapshot_revision=0, snapshot={})
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=0,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
         deadline = time.monotonic() + 8.0
         result = None
         while time.monotonic() < deadline:
@@ -85,6 +94,7 @@ class _WorkerResult:
     def __init__(self, result: DrawResult) -> None:
         self._result = result
         self._published = False
+        self.last_submitted_frame_id = int(result.frame_id)
 
     def submit(self, **_kwargs: object) -> None:
         return None
@@ -118,6 +128,10 @@ def test_scene_runner_merges_worker_payload_before_center_publish() -> None:
         records=[],
         labels=[],
         t=1.0,
+        epoch=0,
+        generation=0,
+        snapshot_revision=0,
+        effect_chains=[],
         diagnostics=(payload,),
     )
     center = DiagnosticCenter()
@@ -135,9 +149,28 @@ def test_scene_runner_merges_worker_payload_before_center_publish() -> None:
             cc_snapshot=None,
             defaults=_defaults(),
             recording=False,
+            transport_epoch=0,
+            quality="draft",
         ) == []
     finally:
         runner.close()
 
     assert runner.last_operation_diagnostics == (payload,)
     assert center.snapshot()[0].summary == "worker-only: grid was rejected"
+
+
+def test_operation_diagnostic_rejects_implicit_payload_conversion() -> None:
+    with pytest.raises(TypeError):
+        OperationDiagnostic(
+            op=object(),  # type: ignore[arg-type]
+            original_value=(),
+            effective_value=(),
+            reason="invalid op",
+        )
+    with pytest.raises(TypeError):
+        OperationDiagnostic(
+            op="sample",
+            original_value=[1],  # type: ignore[arg-type]
+            effective_value=(),
+            reason="invalid value",
+        )

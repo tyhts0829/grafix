@@ -52,7 +52,7 @@ def merge_frame_effect_chains(
     store: ParamStore,
     records: Sequence[FrameEffectChainRecord],
     *,
-    observation_complete: bool = False,
+    observation_complete: bool,
 ) -> bool:
     """成功frameで観測したeffect topologyをstoreへmergeする。
 
@@ -63,7 +63,7 @@ def merge_frame_effect_chains(
 
     latest_by_chain: dict[str, FrameEffectChainRecord] = {}
     for record in records:
-        latest_by_chain[str(record.chain_id)] = record
+        latest_by_chain[record.chain_id] = record
     changed = False
     effects = store._effects_ref()
     for record in latest_by_chain.values():
@@ -96,7 +96,7 @@ def set_effect_order(
 ) -> bool:
     """指定chainのGUI順を完全なpermutationで設定する。"""
 
-    changed = store._effects_ref().set_order_override(str(chain_id), order)
+    changed = store._effects_ref().set_order_override(chain_id, order)
     if changed:
         store._touch()
     return changed
@@ -113,34 +113,22 @@ def move_effect_step(
     """同一chain内のstepをtargetの前後へ移動する。"""
 
     effects = store._effects_ref()
-    current = effects.effective_order(str(chain_id))
+    current = effects.effective_order(chain_id)
     if current is None:
-        raise KeyError(f"unknown effect chain: {str(chain_id)!r}")
+        raise KeyError(f"unknown effect chain: {chain_id!r}")
     moved = moved_effect_order(
         current,
         source=source,
         target=target,
         placement=placement,
     )
-    return set_effect_order(store, chain_id=str(chain_id), order=moved)
+    return set_effect_order(store, chain_id=chain_id, order=moved)
 
 
 def reset_effect_order(store: ParamStore, *, chain_id: str) -> bool:
     """指定chainをコード記述順へ戻す。"""
 
-    changed = store._effects_ref().reset_order(str(chain_id))
-    if changed:
-        store._touch()
-    return changed
-
-
-def restore_effect_order_state(
-    store: ParamStore,
-    state_by_chain: Mapping[str, Sequence[EffectStepKey] | None],
-) -> bool:
-    """memento由来のorder stateを現在topologyへmergeする。"""
-
-    changed = store._effects_ref().restore_order_state(state_by_chain)
+    changed = store._effects_ref().reset_order(chain_id)
     if changed:
         store._touch()
     return changed
@@ -152,7 +140,6 @@ __all__ = [
     "merge_frame_effect_chains",
     "move_effect_step",
     "reset_effect_order",
-    "restore_effect_order_state",
     "set_effect_order",
     "store_effect_order_snapshot",
 ]

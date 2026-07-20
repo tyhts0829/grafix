@@ -7,7 +7,13 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from threading import RLock
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, cast
+
+from grafix.core.value_validation import (
+    exact_integer,
+    exact_string,
+    exact_string_choice,
+)
 
 DiagnosticSeverity = Literal["info", "warning", "error"]
 DiagnosticActionId = Literal[
@@ -31,9 +37,17 @@ class DiagnosticAction:
     label: str
 
     def __post_init__(self) -> None:
-        if self.action_id not in _ACTION_IDS:
-            raise ValueError(f"未対応の action_id: {self.action_id!r}")
-        if not str(self.label).strip():
+        object.__setattr__(
+            self,
+            "action_id",
+            exact_string_choice(
+                self.action_id,
+                name="action_id",
+                choices=tuple(sorted(_ACTION_IDS)),
+            ),
+        )
+        label = exact_string(self.label, name="label")
+        if not label.strip():
             raise ValueError("label は空にできません")
 
 
@@ -51,27 +65,46 @@ class DiagnosticEvent:
     dedupe_key: str | None = None
 
     def __post_init__(self) -> None:
-        if not str(self.category).strip():
+        category = exact_string(self.category, name="category")
+        if not category.strip():
             raise ValueError("category は空にできません")
-        if self.severity not in {"info", "warning", "error"}:
-            raise ValueError(f"未対応の severity: {self.severity!r}")
-        if not str(self.summary).strip():
+        object.__setattr__(
+            self,
+            "severity",
+            exact_string_choice(
+                self.severity,
+                name="severity",
+                choices=("info", "warning", "error"),
+            ),
+        )
+        summary = exact_string(self.summary, name="summary")
+        if not summary.strip():
             raise ValueError("summary は空にできません")
-        if int(self.count) < 1:
-            raise ValueError("count は 1 以上である必要があります")
-        object.__setattr__(self, "actions", tuple(self.actions))
-        object.__setattr__(self, "count", int(self.count))
+        exact_string(self.details, name="details")
+        if self.source is not None:
+            exact_string(self.source, name="source")
+        if self.dedupe_key is not None:
+            exact_string(self.dedupe_key, name="dedupe_key")
+        if not isinstance(self.actions, tuple):
+            raise TypeError("actions は DiagnosticAction の tuple である必要があります")
+        if any(not isinstance(action, DiagnosticAction) for action in self.actions):
+            raise TypeError("actions は DiagnosticAction の tuple である必要があります")
+        object.__setattr__(
+            self,
+            "count",
+            exact_integer(self.count, name="count", minimum=1),
+        )
 
     def identity(self) -> tuple[object, ...]:
         """同一診断を数えるための安定 identity を返す。"""
 
         if self.dedupe_key is not None:
-            return (str(self.category), str(self.dedupe_key))
+            return (self.category, self.dedupe_key)
         return (
-            str(self.category),
-            str(self.severity),
-            str(self.summary),
-            str(self.details),
+            self.category,
+            self.severity,
+            self.summary,
+            self.details,
             self.source,
         )
 
@@ -83,10 +116,7 @@ class DiagnosticCenter:
     """同一診断を集約し、直近の有限件数だけを保持する。"""
 
     def __init__(self, *, max_events: int = 100) -> None:
-        max_events_i = int(max_events)
-        if max_events_i < 1:
-            raise ValueError("max_events は 1 以上である必要があります")
-        self._max_events = max_events_i
+        self._max_events = exact_integer(max_events, name="max_events", minimum=1)
         self._events: OrderedDict[tuple[object, ...], DiagnosticEvent] = OrderedDict()
         self._action_handlers: dict[
             tuple[str | None, DiagnosticActionId], DiagnosticActionHandler
@@ -108,7 +138,7 @@ class DiagnosticCenter:
             stored = (
                 event
                 if previous is None
-                else replace(event, count=int(previous.count) + int(event.count))
+                else replace(event, count=previous.count + event.count)
             )
             self._events[identity] = stored
             while len(self._events) > self._max_events:
@@ -132,12 +162,22 @@ class DiagnosticCenter:
     ) -> None:
         """action handler を型付き ID と任意の category へ登録する。"""
 
-        if action_id not in _ACTION_IDS:
-            raise ValueError(f"未対応の action_id: {action_id!r}")
+        action_id = cast(
+            DiagnosticActionId,
+            exact_string_choice(
+                action_id,
+                name="action_id",
+                choices=tuple(sorted(_ACTION_IDS)),
+            ),
+        )
         if not callable(handler):
             raise TypeError("handler は callable である必要があります")
-        category_key = None if category is None else str(category).strip()
-        if category is not None and not category_key:
+        category_key = (
+            None
+            if category is None
+            else exact_string(category, name="category")
+        )
+        if category_key is not None and not category_key.strip():
             raise ValueError("category は空にできません")
         key = (category_key, action_id)
         with self._lock:
@@ -216,9 +256,9 @@ class DiagnosticCenter:
             if category is None:
                 self._events.clear()
                 return
-            category_s = str(category)
+            category_s = exact_string(category, name="category")
             for identity in tuple(self._events):
-                if str(identity[0]) == category_s:
+                if identity[0] == category_s:
                     self._events.pop(identity, None)
 
     def snapshot(self) -> tuple[DiagnosticEvent, ...]:

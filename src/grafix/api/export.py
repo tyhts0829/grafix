@@ -6,6 +6,7 @@ from pathlib import Path
 
 from grafix.api.render import ExportFormat, ExportResult, Frame
 from grafix.export.capture import CaptureService
+from grafix.export.image import png_output_size
 
 
 def export(
@@ -34,16 +35,24 @@ def export(
 
     if not isinstance(frame, Frame):
         raise TypeError("frame は Frame である必要があります")
+    if type(overwrite) is not bool:
+        raise TypeError("overwrite は bool である必要があります")
     artifact_format = ExportFormat.from_path(path)
     config = frame.metadata.effective_config
-    captured = CaptureService().export(
+    output_size = (
+        png_output_size(frame.canvas_size, scale=config.png_scale)
+        if artifact_format is ExportFormat.PNG
+        else None
+    )
+    return CaptureService().export(
         frame,
         path,
         overwrite=overwrite,
-        png_scale=config.png_scale,
-        gcode_config=config.gcode,
+        output_size=output_size,
+        gcode_params=(
+            config.gcode if artifact_format is ExportFormat.GCODE else None
+        ),
     )
-    return ExportResult(captured.path, artifact_format, captured.manifest_path)
 
 
 __all__ = ["export"]

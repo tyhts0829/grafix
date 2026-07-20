@@ -11,6 +11,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
 
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string_choice,
+    finite_real,
+)
+
 from .memento import (
     ParamStorePatch,
     ParamStorePatchCapture,
@@ -62,14 +69,24 @@ class ParamStoreHistory:
         coalesce_seconds: float = 0.35,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if capacity < 1:
-            raise ValueError("capacity must be >= 1")
-        if coalesce_seconds < 0.0:
-            raise ValueError("coalesce_seconds must be >= 0")
+        if not isinstance(store, ParamStore):
+            raise TypeError("store は ParamStore である必要があります")
+        normalized_capacity = exact_integer(
+            capacity,
+            name="capacity",
+            minimum=1,
+        )
+        normalized_coalesce_seconds = finite_real(
+            coalesce_seconds,
+            name="coalesce_seconds",
+            minimum=0.0,
+        )
+        if not callable(clock):
+            raise TypeError("clock は callable である必要があります")
 
         self._store = store
-        self._capacity = int(capacity)
-        self._coalesce_seconds = float(coalesce_seconds)
+        self._capacity = normalized_capacity
+        self._coalesce_seconds = normalized_coalesce_seconds
         self._clock = clock
         self._undo: deque[_HistoryEntry] = deque(maxlen=self._capacity)
         self._redo: deque[_HistoryEntry] = deque(maxlen=self._capacity)
@@ -101,12 +118,13 @@ class ParamStoreHistory:
         GUI トランザクションの前に取り込む用途を想定する。
         """
 
-        if self._store.revision == self._seen_revision and not clear_history:
+        clear = exact_bool(clear_history, name="clear_history")
+        if self._store.revision == self._seen_revision and not clear:
             return False
         self._current = capture_param_store_memento(self._store)
         self._seen_revision = self._store.revision
         self._redo.clear()
-        if clear_history:
+        if clear:
             self._undo.clear()
         self.break_coalescing()
         return True
@@ -119,6 +137,15 @@ class ParamStoreHistory:
     ) -> bool:
         """直前の基準から現在までの変更を 1 操作として記録する。"""
 
+        try:
+            hash(source)
+        except TypeError:
+            raise TypeError("source は hashable である必要があります") from None
+        explicit_now = (
+            None
+            if now is None
+            else finite_real(now, name="now")
+        )
         if self._store.revision == self._seen_revision:
             return False
         before = self._current
@@ -127,7 +154,11 @@ class ParamStoreHistory:
             before=before,
             after=after,
             source=source,
-            now=self._clock() if now is None else float(now),
+            now=(
+                finite_real(self._clock(), name="clock()")
+                if explicit_now is None
+                else explicit_now
+            ),
         )
 
     @contextmanager
@@ -148,10 +179,20 @@ class ParamStoreHistory:
         や reconcile などの bulk 操作は既定の full memento を使う。
         """
 
+        try:
+            hash(source)
+        except TypeError:
+            raise TypeError("source は hashable である必要があります") from None
+        explicit_now = (
+            None
+            if now is None
+            else finite_real(now, name="now")
+        )
+        use_patch = exact_bool(patch, name="patch")
         if self._store.revision != self._seen_revision:
             self.synchronize()
         before_revision = self._store.revision
-        if patch:
+        if use_patch:
             capture = ParamStorePatchCapture(self._store)
             self._store._begin_history_patch_capture(
                 observe_key=capture.observe_key,
@@ -163,7 +204,11 @@ class ParamStoreHistory:
                 self._store._end_history_patch_capture()
                 if self._store.revision != before_revision:
                     operation = capture.finish()
-                    change_at = self._clock() if now is None else float(now)
+                    change_at = (
+                        finite_real(self._clock(), name="clock()")
+                        if explicit_now is None
+                        else explicit_now
+                    )
                     if operation is None:
                         # favorite や code-owned metadata など、memento の対象外だけが
                         # 変わった場合は Undo を増やさず基準 revision だけ進める。
@@ -194,7 +239,11 @@ class ParamStoreHistory:
                     before=before,
                     after=after,
                     source=source,
-                    now=self._clock() if now is None else float(now),
+                    now=(
+                        finite_real(self._clock(), name="clock()")
+                        if explicit_now is None
+                        else explicit_now
+                    ),
                 )
 
     def undo(self) -> bool:
@@ -339,16 +388,14 @@ class ParamSnapshotSlots:
     """A/B の 2 スロットに ParamStore の調整案を保存する。"""
 
     def __init__(self, store: ParamStore) -> None:
+        if not isinstance(store, ParamStore):
+            raise TypeError("store は ParamStore である必要があります")
         self._store = store
         self._slots: dict[SnapshotSlot, ParamStoreMemento] = {}
 
     @property
     def available_slots(self) -> tuple[SnapshotSlot, ...]:
         return tuple(slot for slot in _SNAPSHOT_SLOTS if slot in self._slots)
-
-    def has(self, slot: SnapshotSlot) -> bool:
-        self._validate_slot(slot)
-        return slot in self._slots
 
     def capture(self, slot: SnapshotSlot) -> None:
         """現在状態を slot へ保存する（既存値は上書き）。"""
@@ -376,8 +423,11 @@ class ParamSnapshotSlots:
 
     @staticmethod
     def _validate_slot(slot: object) -> None:
-        if slot != "A" and slot != "B":
-            raise ValueError("snapshot slot must be 'A' or 'B'")
+        exact_string_choice(
+            slot,
+            name="snapshot slot",
+            choices=("A", "B"),
+        )
 
 
 __all__ = ["ParamStoreHistory", "ParamSnapshotSlots", "SnapshotSlot"]

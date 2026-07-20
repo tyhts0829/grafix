@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -45,8 +46,22 @@ def _store() -> tuple[ParamStore, ParameterKey, ParameterKey]:
     merge_frame_params(
         store,
         [
-            FrameParamRecord(key=key_a, base=2.0, meta=META, explicit=False),
-            FrameParamRecord(key=key_b, base=4.0, meta=META, explicit=False),
+            FrameParamRecord(
+                key=key_a,
+                base=2.0,
+                meta=META,
+                effective=2.0,
+                source="code",
+                explicit=False,
+            ),
+            FrameParamRecord(
+                key=key_b,
+                base=4.0,
+                meta=META,
+                effective=4.0,
+                source="code",
+                explicit=False,
+            ),
         ],
     )
     return store, key_a, key_b
@@ -63,22 +78,27 @@ def _value(store: ParamStore, key: ParameterKey) -> float:
     return float(state.ui_value)
 
 
-def _gui(store: ParamStore, *, thumbnail: Path | None = None) -> ParameterGUI:
-    gui = ParameterGUI.__new__(ParameterGUI)
-    gui._store = store
-    gui._history = ParamStoreHistory(store)
-    gui._transport = None
-    gui._show_inactive_params = True
-    gui._parameter_filter_state = ParameterFilterState()
-    gui._parameter_error_keys = frozenset()
-    gui._favorite_parameter_keys = frozenset()
-    gui._parameter_table_view = None
-    gui._variation_panel_state = VariationPanelState()
-    gui._variation_thumbnail_capture = (
+def _gui(
+    gui: ParameterGUI,
+    store: ParamStore,
+    *,
+    thumbnail: Path | None = None,
+) -> Any:
+    gui_state = cast(Any, gui)
+    gui_state._store = store
+    gui_state._history = ParamStoreHistory(store)
+    gui_state._transport = None
+    gui_state._show_inactive_params = True
+    gui_state._parameter_filter_state = ParameterFilterState()
+    gui_state._parameter_error_keys = frozenset()
+    gui_state._favorite_parameter_keys = frozenset()
+    gui_state._parameter_table_view = None
+    gui_state._variation_panel_state = VariationPanelState()
+    gui_state._variation_thumbnail_capture = (
         None if thumbnail is None else lambda _name: thumbnail
     )
-    gui._variation_thumbnail_preview = None
-    return gui
+    gui_state._variation_thumbnail_preview = None
+    return gui_state
 
 
 def test_panel_model_displays_metadata_diff_count_and_empty_state() -> None:
@@ -153,8 +173,8 @@ def test_capture_service_adapter_exports_current_frame_without_clobber(
             return SimpleNamespace(path=output)
 
     frame = object()
-    capture = make_capture_service_thumbnail_capture(  # type: ignore[arg-type]
-        _CaptureService(),
+    capture = make_capture_service_thumbnail_capture(
+        cast(Any, _CaptureService()),
         frame_provider=lambda: frame,  # type: ignore[arg-type,return-value]
         output_path_for_name=lambda name: tmp_path / f"{name}.png",
         output_size=(96, 64),
@@ -164,10 +184,13 @@ def test_capture_service_adapter_exports_current_frame_without_clobber(
     assert calls == [(frame, tmp_path / "candidate.png", False)]
 
 
-def test_gui_save_uses_thumbnail_boundary_and_load_is_undoable(tmp_path: Path) -> None:
+def test_gui_save_uses_thumbnail_boundary_and_load_is_undoable(
+    tmp_path: Path,
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     store, key_a, _key_b = _store()
     thumbnail = tmp_path / "variation.png"
-    gui = _gui(store, thumbnail=thumbnail)
+    gui = _gui(initialized_parameter_gui, store, thumbnail=thumbnail)
     state = gui._variation_state()
     state.new_name = "candidate"
     state.new_note = "keep this"
@@ -189,10 +212,12 @@ def test_gui_save_uses_thumbnail_boundary_and_load_is_undoable(tmp_path: Path) -
     assert _value(store, key_a) == 8.0
 
 
-def test_gui_rename_duplicate_and_delete_selected_variation() -> None:
+def test_gui_rename_duplicate_and_delete_selected_variation(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     store, _key_a, _key_b = _store()
     create_variation(store, "first", created_at=100.0)
-    gui = _gui(store)
+    gui = _gui(initialized_parameter_gui, store)
     state = gui._variation_state()
     state.selected_name = "first"
     state.target_name = "renamed"
@@ -256,10 +281,12 @@ class _DeleteConfirmationImgui:
         self.closed = True
 
 
-def test_delete_confirmation_modal_names_target_before_permanent_delete() -> None:
+def test_delete_confirmation_modal_names_target_before_permanent_delete(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     store, _key_a, _key_b = _store()
     create_variation(store, "precious")
-    gui = _gui(store)
+    gui = _gui(initialized_parameter_gui, store)
     state = gui._variation_state()
     state.selected_name = "precious"
     assert gui._request_delete_selected_variation() is True
@@ -274,10 +301,12 @@ def test_delete_confirmation_modal_names_target_before_permanent_delete() -> Non
     assert list_variations(store) == ()
 
 
-def test_gui_randomize_and_lock_use_favorite_or_filtered_scope() -> None:
+def test_gui_randomize_and_lock_use_favorite_or_filtered_scope(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     store, key_a, key_b = _store()
     set_parameters_favorite(store, (key_a,), favorite=True)
-    gui = _gui(store)
+    gui = _gui(initialized_parameter_gui, store)
     state = gui._variation_state()
     state.scope = "favorites"
     state.random_seed = 91
@@ -307,7 +336,9 @@ def test_gui_randomize_and_lock_use_favorite_or_filtered_scope() -> None:
     assert _value(store, key_b) != before_b
 
 
-def test_gui_morph_applies_only_current_scope_and_is_undoable() -> None:
+def test_gui_morph_applies_only_current_scope_and_is_undoable(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     store, key_a, key_b = _store()
     set_parameters_favorite(store, (key_a,), favorite=True)
     _set(store, key_a, 1.0)
@@ -316,7 +347,7 @@ def test_gui_morph_applies_only_current_scope_and_is_undoable() -> None:
     _set(store, key_a, 9.0)
     _set(store, key_b, 7.0)
     create_variation(store, "B", created_at=200.0)
-    gui = _gui(store)
+    gui = _gui(initialized_parameter_gui, store)
     state = gui._variation_state()
     state.scope = "favorites"
     state.morph_a = "A"
@@ -331,13 +362,15 @@ def test_gui_morph_applies_only_current_scope_and_is_undoable() -> None:
     assert _value(store, key_a) == pytest.approx(9.0)
 
 
-def test_zero_and_all_locked_scope_actions_report_explicit_no_op() -> None:
+def test_zero_and_all_locked_scope_actions_report_explicit_no_op(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     store, key_a, _key_b = _store()
     _set(store, key_a, 1.0)
     create_variation(store, "A")
     _set(store, key_a, 9.0)
     create_variation(store, "B")
-    gui = _gui(store)
+    gui = _gui(initialized_parameter_gui, store)
     state = gui._variation_state()
     state.morph_a = "A"
     state.morph_b = "B"
@@ -359,9 +392,14 @@ def test_zero_and_all_locked_scope_actions_report_explicit_no_op() -> None:
     assert state.notice is not None and "locked" in state.notice
 
 
-def test_real_pyimgui_renders_empty_variation_popup() -> None:
+def test_real_pyimgui_renders_empty_variation_popup(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
     imgui = pytest.importorskip("imgui")
-    context = imgui.create_context()
+    store, _key_a, _key_b = _store()
+    gui = _gui(initialized_parameter_gui, store)
+    context = gui._context
+    imgui.set_current_context(context)
     try:
         io = imgui.get_io()
         io.display_size = (900.0, 900.0)
@@ -369,8 +407,6 @@ def test_real_pyimgui_renders_empty_variation_popup() -> None:
         io.fonts.get_tex_data_as_rgba32()
         imgui.new_frame()
         imgui.begin("variation popup smoke")
-        store, _key_a, _key_b = _store()
-        gui = _gui(store)
         gui._imgui = imgui
 
         assert gui._render_variation_popup() is False
@@ -379,4 +415,4 @@ def test_real_pyimgui_renders_empty_variation_popup() -> None:
         imgui.render()
         assert imgui.get_draw_data() is not None
     finally:
-        imgui.destroy_context(context)
+        imgui.set_current_context(context)

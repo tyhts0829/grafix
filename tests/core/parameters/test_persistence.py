@@ -9,6 +9,7 @@ import grafix.core.parameters.persistence as persistence_module
 from grafix.core.parameters import ParamMeta, ParamStore, ParameterKey
 from grafix.core.parameters.codec import (
     PARAM_STORE_SCHEMA_VERSION,
+    ParamStoreSchemaError,
     UnsupportedParamStoreSchemaError,
     dumps_param_store,
     loads_param_store_result,
@@ -72,6 +73,8 @@ def _merge_float_group(
                 key=key,
                 base=0.5,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                effective=0.5,
+                source="code",
                 explicit=False,
             )
         ],
@@ -94,6 +97,8 @@ def _store_with_float_value(
                 key=key,
                 base=0.1,
                 meta=meta,
+                effective=0.1,
+                source="code",
                 explicit=explicit,
             )
         ],
@@ -124,6 +129,15 @@ def _store_with_effect_order() -> ParamStore:
     )
     store._touch()
     return store
+
+
+def _store_with_parameter_and_effect_chain() -> tuple[ParamStore, ParameterKey]:
+    store, key = _store_with_float_value(0.6)
+    assert store._effects_ref().record_chain(
+        chain_id="strict-chain",
+        steps=(EffectStepTopology("scale", "effect-site", 1, 0),),
+    )
+    return store, key
 
 
 def _set_mtime(path: Path, value_ns: int) -> None:
@@ -190,6 +204,8 @@ def test_param_store_file_roundtrip(tmp_path: Path):
                 key=key,
                 base=0.5,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                effective=0.5,
+                source="code",
                 explicit=False,
             )
         ],
@@ -217,7 +233,16 @@ def test_explicit_bool_uses_code_after_normal_load_and_ui_after_recovery() -> No
     meta = ParamMeta(kind="bool")
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=True, meta=meta, explicit=True)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=True,
+                meta=meta,
+                effective=True,
+                source="code",
+                explicit=True,
+            )
+        ],
     )
     ok, error = update_state_from_ui(
         store,
@@ -250,7 +275,252 @@ def test_saved_param_store_declares_current_schema_version() -> None:
     assert payload["schema_version"] == PARAM_STORE_SCHEMA_VERSION
 
 
-def test_schema_v2_roundtrip_preserves_effect_topology_and_gui_order(
+def test_current_schema_rejects_missing_top_level_section() -> None:
+    payload = json.loads(dumps_param_store(ParamStore()))
+    payload.pop("states")
+
+    with pytest.raises(ParamStoreSchemaError, match=r"missing=.*'states'"):
+        loads_param_store_result(json.dumps(payload))
+
+
+def test_current_schema_rejects_unknown_top_level_section() -> None:
+    payload = json.loads(dumps_param_store(ParamStore()))
+    payload["legacy_states"] = []
+
+    with pytest.raises(ParamStoreSchemaError, match=r"unknown=.*'legacy_states'"):
+        loads_param_store_result(json.dumps(payload))
+
+
+def test_current_ui_schema_reports_missing_and_unknown_fields() -> None:
+    payload = json.loads(dumps_param_store(ParamStore()))
+    payload["ui"].pop("favorite_parameters")
+    payload["ui"]["legacy_favorites"] = []
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert any(
+        issue.section == "ui"
+        and "missing fields: favorite_parameters" in issue.reason
+        and "unknown fields: legacy_favorites" in issue.reason
+        for issue in result.issues
+    )
+
+
+def test_current_state_entry_with_unknown_field_is_dropped() -> None:
+    store, key = _store_with_float_value(0.6)
+    payload = json.loads(dumps_param_store(store))
+    payload["states"][0]["legacy_value"] = 0.6
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert result.store.get_state(key) is None
+    assert any(
+        issue.section == "states"
+        and issue.index == 0
+        and "unknown fields: legacy_value" in issue.reason
+        for issue in result.issues
+    )
+
+
+def test_current_state_entry_does_not_coerce_wrong_ui_value_type() -> None:
+    store, key = _store_with_float_value(0.6)
+    payload = json.loads(dumps_param_store(store))
+    payload["states"][0]["ui_value"] = "0.6"
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert result.store.get_state(key) is None
+    assert any(
+        issue.section == "states"
+        and issue.index == 0
+        and "ui_value must be a finite number" in issue.reason
+        for issue in result.issues
+    )
+
+
+def test_current_state_numeric_overflow_is_diagnosed_as_invalid_input() -> None:
+    store, key = _store_with_float_value(0.6)
+    payload = json.loads(dumps_param_store(store))
+    payload["states"][0]["ui_value"] = 10**400
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert result.store.get_state(key) is None
+    assert any(
+        issue.section == "states"
+        and issue.index == 0
+        and "ui_value must be a finite number" in issue.reason
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("cc_key", "reason_fragment"),
+    [
+        pytest.param(True, "cc_key", id="bool"),
+        pytest.param(-1, "0..127", id="negative"),
+        pytest.param(128, "0..127", id="above-range"),
+        pytest.param("64", "cc_key", id="string"),
+        pytest.param(1.0, "cc_key", id="float"),
+        pytest.param([None, None, None], "at least one CC number", id="all-null"),
+        pytest.param([1, False, 3], "0..127", id="component-bool"),
+        pytest.param([1, -1, 3], "0..127", id="component-negative"),
+        pytest.param([1, 128, 3], "0..127", id="component-above-range"),
+        pytest.param([1, "2", 3], "0..127", id="component-string"),
+    ],
+)
+def test_current_state_rejects_noncanonical_cc_numbers(
+    cc_key: object,
+    reason_fragment: str,
+) -> None:
+    store, key = _store_with_float_value(0.6)
+    payload = json.loads(dumps_param_store(store))
+    payload["states"][0]["cc_key"] = cc_key
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert result.store.get_state(key) is None
+    assert any(
+        issue.section == "states"
+        and issue.index == 0
+        and reason_fragment in issue.reason
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("op", "meta", "ui_value", "cc_key", "reason_fragment"),
+    [
+        pytest.param(
+            "float-op",
+            ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+            0.5,
+            [1, None, 3],
+            "component MIDI CC is not supported for float",
+            id="float-component-list",
+        ),
+        pytest.param(
+            "vec3-op",
+            ParamMeta(kind="vec3", ui_min=0.0, ui_max=1.0),
+            (0.1, 0.2, 0.3),
+            1,
+            "scalar MIDI CC is not supported for vec3",
+            id="vec3-scalar",
+        ),
+        pytest.param(
+            "rgb-op",
+            ParamMeta(kind="rgb", ui_min=0, ui_max=255),
+            (1, 2, 3),
+            1,
+            "scalar MIDI CC is not supported for rgb",
+            id="rgb-scalar",
+        ),
+        pytest.param(
+            "__style__",
+            ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+            0.5,
+            1,
+            "MIDI CC is not supported for __style__",
+            id="style-scalar",
+        ),
+    ],
+)
+def test_current_state_rejects_cc_incompatible_with_kind_or_op(
+    op: str,
+    meta: ParamMeta,
+    ui_value: object,
+    cc_key: object,
+    reason_fragment: str,
+) -> None:
+    store = ParamStore()
+    key = ParameterKey(op=op, site_id="cc-contract", arg="value")
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=key,
+                base=ui_value,
+                meta=meta,
+                effective=ui_value,
+                source="code",
+                explicit=False,
+            )
+        ],
+    )
+    payload = json.loads(dumps_param_store(store))
+    payload["states"][0]["cc_key"] = cc_key
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert result.store.get_state(key) is None
+    assert any(
+        issue.section == "states"
+        and issue.index == 0
+        and reason_fragment in issue.reason
+        for issue in result.issues
+    )
+
+
+def test_current_schema_reports_and_repairs_missing_parameter_ordinal() -> None:
+    store, key = _store_with_float_value(0.6)
+    payload = json.loads(dumps_param_store(store))
+    del payload["ordinals"][key.op][key.site_id]
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert result.store.get_state(key) is not None
+    assert result.store.get_ordinal(key.op, key.site_id) == 1
+    assert any(
+        issue.section == "ordinals"
+        and f"{key.op}/{key.site_id}" in issue.reason
+        for issue in result.issues
+    )
+
+
+def test_current_schema_reports_and_repairs_missing_chain_ordinal() -> None:
+    payload = json.loads(dumps_param_store(_store_with_effect_order()))
+    del payload["chain_ordinals"]["chain-order"]
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert result.store.chain_ordinals() == {"chain-order": 1}
+    assert result.store._effects_ref().code_order("chain-order") == (
+        ("scale", "scale-site"),
+        ("rotate", "rotate-site"),
+    )
+    assert any(
+        issue.section == "chain_ordinals"
+        and "chain-order" in issue.reason
+        for issue in result.issues
+    )
+
+
+def test_duplicate_parameter_and_chain_ordinals_are_repaired_with_issues() -> None:
+    store = ParamStore()
+    _merge_float_group(store, op="variant", site_id="a")
+    _merge_float_group(store, op="variant", site_id="b")
+    assert store._effects_ref().record_chain(
+        chain_id="a",
+        steps=(EffectStepTopology("scale", "scale-site", 1, 0),),
+    )
+    assert store._effects_ref().record_chain(
+        chain_id="b",
+        steps=(EffectStepTopology("rotate", "rotate-site", 1, 0),),
+    )
+    payload = json.loads(dumps_param_store(store))
+    payload["ordinals"]["variant"]["b"] = 1
+    payload["chain_ordinals"]["b"] = 1
+
+    result = loads_param_store_result(json.dumps(payload))
+
+    assert result.store.get_ordinal("variant", "a") == 1
+    assert result.store.get_ordinal("variant", "b") == 2
+    assert result.store.chain_ordinals() == {"a": 1, "b": 2}
+    assert any(issue.section == "ordinals" for issue in result.issues)
+    assert any(issue.section == "chain_ordinals" for issue in result.issues)
+
+
+def test_current_schema_roundtrip_preserves_effect_topology_and_gui_order(
     tmp_path: Path,
 ) -> None:
     store = _store_with_effect_order()
@@ -261,7 +531,7 @@ def test_schema_v2_roundtrip_preserves_effect_topology_and_gui_order(
     save_param_store_recovery(store, recovery)
 
     payload = json.loads(primary.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == PARAM_STORE_SCHEMA_VERSION
     assert payload["ui"]["effect_order_overrides"] == [
         {
             "chain_id": "chain-order",
@@ -275,6 +545,7 @@ def test_schema_v2_roundtrip_preserves_effect_topology_and_gui_order(
         "scale",
         "rotate",
     ]
+    assert [item["n_inputs"] for item in payload["effect_steps"]] == [1, 1]
 
     for loaded in (load_param_store(primary), load_param_store(recovery)):
         assert loaded._effects_ref().code_order("chain-order") == (
@@ -287,19 +558,30 @@ def test_schema_v2_roundtrip_preserves_effect_topology_and_gui_order(
         )
 
 
-def test_schema_v1_migrates_with_empty_effect_order_override() -> None:
+@pytest.mark.parametrize("schema_version", [None, 1, 2])
+def test_non_current_schema_is_rejected_without_mutating_or_quarantining_file(
+    tmp_path: Path,
+    schema_version: int | None,
+) -> None:
     payload = json.loads(dumps_param_store(_store_with_effect_order()))
-    payload["schema_version"] = 1
-    payload["ui"].pop("effect_order_overrides")
+    if schema_version is None:
+        payload.pop("schema_version")
+    else:
+        payload["schema_version"] = schema_version
+    original_payload = json.dumps(payload)
 
-    result = loads_param_store_result(json.dumps(payload))
+    with pytest.raises(UnsupportedParamStoreSchemaError) as exc_info:
+        loads_param_store_result(original_payload)
+    assert exc_info.value.found_version == schema_version
+    assert json.dumps(payload) == original_payload
 
-    assert result.issues == ()
-    assert result.store._effects_ref().order_overrides() == {}
-    assert result.store._effects_ref().effective_order("chain-order") == (
-        ("scale", "scale-site"),
-        ("rotate", "rotate-site"),
-    )
+    path = tmp_path / "unsupported.json"
+    path.write_text(original_payload, encoding="utf-8")
+    with pytest.raises(UnsupportedParamStoreSchemaError):
+        load_param_store(path)
+
+    assert path.read_text(encoding="utf-8") == original_payload
+    assert list(tmp_path.glob("unsupported.json.corrupt-*")) == []
 
 
 def test_malformed_effect_order_entry_is_diagnosed_and_dropped() -> None:
@@ -327,7 +609,7 @@ def test_malformed_effect_order_entry_is_diagnosed_and_dropped() -> None:
     }
 
 
-def test_order_without_saved_topology_is_validated_on_first_observation() -> None:
+def test_order_without_saved_topology_is_diagnosed_and_dropped() -> None:
     payload = json.loads(dumps_param_store(ParamStore()))
     payload["ui"]["effect_order_overrides"] = [
         {
@@ -338,12 +620,13 @@ def test_order_without_saved_topology_is_validated_on_first_observation() -> Non
             ],
         }
     ]
-    loaded = loads_param_store_result(json.dumps(payload)).store
+    result = loads_param_store_result(json.dumps(payload))
+    loaded = result.store
 
-    assert loaded._effects_ref().order_overrides()["late-chain"] == (
-        ("rotate", "rotate-site"),
-        ("scale", "scale-site"),
-    )
+    assert len(result.issues) == 1
+    assert result.issues[0].section == "ui.effect_order_overrides"
+    assert "topology is missing" in result.issues[0].reason
+    assert loaded._effects_ref().order_overrides() == {}
 
     assert loaded._effects_ref().record_chain(
         chain_id="late-chain",
@@ -354,8 +637,8 @@ def test_order_without_saved_topology_is_validated_on_first_observation() -> Non
     )
 
     assert loaded._effects_ref().effective_order("late-chain") == (
-        ("rotate", "rotate-site"),
         ("scale", "scale-site"),
+        ("rotate", "rotate-site"),
     )
 
 
@@ -364,6 +647,8 @@ def test_order_without_saved_topology_is_validated_on_first_observation() -> Non
     [
         ("incomplete", "exact permutation"),
         ("duplicate_topology", "duplicate step identity"),
+        ("noncontiguous_topology", "contiguous from 0"),
+        ("missing_n_inputs", "missing fields: n_inputs"),
         ("multi_input", "multi-input"),
     ],
 )
@@ -379,39 +664,18 @@ def test_effect_order_incompatible_with_saved_topology_is_diagnosed_and_dropped(
         payload["effect_steps"][1]["site_id"] = payload["effect_steps"][0][
             "site_id"
         ]
+    elif corruption == "noncontiguous_topology":
+        payload["effect_steps"][1]["step_index"] = 2
+    elif corruption == "missing_n_inputs":
+        payload["effect_steps"][1].pop("n_inputs")
     else:
         payload["effect_steps"][0]["n_inputs"] = 2
 
     result = loads_param_store_result(json.dumps(payload))
 
-    assert len(result.issues) == 1
-    assert result.issues[0].section == "ui.effect_order_overrides"
-    assert reason_fragment in result.issues[0].reason
+    assert any(reason_fragment in issue.reason for issue in result.issues)
     assert result.store.effect_order_overrides() == {}
     assert_invariants(result.store)
-
-
-def test_versionless_payload_uses_explicit_legacy_migration(tmp_path: Path) -> None:
-    store, key = _store_with_float_value(0.4)
-    legacy_payload = json.loads(dumps_param_store(store))
-    legacy_payload.pop("schema_version")
-    result = loads_param_store_result(json.dumps(legacy_payload))
-    assert result.migrated_legacy is True
-    assert result.issues == ()
-
-    path = tmp_path / "legacy.json"
-    path.write_text(json.dumps(legacy_payload), encoding="utf-8")
-    loaded = load_param_store(path)
-
-    state = loaded.get_state(key)
-    assert state is not None
-    assert state.ui_value == pytest.approx(0.4)
-    assert loaded.load_provenance == "primary"
-    assert [diagnostic.code for diagnostic in loaded.load_diagnostics] == [
-        "legacy_migration"
-    ]
-    assert path.exists()
-    assert list(tmp_path.glob("legacy.json.corrupt-*")) == []
 
 
 def test_future_schema_is_rejected_without_quarantine_or_empty_fallback(
@@ -497,6 +761,45 @@ def test_repaired_partial_primary_survives_restart_before_any_user_change(
     assert recovery.is_file()
 
 
+def test_missing_writer_ordinals_are_quarantined_and_recovered(
+    tmp_path: Path,
+) -> None:
+    store, key = _store_with_parameter_and_effect_chain()
+    payload = json.loads(dumps_param_store(store))
+    del payload["ordinals"][key.op][key.site_id]
+    del payload["chain_ordinals"]["strict-chain"]
+    original_payload = json.dumps(payload)
+    primary = tmp_path / "missing-ordinals.json"
+    primary.write_text(original_payload, encoding="utf-8")
+    recovery = param_store_recovery_path(primary)
+
+    first_launch = load_param_store_with_recovery(primary)
+
+    assert first_launch.get_state(key) is not None
+    assert first_launch.get_ordinal(key.op, key.site_id) == 1
+    assert first_launch.chain_ordinals() == {"strict-chain": 1}
+    assert first_launch.load_provenance == "quarantined"
+    assert not primary.exists()
+    backups = list(tmp_path.glob("missing-ordinals.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original_payload
+    assert recovery.is_file()
+    assert len(first_launch.load_diagnostics) == 1
+    diagnostic = first_launch.load_diagnostics[0]
+    assert diagnostic.code == "partial_quarantine"
+    assert f"{key.op}/{key.site_id}" in diagnostic.details
+    assert "strict-chain" in diagnostic.details
+
+    restarted = load_param_store_with_recovery(primary)
+
+    assert restarted.get_state(key) is not None
+    assert restarted.get_ordinal(key.op, key.site_id) == 1
+    assert restarted.chain_ordinals() == {"strict-chain": 1}
+    assert restarted.load_provenance == "session_recovery"
+    assert restarted.load_diagnostics == ()
+    assert recovery.is_file()
+
+
 def test_repaired_recovery_save_failure_rolls_quarantine_back_to_primary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -571,7 +874,16 @@ def test_session_recovery_preserves_live_explicit_override_until_clean_exit(
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=0.25, meta=meta, explicit=True)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=0.25,
+                meta=meta,
+                effective=0.25,
+                source="code",
+                explicit=True,
+            )
+        ],
     )
     ok, error = update_state_from_ui(
         store,
@@ -785,6 +1097,38 @@ def test_recovery_read_errors_are_not_misclassified_as_corruption(
     assert list(tmp_path.glob("store.session.json.corrupt-*")) == []
 
 
+def test_unexpected_recovery_decoder_error_propagates_without_quarantine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = tmp_path / "store.json"
+    recovery = param_store_recovery_path(primary)
+    primary_store, _key = _store_with_float_value(0.3)
+    recovery_store, _ = _store_with_float_value(0.8)
+    save_param_store(primary_store, primary)
+    save_param_store_recovery(recovery_store, recovery)
+    primary_before = primary.read_bytes()
+    recovery_before = recovery.read_bytes()
+    _set_mtime(primary, 1_700_000_000_000_000_000)
+    _set_mtime(recovery, 1_700_000_001_000_000_000)
+
+    def fail_decode(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("unexpected decoder failure")
+
+    monkeypatch.setattr(
+        persistence_module,
+        "loads_param_store_result",
+        fail_decode,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected decoder failure"):
+        load_param_store_with_recovery(primary)
+
+    assert primary.read_bytes() == primary_before
+    assert recovery.read_bytes() == recovery_before
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+
+
 def test_finalize_keeps_recovery_when_primary_save_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -855,6 +1199,8 @@ def test_save_param_store_keeps_loaded_groups_after_failed_frame(tmp_path: Path)
                 key=reached_key,
                 base=0.5,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                effective=0.5,
+                source="code",
                 explicit=False,
             )
             # `later_key` を評価する前に draw が失敗した状態。
@@ -903,6 +1249,31 @@ def test_load_param_store_does_not_hide_read_errors(
         load_param_store(path)
 
 
+def test_unexpected_primary_decoder_error_propagates_without_quarantine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "store.json"
+    store, _key = _store_with_float_value(0.3)
+    save_param_store(store, path)
+    original = path.read_bytes()
+
+    def fail_decode(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("unexpected decoder failure")
+
+    monkeypatch.setattr(
+        persistence_module,
+        "loads_param_store_result",
+        fail_decode,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected decoder failure"):
+        load_param_store(path)
+
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob("store.json.corrupt-*")) == []
+
+
 def test_save_param_store_keeps_existing_file_when_replace_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -938,12 +1309,16 @@ def test_save_param_store_prunes_unknown_arg_for_known_primitive(tmp_path: Path)
                 key=known,
                 base=1.0,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=2.0),
+                effective=1.0,
+                source="code",
                 explicit=False,
             ),
             FrameParamRecord(
                 key=unknown,
                 base=0.1,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                effective=0.1,
+                source="code",
                 explicit=True,
             ),
         ],

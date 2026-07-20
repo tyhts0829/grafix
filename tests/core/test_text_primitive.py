@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -7,8 +8,94 @@ import numpy as np
 from grafix.api import G
 from grafix.core.font_resolver import resolve_font_path
 from grafix.core.primitives import text as text_module
+from grafix.core.primitives._text_flatten import flatten_recording
 from grafix.core.primitives.text import text as text_impl
 from grafix.core.realize import realize
+
+
+def _geometry_checksum(value: tuple[np.ndarray, np.ndarray]) -> str:
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(value[0]).view(np.uint8))
+    digest.update(np.ascontiguousarray(value[1]).view(np.uint8))
+    return digest.hexdigest()
+
+
+def _command_checksum(value: tuple) -> str:
+    digest = hashlib.sha256()
+    for command, arguments in value:
+        digest.update(str(command).encode("ascii"))
+        for argument in arguments:
+            digest.update(np.asarray(argument, dtype="<f8").tobytes())
+    return digest.hexdigest()
+
+
+def test_text_representative_glyph_checksums_are_stable() -> None:
+    ascii_compound = text_impl(
+        text="AgOé",
+        font="GoogleSans-Regular.ttf",
+        quality=0.5,
+        scale=10.0,
+    )
+    japanese = text_impl(
+        text="日本あ",
+        font="NotoSansJP-Regular.ttf",
+        quality=0.5,
+        scale=10.0,
+    )
+
+    assert (
+        _geometry_checksum(ascii_compound)
+        == "fb0066474f0f0a2b3069370eb6b54cb58da272bc1a6025607be61c173b4d0bd5"
+    )
+    assert (
+        _geometry_checksum(japanese)
+        == "467cf94545526c90b71c8a569760e5dc0935344c023e5974ef254f61f6098725"
+    )
+
+
+def test_text_compound_glyph_flattened_command_checksum_is_stable() -> None:
+    font_path = resolve_font_path("GoogleSans-Regular.ttf")
+    font = text_module.TEXT_RENDERER.get_font(font_path, 0)
+    commands = text_module.TEXT_RENDERER.get_glyph_commands(
+        char="é",
+        font_path=font_path,
+        font_index=0,
+        flat_seg_len_units=20.0,
+        tt_font=font,
+        cmap=font.getBestCmap(),
+    )
+
+    assert len(commands) == 204
+    assert sum(command == "lineTo" for command, _ in commands) == 200
+    assert (
+        _command_checksum(commands)
+        == "f7d1ac394829f7497e6cf61985d49efb1cf30730db96b187dc19b08375e7b755"
+    )
+
+
+def test_text_flattening_handles_line_quadratic_and_cubic_commands() -> None:
+    from fontTools.pens.recordingPen import RecordingPen
+
+    recording = RecordingPen()
+    recording.moveTo((0.0, 0.0))
+    recording.lineTo((10.0, 0.0))
+    recording.qCurveTo((15.0, 10.0), (20.0, 0.0))
+    recording.curveTo((25.0, -10.0), (35.0, 10.0), (40.0, 0.0))
+    recording.closePath()
+
+    commands = flatten_recording(
+        recording,
+        approximate_segment_length=4.0,
+    )
+
+    assert len(commands) == 24
+    assert sum(command == "lineTo" for command, _ in commands) == 22
+    assert commands[0] == ("moveTo", ((0.0, 0.0),))
+    assert commands[-1] == ("closePath", ())
+    assert (
+        _command_checksum(commands)
+        == "bc03ee2aaccb1eeda1e52bb5af5b8de06ca8f79bf3aec1213eabfb6b8e6e711b"
+    )
 
 
 def test_text_empty_returns_empty_geometry() -> None:

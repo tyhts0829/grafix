@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from grafix.core.parameters import ParamStore
+from grafix.core.runtime_config import RuntimeConfig
 from grafix.interactive.parameter_gui.gui import ParameterGUI
 
 
@@ -40,9 +43,10 @@ class _FailingImGui:
 
 def test_close_switches_to_owned_context_and_attempts_every_cleanup_step(
     caplog: pytest.LogCaptureFixture,
+    initialized_parameter_gui: ParameterGUI,
 ) -> None:
     calls: list[str] = []
-    gui = ParameterGUI.__new__(ParameterGUI)
+    gui = cast(Any, initialized_parameter_gui)
     gui._closed = False
     gui._window = _FailingWindow(calls)
     gui._renderer = _FailingRenderer(calls)
@@ -67,20 +71,26 @@ def test_close_switches_to_owned_context_and_attempts_every_cleanup_step(
 
 def test_partial_initialization_cleans_resources_and_preserves_root_error(
     monkeypatch: pytest.MonkeyPatch,
+    effective_runtime_config: RuntimeConfig,
 ) -> None:
     calls: list[str] = []
     window = _FailingWindow(calls)
 
     def fail_initialize(self: ParameterGUI, *_args: object, **_kwargs: object) -> None:
-        self._renderer = _FailingRenderer(calls)
-        self._imgui = _FailingImGui(calls)
-        self._context = "owned-context"
+        gui_state = cast(Any, self)
+        gui_state._renderer = _FailingRenderer(calls)
+        gui_state._imgui = _FailingImGui(calls)
+        gui_state._context = "owned-context"
         raise ValueError("font initialization failed")
 
     monkeypatch.setattr(ParameterGUI, "_initialize", fail_initialize)
 
     with pytest.raises(ValueError, match="font initialization failed"):
-        ParameterGUI(window, store=ParamStore())
+        ParameterGUI(
+            window,
+            effective_config=effective_runtime_config,
+            store=ParamStore(),
+        )
 
     assert calls == [
         "switch_to",
@@ -88,3 +98,30 @@ def test_partial_initialization_cleans_resources_and_preserves_root_error(
         "imgui.destroy_context",
         "window.close",
     ]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "match"),
+    [
+        ({"transport_fps": "60"}, TypeError, "transport_fps"),
+        ({"transport_fps": 0.0}, ValueError, "transport_fps"),
+        ({"ui_scale": True}, TypeError, "ui_scale"),
+        ({"ui_scale": float("nan")}, ValueError, "ui_scale"),
+        ({"title": 1}, TypeError, "title"),
+        ({"title": ""}, ValueError, "title"),
+    ],
+)
+def test_parameter_gui_rejects_noncanonical_scalar_configuration_before_init(
+    effective_runtime_config: RuntimeConfig,
+    kwargs: dict[str, object],
+    error: type[Exception],
+    match: str,
+) -> None:
+    window = _FailingWindow([])
+    with pytest.raises(error, match=match):
+        ParameterGUI(
+            window,
+            effective_config=effective_runtime_config,
+            store=ParamStore(),
+            **kwargs,  # type: ignore[arg-type]
+        )

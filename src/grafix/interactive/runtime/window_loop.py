@@ -10,6 +10,8 @@ from typing import Any, Callable
 
 import pyglet
 
+from grafix.core.value_validation import finite_real
+
 
 @dataclass(frozen=True, slots=True)
 class WindowTask:
@@ -29,6 +31,16 @@ class WindowTask:
     # `Window.draw()` は on_draw と flip を含む。完了後の経過時間を受け取る。
     on_presented: Callable[[int], None] | None = None
 
+    def __post_init__(self) -> None:
+        if not callable(self.draw_frame):
+            raise TypeError("draw_frame は callable である必要があります")
+        if not callable(self.on_close):
+            raise TypeError("on_close は callable である必要があります")
+        if self.on_presented is not None and not callable(self.on_presented):
+            raise TypeError(
+                "on_presented は callable または None である必要があります"
+            )
+
 
 class MultiWindowLoop:
     """複数ウィンドウを同一ループで回す。
@@ -38,7 +50,7 @@ class MultiWindowLoop:
 
     def __init__(
         self,
-        tasks: list[WindowTask],
+        tasks: tuple[WindowTask, ...],
         *,
         fps: float,
         on_frame_start: Callable[[], None] | None = None,
@@ -49,7 +61,7 @@ class MultiWindowLoop:
 
         Parameters
         ----------
-        tasks : list[WindowTask]
+        tasks : tuple[WindowTask, ...]
             1 フレームごとに描画したいウィンドウと描画処理。
         fps : float
             目標フレームレート。`<=0` の場合はスロットリングしない。
@@ -62,8 +74,26 @@ class MultiWindowLoop:
             連続 tick の開始間隔と目標間隔の絶対差 ns を渡す。
         """
 
-        self._tasks = list(tasks)
-        self._fps = float(fps)
+        if type(tasks) is not tuple or any(
+            not isinstance(task, WindowTask)
+            for task in tasks
+        ):
+            raise TypeError("tasks は WindowTask の tuple である必要があります")
+        if not tasks:
+            raise ValueError("tasks は1件以上必要です")
+        frame_rate = finite_real(fps, name="fps")
+        for name, callback in (
+            ("on_frame_start", on_frame_start),
+            ("on_frame_finished", on_frame_finished),
+            ("on_scheduler_jitter", on_scheduler_jitter),
+        ):
+            if callback is not None and not callable(callback):
+                raise TypeError(
+                    f"{name} は callable または None である必要があります"
+                )
+
+        self._tasks = tasks
+        self._fps = frame_rate
         self._on_frame_start = on_frame_start
         self._on_frame_finished = on_frame_finished
         self._on_scheduler_jitter = on_scheduler_jitter
@@ -71,7 +101,7 @@ class MultiWindowLoop:
     def run(self) -> None:
         """ウィンドウが閉じられるまでループを実行する。"""
 
-        tasks = list(self._tasks)
+        tasks = self._tasks
 
         def close_handler(task: WindowTask) -> Callable[..., object]:
             def handle_close(*_: object) -> object:
@@ -124,9 +154,8 @@ class MultiWindowLoop:
             try:
                 for task in tasks:
                     # 閉じられた window と hide 中の window は描画しない。
-                    # test double など visible を持たない window は従来通り表示中とみなす。
                     if task.window not in pyglet.app.windows or not bool(
-                        getattr(task.window, "visible", True)
+                        task.window.visible
                     ):
                         continue
                     window_started_ns = time.perf_counter_ns()
@@ -147,7 +176,7 @@ class MultiWindowLoop:
         if self._fps <= 0:
             pyglet.clock.schedule(draw_all)
         else:
-            pyglet.clock.schedule_interval(draw_all, 1.0 / float(self._fps))
+            pyglet.clock.schedule_interval(draw_all, 1.0 / self._fps)
 
         try:
             pyglet.app.run(interval=None)

@@ -130,15 +130,6 @@ def _caption_text(
 
 
 def draw(t: float):
-    paper = _fill(
-        G.closed_path(
-            points=((0.0, 0.0), (148.0, 0.0), (148.0, 210.0), (0.0, 210.0)),
-        ),
-        angle=0.0,
-        density=650.0,
-        remove_boundary=True,
-    )
-
     black_mass = _fill(
         G.closed_path(
             points=(
@@ -272,25 +263,22 @@ def draw(t: float):
     )
 
     return (
-        # L(name="warm paper").layer(
-        #     paper, color=_rgb255((247, 243, 234)), thickness=0.004
-        # )
         L(name="pale gray forms").layer(
             gray_shapes[:4],
             color=_rgb255((151, 149, 139)),
             thickness=0.00045,
-        )
-        + L(name="dark overlap").layer(
+        ),
+        L(name="dark overlap").layer(
             gray_shapes[4],
             color=_rgb255((76, 76, 70)),
             thickness=0.00045,
-        )
-        + L(name="black trapezoid").layer(
+        ),
+        L(name="black trapezoid").layer(
             black_mass,
             color=_rgb255((23, 25, 23)),
             thickness=0.0010,
-        )
-        + L(name="caption").layer(
+        ),
+        L(name="caption").layer(
             [caption_number, caption_rule, caption_title, caption_year],
             color=_rgb255((37, 37, 34)),
             thickness=0.00022,

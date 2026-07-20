@@ -16,12 +16,16 @@ from grafix.core.effect_registry import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import PlanarFrame, empty_geom, pack_polylines
+from .util import (
+    PlanarFrame,
+    empty_geom,
+    float_cycle,
+    pack_polylines,
+    planarity_threshold,
+)
 
 # 生成する塗り線の最大本数（密度の上限）。
 MAX_FILL_LINES = 1000
-NONPLANAR_EPS_ABS = 1e-6
-NONPLANAR_EPS_REL = 1e-5
 _SCANLINE_SAFE_ABS_MIN = np.float32(2.0**-40)
 
 fill_meta = {
@@ -81,23 +85,6 @@ def _emit_fill_fallback(original: str, *, reason: str) -> None:
         reason=reason,
     )
 
-
-def _as_float_cycle(value: float | Sequence[float]) -> tuple[float, ...]:
-    """float または float 列を「サイクル可能なタプル」に正規化する。"""
-    # `np.ndarray` は `collections.abc.Sequence` を満たさないため個別扱いする。
-    if isinstance(value, np.ndarray):
-        if value.ndim == 0:
-            return (float(value),)
-        if value.size <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(float(v) for v in value.ravel())
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        if len(value) <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(float(v) for v in value)
-    return (float(value),)
-
-
 def _as_int_cycle(value: int | Sequence[int]) -> tuple[int, ...]:
     """int または int 列を「サイクル可能なタプル」に正規化する。"""
     if isinstance(value, np.ndarray):
@@ -126,20 +113,6 @@ def _as_bool_cycle(value: bool | Sequence[bool]) -> tuple[bool, ...]:
             raise ValueError("空のシーケンスは指定できません")
         return tuple(bool(v) for v in value)
     return (bool(value),)
-
-
-def _planarity_threshold(points: np.ndarray) -> float:
-    """点群スケールに基づく平面性判定の閾値を返す。"""
-    # スケール依存の許容誤差:
-    # - 小さな形状では絶対誤差（eps_abs）が支配
-    # - 大きな形状では相対誤差（eps_rel * 対角長）が支配
-    if points.size == 0:
-        return float(NONPLANAR_EPS_ABS)
-    p = points.astype(np.float64, copy=False)
-    mins = np.min(p, axis=0)
-    maxs = np.max(p, axis=0)
-    diag = float(np.linalg.norm(maxs - mins))
-    return max(float(NONPLANAR_EPS_ABS), float(NONPLANAR_EPS_REL) * diag)
 
 
 def _polygon_area_abs(vertices: np.ndarray) -> float:
@@ -529,7 +502,6 @@ def _sort_intersections_numpy_order(
 def _scanline_endpoints_njit(
     ex1: np.ndarray,
     ey1: np.ndarray,
-    ex2: np.ndarray,
     ey2: np.ndarray,
     edx: np.ndarray,
     edy: np.ndarray,
@@ -672,7 +644,6 @@ def _scanline_arithmetic_is_safe(
 def _scanline_endpoints_numpy(
     ex1: np.ndarray,
     ey1: np.ndarray,
-    ex2: np.ndarray,
     ey2: np.ndarray,
     edx: np.ndarray,
     edy: np.ndarray,
@@ -803,7 +774,6 @@ def _generate_line_fill_evenodd_multi(
         endpoints = _scanline_endpoints_njit(
             ex1,
             ey1,
-            ex2,
             ey2,
             edx,
             edy,
@@ -813,7 +783,6 @@ def _generate_line_fill_evenodd_multi(
         endpoints = _scanline_endpoints_numpy(
             ex1,
             ey1,
-            ex2,
             ey2,
             edx,
             edy,
@@ -897,9 +866,9 @@ def fill(
     シーケンス指定はコードからの指定を想定する（parameter_gui の編集対象にはしない）。
     """
     angle_sets_seq = _as_int_cycle(angle_sets)
-    angle_seq = _as_float_cycle(angle)
-    density_seq = _as_float_cycle(density)
-    spacing_gradient_seq = _as_float_cycle(spacing_gradient)
+    angle_seq = float_cycle(angle)
+    density_seq = float_cycle(density)
+    spacing_gradient_seq = float_cycle(spacing_gradient)
     remove_boundary_seq = _as_bool_cycle(remove_boundary)
 
     # 返すジオメトリの構造:
@@ -914,7 +883,7 @@ def fill(
     # 1) 全体がほぼ平面なら、外周＋穴をグルーピングして even-odd 塗りを行う。
     # 3D -> XY 平面への整列で 2D 化し、生成した線分を元姿勢へ戻す。
     global_frame = PlanarFrame.from_points(coords, offsets)
-    if global_frame.is_planar(_planarity_threshold(coords)):
+    if global_frame.is_planar(planarity_threshold(coords)):
         coords_xy_all = global_frame.to_local(coords)
         coords2d_all = coords_xy_all[:, :2].astype(np.float32, copy=False)
         if _is_degenerate_fill_input(coords2d_all, offsets):
@@ -1038,7 +1007,7 @@ def fill(
             )
             out_lines.append(vertices)
             continue
-        if not frame.is_planar(_planarity_threshold(vertices)):
+        if not frame.is_planar(planarity_threshold(vertices)):
             # non-planar では「各ポリライン」をグループとみなし、poly_i でサイクルする。
             _emit_fill_fallback(
                 "nonplanar_boundary",

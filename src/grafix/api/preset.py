@@ -16,9 +16,11 @@ from grafix.core.parameters.context import (
     parameter_recording_muted,
 )
 from grafix.core.parameters.labels_ops import set_label
+from grafix.core.parameters.identity import identity_string
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_dict_from_user
 from grafix.core.parameters.resolver import resolve_params
+from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.scene import SceneItem
 
 # parameters package の初期化後に読み、registry module を循環なく参照する。
@@ -101,9 +103,9 @@ def preset(
     - 関数本体は自動で mute され、内部の `G.*` / `E.*` の観測（GUI/永続化）を行わない。
     - `activate` は予約引数として自動追加され、GUI/永続化の対象になる（meta に含めない）。
       `False` の場合は関数本体を実行せず、空の `Geometry` を返す。
-    - `name=` / `key=` / `instance_key=` / `shared=` を予約引数として使える
-      （GUI には出さない）。``key`` は semantic site、``instance_key`` は
-      反復 instance、``shared=True`` は semantic site の意図的な共有を表す。
+    - label と parameter identity は ``P(name=..., key=...).foo(...)`` から渡す。
+      元 preset 関数は wrapper 所有の予約名を受け付けない。通常の
+      ``P.foo(...)`` では自動追加された ``activate`` だけを直接指定できる。
     """
 
     meta_norm = meta_dict_from_user(meta)
@@ -117,19 +119,22 @@ def preset(
         raise ValueError(f"@preset meta に予約引数は含められません: {bad}")
 
     def decorator(func: Callable[_PSpec, SceneItem]) -> Callable[_PSpec, SceneItem]:
-        preset_name = str(func.__name__)
+        preset_name = identity_string(func.__name__, name="preset name")
         # name 重複は「P.<name>」の解決が曖昧になるため禁止する。
         registry = preset_registry_module.preset_registry
-        if registry.get(preset_name) is not None:
+        preset_op = preset_registry_module.preset_op(preset_name)
+        if preset_op in registry:
             raise ValueError(f"preset '{preset_name}' は既に登録されている")
 
         # GUI 側で扱う op 名は `preset.<funcname>` に固定する。
         # 目的: preset を「1 種類の op」として分類/表示し、ParameterKey の op にも使う。
-        preset_op = preset_registry_module.preset_op(preset_name)
         sig = inspect.signature(func)
-        if "activate" in sig.parameters:
+        reserved_in_signature = reserved & set(sig.parameters)
+        if reserved_in_signature:
+            bad = ", ".join(sorted(reserved_in_signature))
             raise ValueError(
-                f"@preset の予約引数 'activate' はシグネチャに含められません: {func.__name__}.activate"
+                f"@preset の予約引数はシグネチャに含められません: "
+                f"{func.__name__}({bad})"
             )
         # 公開パラメータは default 必須として、呼び出しごとの base 値が必ず決まるようにする。
         _defaults_from_signature(func, meta_norm)
@@ -139,21 +144,20 @@ def preset(
         # GUI の行順は「定義したシグネチャ順」を優先する（dict の順序に依存しない）。
         sig_order = [arg_name for arg_name in sig.parameters if arg_name in meta_keys]
 
-        @wraps(func)
-        def wrapper(*args: _PSpec.args, **kwargs: _PSpec.kwargs) -> SceneItem:
+        def _invoke_at_site(
+            identity: preset_registry_module.PresetIdentity,
+            site_id: str,
+            args: tuple[Any, ...],
+            kwargs: dict[str, Any],
+        ) -> SceneItem:
             # activate を kwargs から取り出す。
             # `explicit` 判定が必要なので、pop 前に「明示指定されていたか」を保持する。
             activate_explicit = "activate" in kwargs
-            activate_base = bool(kwargs.pop("activate", True))
-
-            # identity/name は予約引数として「どの preset でも」受け付けたい。
-            # ただし、元のシグネチャに無い場合は sig.bind が落ちるため、
-            # bind 前に pop して label/site_id のために保持しておく。
-            _missing = object()
-            name_input = kwargs.pop("name", _missing)
-            key_input = kwargs.pop("key", _missing)
-            instance_key_input = kwargs.pop("instance_key", _missing)
-            shared_input = kwargs.pop("shared", _missing)
+            activate_base = validate_parameter_value(
+                kwargs.pop("activate", True),
+                kind="bool",
+                choices=None,
+            )
 
             # - bind: 呼び出しをシグネチャに当てはめ、引数名で扱えるようにする
             # - explicit_keys: 「ユーザーが明示的に渡した引数名」を記録する（apply_defaults 前）
@@ -162,75 +166,11 @@ def preset(
             explicit_keys = set(bound.arguments.keys())
             bound.apply_defaults()
 
-            # 予約引数がシグネチャに含まれる場合のみ、実関数呼び出しへ渡す。
-            name_explicit = name_input is not _missing
-            key_explicit = key_input is not _missing
-            instance_key_explicit = instance_key_input is not _missing
-            shared_explicit = shared_input is not _missing
-
-            # GUI 非公開の予約引数（preset の挙動や GUI 表示だけに使い、パラメータ行は増やさない）
-            display_name = None
-            if name_explicit:
-                display_name = name_input
-            elif "name" in sig.parameters:
-                display_name = bound.arguments.get("name", None)
-
-            key: str | int | None = None
-            if key_explicit:
-                raw_key = key_input
-            elif "key" in sig.parameters:
-                raw_key = bound.arguments.get("key", None)
-            else:
-                raw_key = None
-            if raw_key is not None:
-                if not isinstance(raw_key, (str, int)):
-                    raise TypeError("preset の key は str|int|None である必要があります")
-                key = raw_key
-
-            if instance_key_explicit:
-                raw_instance_key = instance_key_input
-            elif "instance_key" in sig.parameters:
-                raw_instance_key = bound.arguments.get("instance_key", None)
-            else:
-                raw_instance_key = None
-            if raw_instance_key is not None and not isinstance(
-                raw_instance_key, (str, int)
-            ):
-                raise TypeError(
-                    "preset の instance_key は str|int|None である必要があります"
-                )
-            instance_key: str | int | None = raw_instance_key
-
-            if shared_explicit:
-                raw_shared = shared_input
-            elif "shared" in sig.parameters:
-                raw_shared = bound.arguments.get("shared", False)
-            else:
-                raw_shared = False
-            if not isinstance(raw_shared, bool):
-                raise TypeError("preset の shared は bool である必要があります")
-            shared = raw_shared
-
-            # 予約 identity が元シグネチャにある場合だけ、実関数呼び出しへ渡す。
-            if "name" in sig.parameters and name_explicit:
-                bound.arguments["name"] = name_input
-            if "key" in sig.parameters and key_explicit:
-                bound.arguments["key"] = key_input
-            if "instance_key" in sig.parameters and instance_key_explicit:
-                bound.arguments["instance_key"] = instance_key_input
-            if "shared" in sig.parameters and shared_explicit:
-                bound.arguments["shared"] = shared_input
-
-            site_id = caller_site_id(
-                skip=1,
-                key=key,
-                instance_key=instance_key,
-                shared=shared,
-            )
-
             # group header 名は、指定が無ければ関数名を使う（GUI 未使用時は何もしない）。
             if current_param_recording_enabled():
-                label = str(func.__name__) if display_name is None else str(display_name)
+                label = (
+                    preset_name if identity.name is None else identity.name
+                )
                 _maybe_set_label(op=preset_op, site_id=site_id, label=label)
 
             # 公開引数だけ解決する:
@@ -264,7 +204,12 @@ def preset(
                     continue
                 bound.arguments[k] = v
 
-            if not bool(resolved_params.get("activate", True)):
+            resolved_activate = validate_parameter_value(
+                resolved_params["activate"],
+                kind="bool",
+                choices=None,
+            )
+            if not resolved_activate:
                 # activate=False なら「何も描かない Geometry」を返して終了する。
                 # （GUI 行としての preset 自体は記録/表示される）
                 return Geometry.create(op="concat")
@@ -275,10 +220,44 @@ def preset(
             with parameter_recording_muted():
                 return func(*bound.args, **bound.kwargs)
 
+        direct_identity = preset_registry_module.PresetIdentity(
+            name=None,
+            key=None,
+            instance_key=None,
+            shared=False,
+        )
+
+        @wraps(func)
+        def wrapper(*args: _PSpec.args, **kwargs: _PSpec.kwargs) -> SceneItem:
+            site_id = caller_site_id(skip=1)
+            return _invoke_at_site(
+                direct_identity,
+                site_id,
+                tuple(args),
+                dict(kwargs),
+            )
+
+        def invoker(
+            identity: preset_registry_module.PresetIdentity,
+            /,
+            *args: Any,
+            **kwargs: Any,
+        ) -> SceneItem:
+            if not isinstance(identity, preset_registry_module.PresetIdentity):
+                raise TypeError("preset identity は PresetIdentity である必要があります")
+            site_id = caller_site_id(
+                skip=1,
+                key=identity.key,
+                instance_key=identity.instance_key,
+                shared=identity.shared,
+            )
+            return _invoke_at_site(identity, site_id, args, kwargs)
+
         # callable と GUI 用の静的仕様を、一つの spec として原子的に登録する。
         registry._register(
             preset_name,
             wrapper,
+            invoker=invoker,
             display_op=preset_name,
             meta=meta_with_activate,
             param_order=("activate", *sig_order),

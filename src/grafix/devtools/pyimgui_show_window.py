@@ -1,18 +1,9 @@
 import imgui
 import pyglet
 
-# 新しめの pyimgui: create_renderer 推奨（PygletRenderer は deprecated）
-try:
-    from imgui.integrations.pyglet import create_renderer
-
-    def make_renderer(window):
-        return create_renderer(window)  # 固定/プログラマブルを適宜選ぶ
-
-except Exception:
-    from imgui.integrations.pyglet import PygletRenderer
-
-    def make_renderer(window):
-        return PygletRenderer(window)
+from grafix.interactive.parameter_gui.pyglet_backend import (
+    create_imgui_pyglet_renderer,
+)
 
 
 def main():
@@ -21,7 +12,7 @@ def main():
     )
 
     imgui.create_context()
-    impl = make_renderer(window)
+    impl = create_imgui_pyglet_renderer(window)
 
     @window.event
     def on_draw():

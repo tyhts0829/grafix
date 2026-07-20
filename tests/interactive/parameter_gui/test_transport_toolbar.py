@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Any, cast
 
 from grafix.interactive.parameter_gui.gui import ParameterGUI
 from grafix.interactive.runtime.frame_clock import TransportClock
@@ -12,10 +13,10 @@ class _FakeImGui:
             "transport_slower",
         }
 
-    def button(self, label: str) -> bool:
+    def button(self, label: str, width: float = 0.0, height: float = 0.0) -> bool:
         return label.rpartition("##")[2] in self.clicked
 
-    def same_line(self) -> None:
+    def same_line(self, position: float = 0.0, spacing: float = -1.0) -> None:
         pass
 
     def set_next_item_width(self, _width: float) -> None:
@@ -33,6 +34,15 @@ class _FakeImGui:
     def separator(self) -> None:
         pass
 
+    def is_item_hovered(self) -> bool:
+        return False
+
+    def is_item_focused(self) -> bool:
+        return False
+
+    def set_tooltip(self, _text: str) -> None:
+        pass
+
 
 class _KeyboardCaptureImGui:
     @staticmethod
@@ -40,8 +50,10 @@ class _KeyboardCaptureImGui:
         return SimpleNamespace(want_text_input=False, want_capture_keyboard=True)
 
 
-def test_transport_toolbar_controls_the_shared_clock() -> None:
-    gui = ParameterGUI.__new__(ParameterGUI)
+def test_transport_toolbar_controls_the_shared_clock(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui = cast(Any, initialized_parameter_gui)
     gui._imgui = _FakeImGui()
     gui._transport_fps = 10.0
     gui._transport = TransportClock(
@@ -57,8 +69,10 @@ def test_transport_toolbar_controls_the_shared_clock() -> None:
     assert gui._transport.t() == 2.5
 
 
-def test_focused_imgui_control_keeps_keyboard_input_from_transport() -> None:
-    gui = ParameterGUI.__new__(ParameterGUI)
+def test_focused_imgui_control_keeps_keyboard_input_from_transport(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui = cast(Any, initialized_parameter_gui)
     gui._imgui = _KeyboardCaptureImGui()
     gui._transport = TransportClock(
         start_time=10.0,
@@ -84,8 +98,10 @@ def test_focused_imgui_control_keeps_keyboard_input_from_transport() -> None:
     assert gui._transport.t() == 1.0
 
 
-def test_range_edit_shortcuts_ignore_captured_keyboard() -> None:
-    gui = ParameterGUI.__new__(ParameterGUI)
+def test_range_edit_shortcuts_ignore_captured_keyboard(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui = cast(Any, initialized_parameter_gui)
     gui._imgui = _KeyboardCaptureImGui()
     gui._range_edit_key_r = 82
     gui._range_edit_key_e = 69

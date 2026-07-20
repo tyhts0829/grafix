@@ -11,7 +11,7 @@ def draw(t):
     frame = P.grn_a5_frame(number_text=str(Path(__file__).stem))
     g = G.polyhedron(
         activate=True,
-        type_index=1,
+        kind="hexahedron",
         center=(76.63, 125.543, 0.0),
         scale=61.695,
     )

@@ -11,10 +11,11 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from grafix.core.font_resolver import default_font_path
 from grafix.core.runtime_config import runtime_config, set_config_path
+from grafix.core.value_validation import exact_string, exact_string_choice
 
 DoctorStatus = Literal["ok", "warning", "error"]
 
@@ -29,11 +30,38 @@ class DoctorCheck:
     details: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.status not in {"ok", "warning", "error"}:
-            raise ValueError(f"未知の doctor status: {self.status!r}")
-        object.__setattr__(self, "name", str(self.name))
-        object.__setattr__(self, "summary", str(self.summary))
-        object.__setattr__(self, "details", tuple(str(item) for item in self.details))
+        object.__setattr__(
+            self,
+            "name",
+            exact_string(self.name, name="name"),
+        )
+        object.__setattr__(
+            self,
+            "status",
+            cast(
+                DoctorStatus,
+                exact_string_choice(
+                    self.status,
+                    name="status",
+                    choices=("ok", "warning", "error"),
+                ),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "summary",
+            exact_string(self.summary, name="summary"),
+        )
+        if type(self.details) is not tuple:
+            raise TypeError("details は str の tuple である必要があります")
+        object.__setattr__(
+            self,
+            "details",
+            tuple(
+                exact_string(item, name=f"details[{index}]")
+                for index, item in enumerate(self.details)
+            ),
+        )
 
     def to_dict(self) -> dict[str, object]:
         """JSON 化可能な辞書へ変換する。"""
@@ -51,6 +79,13 @@ class DoctorReport:
     """Grafix doctor の structured result。"""
 
     checks: tuple[DoctorCheck, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.checks) is not tuple or any(
+            not isinstance(check, DoctorCheck)
+            for check in self.checks
+        ):
+            raise TypeError("checks は DoctorCheck の tuple である必要があります")
 
     @property
     def healthy(self) -> bool:

@@ -22,113 +22,41 @@ def _reset_runtime_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     set_config_path(None)
 
 
-def test_default_png_output_path_uses_data_dir_and_script_stem():
+def test_default_png_output_path_uses_script_stem_and_output_size():
     def draw(t: float) -> None:
         return None
 
-    path = image.default_png_output_path(draw)
-    assert path.parts[0] == "data"
-    assert path.parts[1] == "output"
-    assert path.parts[2] == "png"
-    assert path.name == f"{Path(__file__).stem}.png"
-    assert path.suffix == ".png"
-
-
-def test_default_png_output_path_includes_output_size_when_given():
-    def draw(t: float) -> None:
-        return None
-
-    path = image.default_png_output_path(draw, canvas_size=(800, 600))
+    path = image.default_png_output_path(draw, scale=8.0, canvas_size=(800, 600))
+    assert path.parts[:3] == ("data", "output", "png")
     assert path.name == f"{Path(__file__).stem}_6400x4800.png"
+    assert path.suffix == ".png"
 
 
 def test_png_output_size_scales_canvas_by_png_scale():
     scale = float(runtime_config().png_scale)
     expected = (int(300 * scale), int(300 * scale))
-    assert image.png_output_size((300, 300)) == expected
+    assert image.png_output_size((300, 300), scale=scale) == expected
 
 
-def test_export_image_png_uses_private_temporary_svg_without_touching_sibling(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("canvas_size", "scale"),
+    [
+        ((True, 300), 1.0),
+        ((300.5, 300), 1.0),
+        (("300", 300), 1.0),
+        ((300, 300), True),
+        ((300, 300), "1.0"),
+    ],
+)
+def test_png_output_size_rejects_implicit_numeric_coercion(
+    canvas_size: object,
+    scale: object,
 ) -> None:
-    out_png = tmp_path / "art.png"
-    sibling_svg = out_png.with_suffix(".svg")
-    sibling_svg.write_text("existing artwork\n", encoding="utf-8")
-    observed_svg_path: Path | None = None
-
-    def fake_rasterize(
-        svg_path,
-        png_path,
-        *,
-        output_size,
-        background_color_rgb01,
-    ) -> Path:
-        nonlocal observed_svg_path
-        observed_svg_path = Path(svg_path)
-        assert observed_svg_path != sibling_svg
-        assert observed_svg_path.parent != out_png.parent
-        assert observed_svg_path.read_text(encoding="utf-8").startswith("<?xml")
-        assert Path(png_path) == out_png
-        assert output_size == image.png_output_size((20, 10))
-        assert background_color_rgb01 == (0.1, 0.2, 0.3)
-        return out_png
-
-    monkeypatch.setattr(image, "rasterize_svg_to_png", fake_rasterize)
-
-    result = image.export_image(
-        [],
-        out_png,
-        canvas_size=(20, 10),
-        background_color=(0.1, 0.2, 0.3),
-    )
-
-    assert result == out_png
-    assert sibling_svg.read_text(encoding="utf-8") == "existing artwork\n"
-    assert observed_svg_path is not None
-    assert not observed_svg_path.exists()
-    assert not observed_svg_path.parent.exists()
-
-
-def test_export_image_png_cleans_up_temporary_svg_after_rasterizer_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    out_png = tmp_path / "art.png"
-    observed_svg_path: Path | None = None
-
-    def fail_rasterize(svg_path, png_path, **kwargs) -> Path:
-        nonlocal observed_svg_path
-        observed_svg_path = Path(svg_path)
-        assert observed_svg_path.exists()
-        raise RuntimeError("rasterizer failed")
-
-    monkeypatch.setattr(image, "rasterize_svg_to_png", fail_rasterize)
-
-    with pytest.raises(RuntimeError, match="rasterizer failed"):
-        image.export_image([], out_png, canvas_size=(20, 10))
-
-    assert observed_svg_path is not None
-    assert not observed_svg_path.exists()
-    assert not observed_svg_path.parent.exists()
-
-
-def test_export_image_svg_still_exports_directly_to_requested_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    out_svg = tmp_path / "art.svg"
-    observed: tuple[object, Path, tuple[int, int]] | None = None
-
-    def fake_export_svg(layers, path, *, canvas_size) -> Path:
-        nonlocal observed
-        observed = (layers, Path(path), canvas_size)
-        return Path(path)
-
-    monkeypatch.setattr(image, "export_svg", fake_export_svg)
-
-    layers: list[object] = []
-    result = image.export_image(layers, out_svg, canvas_size=(20, 10))
-
-    assert result == out_svg
-    assert observed == (layers, out_svg, (20, 10))
+    with pytest.raises(TypeError):
+        image.png_output_size(
+            canvas_size,  # type: ignore[arg-type]
+            scale=scale,  # type: ignore[arg-type]
+        )
 
 
 def test_rasterize_svg_to_png_invokes_resvg_with_resized_svg(
@@ -231,3 +159,20 @@ def test_rasterize_svg_to_png_times_out_resvg(
 
     assert out_png.read_bytes() == b"original"
     assert list(tmp_path.glob(".out.*.tmp.png")) == []
+
+
+@pytest.mark.parametrize("timeout_s", [True, "1.0"])
+def test_rasterize_rejects_implicit_timeout_coercion(
+    tmp_path: Path,
+    timeout_s: object,
+) -> None:
+    src_svg = tmp_path / "source.svg"
+    src_svg.write_text("<svg/>", encoding="utf-8")
+
+    with pytest.raises(TypeError, match="timeout_s"):
+        image.rasterize_svg_to_png(
+            src_svg,
+            tmp_path / "out.png",
+            output_size=(10, 10),
+            timeout_s=timeout_s,  # type: ignore[arg-type]
+        )

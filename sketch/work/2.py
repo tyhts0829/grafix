@@ -290,22 +290,22 @@ def draw(t: float):
             shadow,
             color=_rgb255(INK),
             thickness=0.0033,
-        )
-        + L(name="black body").layer(
+        ),
+        L(name="black body").layer(
             body,
             color=_rgb255(INK),
             thickness=0.0042,
-        )
-        + L(name="field lines").layer(
+        ),
+        L(name="field lines").layer(
             field_lines,
             color=_rgb255(HAIRLINE),
             thickness=0.00034,
-        )
-        + L(name="red circle").layer(
+        ),
+        L(name="red circle").layer(
             red_circle,
             color=_rgb255(RED),
             thickness=0.0031,
-        )
+        ),
     )
 
 

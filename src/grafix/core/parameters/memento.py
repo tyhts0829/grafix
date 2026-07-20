@@ -9,9 +9,7 @@ from dataclasses import dataclass, replace
 
 from .effects import EffectChainIndex, EffectTopologySignature
 from .key import ParameterKey
-from .labels import ParamLabels
 from .meta import ParamMeta
-from .ordinals import GroupOrdinals
 from .state import ParamState
 from .store import ParamStore
 
@@ -41,7 +39,7 @@ def _gui_entries_match(left: _ParamGuiEntry, right: _ParamGuiEntry) -> bool:
     if left_state is None or right_state is None or left_meta is None or right_meta is None:
         return left_state == right_state and left_meta == right_meta
     return (
-        str(left_meta.kind) == str(right_meta.kind)
+        left_meta.kind == right_meta.kind
         and left_state.override == right_state.override
         and left_state.ui_value == right_state.ui_value
         and left_state.cc_key == right_state.cc_key
@@ -148,7 +146,7 @@ def _known_collapse_headers(
 ) -> set[str]:
     """Store 構造から、現在存在し得る GUI header ID を返す。"""
 
-    groups = {(str(key.op), str(key.site_id)) for key in states}
+    groups = {(key.op, key.site_id) for key in states}
     known: set[str] = set()
     style_ops = {"__style__", "__layer_style__"}
     if any(op in style_ops for op, _site_id in groups):
@@ -162,7 +160,7 @@ def _known_collapse_headers(
         known.add(f"preset:{op}:{site_id}")
 
     for group, (chain_id, _step_index) in effects.step_info_by_site().items():
-        if (str(group[0]), str(group[1])) in groups:
+        if group in groups:
             known.add(f"effect_chain:{chain_id}")
     return known
 
@@ -178,12 +176,6 @@ class ParamStoreMemento:
     復元時は、現在も同じ ``ParameterKey`` と ``meta.kind`` で存在する
     parameter だけへ merge する。そのため、履歴作成後に draw が
     発見した parameter や、code reload 後の新しい metadata は消えない。
-
-    Notes
-    -----
-    コンストラクタの keyword は従来 API と互換に保つ。ただし
-    ``explicit_by_key`` / ``labels`` / ``ordinals`` は code-owned なので、
-    互換入力として受け取るだけで復元対象には含めない。
     """
 
     __slots__ = (
@@ -199,71 +191,37 @@ class ParamStoreMemento:
         *,
         states: dict[ParameterKey, ParamState],
         meta: dict[ParameterKey, ParamMeta],
-        explicit_by_key: dict[ParameterKey, bool],
-        labels: ParamLabels,
-        ordinals: GroupOrdinals,
-        effects: EffectChainIndex,
-        collapsed_headers: set[str],
-    ) -> None:
-        # memento と復元先で可変オブジェクトを共有しない。
-        self._states = deepcopy(states)
-        self._meta = deepcopy(meta)
-        known_headers = _known_collapse_headers(states, effects)
-        self._collapsed_by_header = {
-            header: header in collapsed_headers for header in known_headers
-        }
-        self._effect_order_state = effects.order_state_by_chain()
-        self._effect_topology_signatures = effects.topology_signatures()
-
-        # 従来コンストラクタ API は保つが、code-owned 値は保存しない。
-        _ = explicit_by_key, labels, ordinals
-
-    @classmethod
-    def _from_gui_owned_parts(
-        cls,
-        *,
-        states: dict[ParameterKey, ParamState],
-        meta: dict[ParameterKey, ParamMeta],
         collapsed_by_header: dict[str, bool],
         effect_order_state: dict[
             str,
             tuple[tuple[str, str], ...] | None,
         ],
         effect_topology_signatures: dict[str, EffectTopologySignature],
-    ) -> ParamStoreMemento:
-        """永続化済み GUI-owned 部分から memento を再構築する。
-
-        Notes
-        -----
-        named variation の codec 向けの package-private constructor。
-        通常の capture は ``capture_param_store_memento`` を使う。
-        """
-
-        memento = cls.__new__(cls)
-        memento._states = deepcopy(states)
-        memento._meta = deepcopy(meta)
-        memento._collapsed_by_header = {
-            str(header): bool(collapsed)
-            for header, collapsed in collapsed_by_header.items()
-        }
-        memento._effect_order_state = deepcopy(effect_order_state)
-        memento._effect_topology_signatures = deepcopy(
+    ) -> None:
+        # memento と復元先で可変オブジェクトを共有しない。
+        self._states = deepcopy(states)
+        self._meta = deepcopy(meta)
+        self._collapsed_by_header = dict(collapsed_by_header)
+        self._effect_order_state = deepcopy(effect_order_state)
+        self._effect_topology_signatures = deepcopy(
             effect_topology_signatures
         )
-        return memento
 
 
 def capture_param_store_memento(store: ParamStore) -> ParamStoreMemento:
     """store の GUI-owned 状態を、後続変更から独立して記録する。"""
 
+    effects = store._effects_ref()
+    known_headers = _known_collapse_headers(store._states, effects)
+    collapsed_headers = store._collapsed_headers_ref()
     return ParamStoreMemento(
         states=store._states,
         meta=store._meta,
-        explicit_by_key=store._explicit_by_key,
-        labels=store._labels_ref(),
-        ordinals=store._ordinals_ref(),
-        effects=store._effects_ref(),
-        collapsed_headers=store._collapsed_headers_ref(),
+        collapsed_by_header={
+            header: header in collapsed_headers for header in known_headers
+        },
+        effect_order_state=effects.order_state_by_chain(),
+        effect_topology_signatures=effects.topology_signatures(),
     )
 
 
@@ -281,7 +239,7 @@ def _applicable_entries(
         if saved_meta is None or current_state is None or current_meta is None:
             continue
         # kind 変更は code reload による構造変更として尊重する。
-        if str(saved_meta.kind) != str(current_meta.kind):
+        if saved_meta.kind != current_meta.kind:
             continue
         applicable.append((key, saved_state, saved_meta, current_state, current_meta))
     return applicable
@@ -410,7 +368,7 @@ def _apply_gui_entry(
         or saved_meta is None
         or current_state is None
         or current_meta is None
-        or str(saved_meta.kind) != str(current_meta.kind)
+        or saved_meta.kind != current_meta.kind
     ):
         return False, False
 
@@ -517,7 +475,7 @@ def update_param_store_memento_from_patch(
 
     header_states = patch._collapsed_after if after else patch._collapsed_before
     for header, collapsed in header_states.items():
-        memento._collapsed_by_header[str(header)] = bool(collapsed)
+        memento._collapsed_by_header[header] = collapsed
 
 
 __all__ = [

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from grafix.core import output_paths
 from grafix.core.output_paths import VersionedPathAllocator, gcode_layer_output_path
 
 
@@ -57,10 +59,15 @@ def test_versioned_path_allocator_normalizes_relative_reservations(
 def test_versioned_path_allocator_validates_configuration() -> None:
     with pytest.raises(ValueError, match="minimum_digits"):
         VersionedPathAllocator(minimum_digits=0)
+    for value in (True, 3.0, "3"):
+        with pytest.raises(TypeError, match="minimum_digits"):
+            VersionedPathAllocator(minimum_digits=cast(Any, value))
 
     allocator = VersionedPathAllocator()
     with pytest.raises(ValueError, match="ファイル名"):
         allocator.allocate(Path("."))
+    with pytest.raises(TypeError, match="base_path"):
+        allocator.allocate(cast(Any, object()))
 
 
 def test_gcode_layer_output_path_without_name() -> None:
@@ -95,6 +102,35 @@ def test_gcode_layer_output_path_name_can_be_omitted_after_sanitize() -> None:
 def test_gcode_layer_output_path_index_validation() -> None:
     with pytest.raises(ValueError):
         gcode_layer_output_path(Path("x.gcode"), layer_index=0, n_layers=1)
+    with pytest.raises(ValueError, match="n_layers"):
+        gcode_layer_output_path(Path("x.gcode"), layer_index=1, n_layers=0)
+    with pytest.raises(ValueError, match="n_layers"):
+        gcode_layer_output_path(Path("x.gcode"), layer_index=2, n_layers=1)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    (
+        ({"base_path": "x.gcode"}, "base_path"),
+        ({"layer_index": True}, "layer_index"),
+        ({"n_layers": "1"}, "n_layers"),
+        ({"layer_name": 1}, "layer_name"),
+        ({"max_layer_name_len": 1.0}, "max_layer_name_len"),
+    ),
+)
+def test_gcode_layer_output_path_rejects_implicit_conversions(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    arguments: dict[str, object] = {
+        "base_path": Path("x.gcode"),
+        "layer_index": 1,
+        "n_layers": 1,
+    }
+    arguments.update(kwargs)
+
+    with pytest.raises(TypeError, match=match):
+        gcode_layer_output_path(**cast(Any, arguments))
 
 
 def test_gcode_layer_output_path_width_grows_for_large_layer_counts() -> None:
@@ -102,3 +138,84 @@ def test_gcode_layer_output_path_width_grows_for_large_layer_counts() -> None:
     assert gcode_layer_output_path(base, layer_index=1, n_layers=1000) == Path(
         "output/gcode/foo_layer0001.gcode"
     )
+
+
+def test_draw_source_path_only_treats_unsupported_callable_as_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CallableWithoutSource:
+        def __call__(self, t: float) -> None:
+            return None
+
+    monkeypatch.setattr(
+        output_paths.inspect,
+        "getsourcefile",
+        lambda _draw: (_ for _ in ()).throw(TypeError("unsupported callable")),
+    )
+    monkeypatch.setattr(
+        output_paths.inspect,
+        "getfile",
+        lambda _draw: (_ for _ in ()).throw(TypeError("unsupported callable")),
+    )
+
+    assert output_paths._draw_source_path(CallableWithoutSource()) is None
+
+
+def test_draw_source_path_does_not_hide_unexpected_inspection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CallableWithoutSource:
+        def __call__(self, t: float) -> None:
+            return None
+
+    def fail(_draw: object) -> str:
+        raise RuntimeError("inspection failed")
+
+    monkeypatch.setattr(output_paths.inspect, "getsourcefile", fail)
+
+    with pytest.raises(RuntimeError, match="inspection failed"):
+        output_paths._draw_source_path(CallableWithoutSource())
+
+
+def test_project_root_lookup_only_handles_shallow_ancestor_chain() -> None:
+    assert (
+        output_paths._project_root_dir_from_sketch_root(
+            Path("/sketch"),
+            Path("far/too/deep/sketch"),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "match"),
+    (
+        ({"kind": 1}, TypeError, "kind"),
+        ({"kind": ""}, ValueError, "kind"),
+        ({"ext": 1}, TypeError, "ext"),
+        ({"ext": ""}, ValueError, "ext"),
+        ({"draw": None}, TypeError, "draw"),
+        ({"run_id": 1}, TypeError, "run_id"),
+        ({"canvas_size": [800, 600]}, TypeError, "canvas_size"),
+        ({"canvas_size": (True, 600)}, TypeError, "canvas_size"),
+        ({"canvas_size": (float("nan"), 600)}, ValueError, "canvas_size"),
+        ({"canvas_size": (0, 600)}, ValueError, "canvas_size"),
+    ),
+)
+def test_output_path_for_draw_rejects_implicit_conversions(
+    kwargs: dict[str, object],
+    error: type[Exception],
+    match: str,
+) -> None:
+    def draw(_t: float) -> None:
+        return None
+
+    arguments: dict[str, object] = {
+        "kind": "svg",
+        "ext": "svg",
+        "draw": draw,
+    }
+    arguments.update(kwargs)
+
+    with pytest.raises(error, match=match):
+        output_paths.output_path_for_draw(**cast(Any, arguments))

@@ -8,8 +8,16 @@ from collections.abc import Iterator, Mapping
 from typing import TypeVar, overload
 
 from grafix.core.parameters.context import current_cc_snapshot
+from grafix.core.value_validation import exact_integer
 
 _T = TypeVar("_T")
+
+
+def _cc_number(value: object) -> int:
+    cc_number = exact_integer(value, name="CC number")
+    if cc_number < 0 or cc_number > 127:
+        raise ValueError("CC number は0..127である必要があります")
+    return cc_number
 
 
 class CcView(Mapping[int, float]):
@@ -23,19 +31,12 @@ class CcView(Mapping[int, float]):
     """
 
     def __getitem__(self, cc_number: int) -> float:
+        key = _cc_number(cc_number)
         snapshot = current_cc_snapshot()
         if snapshot is None:
             return 0.0
-        try:
-            value = snapshot.get(int(cc_number))
-        except Exception:
-            return 0.0
-        if value is None:
-            return 0.0
-        try:
-            return float(value)
-        except Exception:
-            return 0.0
+        value = snapshot.get(key)
+        return 0.0 if value is None else value
 
     @overload
     def get(self, cc_number: int, default: None = None) -> float | None: ...
@@ -44,33 +45,27 @@ class CcView(Mapping[int, float]):
     def get(self, cc_number: int, default: _T = ...) -> float | _T: ...
 
     def get(self, cc_number: int, default: object | None = None) -> object:
+        key = _cc_number(cc_number)
         snapshot = current_cc_snapshot()
         if snapshot is None:
             return default
-        try:
-            key = int(cc_number)
-        except Exception:
-            return default
         if key not in snapshot:
             return default
-        try:
-            return float(snapshot[key])
-        except Exception:
-            return default
+        return snapshot[key]
 
     def __contains__(self, cc_number: object) -> bool:
         snapshot = current_cc_snapshot()
         if snapshot is None:
             return False
-        if not isinstance(cc_number, int):
+        if isinstance(cc_number, bool) or not isinstance(cc_number, int):
             return False
-        return int(cc_number) in snapshot
+        return cc_number in snapshot
 
     def __iter__(self) -> Iterator[int]:
         snapshot = current_cc_snapshot()
         if snapshot is None:
             return iter(())
-        return iter(snapshot.keys())  # type: ignore[return-value]
+        return iter(snapshot)
 
     def __len__(self) -> int:
         snapshot = current_cc_snapshot()
@@ -85,13 +80,7 @@ class CcView(Mapping[int, float]):
         if not snapshot:
             return "CcView({})"
 
-        items: list[tuple[int, float]] = []
-        for key, value in snapshot.items():
-            try:
-                items.append((int(key), float(value)))
-            except Exception:
-                continue
-        items.sort(key=lambda kv: kv[0])
+        items = list(snapshot.entries)
 
         max_items = 16
         head = items[:max_items]

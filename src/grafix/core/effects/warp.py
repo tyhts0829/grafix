@@ -19,6 +19,8 @@ from numba import (  # type: ignore[import-untyped, attr-defined]
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
+
+from .argument_validation import exact_bool, known_choice
 from .util import (
     PlanarFrame,
     extract_planar_rings,
@@ -31,11 +33,15 @@ _LENS_OPTIMIZED_MIN_POINT_SEGMENTS = 100_000
 _LENS_OPTIMIZED_MIN_BASE_POINTS = 256
 _LENS_EDGE_SCRATCH_BYTES_PER_SEGMENT = 7 * np.dtype(np.float64).itemsize
 _LENS_MAX_EDGE_SCRATCH_BYTES = 8 * 1024 * 1024
+_MODE_CHOICES = ("lens", "attract")
+_KIND_CHOICES = ("scale", "rotate", "shear", "swirl")
+_PROFILE_CHOICES = ("band", "ramp")
+_DIRECTION_CHOICES = ("attract", "repel")
 
 warp_meta = {
     "mode": ParamMeta(
         kind="choice",
-        choices=("lens", "attract"),
+        choices=_MODE_CHOICES,
         description="マスク近傍で座標変換をブレンドするか、境界へ吸着または反発させるか選ぶ。",
     ),
     "strength": ParamMeta(
@@ -55,12 +61,12 @@ warp_meta = {
     # lens
     "kind": ParamMeta(
         kind="choice",
-        choices=("scale", "rotate", "shear", "swirl"),
+        choices=_KIND_CHOICES,
         description="レンズモードでマスク領域へブレンドする座標変換の種類。",
     ),
     "profile": ParamMeta(
         kind="choice",
-        choices=("band", "ramp"),
+        choices=_PROFILE_CHOICES,
         description=(
             "距離幅が正のときに使うレンズ強度の形状。band は境界と遷移幅の"
             "両端で 0、中間で最大となり、ramp は境界から離れるほど増加する。"
@@ -110,7 +116,7 @@ warp_meta = {
     # attract
     "direction": ParamMeta(
         kind="choice",
-        choices=("attract", "repel"),
+        choices=_DIRECTION_CHOICES,
         description="頂点をマスク境界へ引き寄せるか、境界から遠ざけるか選ぶ。",
     ),
     "bias": ParamMeta(
@@ -135,24 +141,24 @@ warp_meta = {
 
 warp_ui_visible = {
     # lens
-    "kind": lambda v: str(v.get("mode", "lens")) == "lens",
-    "profile": lambda v: str(v.get("mode", "lens")) == "lens",
-    "band": lambda v: str(v.get("mode", "lens")) == "lens",
-    "inside_only": lambda v: str(v.get("mode", "lens")) == "lens",
-    "auto_center": lambda v: str(v.get("mode", "lens")) == "lens",
-    "pivot": lambda v: str(v.get("mode", "lens")) == "lens"
-    and not bool(v.get("auto_center", True)),
-    "scale": lambda v: str(v.get("mode", "lens")) == "lens"
-    and str(v.get("kind", "scale")) == "scale",
-    "angle": lambda v: str(v.get("mode", "lens")) == "lens"
-    and str(v.get("kind", "scale")) in {"rotate", "swirl"},
-    "shear": lambda v: str(v.get("mode", "lens")) == "lens"
-    and str(v.get("kind", "scale")) == "shear",
+    "kind": lambda v: v.get("mode", "lens") == "lens",
+    "profile": lambda v: v.get("mode", "lens") == "lens",
+    "band": lambda v: v.get("mode", "lens") == "lens",
+    "inside_only": lambda v: v.get("mode", "lens") == "lens",
+    "auto_center": lambda v: v.get("mode", "lens") == "lens",
+    "pivot": lambda v: v.get("mode", "lens") == "lens"
+    and v.get("auto_center", True) is False,
+    "scale": lambda v: v.get("mode", "lens") == "lens"
+    and v.get("kind", "scale") == "scale",
+    "angle": lambda v: v.get("mode", "lens") == "lens"
+    and v.get("kind", "scale") in {"rotate", "swirl"},
+    "shear": lambda v: v.get("mode", "lens") == "lens"
+    and v.get("kind", "scale") == "shear",
     # attract
-    "direction": lambda v: str(v.get("mode", "lens")) == "attract",
-    "bias": lambda v: str(v.get("mode", "lens")) == "attract",
-    "snap_band": lambda v: str(v.get("mode", "lens")) == "attract",
-    "falloff": lambda v: str(v.get("mode", "lens")) == "attract",
+    "direction": lambda v: v.get("mode", "lens") == "attract",
+    "bias": lambda v: v.get("mode", "lens") == "attract",
+    "snap_band": lambda v: v.get("mode", "lens") == "attract",
+    "falloff": lambda v: v.get("mode", "lens") == "attract",
 }
 
 
@@ -204,14 +210,18 @@ def _build_ring_edge_invariants(
 
 
 @njit(cache=True, parallel=True)
-def _evaluate_sdf_points_numba(
+def _evaluate_warp_sdf_points_numba(
     points_xy: np.ndarray,
     ring_vertices: np.ndarray,
     ring_offsets: np.ndarray,
     ring_mins: np.ndarray,
     ring_maxs: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """点列に対して signed distance と外向き法線（距離増加方向）を返す。"""
+    """warp の汎用 SDF と外向き法線を bit 安定な基準経路で返す。
+
+    attract は法線まで必要とし、lens の edge-invariant 高速経路は本 kernel の
+    distance と bit 単位で一致する。growth 固有の fastmath/bbox 省略は適用しない。
+    """
     n = int(points_xy.shape[0])
     n_rings = int(ring_offsets.shape[0]) - 1
 
@@ -559,14 +569,34 @@ def warp(
     tuple[np.ndarray, np.ndarray]
         変形後の実体ジオメトリ（coords, offsets）。
     """
+    mode_s = known_choice(mode, choices=_MODE_CHOICES, name="warp: mode")
+    kind_s = known_choice(kind, choices=_KIND_CHOICES, name="warp: kind")
+    profile_s = known_choice(
+        profile,
+        choices=_PROFILE_CHOICES,
+        name="warp: profile",
+    )
+    direction_s = known_choice(
+        direction,
+        choices=_DIRECTION_CHOICES,
+        name="warp: direction",
+    )
+    inside_only_b = exact_bool(inside_only, name="warp: inside_only")
+    auto_center_b = exact_bool(auto_center, name="warp: auto_center")
+    show_mask_b = exact_bool(show_mask, name="warp: show_mask")
+    keep_original_b = exact_bool(
+        keep_original,
+        name="warp: keep_original",
+    )
+
     base_coords, base_offsets = base
     mask_coords, mask_offsets = mask
 
     def _with_extras(result: GeomTuple) -> GeomTuple:
         out_geoms: list[GeomTuple] = [result]
-        if bool(keep_original) and result is not base:
+        if keep_original_b and result is not base:
             out_geoms.append(base)
-        if bool(show_mask):
+        if show_mask_b:
             out_geoms.append(mask)
         return (
             concat_geom_tuples(*out_geoms)
@@ -579,24 +609,12 @@ def warp(
     if mask_coords.shape[0] == 0:
         return _with_extras(base)
 
-    mode_s = str(mode)
-    if mode_s not in {"lens", "attract"}:
-        return _with_extras(base)
-
     strength_f = float(strength)
     if not math.isfinite(strength_f) or strength_f == 0.0:
         return _with_extras(base)
 
     # mode-specific params
     if mode_s == "lens":
-        kind_s = str(kind)
-        if kind_s not in {"scale", "rotate", "shear", "swirl"}:
-            return _with_extras(base)
-
-        profile_s = str(profile)
-        if profile_s not in {"band", "ramp"}:
-            return _with_extras(base)
-
         band_f = float(band)
         if not math.isfinite(band_f):
             return _with_extras(base)
@@ -613,9 +631,6 @@ def warp(
         if kind_s == "shear" and shx == 0.0 and shy == 0.0:
             return _with_extras(base)
     else:
-        direction_s = str(direction)
-        if direction_s not in {"attract", "repel"}:
-            return _with_extras(base)
         dir_sign = 1.0 if direction_s == "attract" else -1.0
 
         bias_f = float(bias)
@@ -663,7 +678,7 @@ def warp(
             segment_count=n_segments,
             edge_count=max(0, int(ring_vertices.shape[0]) - 1),
         ):
-            d, _, _ = _evaluate_sdf_points_numba(
+            d, _, _ = _evaluate_warp_sdf_points_numba(
                 base_xy,
                 ring_vertices,
                 ring_offsets,
@@ -688,7 +703,7 @@ def warp(
         mins = np.min(np.stack([r0.mins for r0 in rings], axis=0), axis=0)
         maxs = np.max(np.stack([r0.maxs for r0 in rings], axis=0), axis=0)
 
-        if bool(auto_center):
+        if auto_center_b:
             center2 = 0.5 * (mins + maxs)
         else:
             pivot3 = np.array(
@@ -698,12 +713,12 @@ def warp(
             center2 = pivot_xy.astype(np.float64, copy=False)
 
         if band_f <= 0.0:
-            if bool(inside_only):
+            if inside_only_b:
                 w = (d < 0.0).astype(np.float64)
             else:
                 w = np.ones_like(d, dtype=np.float64)
         else:
-            if bool(inside_only):
+            if inside_only_b:
                 t = (-d) / float(band_f)
             else:
                 t = np.abs(d) / float(band_f)
@@ -712,7 +727,7 @@ def warp(
                 w = s
             else:
                 w = 4.0 * s * (1.0 - s)
-            if bool(inside_only):
+            if inside_only_b:
                 w[~(d < 0.0)] = 0.0
 
         max_w = float(np.max(w)) if w.size else 0.0
@@ -762,7 +777,7 @@ def warp(
         return _with_extras((restored, base_offsets))
 
     # mode_s == "attract"
-    d, gx, gy = _evaluate_sdf_points_numba(
+    d, gx, gy = _evaluate_warp_sdf_points_numba(
         base_xy,
         ring_vertices,
         ring_offsets,

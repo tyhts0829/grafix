@@ -16,7 +16,7 @@
 
 - 公開 API を変更したらスタブを再生成し、スタブ同期テストを更新する。
   - 例: `python -m grafix stub`
-  - 例: `pytest -q tests/stubs/test_g_stub_sync.py`
+  - 例: `pytest -q tests/stubs/test_api_stub_sync.py`
 
 ## markers 実行例
 

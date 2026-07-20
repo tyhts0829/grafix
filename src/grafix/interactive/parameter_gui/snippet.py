@@ -5,7 +5,7 @@
 """Parameter GUI の状態から「コピペ可能な Python スニペット」を生成する。
 
 このモジュールは、UI（imgui など）の描画やイベント処理から切り離した **純粋関数** を提供する。
-入力は Parameter GUI が持つブロック表現（`GroupBlock` / `ParameterRow`）で、出力は
+入力は Parameter GUI が持つ不変 layout と indexed `ParameterRow` で、出力は
 `P.` / `G.` / `E.` などの呼び出しを組み立てた **Python コード断片（文字列）**。
 
 生成されるスニペットは「関数内へ貼る」用途を想定し、全行が `_CODE_INDENT` だけインデントされている。
@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import assert_never
 
 from grafix.core.operation_selector import (
     decode_selector_param_key,
@@ -44,7 +45,8 @@ from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
 from grafix.core.primitive_registry import primitive_registry
 
-from .group_blocks import GroupBlock
+from .group_blocks import GroupBlockLayout
+from .grouping import GroupType
 
 
 _CODE_INDENT = "    "
@@ -197,7 +199,7 @@ def _with_explicit_key(
 
     if explicit_key_by_site is None:
         return kwargs
-    group = (str(op), str(site_id))
+    group = (op, site_id)
     if group not in explicit_key_by_site:
         return kwargs
     explicit_key = explicit_key_by_site[group]
@@ -220,7 +222,7 @@ def _selector_kwargs(
     生成せず、手動で ``params_by_target`` を維持するための NOTE を返す。
     """
 
-    target_row = next((row for row in rows if str(row.arg) == "target"), None)
+    target_row = next((row for row in rows if row.arg == "target"), None)
     if target_row is None:
         return [], (
             "# NOTE: selector の target 行が無いため Copy Code を生成できません。"
@@ -293,30 +295,28 @@ def _selector_kwargs(
 
 
 def _selector_rows_for_site(
-    rows: Sequence[ParameterRow],
+    indexed_rows: Sequence[ParameterRow],
     *,
-    all_rows: Sequence[ParameterRow] | None,
     op: str,
     site_id: str,
 ) -> list[ParameterRow]:
     """selector site の非表示行を含む全 ParameterRow を返す。"""
 
-    if all_rows is None:
-        return list(rows)
     site_rows = [
         row
-        for row in all_rows
-        if str(row.op) == str(op) and str(row.site_id) == str(site_id)
+        for row in indexed_rows
+        if row.op == op and row.site_id == site_id
     ]
-    return site_rows if site_rows else list(rows)
+    if not site_rows:
+        raise AssertionError("layout が参照する selector site が model rows に存在しません")
+    return site_rows
 
 
 def snippet_for_block(
-    block: GroupBlock,
+    block: GroupBlockLayout,
+    indexed_rows: Sequence[ParameterRow],
     *,
-    all_rows: Sequence[ParameterRow] | None = None,
     last_effective_by_key: Mapping[ParameterKey, object] | None = None,
-    layer_style_name_by_site_id: Mapping[str, str] | None = None,
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
     raw_label_by_site: Mapping[tuple[str, str], str] | None = None,
     explicit_key_by_site: Mapping[tuple[str, str], str | int] | None = None,
@@ -326,14 +326,12 @@ def snippet_for_block(
     Parameters
     ----------
     block:
-        `GroupBlock`（連続する group を 1 つにまとめたもの）。
-    all_rows:
-        table model の全行。selector の ``ui_visible`` で非表示になった target 引数も
-        Copy Code へ復元する場合に渡す。
+        連続する group を表す不変 layout。
+    indexed_rows:
+        layout item の ``row_index`` が参照する table model の全行。selector の
+        ``ui_visible`` で非表示になった target 引数もここから復元する。
     last_effective_by_key:
         UI 値ではなく実効値で出したい場合の参照マップ。
-    layer_style_name_by_site_id:
-        将来用の引数（現在は未使用）。
     step_info_by_site:
         effect_chain の「並び順」を安定させるための補助情報。
         `((op, site_id) -> (chain_id, step_index))` を想定する。
@@ -356,17 +354,17 @@ def snippet_for_block(
     - 返り値は **末尾改行あり**（空文字を除く）。
     """
 
-    group_type = str(block.group_id[0])
-    rows = [it.row for it in block.items]
+    group_type = block.group_id[0]
+    rows = [indexed_rows[item.row_index] for item in block.items]
 
-    if group_type == "style":
+    if group_type is GroupType.STYLE:
         # Style は 1 ヘッダ内に「global + layer_style」が混ざるので、出力は中で分割する。
         style_rows = [r for r in rows if r.op == STYLE_OP]
         layer_rows = [r for r in rows if r.op == LAYER_STYLE_OP]
 
         # --- global style ---
         global_items: list[tuple[str, str]] = []
-        by_arg = {str(r.arg): r for r in style_rows}
+        by_arg = {r.arg: r for r in style_rows}
         if STYLE_BACKGROUND_COLOR in by_arg:
             # UI は 0-255 の RGB を持つので、スニペットでは 0-1 の浮動小数へ変換して貼れる形にする。
             bg255 = coerce_rgb255(
@@ -385,7 +383,7 @@ def snippet_for_block(
         # --- layer style (site_id ごと) ---
         layer_by_site: dict[str, list[ParameterRow]] = {}
         for r in layer_rows:
-            layer_by_site.setdefault(str(r.site_id), []).append(r)
+            layer_by_site.setdefault(r.site_id, []).append(r)
 
         style_output_lines: list[str] = []
 
@@ -401,16 +399,16 @@ def snippet_for_block(
             layer_raw_name = ""
             if raw_label_by_site is not None:
                 # layer_style は op が固定（LAYER_STYLE_OP）で、site_id ごとにラベルが付く。
-                raw_label = raw_label_by_site.get((LAYER_STYLE_OP, str(site_id)))
+                raw_label = raw_label_by_site.get((LAYER_STYLE_OP, site_id))
                 if raw_label is not None:
-                    layer_raw_name = str(raw_label).strip()
+                    layer_raw_name = raw_label.strip()
 
             if not layer_raw_name:
-                unnamed_layer_site_ids.append(str(site_id))
+                unnamed_layer_site_ids.append(site_id)
                 continue
 
             # 行は (arg の並び) が欲しいので明示で揃える。
-            by_arg2 = {str(r.arg): r for r in site_rows}
+            by_arg2 = {r.arg: r for r in site_rows}
 
             layer_items: list[tuple[str, str]] = []
             if LAYER_STYLE_LINE_COLOR in by_arg2:
@@ -459,22 +457,22 @@ def snippet_for_block(
             return ""
         return _indent_code("\n".join(style_output_lines).rstrip() + "\n")
 
-    if group_type == "preset":
+    if group_type is GroupType.PRESET:
         row0 = rows[0]
-        op = str(row0.op)
+        op = row0.op
         # preset は “表示名” と実装 op が一致しないケースがあるため、registry で表示名へ寄せる。
         call_name = preset_registry[op].display_op
         prefix = "P."
         if raw_label_by_site is not None:
-            raw_label = raw_label_by_site.get((op, str(row0.site_id)))
+            raw_label = raw_label_by_site.get((op, row0.site_id))
             if raw_label is not None:
-                raw_label_s = str(raw_label).strip()
-                if raw_label_s and raw_label_s != str(call_name):
+                raw_label_s = raw_label.strip()
+                if raw_label_s and raw_label_s != call_name:
                     prefix = f"P(name={_py_literal(raw_label_s)})."
         kwargs = _with_explicit_key(
             [
                 (
-                    str(r.arg),
+                    r.arg,
                     _py_literal(
                         _effective_or_ui_value(
                             r,
@@ -485,32 +483,31 @@ def snippet_for_block(
                 for r in rows
             ],
             op=op,
-            site_id=str(row0.site_id),
+            site_id=row0.site_id,
             explicit_key_by_site=explicit_key_by_site,
         )
         return _indent_code(_format_kwargs_call(prefix, op=call_name, kwargs=kwargs).rstrip() + "\n")
 
-    if group_type == "primitive":
+    if group_type is GroupType.PRIMITIVE:
         row0 = rows[0]
-        op = str(row0.op)
+        op = row0.op
         prefix = "G."
         if raw_label_by_site is not None:
-            raw_label = raw_label_by_site.get((op, str(row0.site_id)))
+            raw_label = raw_label_by_site.get((op, row0.site_id))
             if raw_label is not None:
-                raw_label_s = str(raw_label).strip()
+                raw_label_s = raw_label.strip()
                 if raw_label_s:
                     prefix = f"G(name={_py_literal(raw_label_s)})."
         if selector_kind(op) == "primitive":
             selector_rows = _selector_rows_for_site(
-                rows,
-                all_rows=all_rows,
+                indexed_rows,
                 op=op,
-                site_id=str(row0.site_id),
+                site_id=row0.site_id,
             )
             kwargs, note = _selector_kwargs(
                 selector_rows,
                 op=op,
-                site_id=str(row0.site_id),
+                site_id=row0.site_id,
                 last_effective_by_key=last_effective_by_key,
                 explicit_key_by_site=explicit_key_by_site,
             )
@@ -523,7 +520,7 @@ def snippet_for_block(
         kwargs = _with_explicit_key(
             [
                 (
-                    str(r.arg),
+                    r.arg,
                     _py_literal(
                         _effective_or_ui_value(
                             r,
@@ -534,22 +531,22 @@ def snippet_for_block(
                 for r in rows
             ],
             op=op,
-            site_id=str(row0.site_id),
+            site_id=row0.site_id,
             explicit_key_by_site=explicit_key_by_site,
         )
         return _indent_code(
             _format_kwargs_call(prefix, op=op, kwargs=kwargs).rstrip() + "\n"
         )
 
-    if group_type == "effect_chain":
+    if group_type is GroupType.EFFECT_CHAIN:
         prefix = "E."
         if raw_label_by_site is not None:
             # effect_chain は “チェーン全体” に対する名前として、最初に見つかったラベルを採用する。
             for r in rows:
-                raw_label = raw_label_by_site.get((str(r.op), str(r.site_id)))
+                raw_label = raw_label_by_site.get((r.op, r.site_id))
                 if raw_label is None:
                     continue
-                raw_label_s = str(raw_label).strip()
+                raw_label_s = raw_label.strip()
                 if not raw_label_s:
                     continue
                 prefix = f"E(name={_py_literal(raw_label_s)})."
@@ -560,11 +557,11 @@ def snippet_for_block(
             # step_info が無い場合でも決定的に並ぶよう、未指定は大きい index に寄せて末尾へ回す。
             step_index = 10**9
             if step_info_by_site is not None:
-                info = step_info_by_site.get((str(r.op), str(r.site_id)))
+                info = step_info_by_site.get((r.op, r.site_id))
                 if info is not None:
                     _cid, idx = info
-                    step_index = int(idx)
-            key = (int(step_index), str(r.op), str(r.site_id))
+                    step_index = idx
+            key = (step_index, r.op, r.site_id)
             steps.setdefault(key, []).append(r)
 
         if not steps:
@@ -576,8 +573,7 @@ def snippet_for_block(
         ):
             if selector_kind(op) == "effect":
                 selector_rows = _selector_rows_for_site(
-                    step_rows,
-                    all_rows=all_rows,
+                    indexed_rows,
                     op=op,
                     site_id=_site_id,
                 )
@@ -595,7 +591,7 @@ def snippet_for_block(
                 kwargs = _with_explicit_key(
                     [
                         (
-                            str(r.arg),
+                            r.arg,
                             _py_literal(
                                 _effective_or_ui_value(
                                     r,
@@ -626,21 +622,7 @@ def snippet_for_block(
 
         return _indent_code("\n".join(out_lines).rstrip() + "\n")
 
-    # fallback
-    if rows:
-        # 未知 group_type のときも “何かは貼れる” 形で返しておく（デバッグ・テスト用の最終手段）。
-        row0 = rows[0]
-        op = str(row0.op)
-        kwargs = [
-            (str(r.arg), _py_literal(_effective_or_ui_value(r, last_effective_by_key=last_effective_by_key)))
-            for r in rows
-        ]
-        return _indent_code(
-            ("dict(\n" + "\n".join(f"    {k}={v}," for k, v in kwargs) + "\n)")
-            .rstrip()
-            + "\n"
-        )
-    return ""
+    assert_never(group_type)
 
 
 __all__ = ["snippet_for_block"]

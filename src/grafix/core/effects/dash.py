@@ -10,6 +10,7 @@ from numba import njit  # type: ignore[attr-defined, import-untyped]
 from grafix.core.effect_registry import effect
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
+from .util import float_cycle
 
 dash_meta = {
     "dash_length": ParamMeta(
@@ -37,23 +38,6 @@ dash_meta = {
         description="ポリラインごとに開始位相へ加える一様乱数の最大振幅。",
     ),
 }
-
-
-def _as_float_cycle(value: float | Sequence[float]) -> tuple[float, ...]:
-    """float または float 列を「サイクル可能なタプル」に正規化する。"""
-    # `np.ndarray` は `collections.abc.Sequence` を満たさないため個別扱いする。
-    if isinstance(value, np.ndarray):
-        if value.ndim == 0:
-            return (float(value),)
-        if value.size <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(float(v) for v in value.ravel())
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        if len(value) <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(float(v) for v in value)
-    return (float(value),)
-
 
 @effect(meta=dash_meta)
 def dash(
@@ -101,8 +85,8 @@ def dash(
     if coords.shape[0] == 0:
         return coords, offsets
 
-    dash_seq = _as_float_cycle(dash_length)
-    gap_seq = _as_float_cycle(gap_length)
+    dash_seq = float_cycle(dash_length)
+    gap_seq = float_cycle(gap_length)
     dash_arr = np.asarray(dash_seq, dtype=np.float64)
     gap_arr = np.asarray(gap_seq, dtype=np.float64)
     if not np.all(np.isfinite(dash_arr)) or not np.all(np.isfinite(gap_arr)):
@@ -118,7 +102,7 @@ def dash(
             return coords, offsets
 
     # 線ごとの offset にランダム量を加える（決定的な RNG を使用、旧仕様）。
-    offset_seq = _as_float_cycle(offset)
+    offset_seq = float_cycle(offset)
     jitter_scale = float(offset_jitter)
     if not np.isfinite(jitter_scale) or jitter_scale <= 0.0:
         jitter_scale = 0.0

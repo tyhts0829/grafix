@@ -200,7 +200,7 @@ def store_snapshot_for_gui(
     return {
         key: value
         for key, value in snapshot.items()
-        if (str(key.op), str(key.site_id)) not in hide_groups
+        if (key.op, key.site_id) not in hide_groups
     }
 
 

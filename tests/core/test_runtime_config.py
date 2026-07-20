@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,6 +22,12 @@ def _reset_runtime_config() -> None:
 def _isolate_config_discovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
+
+
+@pytest.mark.parametrize("value", (0, 1.0, object()))
+def test_set_config_path_rejects_implicit_path_conversion(value: Any) -> None:
+    with pytest.raises(TypeError, match="str、Path、None"):
+        set_config_path(value)
 
 
 def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -281,6 +288,139 @@ def test_unknown_key_is_rejected_before_merge_with_nearest_candidate(
 
     assert "paths.output_dir" in str(exc_info.value)
     assert str(config_path) in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "error_match"),
+    [
+        ("paths:\n  font_dirs: ./fonts\n", "paths\\.font_dirs.*配列"),
+        ("paths:\n  font_dirs: [123]\n", "paths\\.font_dirs\\[0\\].*文字列"),
+        ('paths:\n  font_dirs: [""]\n', "paths\\.font_dirs\\[0\\].*空でない"),
+    ],
+)
+def test_path_lists_reject_non_list_or_non_string_values(
+    yaml_text: str,
+    error_match: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_text, encoding="utf-8")
+    set_config_path(config_path)
+
+    with pytest.raises(RuntimeError, match=error_match):
+        runtime_config()
+
+
+@pytest.mark.parametrize("yaml_value", ("1.0", '"1"', "true"))
+def test_schema_version_requires_an_integer_without_coercion(
+    yaml_value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f"version: {yaml_value}\n", encoding="utf-8")
+    set_config_path(config_path)
+
+    with pytest.raises(RuntimeError, match="config\\.yaml\\.version.*整数"):
+        runtime_config()
+
+
+@pytest.mark.parametrize("yaml_value", ("3.0", '"3"', "true"))
+def test_gcode_decimals_requires_an_integer_without_coercion(
+    yaml_value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"export:\n  gcode:\n    decimals: {yaml_value}\n",
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+
+    with pytest.raises(RuntimeError, match="export\\.gcode\\.decimals.*整数"):
+        runtime_config()
+
+
+@pytest.mark.parametrize("yaml_value", ("1", '"true"'))
+def test_gcode_boolean_requires_a_boolean_without_coercion(
+    yaml_value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"export:\n  gcode:\n    y_down: {yaml_value}\n",
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+
+    with pytest.raises(RuntimeError, match="export\\.gcode\\.y_down.*bool"):
+        runtime_config()
+
+
+@pytest.mark.parametrize("yaml_value", ('"8.0"', "true"))
+def test_float_config_requires_a_real_number_without_coercion(
+    yaml_value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"export:\n  png:\n    scale: {yaml_value}\n",
+        encoding="utf-8",
+    )
+    set_config_path(config_path)
+
+    with pytest.raises(RuntimeError, match="export\\.png\\.scale.*数値"):
+        runtime_config()
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "error_match"),
+    [
+        ("paths:\n  output_dir: 123\n", "paths\\.output_dir.*path 文字列"),
+        (
+            "ui:\n  parameter_gui:\n    fallback_font_japanese: 123\n",
+            "文字列または None",
+        ),
+        (
+            "ui:\n  parameter_gui:\n    shortcuts:\n      play_pause: 1\n",
+            "shortcuts\\.play_pause.*pyglet key名",
+        ),
+    ],
+)
+def test_path_string_and_shortcut_values_reject_implicit_string_conversion(
+    yaml_text: str,
+    error_match: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml_text, encoding="utf-8")
+    set_config_path(config_path)
+
+    with pytest.raises((RuntimeError, ValueError), match=error_match):
+        runtime_config()
+
+
+def test_integer_yaml_value_is_valid_for_a_real_config_field(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("export:\n  png:\n    scale: 8\n", encoding="utf-8")
+    set_config_path(config_path)
+
+    assert runtime_config().png_scale == 8.0
 
 
 def test_interactive_fallback_is_explicit_and_cached_for_all_consumers(

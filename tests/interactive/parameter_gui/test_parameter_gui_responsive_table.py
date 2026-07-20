@@ -32,7 +32,7 @@ class LayoutImGui:
         self.same_line_calls: list[tuple[float, float]] = []
         self.buttons: list[tuple[str, float]] = []
         self.checkboxes: list[str] = []
-        self.style_colors: list[tuple[int, tuple[float, float, float, float]]] = []
+        self.style_colors: list[tuple[int, tuple[float, ...]]] = []
 
     def table_set_column_index(self, index: int) -> None:
         assert index == 3
@@ -61,6 +61,15 @@ class LayoutImGui:
         self.style_colors.append((int(index), tuple(float(value) for value in color)))
 
     def pop_style_color(self, _count: int) -> None:
+        return None
+
+    def is_item_hovered(self) -> bool:
+        return False
+
+    def is_item_focused(self) -> bool:
+        return False
+
+    def set_tooltip(self, _text: str) -> None:
         return None
 
 
@@ -93,13 +102,18 @@ class _Popup:
 
 class SourceLayoutImGui:
     SELECTABLE_DISABLED = 8
+    COLOR_BUTTON = 0
+    COLOR_BUTTON_HOVERED = 1
+    COLOR_BUTTON_ACTIVE = 2
+    COLOR_TEXT = 3
+    STYLE_FRAME_PADDING = 4
 
     def __init__(
         self,
         *,
         clicked_ids: set[str] | None = None,
         click_reset: bool = False,
-        cell_width: float | None = None,
+        cell_width: float = 500.0,
         text_height: float = 14.0,
     ) -> None:
         self.clicked_ids = set(clicked_ids or set())
@@ -115,7 +129,7 @@ class SourceLayoutImGui:
     def table_set_column_index(self, index: int) -> None:
         assert index == 0
 
-    def get_content_region_available_width(self) -> float | None:
+    def get_content_region_available_width(self) -> float:
         return self.cell_width
 
     def calc_text_size(self, text: str) -> tuple[float, float]:
@@ -132,6 +146,30 @@ class SourceLayoutImGui:
         self.buttons.append((str(label), float(width)))
         widget_id = str(label).split("##", 1)[-1]
         return widget_id in self.clicked_ids
+
+    def push_style_color(self, *_args: object) -> None:
+        return None
+
+    def pop_style_color(self, _count: int = 1) -> None:
+        return None
+
+    def get_style(self) -> object:
+        return type("_Style", (), {"frame_padding": (4.0, 3.0)})()
+
+    def push_style_var(self, *_args: object) -> None:
+        return None
+
+    def pop_style_var(self, _count: int = 1) -> None:
+        return None
+
+    def is_item_hovered(self) -> bool:
+        return False
+
+    def is_item_focused(self) -> bool:
+        return False
+
+    def set_tooltip(self, _text: str) -> None:
+        return None
 
     def open_popup(self, _label: str) -> None:
         self.popup_open = True
@@ -150,6 +188,12 @@ class SourceLayoutImGui:
 
     def close_current_popup(self) -> None:
         self.popup_open = False
+
+    def text_disabled(self, _text: str) -> None:
+        return None
+
+    def separator(self) -> None:
+        return None
 
     def selectable(
         self,
@@ -204,13 +248,11 @@ def _render(
     *,
     last_source: ValueSource | None = None,
 ) -> None:
-    changed, cc_key, override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         imgui,
         row=row,
         rules=ui_rules_for_row(row),
         cc_key=row.cc_key,
-        override=row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=None,
         midi_last_cc_change=None,
@@ -218,7 +260,6 @@ def _render(
     )
     assert changed is False
     assert cc_key == row.cc_key
-    assert override is row.override
 
 
 def test_scalar_midi_is_the_only_control_in_the_right_cell() -> None:
@@ -299,18 +340,16 @@ def test_unassigned_midi_controls_use_one_consistent_component_series() -> None:
 
     rgb = LayoutImGui(cell_width=165.0)
     rgb_row = _row(kind="rgb", cc_key=None)
-    changed, cc_key, override = _render_cc_cell(
+    changed, cc_key = _render_cc_cell(
         rgb,
         row=rgb_row,
         rules=RowUiRules(minmax="none", cc_key="int3", show_override=True),
         cc_key=rgb_row.cc_key,
-        override=rgb_row.override,
-        cc_key_width=30,
         width_spacer=4,
         midi_learn_state=None,
         midi_last_cc_change=None,
     )
-    assert (changed, cc_key, override) == (False, None, True)
+    assert (changed, cc_key) == (False, None)
     assert [label.split("##", 1)[0] for label, _width in rgb.buttons] == [
         "R",
         "G",

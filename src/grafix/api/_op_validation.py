@@ -7,6 +7,7 @@ from difflib import get_close_matches
 from typing import Any
 
 from grafix.core.op_registry import OpSpec
+from grafix.core.parameters.validation import validate_parameter_value
 
 
 def _suggest(name: str, candidates: tuple[str, ...]) -> str:
@@ -41,6 +42,13 @@ def validate_operation_kwargs(
             f"{name!r}{_suggest(name, allowed)}" for name in unknown
         )
         raise TypeError(f"{spec.kind} {op!r} に不明な引数があります: {rendered}")
+
+    if "activate" in params:
+        validate_parameter_value(
+            params["activate"],
+            kind="bool",
+            choices=None,
+        )
 
     for name, value in params.items():
         meta = spec.meta.get(name)

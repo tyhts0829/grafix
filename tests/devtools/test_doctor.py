@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import Any, cast
+
+import pytest
 
 from grafix.devtools import doctor
 
@@ -91,3 +94,49 @@ def test_doctor_cli_json_uses_report_exit_status(monkeypatch, capsys) -> None:
             }
         ],
     }
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    (
+        ({"name": 1}, "name"),
+        ({"status": 1}, "status"),
+        ({"summary": None}, "summary"),
+        ({"details": ["detail"]}, "details"),
+        ({"details": (1,)}, r"details\[0\]"),
+    ),
+)
+def test_doctor_check_rejects_implicit_conversions(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    arguments: dict[str, object] = {
+        "name": "gl",
+        "status": "ok",
+        "summary": "available",
+    }
+    arguments.update(kwargs)
+
+    with pytest.raises(TypeError, match=match):
+        doctor.DoctorCheck(**cast(Any, arguments))
+
+
+def test_doctor_check_rejects_unknown_status() -> None:
+    with pytest.raises(ValueError, match="status"):
+        doctor.DoctorCheck(
+            name="gl",
+            status=cast(Any, "unknown"),
+            summary="available",
+        )
+
+
+@pytest.mark.parametrize(
+    "checks",
+    (
+        [],
+        (object(),),
+    ),
+)
+def test_doctor_report_requires_doctor_check_tuple(checks: object) -> None:
+    with pytest.raises(TypeError, match="checks"):
+        doctor.DoctorReport(checks=cast(Any, checks))

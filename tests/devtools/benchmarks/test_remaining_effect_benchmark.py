@@ -272,7 +272,8 @@ def test_foundational_effect_direct_cases_pass_frozen_contracts(
         for value in select_case_definitions(suites=("effects-remaining",))
         if value.case_id == case_id
     )
-    state = definition.setup(dict(definition.parameters), 20260719)
+    # frozen checksum は benchmark CLI の既定 seed=0 に対する契約。
+    state = definition.setup(dict(definition.parameters), 0)
     assert isinstance(state, RemainingEffectBenchmarkState)
     assert definition.measurement_context is not None
     assert definition.postprocess is not None
@@ -307,7 +308,8 @@ def test_remaining_effect_direct_cases_pass_frozen_hard_contracts(
         for value in select_case_definitions(suites=("effects-remaining",))
         if value.case_id == case_id
     )
-    state = definition.setup(dict(definition.parameters), 20260719)
+    # frozen checksum は benchmark CLI の既定 seed=0 に対する契約。
+    state = definition.setup(dict(definition.parameters), 0)
     assert isinstance(state, RemainingEffectBenchmarkState)
     assert definition.measurement_context is not None
     assert definition.postprocess is not None

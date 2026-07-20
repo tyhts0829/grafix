@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from grafix.api import E, G
+from grafix.core.effects.metaball import metaball as metaball_impl
 from grafix.core.operation_diagnostics import operation_diagnostic_context
 from grafix.core.preview_quality import preview_quality_context
 from grafix.core.primitive_registry import primitive
@@ -82,14 +83,28 @@ def test_metaball_does_not_connect_far_circles() -> None:
     np.testing.assert_allclose(realized.coords[:, 2], 0.0, rtol=0.0, atol=1e-4)
 
 
-def test_metaball_radius_zero_is_noop() -> None:
-    g = G.metaball_test_two_circles_near_xy()
-    base = realize(g)
-    out = E.metaball(radius=0.0, threshold=1.0, grid_pitch=0.5)(g)
-    realized = realize(out)
+def test_metaball_rejects_nonpositive_radius() -> None:
+    base = realize(G.metaball_test_two_circles_near_xy())
 
-    assert realized.offsets.tolist() == base.offsets.tolist()
-    np.testing.assert_allclose(realized.coords, base.coords, rtol=0.0, atol=1e-6)
+    with pytest.raises(ValueError, match="radius"):
+        metaball_impl(
+            (base.coords, base.offsets),
+            radius=0.0,
+            threshold=1.0,
+            grid_pitch=0.5,
+        )
+
+
+def test_metaball_rejects_nonpositive_threshold() -> None:
+    base = realize(G.metaball_test_two_circles_near_xy())
+
+    with pytest.raises(ValueError, match="threshold"):
+        metaball_impl(
+            (base.coords, base.offsets),
+            radius=3.0,
+            threshold=0.0,
+            grid_pitch=0.5,
+        )
 
 
 def test_metaball_nonplanar_is_noop() -> None:

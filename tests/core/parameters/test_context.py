@@ -98,6 +98,8 @@ def test_parameter_context_rolls_back_frame_observations_when_body_raises() -> N
                 key=key,
                 base=0.5,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                effective=0.5,
+                source="code",
                 explicit=False,
             )
             frame_params.set_label(

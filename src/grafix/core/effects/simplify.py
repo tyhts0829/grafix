@@ -10,10 +10,13 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
+
+from .argument_validation import known_choice
 from .util import RESAMPLE_CLOSED_DISTANCE_EPS
 
 _SCRATCH_BYTES_PER_VERTEX = 64
 _SCRATCH_BYTES_PER_LINE = 16
+_CLOSED_CHOICES = ("auto", "open", "closed")
 
 
 simplify_meta = {
@@ -25,7 +28,7 @@ simplify_meta = {
     ),
     "closed": ParamMeta(
         kind="choice",
-        choices=("auto", "open", "closed"),
+        choices=_CLOSED_CHOICES,
         description="開曲線、閉曲線、端点距離による自動判定から簡略化方式を選ぶ。",
     ),
 }
@@ -275,6 +278,11 @@ def simplify(
         簡略化後の実体ジオメトリ（coords, offsets）。
     """
 
+    closed_mode = known_choice(
+        closed,
+        choices=_CLOSED_CHOICES,
+        name="simplify: closed",
+    )
     coords, offsets = g
     tolerance_size = float(tolerance)
     if (
@@ -306,10 +314,6 @@ def simplify(
         scratch_bytes=scratch_bytes,
         hint="入力頂点数を減らすか、resample を先に適用してください",
     )
-
-    closed_mode = str(closed)
-    if closed_mode not in {"auto", "open", "closed"}:
-        closed_mode = "auto"
 
     tolerance_sq = tolerance_size * tolerance_size
     plans: list[_SimplifyLinePlan] = []

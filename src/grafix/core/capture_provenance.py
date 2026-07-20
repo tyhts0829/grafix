@@ -1,4 +1,4 @@
-"""capture manifest v2 に渡す再現情報を main process で固定する。"""
+"""capture manifest に渡す再現情報を main process で固定する。"""
 
 from __future__ import annotations
 
@@ -18,15 +18,22 @@ from grafix.core.parameters.codec import encode_param_store
 from grafix.core.parameters.runtime import LoadProvenance
 from grafix.core.parameters.store import ParamStore
 from grafix.core.runtime_config import RuntimeConfig
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string,
+    exact_string_choice,
+    finite_real,
+)
 
 _HASH_ALGORITHM = "sha256"
 _GIT_TIMEOUT_S = 2.0
 
 
 def _normalize_seed(seed: object, *, parameter_name: str) -> int | None:
-    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
-        raise TypeError(f"{parameter_name} は int または None である必要があります")
-    return seed
+    if seed is None:
+        return None
+    return exact_integer(seed, name=parameter_name)
 
 
 def _sha256(payload: bytes) -> str:
@@ -96,6 +103,20 @@ class SourceProvenance:
     hash_scope: Literal["validated_source_bytes", "file", "callable_source"] | None
     unavailable_reason: str | None = None
 
+    def __post_init__(self) -> None:
+        for name in ("module", "qualname", "sha256", "unavailable_reason"):
+            value = getattr(self, name)
+            if value is not None:
+                exact_string(value, name=name)
+        if self.path is not None and not isinstance(self.path, Path):
+            raise TypeError("path は Path または None である必要があります")
+        if self.hash_scope is not None:
+            exact_string_choice(
+                self.hash_scope,
+                name="hash_scope",
+                choices=("validated_source_bytes", "file", "callable_source"),
+            )
+
     @property
     def available(self) -> bool:
         return self.sha256 is not None
@@ -126,6 +147,17 @@ class GitProvenance:
     dirty: bool | None = None
     unavailable_reason: str | None = None
 
+    def __post_init__(self) -> None:
+        exact_bool(self.available, name="available")
+        if self.root is not None and not isinstance(self.root, Path):
+            raise TypeError("root は Path または None である必要があります")
+        for name in ("commit", "unavailable_reason"):
+            value = getattr(self, name)
+            if value is not None:
+                exact_string(value, name=name)
+        if self.dirty is not None:
+            exact_bool(self.dirty, name="dirty")
+
     def as_dict(self) -> dict[str, object]:
         return {
             "available": self.available,
@@ -143,6 +175,12 @@ class ConfigProvenance:
     path: Path | None
     effective_json: str
     sha256: str
+
+    def __post_init__(self) -> None:
+        if self.path is not None and not isinstance(self.path, Path):
+            raise TypeError("path は Path または None である必要があります")
+        exact_string(self.effective_json, name="effective_json")
+        exact_string(self.sha256, name="sha256")
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> ConfigProvenance:
@@ -177,6 +215,31 @@ class SessionProvenance:
     parameter_load_provenance: LoadProvenance
     seed: int | None
 
+    def __post_init__(self) -> None:
+        exact_string(self.grafix_version, name="grafix_version")
+        if not isinstance(self.source, SourceProvenance):
+            raise TypeError("source は SourceProvenance である必要があります")
+        if not isinstance(self.git, GitProvenance):
+            raise TypeError("git は GitProvenance である必要があります")
+        if not isinstance(self.config, ConfigProvenance):
+            raise TypeError("config は ConfigProvenance である必要があります")
+        exact_string(self.parameter_source, name="parameter_source")
+        if self.parameter_store_path is not None and not isinstance(
+            self.parameter_store_path,
+            Path,
+        ):
+            raise TypeError("parameter_store_path は Path または None である必要があります")
+        exact_string_choice(
+            self.parameter_load_provenance,
+            name="parameter_load_provenance",
+            choices=("primary", "session_recovery", "quarantined"),
+        )
+        object.__setattr__(
+            self,
+            "seed",
+            _normalize_seed(self.seed, parameter_name="seed"),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ParameterSnapshotProvenance:
@@ -185,6 +248,19 @@ class ParameterSnapshotProvenance:
     revision: int
     entry_count: int
     sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "revision",
+            exact_integer(self.revision, name="revision", minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "entry_count",
+            exact_integer(self.entry_count, name="entry_count", minimum=0),
+        )
+        exact_string(self.sha256, name="sha256")
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +273,37 @@ class FrameProvenance:
     origin: Literal["headless", "interactive"]
     parameters: ParameterSnapshotProvenance
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "t", finite_real(self.t, name="t"))
+        if self.frame_index is not None:
+            object.__setattr__(
+                self,
+                "frame_index",
+                exact_integer(self.frame_index, name="frame_index", minimum=0),
+            )
+        object.__setattr__(
+            self,
+            "quality",
+            exact_string_choice(
+                self.quality,
+                name="quality",
+                choices=("draft", "final"),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "origin",
+            exact_string_choice(
+                self.origin,
+                name="origin",
+                choices=("headless", "interactive"),
+            ),
+        )
+        if not isinstance(self.parameters, ParameterSnapshotProvenance):
+            raise TypeError(
+                "parameters は ParameterSnapshotProvenance である必要があります"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class CaptureProvenance:
@@ -204,6 +311,12 @@ class CaptureProvenance:
 
     session: SessionProvenance
     frame: FrameProvenance
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.session, SessionProvenance):
+            raise TypeError("session は SessionProvenance である必要があります")
+        if not isinstance(self.frame, FrameProvenance):
+            raise TypeError("frame は FrameProvenance である必要があります")
 
     def manifest_sections(self) -> dict[str, object]:
         session = self.session
@@ -396,7 +509,7 @@ def _parameter_snapshot(store: ParamStore) -> ParameterSnapshotProvenance:
     }
     text = _canonical_json(payload)
     return ParameterSnapshotProvenance(
-        revision=int(store.revision),
+        revision=store.revision,
         entry_count=len(effective_entries),
         sha256=_sha256(text.encode("utf-8")),
     )
@@ -415,6 +528,26 @@ class CaptureProvenanceBuilder:
         parameter_load_provenance: LoadProvenance,
         seed: int | None = None,
     ) -> None:
+        if not callable(draw):
+            raise TypeError("draw は callable である必要があります")
+        if not isinstance(config, RuntimeConfig):
+            raise TypeError("config は RuntimeConfig である必要があります")
+        if type(parameter_source) is str:
+            parameter_source_text = exact_string(
+                parameter_source,
+                name="parameter_source",
+            )
+        elif isinstance(parameter_source, Path):
+            parameter_source_text = str(parameter_source)
+        else:
+            raise TypeError("parameter_source は str または Path である必要があります")
+        if parameter_store_path is not None and not isinstance(
+            parameter_store_path,
+            Path,
+        ):
+            raise TypeError(
+                "parameter_store_path は Path または None である必要があります"
+            )
         seed = _normalize_seed(seed, parameter_name="seed")
         source = _snapshot_source(draw)
         self._session = SessionProvenance(
@@ -422,10 +555,8 @@ class CaptureProvenanceBuilder:
             source=source,
             git=_snapshot_git(source.path),
             config=ConfigProvenance.from_config(config),
-            parameter_source=str(parameter_source),
-            parameter_store_path=(
-                None if parameter_store_path is None else Path(parameter_store_path)
-            ),
+            parameter_source=parameter_source_text,
+            parameter_store_path=parameter_store_path,
             parameter_load_provenance=parameter_load_provenance,
             seed=seed,
         )
@@ -445,8 +576,8 @@ class CaptureProvenanceBuilder:
         self, store: ParamStore
     ) -> ParameterSnapshotProvenance:
         runtime = store._runtime_ref()
-        store_revision = int(store.revision)
-        effective_revision = int(runtime.effective_revision)
+        store_revision = store.revision
+        effective_revision = runtime.effective_revision
         cached = self._parameter_cache_snapshot
         if (
             cached is not None
@@ -480,6 +611,10 @@ class CaptureProvenanceBuilder:
         source/Git/config の再探索や乱数 global state の変更は行わない。
         """
 
+        if not isinstance(store, ParamStore):
+            raise TypeError("store は ParamStore である必要があります")
+        if provenance_seed == "session" and type(provenance_seed) is not str:
+            raise TypeError("provenance_seed は int、None、または 'session' である必要があります")
         session = self._session
         if provenance_seed != "session":
             session = replace(
@@ -493,57 +628,13 @@ class CaptureProvenanceBuilder:
         return CaptureProvenance(
             session=session,
             frame=FrameProvenance(
-                t=float(t),
-                frame_index=None if frame_index is None else int(frame_index),
+                t=t,
+                frame_index=frame_index,
                 quality=quality,
                 origin=origin,
                 parameters=self._parameter_snapshot_for_store(store),
             ),
         )
-
-
-def unavailable_capture_provenance(*, t: float) -> CaptureProvenance:
-    """旧/internal caller用に、欠落理由を明示した provenance を返す。"""
-
-    empty_json = _canonical_json({})
-    session = SessionProvenance(
-        grafix_version=_grafix_version(),
-        source=SourceProvenance(
-            module=None,
-            qualname=None,
-            path=None,
-            sha256=None,
-            hash_scope=None,
-            unavailable_reason="frame did not provide source provenance",
-        ),
-        git=GitProvenance(
-            available=False,
-            unavailable_reason="frame did not provide Git provenance",
-        ),
-        config=ConfigProvenance(
-            path=None,
-            effective_json=empty_json,
-            sha256=_sha256(empty_json.encode("utf-8")),
-        ),
-        parameter_source="unavailable",
-        parameter_store_path=None,
-        parameter_load_provenance="primary",
-        seed=None,
-    )
-    return CaptureProvenance(
-        session=session,
-        frame=FrameProvenance(
-            t=float(t),
-            frame_index=None,
-            quality="final",
-            origin="headless",
-            parameters=ParameterSnapshotProvenance(
-                revision=0,
-                entry_count=0,
-                sha256=_sha256(_canonical_json([]).encode("utf-8")),
-            ),
-        ),
-    )
 
 
 __all__ = [
@@ -555,5 +646,4 @@ __all__ = [
     "ParameterSnapshotProvenance",
     "SessionProvenance",
     "SourceProvenance",
-    "unavailable_capture_provenance",
 ]

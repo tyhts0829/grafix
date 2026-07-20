@@ -16,10 +16,8 @@ from typing import TextIO
 import numpy as np
 
 from grafix.core.atomic_write import atomic_text_writer
+from grafix.core.gcode_params import GCodeParams
 from grafix.core.pipeline import RealizedLayer
-from grafix.core.runtime_config import runtime_config
-
-_DEFAULT_PAPER_MARGIN_MM = 2.0
 
 # --- 実装全体の前提（概要）---
 #
@@ -37,61 +35,6 @@ _DEFAULT_PAPER_MARGIN_MM = 2.0
 # - 数値は常に固定小数フォーマット（_fmt_float）
 # - bed 検証は「実際に出力する値（丸め後）」に対して行う（_quantize_xy→_validate_bed_xy）
 # - 並び替えの距離比較は量子化（整数）し、タイブレーク規則を固定する（_order_strokes_in_layer）
-
-
-@dataclass(frozen=True, slots=True)
-class GCodeParams:
-    """G-code 生成パラメータ。
-
-    Parameters
-    ----------
-    travel_feed : float
-        ペンアップ移動のフィードレート [mm/min]。
-    draw_feed : float
-        ペンダウン描画のフィードレート [mm/min]。
-    z_up : float
-        ペンアップ時の Z 高さ [mm]。
-    z_down : float
-        ペンダウン時の Z 高さ [mm]。
-    y_down : bool
-        True の場合、Y 反転を行う。
-    origin : tuple[float, float]
-        出力座標の原点オフセット [mm]（X, Y）。
-    decimals : int
-        数値出力の小数点以下の桁数。
-    paper_margin_mm : float
-        紙（canvas）の外周安全マージン [mm]。
-    bed_x_range : tuple[float, float] or None
-        3D プリンタのベッド X 範囲 [mm]。None で無効。
-    bed_y_range : tuple[float, float] or None
-        3D プリンタのベッド Y 範囲 [mm]。None で無効。
-    bridge_draw_distance : float or None
-        ストローク間の移動距離がこの値より小さければ、ペンアップを省略して描画で繋ぐ。
-        None の場合は無効。
-    optimize_travel : bool
-        True の場合、レイヤ内でストローク順を並び替えてペンアップ移動距離を小さくする。
-    allow_reverse : bool
-        `optimize_travel=True` の場合、ストロークの逆向き描画を許可する。
-    canvas_height_mm : float or None
-        `y_down=True` 時の厳密反転に使うキャンバス高さ [mm]。
-        None の場合、`export_gcode(canvas_size=...)` の高さを使う。
-    """
-
-    travel_feed: float = 3000.0
-    draw_feed: float = 3000.0
-    z_up: float = 3.0
-    z_down: float = -1.0
-    y_down: bool = True
-    origin: tuple[float, float] = (154.019, 14.195)
-    # origin: tuple[float, float] = (91.0, -0.75)
-    decimals: int = 3
-    paper_margin_mm: float = _DEFAULT_PAPER_MARGIN_MM
-    bed_x_range: tuple[float, float] | None = None
-    bed_y_range: tuple[float, float] | None = None
-    bridge_draw_distance: float | None = 0.5
-    optimize_travel: bool = True
-    allow_reverse: bool = True
-    canvas_height_mm: float | None = None
 
 
 def _fmt_float(value: float, *, decimals: int) -> str:
@@ -650,28 +593,6 @@ _GCODE_HEADER = (
 )
 
 
-def _params_from_config() -> GCodeParams:
-    """runtime config から G-code parameter を構築する。"""
-
-    cfg = runtime_config().gcode
-    return GCodeParams(
-        travel_feed=float(cfg.travel_feed),
-        draw_feed=float(cfg.draw_feed),
-        z_up=float(cfg.z_up),
-        z_down=float(cfg.z_down),
-        y_down=bool(cfg.y_down),
-        origin=(float(cfg.origin[0]), float(cfg.origin[1])),
-        decimals=int(cfg.decimals),
-        paper_margin_mm=float(cfg.paper_margin_mm),
-        bed_x_range=cfg.bed_x_range,
-        bed_y_range=cfg.bed_y_range,
-        bridge_draw_distance=cfg.bridge_draw_distance,
-        optimize_travel=bool(cfg.optimize_travel),
-        allow_reverse=bool(cfg.allow_reverse),
-        canvas_height_mm=cfg.canvas_height_mm,
-    )
-
-
 def _validated_canvas(canvas_size: tuple[float, float]) -> tuple[float, float]:
     """正の有限 canvas size を float tuple として返す。"""
 
@@ -872,7 +793,7 @@ def export_gcode(
     path: str | Path,
     *,
     canvas_size: tuple[float, float],
-    params: GCodeParams | None = None,
+    params: GCodeParams,
 ) -> Path:
     """Layer 列を決定的な G-code として保存する。
 
@@ -884,8 +805,8 @@ def export_gcode(
         出力先パス。
     canvas_size : tuple[float, float]
         紙サイズ（mm）として扱うキャンバス寸法 ``(width, height)``。
-    params : GCodeParams or None
-        出力パラメータ。None の場合は runtime config を使う。
+    params : GCodeParams
+        session/config 境界で確定した出力パラメータ。
 
     Returns
     -------
@@ -894,21 +815,20 @@ def export_gcode(
     """
 
     destination = Path(path)
-    resolved = params if params is not None else _params_from_config()
     canvas = _validated_canvas(canvas_size)
     safe_rect = _paper_safe_rect(
         canvas,
-        paper_margin_mm=float(resolved.paper_margin_mm),
+        paper_margin_mm=float(params.paper_margin_mm),
     )
-    bridge_distance = resolved.bridge_draw_distance
+    bridge_distance = params.bridge_draw_distance
     if bridge_distance is not None and float(bridge_distance) < 0.0:
         raise ValueError("bridge_draw_distance は 0 以上である必要がある")
 
-    scale = 10 ** int(resolved.decimals)
-    travel_feed = int(round(float(resolved.travel_feed)))
-    draw_feed = int(round(float(resolved.draw_feed)))
+    scale = 10 ** int(params.decimals)
+    travel_feed = int(round(float(params.travel_feed)))
+    draw_feed = int(round(float(params.draw_feed)))
     with atomic_text_writer(destination, newline="\n") as stream:
-        emitter = _GCodeEmitter(stream=stream, params=resolved, canvas=canvas)
+        emitter = _GCodeEmitter(stream=stream, params=params, canvas=canvas)
 
         for layer_index, layer in enumerate(layers):
             emitter.write_line(f"; layer {layer_index} start")
@@ -919,8 +839,8 @@ def export_gcode(
             )
             ordered_blocks = _order_stroke_blocks(
                 strokes_by_block,
-                optimize_travel=bool(resolved.optimize_travel),
-                allow_reverse=bool(resolved.allow_reverse),
+                optimize_travel=bool(params.optimize_travel),
+                allow_reverse=bool(params.allow_reverse),
             )
             for block_index, ordered in enumerate(ordered_blocks):
                 emitter.write_line(f"; face_block {block_index} start")

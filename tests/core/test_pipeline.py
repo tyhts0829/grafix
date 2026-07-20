@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
+import pytest
 
 from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer, LayerStyleDefaults
@@ -55,6 +58,35 @@ def test_realize_scene_reuses_explicit_session_between_frames() -> None:
     assert second[0].cache_key == first[0].cache_key
 
 
+@pytest.mark.parametrize(
+    ("changes", "error"),
+    [
+        ({"layer": object()}, TypeError),
+        ({"realized": object()}, TypeError),
+        ({"cache_key": []}, TypeError),
+        ({"cache_key": ("other", (0, 0))}, ValueError),
+        ({"cache_key": ("placeholder", (True, 0))}, TypeError),
+        ({"color": [0.0, 0.0, 0.0]}, TypeError),
+        ({"thickness": "0.1"}, TypeError),
+    ],
+)
+def test_realized_layer_validates_direct_construction(
+    changes: dict[str, object],
+    error: type[Exception],
+) -> None:
+    geometry = Geometry.create("polygon", params={"n_sides": 3})
+    valid = realize_scene(
+        lambda _t: geometry,
+        t=0.0,
+        defaults=LayerStyleDefaults(
+            color=(0.0, 0.0, 0.0),
+            thickness=0.01,
+        ),
+    )[0]
+    with pytest.raises(error):
+        replace(valid, **changes)
+
+
 def test_realize_scene_observes_and_applies_layer_style_overrides() -> None:
     g = Geometry.create("polygon", params={"n_sides": 3})
 
@@ -87,6 +119,11 @@ def test_realize_scene_observes_and_applies_layer_style_overrides() -> None:
 
     assert realized_layers[0].thickness == 0.123
     assert realized_layers[0].color == (1.0, 0.0, 0.0)
+    runtime = store._runtime_ref()
+    assert runtime.last_effective_by_key[key_thickness] == 0.123
+    assert runtime.last_source_by_key[key_thickness] == "ui"
+    assert runtime.last_effective_by_key[key_color] == (255, 0, 0)
+    assert runtime.last_source_by_key[key_color] == "ui"
 
 
 def test_realize_scene_records_layer_style_without_param_store() -> None:
@@ -103,12 +140,15 @@ def test_realize_scene_records_layer_style_without_param_store() -> None:
     assert realized_layers[0].thickness == 0.05
     assert realized_layers[0].color == (0.1, 0.2, 0.3)
 
-    assert layer_style_key("layer:1", LAYER_STYLE_LINE_THICKNESS) in {
-        rec.key for rec in frame_params.records
-    }
-    assert layer_style_key("layer:1", LAYER_STYLE_LINE_COLOR) in {
-        rec.key for rec in frame_params.records
-    }
+    records_by_key = {record.key: record for record in frame_params.records}
+    thickness_record = records_by_key[
+        layer_style_key("layer:1", LAYER_STYLE_LINE_THICKNESS)
+    ]
+    color_record = records_by_key[layer_style_key("layer:1", LAYER_STYLE_LINE_COLOR)]
+    assert thickness_record.effective == 0.05
+    assert thickness_record.source == "code"
+    assert color_record.effective == (26, 51, 76)
+    assert color_record.source == "code"
     assert any(
         (rec.op, rec.site_id, rec.label) == (LAYER_STYLE_OP, "layer:1", "bg")
         for rec in frame_params.labels

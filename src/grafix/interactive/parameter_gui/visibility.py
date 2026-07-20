@@ -45,13 +45,13 @@ def active_mask_for_rows(
     # ルールは “同一呼び出し 1 回” の値にだけ依存する想定。
     values_by_group: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
-        group = (str(row.op), str(row.site_id))
+        group = (row.op, row.site_id)
         v = values_by_group.get(group)
         if v is None:
             v = {}
             values_by_group[group] = v
-        key = ParameterKey(op=str(row.op), site_id=str(row.site_id), arg=str(row.arg))
-        v[str(row.arg)] = (
+        key = ParameterKey(op=row.op, site_id=row.site_id, arg=row.arg)
+        v[row.arg] = (
             row.ui_value if effective is None else effective.get(key, row.ui_value)
         )
 
@@ -91,10 +91,10 @@ def active_mask_for_rows(
 
     mask: list[bool] = []
     for row in rows:
-        op = str(row.op)
-        arg = str(row.arg)
+        op = row.op
+        arg = row.arg
 
-        group = (str(row.op), str(row.site_id))
+        group = (row.op, row.site_id)
         if group in disabled_groups:
             mask.append(arg == "activate")
             continue

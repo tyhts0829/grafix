@@ -269,6 +269,30 @@ def test_schema_rejects_duplicate_case_ids() -> None:
         benchmark_run_from_dict(payload)
 
 
+def test_schema_rejects_duplicate_metric_names_across_phases() -> None:
+    run = _run()
+    metric = run.cases[0].metrics[0]
+    duplicate = replace(metric, phase="settle")
+    payload = json.loads(
+        json.dumps(
+            benchmark_run_to_dict(
+                replace(
+                    run,
+                    cases=(
+                        replace(
+                            run.cases[0],
+                            metrics=(metric, duplicate),
+                        ),
+                    ),
+                )
+            )
+        )
+    )
+
+    with pytest.raises(BenchmarkSchemaError, match="duplicate metric name"):
+        benchmark_run_from_dict(payload)
+
+
 def test_schema_rejects_invalid_typed_metric_and_contract_result() -> None:
     run = _run()
     metric = run.cases[0].metrics[0]

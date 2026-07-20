@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from grafix.core.parameters.view import ParameterRow
 
-from .grouping import group_info_for_row
+from .grouping import GroupId, group_info_for_row
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,28 +24,10 @@ class GroupBlockLayoutItem:
 class GroupBlockLayout:
     """row の動的値を持たない、不変な group 描画構造。"""
 
-    group_id: tuple[str, object]
+    group_id: GroupId
     header_id: str
     header: str | None
     items: tuple[GroupBlockLayoutItem, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class GroupBlockItem:
-    """グループ内の 1 行ぶんの描画情報。"""
-
-    row: ParameterRow
-    visible_label: str
-
-
-@dataclass(frozen=True, slots=True)
-class GroupBlock:
-    """連続する group（Style/Primitive/Effect chain）を 1 ブロックとして表す。"""
-
-    group_id: tuple[str, object]
-    header_id: str
-    header: str | None
-    items: list[GroupBlockItem]
 
 
 def group_layout_from_rows(
@@ -61,7 +43,7 @@ def group_layout_from_rows(
 
     out: list[GroupBlockLayout] = []
 
-    current_group_id: tuple[str, object] | None = None
+    current_group_id: GroupId | None = None
     current_header_id: str | None = None
     current_header: str | None = None
     current_items: list[GroupBlockLayoutItem] = []
@@ -111,29 +93,6 @@ def group_layout_from_rows(
     return tuple(out)
 
 
-def group_blocks_from_layout(
-    rows: Sequence[ParameterRow],
-    layout: Sequence[GroupBlockLayout],
-) -> list[GroupBlock]:
-    """静的 layout と現在値の rows を従来の block 表現へ合成する。"""
-
-    return [
-        GroupBlock(
-            group_id=block.group_id,
-            header_id=block.header_id,
-            header=block.header,
-            items=[
-                GroupBlockItem(
-                    row=rows[item.row_index],
-                    visible_label=item.visible_label,
-                )
-                for item in block.items
-            ],
-        )
-        for block in layout
-    ]
-
-
 def visible_group_layout(
     layout: Sequence[GroupBlockLayout],
     visible_mask: Sequence[bool],
@@ -179,36 +138,9 @@ def visible_group_layout(
     return tuple(out)
 
 
-def group_blocks_from_rows(
-    rows: list[ParameterRow],
-    *,
-    primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
-    layer_style_name_by_site_id: Mapping[str, str] | None = None,
-    effect_chain_header_by_id: Mapping[str, str] | None = None,
-    step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
-    effect_step_ordinal_by_site: Mapping[tuple[str, str], int] | None = None,
-) -> list[GroupBlock]:
-    """rows を “連続する group_id” ごとのブロックへ分割して返す。"""
-
-    layout = group_layout_from_rows(
-        rows,
-        primitive_header_by_group=primitive_header_by_group,
-        layer_style_name_by_site_id=layer_style_name_by_site_id,
-        effect_chain_header_by_id=effect_chain_header_by_id,
-        step_info_by_site=step_info_by_site,
-        effect_step_ordinal_by_site=effect_step_ordinal_by_site,
-    )
-    out = group_blocks_from_layout(rows, layout)
-    return out
-
-
 __all__ = [
-    "GroupBlock",
-    "GroupBlockItem",
     "GroupBlockLayout",
     "GroupBlockLayoutItem",
-    "group_blocks_from_layout",
-    "group_blocks_from_rows",
     "group_layout_from_rows",
     "visible_group_layout",
 ]

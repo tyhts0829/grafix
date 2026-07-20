@@ -8,7 +8,6 @@ import os
 import re
 import shutil
 import tempfile
-from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from html import escape
@@ -20,9 +19,47 @@ from grafix.core.parameters.memento import restore_param_store_memento
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.variations import Variation, list_variations
 from grafix.core.preview_quality import preview_quality_context
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string,
+    exact_string_choice,
+    finite_real,
+    positive_integer_pair,
+)
 from grafix.export.capture import CaptureService
 
 VariationRenderStatus = Literal["success", "failed"]
+
+
+def _path(value: object, *, name: str) -> Path:
+    """暗黙 Path 化を行わず Path instance を返す。"""
+
+    if not isinstance(value, Path):
+        raise TypeError(f"{name} は Path である必要があります")
+    return value
+
+
+def _optional_path(value: object, *, name: str) -> Path | None:
+    """None または Path instance だけを受ける。"""
+
+    return None if value is None else _path(value, name=name)
+
+
+def _path_input(value: object, *, name: str) -> Path:
+    """公開 path 入力の宣言型である exact str または Path だけを受ける。"""
+
+    if type(value) is str:
+        return Path(value)
+    if isinstance(value, Path):
+        return value
+    raise TypeError(f"{name} は str または Path である必要があります")
+
+
+def _optional_exact_string(value: object, *, name: str) -> str | None:
+    """None または exact str だけを受ける。"""
+
+    return None if value is None else exact_string(value, name=name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +81,7 @@ class _BatchDirectory:
     staged: bool
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class VariationRenderResult:
     """1 named variation の capture 結果。"""
 
@@ -58,29 +95,46 @@ class VariationRenderResult:
     error_message: str | None = None
 
     def __post_init__(self) -> None:
-        name = str(self.variation_name).strip()
-        if not name:
-            raise ValueError("variation_name は空にできません")
-        if self.seed is not None and (
-            isinstance(self.seed, bool) or not isinstance(self.seed, int)
-        ):
-            raise TypeError("seed は int または None である必要があります")
-        render_t = float(self.t)
-        if not math.isfinite(render_t):
-            raise ValueError("t は有限値である必要があります")
-        if self.status not in {"success", "failed"}:
-            raise ValueError(f"未対応の variation render status: {self.status!r}")
-        if self.status == "success" and self.thumbnail_path is None:
+        name = exact_string(self.variation_name, name="variation_name")
+        if not name.strip():
+            raise ValueError("variation_name は空白だけの名前にできません")
+        seed = (
+            None
+            if self.seed is None
+            else exact_integer(self.seed, name="seed")
+        )
+        render_t = finite_real(self.t, name="t")
+        status = exact_string_choice(
+            self.status,
+            name="status",
+            choices=("success", "failed"),
+        )
+        thumbnail_path = _optional_path(
+            self.thumbnail_path,
+            name="thumbnail_path",
+        )
+        manifest_path = _optional_path(
+            self.manifest_path,
+            name="manifest_path",
+        )
+        error_type = _optional_exact_string(self.error_type, name="error_type")
+        error_message = _optional_exact_string(
+            self.error_message,
+            name="error_message",
+        )
+        if status == "success" and thumbnail_path is None:
             raise ValueError("success result には thumbnail_path が必要です")
-        if self.status == "failed" and self.error_type is None:
+        if status == "failed" and error_type is None:
             raise ValueError("failed result には error_type が必要です")
 
         object.__setattr__(self, "variation_name", name)
+        object.__setattr__(self, "seed", seed)
         object.__setattr__(self, "t", render_t)
-        if self.thumbnail_path is not None:
-            object.__setattr__(self, "thumbnail_path", Path(self.thumbnail_path))
-        if self.manifest_path is not None:
-            object.__setattr__(self, "manifest_path", Path(self.manifest_path))
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "thumbnail_path", thumbnail_path)
+        object.__setattr__(self, "manifest_path", manifest_path)
+        object.__setattr__(self, "error_type", error_type)
+        object.__setattr__(self, "error_message", error_message)
 
     @property
     def succeeded(self) -> bool:
@@ -103,7 +157,7 @@ class VariationRenderResult:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class VariationBatchResult:
     """Named variation batch 全体の immutable summary。"""
 
@@ -113,10 +167,15 @@ class VariationBatchResult:
     summary_path: Path
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "output_directory", Path(self.output_directory))
-        object.__setattr__(self, "items", tuple(self.items))
-        object.__setattr__(self, "contact_sheet_path", Path(self.contact_sheet_path))
-        object.__setattr__(self, "summary_path", Path(self.summary_path))
+        if type(self.items) is not tuple or not all(
+            isinstance(item, VariationRenderResult) for item in self.items
+        ):
+            raise TypeError(
+                "items は VariationRenderResult の tuple である必要があります"
+            )
+        _path(self.output_directory, name="output_directory")
+        _path(self.contact_sheet_path, name="contact_sheet_path")
+        _path(self.summary_path, name="summary_path")
 
     @property
     def success_count(self) -> int:
@@ -158,9 +217,9 @@ def render_variation_batch(
     session: RenderSession,
     output_root: str | Path,
     *,
-    variation_names: Sequence[str] | None = None,
+    variation_names: tuple[str, ...] | None = None,
     default_t: float = 0.0,
-    thumbnail_format: ExportFormat | str = ExportFormat.PNG,
+    thumbnail_format: ExportFormat = ExportFormat.PNG,
     thumbnail_size: tuple[int, int] = (320, 320),
     columns: int | None = None,
     batch_name: str = "variations",
@@ -175,11 +234,11 @@ def render_variation_batch(
         named variations を持つ ``ParamStore`` と render cache を所有する session。
     output_root : str or Path
         batch directory を作る親 directory。
-    variation_names : Sequence[str] or None, optional
+    variation_names : tuple[str, ...] or None, optional
         描画順。None は保存順の全 variation。未知名は partial failure として残す。
     default_t : float, optional
         variation に ``t`` が無い場合の評価時刻。
-    thumbnail_format : {"png", "svg"} or ExportFormat, optional
+    thumbnail_format : ExportFormat, optional
         CaptureService へ渡す thumbnail 形式。
     thumbnail_size : tuple[int, int], optional
         PNG thumbnail の出力解像度と、contact sheet 上の表示サイズ。
@@ -207,27 +266,31 @@ def render_variation_batch(
     revision/runtime/UI state/named variations を含む呼び出し前の状態へ戻す。
     """
 
-    store = getattr(session, "param_store", None)
+    store = session.param_store
     if not isinstance(store, ParamStore):
         raise TypeError("session.param_store は ParamStore である必要があります")
-    render_t = float(default_t)
-    if not math.isfinite(render_t):
-        raise ValueError("default_t は有限値である必要があります")
+    output_root_path = _path_input(output_root, name="output_root")
+    overwrite = exact_bool(overwrite, name="overwrite")
+    render_t = finite_real(default_t, name="default_t")
     image_size = _positive_size(thumbnail_size)
-    if columns is not None and (
-        isinstance(columns, bool) or not isinstance(columns, int) or columns <= 0
-    ):
-        raise ValueError("columns は正の整数または None である必要があります")
-    column_count = columns
-    image_format = _thumbnail_format(thumbnail_format)
+    column_count = (
+        None
+        if columns is None
+        else exact_integer(columns, name="columns", minimum=1)
+    )
+    if not isinstance(thumbnail_format, ExportFormat):
+        raise TypeError("thumbnail_format は ExportFormat である必要があります")
+    image_format = thumbnail_format
+    if image_format not in {ExportFormat.PNG, ExportFormat.SVG}:
+        raise ValueError("thumbnail_format は PNG または SVG である必要があります")
     requests = _variation_requests(store, variation_names)
     if not requests:
         raise ValueError("render 対象の named variation がありません")
 
     batch_directory = _prepare_batch_directory(
-        Path(output_root),
+        output_root_path,
         batch_name=batch_name,
-        overwrite=bool(overwrite),
+        overwrite=overwrite,
     )
     try:
         output_directory = batch_directory.working
@@ -250,7 +313,7 @@ def render_variation_batch(
                     )
                     continue
 
-                item_t = render_t if variation.t is None else float(variation.t)
+                item_t = render_t if variation.t is None else variation.t
                 try:
                     restore_param_store_memento(store, variation.parameter_snapshot)
                     with preview_quality_context("final"):
@@ -373,50 +436,28 @@ def _restore_exact_param_store(
     vars(store).update(restored)
 
 
-def _thumbnail_format(value: ExportFormat | str) -> ExportFormat:
-    if isinstance(value, ExportFormat):
-        output = value
-    else:
-        try:
-            output = ExportFormat(str(value).strip().casefold().lstrip("."))
-        except ValueError as exc:
-            raise ValueError(f"未対応の thumbnail_format: {value!r}") from exc
-    if output not in {ExportFormat.PNG, ExportFormat.SVG}:
-        raise ValueError("thumbnail_format は 'png' または 'svg' である必要があります")
-    return output
-
-
 def _positive_size(value: tuple[int, int]) -> tuple[int, int]:
-    try:
-        width, height = value
-    except (TypeError, ValueError) as exc:
-        raise ValueError("thumbnail_size は (width, height) で指定してください") from exc
-    if (
-        isinstance(width, bool)
-        or isinstance(height, bool)
-        or not isinstance(width, int)
-        or not isinstance(height, int)
-        or width <= 0
-        or height <= 0
-    ):
-        raise ValueError("thumbnail_size は正の整数ペアである必要があります")
-    return int(width), int(height)
+    if type(value) is not tuple:
+        raise TypeError("thumbnail_size は2要素の tuple である必要があります")
+    return positive_integer_pair(value, name="thumbnail_size")
 
 
 def _variation_requests(
     store: ParamStore,
-    names: Sequence[str] | None,
+    names: tuple[str, ...] | None,
 ) -> tuple[tuple[str, Variation | None], ...]:
     variations = list_variations(store)
     if names is None:
         return tuple((variation.name, variation) for variation in variations)
+    if type(names) is not tuple:
+        raise TypeError("variation_names は文字列の tuple で指定してください")
     by_name = {variation.name: variation for variation in variations}
     requests: list[tuple[str, Variation | None]] = []
     for name in names:
-        normalized = str(name).strip()
-        if not normalized:
-            raise ValueError("variation_names に空文字は指定できません")
-        requests.append((normalized, by_name.get(normalized)))
+        name = exact_string(name, name="variation_names の各要素")
+        if not name.strip():
+            raise ValueError("variation_names に空白だけの名前は指定できません")
+        requests.append((name, by_name.get(name)))
     return tuple(requests)
 
 
@@ -426,11 +467,11 @@ def _prepare_batch_directory(
     batch_name: str,
     overwrite: bool,
 ) -> _BatchDirectory:
+    name = exact_string(batch_name, name="batch_name")
+    if not name.strip() or name in {".", ".."} or Path(name).name != name:
+        raise ValueError("batch_name は path separator を含まない名前で指定してください")
     root = output_root.expanduser()
     root.mkdir(parents=True, exist_ok=True)
-    name = str(batch_name).strip()
-    if not name or name in {".", ".."} or Path(name).name != name:
-        raise ValueError("batch_name は path separator を含まない名前で指定してください")
     base = root / name
     if overwrite:
         if os.path.lexists(base) and (base.is_symlink() or not base.is_dir()):
@@ -510,11 +551,6 @@ def _relocate_capture_manifests(
             raise ValueError(f"capture manifest が object ではありません: {manifest}")
         old_path = str(artifact)
         new_path = str(public_artifact)
-        artifact_paths = payload.get("artifact_paths")
-        if isinstance(artifact_paths, list):
-            payload["artifact_paths"] = [
-                new_path if value == old_path else value for value in artifact_paths
-            ]
         output = payload.get("output")
         if isinstance(output, dict):
             output_paths = output.get("artifact_paths")
@@ -561,7 +597,8 @@ def _publish_batch_directory(batch: _BatchDirectory) -> None:
 
 
 def _filename_slug(value: str) -> str:
-    slug = re.sub(r"[^\w.-]+", "_", str(value), flags=re.UNICODE).strip("_.-")
+    value = exact_string(value, name="variation name")
+    slug = re.sub(r"[^\w.-]+", "_", value, flags=re.UNICODE).strip("_.-")
     return (slug or "variation")[:64].rstrip("_.-") or "variation"
 
 
@@ -572,17 +609,21 @@ def _thumbnail_name(
 ) -> str:
     seed = "none" if variation.seed is None else str(variation.seed)
     return (
-        f"{int(index):03d}_{_filename_slug(variation.name)}_seed-{seed}"
+        f"{index:03d}_{_filename_slug(variation.name)}_seed-{seed}"
         f"{image_format.suffix}"
     )
 
 
 def _summary_path(path: Path | None, relative_to: Path | None) -> str | None:
-    if path is None:
+    canonical_path = _optional_path(path, name="path")
+    canonical_relative_to = _optional_path(relative_to, name="relative_to")
+    if canonical_path is None:
         return None
-    if relative_to is None:
-        return str(path)
-    return Path(os.path.relpath(path, relative_to)).as_posix()
+    if canonical_relative_to is None:
+        return str(canonical_path)
+    return Path(
+        os.path.relpath(canonical_path, canonical_relative_to)
+    ).as_posix()
 
 
 def _contact_sheet_svg(
@@ -596,7 +637,7 @@ def _contact_sheet_svg(
     column_count = (
         min(4, max(1, math.ceil(math.sqrt(count))))
         if columns is None
-        else min(int(columns), count)
+        else min(columns, count)
     )
     row_count = math.ceil(count / column_count)
     thumb_w, thumb_h = thumbnail_size
@@ -669,7 +710,7 @@ def _publish_text(path: Path, text: str, *, overwrite: bool) -> None:
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(str(text))
+            stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
         if overwrite:

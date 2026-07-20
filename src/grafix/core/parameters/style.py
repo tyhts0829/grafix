@@ -33,7 +33,7 @@ def line_width_for_short_side(
 def style_key(arg: str) -> ParameterKey:
     """Style 用の ParameterKey を返す。"""
 
-    return ParameterKey(op=STYLE_OP, site_id=STYLE_SITE_ID, arg=str(arg))
+    return ParameterKey(op=STYLE_OP, site_id=STYLE_SITE_ID, arg=arg)
 
 
 def coerce_rgb255(value: object) -> tuple[int, int, int]:

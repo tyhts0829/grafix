@@ -8,17 +8,19 @@ from numba import njit  # type: ignore[attr-defined, import-untyped]
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
+
+from .argument_validation import known_choice
 from .util import (
     RESAMPLE_CLOSED_DISTANCE_EPS,
     ResamplePlan,
     build_gaussian_kernel,
+    reflect_index,
     resample_polylines,
 )
 
-# `closed=auto` の近接判定しきい値（距離）。単位は入力座標系に従う（通常は mm）。
-CLOSED_DISTANCE_EPS = RESAMPLE_CLOSED_DISTANCE_EPS
 MAX_TOTAL_VERTICES = 10_000_000
 MAX_KERNEL_RADIUS = 2048
+_CLOSED_CHOICES = ("auto", "open", "closed")
 
 lowpass_meta = {
     "step": ParamMeta(
@@ -35,25 +37,10 @@ lowpass_meta = {
     ),
     "closed": ParamMeta(
         kind="choice",
-        choices=("auto", "open", "closed"),
+        choices=_CLOSED_CHOICES,
         description="端点の平滑境界条件を開曲線、閉曲線、端点距離による自動判定から選ぶ。",
     ),
 }
-
-
-@njit(cache=True, fastmath=True)  # type: ignore[misc]
-def _reflect_index(i: int, n: int) -> int:
-    j = int(i)
-    nn = int(n)
-    if nn <= 1:
-        return 0
-    while j < 0 or j >= nn:
-        if j < 0:
-            j = -j
-        elif j >= nn:
-            j = 2 * nn - 2 - j
-    return int(j)
-
 
 @njit(cache=True, fastmath=True, inline="always")  # type: ignore[misc]
 def _smooth_reflect_line_into_nb(
@@ -79,7 +66,7 @@ def _smooth_reflect_line_into_nb(
         ay = 0.0
         az = 0.0
         for k in range(-r, r + 1):
-            j = _reflect_index(i + k, n)
+            j = reflect_index(i + k, n)
             w = float(kernel[k + r])
             ax += w * float(source[j, 0])
             ay += w * float(source[j, 1])
@@ -166,13 +153,18 @@ def lowpass(
         ガウス平滑半径。大きいほど強く丸まる（`sigma/step` が実効的な強さ）。
     closed : str, default "auto"
         境界条件。`"open"` は反射、`"closed"` は周期。
-        `"auto"` は端点距離が `CLOSED_DISTANCE_EPS` 以下なら `"closed"` 扱い。
+        `"auto"` は端点距離が共通の再サンプルしきい値以下なら `"closed"` 扱い。
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         平滑化後の実体ジオメトリ（coords, offsets）。
     """
+    closed_mode = known_choice(
+        closed,
+        choices=_CLOSED_CHOICES,
+        name="lowpass: closed",
+    )
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
@@ -183,10 +175,6 @@ def lowpass(
         return coords, offsets
     if step_size <= 0.0 or sigma_size <= 0.0:
         return coords, offsets
-
-    closed_mode = str(closed)
-    if closed_mode not in {"auto", "open", "closed"}:
-        closed_mode = "auto"
 
     sigma_in_samples = sigma_size / step_size
     if not np.isfinite(sigma_in_samples) or sigma_in_samples <= 0.0:
@@ -202,7 +190,7 @@ def lowpass(
         step=step_size,
         closed=closed_mode,
         max_vertices=MAX_TOTAL_VERTICES,
-        closed_distance=CLOSED_DISTANCE_EPS,
+        closed_distance=RESAMPLE_CLOSED_DISTANCE_EPS,
     )
     if not plan.fits:
         return coords, offsets
@@ -222,7 +210,6 @@ def lowpass(
 
 
 __all__ = [
-    "CLOSED_DISTANCE_EPS",
     "lowpass",
     "lowpass_meta",
 ]

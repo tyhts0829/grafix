@@ -8,9 +8,9 @@
 Layer の見た目（線幅・線色）も、他のパラメータと同様に ParamStore のキー体系で扱うための薄い層。
 `observe_and_apply_layer_style()` は以下をまとめて行う:
 
-- 観測: `FrameParamsBuffer` がある場合、Layer style の `FrameParamRecord` を積む
+- 適用: GUI 側で `override=True` のときだけ、UI 値を描画値へ反映する
+- 観測: 最終値とその source を含む `FrameParamRecord` を `FrameParamsBuffer` へ積む
 - ラベル: `Layer.name` を (op, site_id) の group ラベルとして保存する（可能なら store へ、無ければ buffer へ）
-- 適用: GUI 側で `override=True` のときだけ、UI 値を描画値へ反映して返す
 
 I/O と型
 --------
@@ -26,6 +26,7 @@ from .context import current_frame_params, current_param_store
 from .key import ParameterKey
 from .labels_ops import set_label
 from .meta import ParamMeta
+from .source import ValueSource
 from .style import coerce_rgb255, rgb01_to_rgb255, rgb255_to_rgb01
 
 # Layer style を ParamStore 上で group 化するための op 名。
@@ -63,7 +64,7 @@ def layer_style_key(layer_site_id: str, arg: str) -> ParameterKey:
     - `arg`: group 内のパラメータ名（例: `line_thickness`, `line_color`）
     """
 
-    return ParameterKey(op=LAYER_STYLE_OP, site_id=str(layer_site_id), arg=str(arg))
+    return ParameterKey(op=LAYER_STYLE_OP, site_id=layer_site_id, arg=arg)
 
 
 def layer_style_records(
@@ -71,6 +72,10 @@ def layer_style_records(
     layer_site_id: str,
     base_line_thickness: float,
     base_line_color_rgb01: tuple[float, float, float],
+    effective_line_thickness: float,
+    effective_line_color_rgb01: tuple[float, float, float],
+    line_thickness_source: ValueSource,
+    line_color_source: ValueSource,
     explicit_line_thickness: bool,
     explicit_line_color: bool,
 ) -> list[FrameParamRecord]:
@@ -80,6 +85,8 @@ def layer_style_records(
     -----
     - `FrameParamRecord.base` は「ストア/GUI 側の表現」に合わせる。
       そのため `base_line_color_rgb01`（0..1 float）は `RGB255`（0..255 int）へ変換して保持する。
+    - `effective_*` は override 適用後の最終値、`*_source` はその由来を表す。
+      color の effective も runtime 観測では `RGB255` に揃える。
     - `explicit_*` は「コード側が値を明示指定したか」を表すフラグで、
       初期 `override` の方針（コード優先/GUI 優先）に使われる。
     """
@@ -92,13 +99,17 @@ def layer_style_records(
             key=thickness_key,
             base=float(base_line_thickness),
             meta=LAYER_STYLE_THICKNESS_META,
-            explicit=bool(explicit_line_thickness),
+            effective=float(effective_line_thickness),
+            source=line_thickness_source,
+            explicit=explicit_line_thickness,
         ),
         FrameParamRecord(
             key=color_key,
             base=rgb01_to_rgb255(base_line_color_rgb01),
             meta=LAYER_STYLE_COLOR_META,
-            explicit=bool(explicit_line_color),
+            effective=rgb01_to_rgb255(effective_line_color_rgb01),
+            source=line_color_source,
+            explicit=explicit_line_color,
         ),
     ]
 
@@ -149,42 +160,49 @@ def observe_and_apply_layer_style(
     color = base_line_color_rgb01
 
     frame_params = current_frame_params()
-    if frame_params is not None:
-        # store が無いコンテキスト（worker 等）でも「観測した事実」自体は残したいので、
-        # FrameParamsBuffer があれば records を積む。
-        frame_params.records.extend(
-            layer_style_records(
-                layer_site_id=layer_site_id,
-                base_line_thickness=thickness,
-                base_line_color_rgb01=color,
-                explicit_line_thickness=explicit_line_thickness,
-                explicit_line_color=explicit_line_color,
-            )
-        )
-
+    store = current_param_store()
     if layer_name is not None:
         # (op, site_id) のラベルは GUI のヘッダ表示に使う。
         # store があるなら即時に反映し、無い場合は buffer に積んで呼び出し側へ返す。
-        store = current_param_store()
         if store is not None:
             set_label(store, op=LAYER_STYLE_OP, site_id=layer_site_id, label=layer_name)
         elif frame_params is not None:
             frame_params.set_label(op=LAYER_STYLE_OP, site_id=layer_site_id, label=layer_name)
 
-    store = current_param_store()
-    if store is None:
-        # GUI/永続化の文脈が無いなら base をそのまま返す。
-        return thickness, color
+    thickness_source: ValueSource = "code"
+    color_source: ValueSource = "code"
+    if store is not None:
+        # override=True のときだけ UI 値を採用する（override=False は base を優先）。
+        thickness_state = store.get_state(
+            layer_style_key(layer_site_id, LAYER_STYLE_LINE_THICKNESS)
+        )
+        if thickness_state is not None and thickness_state.override:
+            thickness = float(thickness_state.ui_value)
+            thickness_source = "ui"
 
-    # override=True のときだけ UI 値を採用する（override=False は base を優先）。
-    thickness_state = store.get_state(layer_style_key(layer_site_id, LAYER_STYLE_LINE_THICKNESS))
-    if thickness_state is not None and thickness_state.override:
-        thickness = float(thickness_state.ui_value)
+        color_state = store.get_state(
+            layer_style_key(layer_site_id, LAYER_STYLE_LINE_COLOR)
+        )
+        if color_state is not None and color_state.override:
+            # UI 側の値は list 等で来る可能性があるので、RGB255 タプルへ正規化してから 0..1 に戻す。
+            rgb255 = coerce_rgb255(color_state.ui_value)
+            color = rgb255_to_rgb01(rgb255)
+            color_source = "ui"
 
-    color_state = store.get_state(layer_style_key(layer_site_id, LAYER_STYLE_LINE_COLOR))
-    if color_state is not None and color_state.override:
-        # UI 側の値は list 等で来る可能性があるので、RGB255 タプルへ正規化してから 0..1 に戻す。
-        rgb255 = coerce_rgb255(color_state.ui_value)
-        color = rgb255_to_rgb01(rgb255)
+    if frame_params is not None:
+        # store が無い worker でも、最終 effective/source を含む同じ観測形を残す。
+        frame_params.records.extend(
+            layer_style_records(
+                layer_site_id=layer_site_id,
+                base_line_thickness=base_line_thickness,
+                base_line_color_rgb01=base_line_color_rgb01,
+                effective_line_thickness=thickness,
+                effective_line_color_rgb01=color,
+                line_thickness_source=thickness_source,
+                line_color_source=color_source,
+                explicit_line_thickness=explicit_line_thickness,
+                explicit_line_color=explicit_line_color,
+            )
+        )
 
     return thickness, color

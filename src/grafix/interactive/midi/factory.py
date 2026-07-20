@@ -24,8 +24,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
+
+from grafix.core.value_validation import (
+    exact_string,
+    exact_string_choice,
+)
 
 from .midi_controller import MidiController
 
@@ -39,7 +43,7 @@ def create_midi_controller(
     mode: str,
     profile_name: str,
     save_dir: Path | None = None,
-    priority_inputs: Sequence[tuple[str, str]] = (),
+    priority_inputs: tuple[tuple[str, str], ...] = (),
 ) -> MidiController | None:
     """設定値に従って `MidiController` を生成する。
 
@@ -58,7 +62,8 @@ def create_midi_controller(
 
         - 先頭から順に「存在するポート + 指定 mode」で接続を試す。
         - 候補の `port_name` に `"auto"` を含めると「先頭ポート + その mode」を強制できる。
-        - どれも接続できなければ従来の挙動（先頭ポートへ接続）に fallback する。
+        - 候補が指定され、どれも利用できなければ MIDI は無効になる。
+        - 候補を指定しない通常の ``"auto"`` は先頭ポートを使う。
 
     Returns
     -------
@@ -75,6 +80,41 @@ def create_midi_controller(
     `MidiController` の生成時に、入力ポートの open と CC スナップショットの load が行われる。
     """
 
+    mode_value = exact_string_choice(
+        mode,
+        name="mode",
+        choices=("7bit", "14bit"),
+    )
+    profile = exact_string(profile_name, name="profile_name")
+    if not profile:
+        raise ValueError("profile_name は空にできません")
+    if save_dir is not None and not isinstance(save_dir, Path):
+        raise TypeError("save_dir は Path または None である必要があります")
+    if type(priority_inputs) is not tuple:
+        raise TypeError(
+            "priority_inputs は (port_name, mode) の tuple である必要があります"
+        )
+    priorities: list[tuple[str, str]] = []
+    for index, candidate in enumerate(priority_inputs):
+        if type(candidate) is not tuple or len(candidate) != 2:
+            raise TypeError(
+                f"priority_inputs[{index}] は (port_name, mode) tuple である必要があります"
+            )
+        candidate_port = exact_string(
+            candidate[0],
+            name=f"priority_inputs[{index}].port_name",
+        )
+        if not candidate_port:
+            raise ValueError(
+                f"priority_inputs[{index}].port_name は空にできません"
+            )
+        candidate_mode = exact_string_choice(
+            candidate[1],
+            name=f"priority_inputs[{index}].mode",
+            choices=("7bit", "14bit"),
+        )
+        priorities.append((candidate_port, candidate_mode))
+
     if port_name is None:
         # ユーザーが明示的に MIDI を無効化したケース。
         return None
@@ -88,31 +128,37 @@ def create_midi_controller(
 
         # 以降で何度も参照するので一度 list 化して固定する。
         names = list(mido.get_input_names())  # type: ignore
-        for candidate_port_name, candidate_mode in priority_inputs:
-            # 設定値は外部入力なので、軽く正規化（空文字は無視）して扱う。
-            port_s = str(candidate_port_name).strip()
-            mode_s = str(candidate_mode).strip()
-            if not port_s or not mode_s:
-                continue
-            if port_s == _AUTO_MIDI_PORT:
+        for candidate_port_name, candidate_mode in priorities:
+            if candidate_port_name == _AUTO_MIDI_PORT:
                 # "auto" を候補に含めることで「先頭ポートを、この mode で使う」を表現できる。
                 if not names:
                     continue
                 return MidiController(
-                    names[0], mode=mode_s, profile_name=profile_name, save_dir=save_dir
+                    names[0],
+                    mode=candidate_mode,
+                    profile_name=profile,
+                    save_dir=save_dir,
                 )
-            if port_s in names:
+            if candidate_port_name in names:
                 return MidiController(
-                    port_s, mode=mode_s, profile_name=profile_name, save_dir=save_dir
+                    candidate_port_name,
+                    mode=candidate_mode,
+                    profile_name=profile,
+                    save_dir=save_dir,
                 )
 
-        if not names:
+        if priorities or not names:
             return None
-        # priority_inputs で決まらなければ、従来の auto 挙動（先頭ポート）にフォールバックする。
         return MidiController(
-            names[0], mode=mode, profile_name=profile_name, save_dir=save_dir
+            names[0],
+            mode=mode_value,
+            profile_name=profile,
+            save_dir=save_dir,
         )
 
+    explicit_port = exact_string(port_name, name="port_name")
+    if not explicit_port:
+        raise ValueError("port_name は空にできません")
     # 明示指定のときは mido が必要。
     # （未導入なら `MidiController` 側で ImportError になるが、ここで意図の分かるエラーメッセージにする）
     try:
@@ -121,4 +167,9 @@ def create_midi_controller(
         raise RuntimeError(
             "midi_port_name を指定するには mido が必要です（pip で導入してください）。"
         ) from exc
-    return MidiController(port_name, mode=mode, profile_name=profile_name, save_dir=save_dir)
+    return MidiController(
+        explicit_port,
+        mode=mode_value,
+        profile_name=profile,
+        save_dir=save_dir,
+    )

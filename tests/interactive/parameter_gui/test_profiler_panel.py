@@ -12,9 +12,9 @@ class _Imgui:
     def __init__(self) -> None:
         self.lines: list[str] = []
 
-    def collapsing_header(self, label: str) -> bool:
+    def collapsing_header(self, label: str) -> tuple[bool, None]:
         self.lines.append(label)
-        return True
+        return True, None
 
     def text(self, value: object) -> None:
         self.lines.append(str(value))

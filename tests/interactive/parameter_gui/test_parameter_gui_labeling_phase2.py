@@ -2,7 +2,6 @@ from grafix.api import E, G
 from grafix.interactive.parameter_gui.labeling import (
     effect_chain_header_display_names_from_snapshot,
     effect_step_ordinals_by_site,
-    format_param_row_label,
 )
 from grafix.core.effect_registry import effect_registry
 from grafix.core.parameters import ParamStore, ParameterKey, parameter_context
@@ -55,17 +54,9 @@ def test_effect_chain_header_and_step_ordinals():
 
     key_scale0 = ParameterKey(op="scale", site_id=scale0_site, arg="auto_center")
     assert key_scale0 in snap
-    assert (
-        format_param_row_label("scale", step_ordinals[("scale", scale0_site)], "auto_center")
-        == "scale#1 auto_center"
-    )
 
     key_scale1 = ParameterKey(op="scale", site_id=scale1_site, arg="auto_center")
     assert key_scale1 in snap
-    assert (
-        format_param_row_label("scale", step_ordinals[("scale", scale1_site)], "auto_center")
-        == "scale#2 auto_center"
-    )
     assert_invariants(store)
 
 

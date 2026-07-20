@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from difflib import get_close_matches
-from operator import index
-from typing import Any, Literal, SupportsIndex, TypeAlias, cast
+from typing import Any, Literal, TypeAlias
 from weakref import WeakKeyDictionary
 
 from .builtins import (
@@ -16,8 +15,10 @@ from .builtins import (
 from .effect_registry import EffectFunc
 from .op_registry import OpRegistry, OpSpec
 from .parameters.meta import ParamMeta
+from .parameters.identity import identity_string
 from .primitive_registry import PrimitiveFunc
 from .realized_geometry import RealizedGeometry
+from .value_validation import exact_integer
 
 import grafix.core.effect_registry as effect_registry_module
 import grafix.core.primitive_registry as primitive_registry_module
@@ -59,17 +60,11 @@ _SELECTOR_CACHE: WeakKeyDictionary[
 def validate_effect_selector_n_inputs(n_inputs: object) -> int:
     """effect selector の arity を厳密な正整数として返す。"""
 
-    if isinstance(n_inputs, bool):
-        raise TypeError("effect selector の n_inputs は int である必要があります")
-    try:
-        count = int(index(cast(SupportsIndex, n_inputs)))
-    except TypeError:
-        raise TypeError(
-            "effect selector の n_inputs は int である必要があります"
-        ) from None
-    if count < 1:
-        raise ValueError("effect selector の n_inputs は 1 以上である必要があります")
-    return count
+    return exact_integer(
+        n_inputs,
+        name="effect selector の n_inputs",
+        minimum=1,
+    )
 
 
 def effect_selector_op(n_inputs: int) -> str:
@@ -82,7 +77,7 @@ def effect_selector_op(n_inputs: int) -> str:
 def selector_kind(op: str) -> SelectorKind | None:
     """private selector op の種別を返す。通常 operation なら None。"""
 
-    op_s = str(op)
+    op_s = identity_string(op, name="selector op")
     if op_s == PRIMITIVE_SELECTOR_OP:
         return "primitive"
     if op_s.startswith(_EFFECT_SELECTOR_PREFIX):
@@ -95,7 +90,7 @@ def selector_kind(op: str) -> SelectorKind | None:
 def selector_effect_n_inputs(op: str) -> int | None:
     """private effect selector op から arity を返す。"""
 
-    op_s = str(op)
+    op_s = identity_string(op, name="selector op")
     if not op_s.startswith(_EFFECT_SELECTOR_PREFIX):
         return None
     suffix = op_s.removeprefix(_EFFECT_SELECTOR_PREFIX)
@@ -107,14 +102,15 @@ def selector_effect_n_inputs(op: str) -> int | None:
 def selector_param_key(target: str, arg: str) -> str:
     """target/arg を衝突しない ParameterKey.arg へ符号化する。"""
 
-    target_s = str(target)
-    return f"{_TARGET_PARAM_PREFIX}{len(target_s)}:{target_s}{str(arg)}"
+    target_s = identity_string(target, name="selector target")
+    arg_s = identity_string(arg, name="selector argument")
+    return f"{_TARGET_PARAM_PREFIX}{len(target_s)}:{target_s}{arg_s}"
 
 
 def decode_selector_param_key(arg: str) -> tuple[str, str] | None:
     """selector parameter key を ``(target, original_arg)`` へ戻す。"""
 
-    text = str(arg)
+    text = identity_string(arg, name="selector argument")
     if not text.startswith(_TARGET_PARAM_PREFIX):
         return None
     colon = text.find(":", 1)
@@ -135,26 +131,14 @@ def decode_selector_param_key(arg: str) -> tuple[str, str] | None:
     return target, original_arg
 
 
-def selector_display_arg(op: str, arg: str) -> str:
-    """GUI/Help/snippet 用に selector の内部 arg 名を公開名へ戻す。"""
-
-    if selector_kind(op) is None:
-        return str(arg)
-    decoded = decode_selector_param_key(arg)
-    if decoded is None:
-        return str(arg)
-    _target, original_arg = decoded
-    return original_arg
-
-
 def selector_search_terms(op: str, arg: str) -> tuple[str, ...]:
     """内部 namespace を漏らさない selector row の検索語を返す。"""
 
     if selector_kind(op) is None:
-        return (str(arg),)
+        return (identity_string(arg, name="selector argument"),)
     decoded = decode_selector_param_key(arg)
     if decoded is None:
-        return (str(arg),)
+        return (identity_string(arg, name="selector argument"),)
     target, original_arg = decoded
     return target, original_arg
 
@@ -168,7 +152,7 @@ def selector_help_identity(op: str, arg: str) -> str | None:
     prefix = "G.select" if kind == "primitive" else "E.select"
     decoded = decode_selector_param_key(arg)
     if decoded is None:
-        return f"{prefix}.{str(arg)}"
+        return f"{prefix}.{identity_string(arg, name='selector argument')}"
     target, original_arg = decoded
     return f"{prefix}.{target}.{original_arg}"
 
@@ -195,7 +179,7 @@ def _public_specs(
         (name, spec)
         for name, spec in sorted(registry.items())
         if not name.startswith("_")
-        and (n_inputs is None or int(spec.n_inputs) == int(n_inputs))
+        and (n_inputs is None or spec.n_inputs == n_inputs)
     )
 
 
@@ -215,7 +199,7 @@ def _selector_ui_rule(
     activate_key = arg_keys.get("activate")
 
     def visible(values: Mapping[str, Any]) -> bool:
-        if str(values.get(_TARGET_ARG, "")) != target:
+        if values.get(_TARGET_ARG) != target:
             return False
         if arg != "activate" and activate_key is not None:
             if not bool(values.get(activate_key, True)):
@@ -240,7 +224,7 @@ def _selector_spec(
 ) -> OpSpec[Any]:
     names = tuple(name for name, _spec in entries)
     if not names:
-        arity = "" if kind == "primitive" else f"（n_inputs={int(n_inputs)}）"
+        arity = "" if kind == "primitive" else f"（n_inputs={n_inputs}）"
         raise _NoSelectableOperationsError(
             f"選択可能な {kind}{arity} が登録されていません"
         )
@@ -297,7 +281,7 @@ def _selector_spec(
         defaults=defaults,
         param_order=tuple(param_order),
         ui_visible=ui_visible,
-        n_inputs=int(n_inputs),
+        n_inputs=n_inputs,
         kind=kind,
         description=f"Grafix internal {kind} selector metadata",
         doc="DAG 作成時に実 operation へ lower される private selector。",
@@ -323,7 +307,7 @@ def _ensure_selector_spec(
 
     entries = _public_specs(
         registry,
-        n_inputs=None if kind == "primitive" else int(n_inputs),
+        n_inputs=None if kind == "primitive" else n_inputs,
     )
     fingerprint = _selector_fingerprint(entries)
     by_op = _SELECTOR_CACHE.get(registry)
@@ -440,9 +424,9 @@ def _target_error(
     choices: tuple[str, ...],
     n_inputs: int | None,
 ) -> ValueError:
-    hint_match = get_close_matches(str(target), choices, n=1, cutoff=0.55)
+    hint_match = get_close_matches(target, choices, n=1, cutoff=0.55)
     hint = "" if not hint_match else f"。{hint_match[0]!r} の誤りですか？"
-    arity = "" if n_inputs is None else f"（n_inputs={int(n_inputs)}）"
+    arity = "" if n_inputs is None else f"（n_inputs={n_inputs}）"
     available = ", ".join(repr(choice) for choice in choices) or "（なし）"
     return ValueError(
         f"選択可能な {kind}{arity} に {target!r} はありません{hint}。"
@@ -459,7 +443,7 @@ def validate_selector_target(
 ) -> str:
     """selector spec の現在候補に target が含まれることを検証する。"""
 
-    target_s = str(target)
+    target_s = identity_string(target, name=f"{kind} selector target")
     target_meta = selector_spec.meta[_TARGET_ARG]
     choices = tuple(target_meta.choices or ())
     if target_s.startswith("_") or target_s not in choices:
@@ -472,17 +456,6 @@ def validate_selector_target(
     return target_s
 
 
-def validate_primitive_selector_target(target: str) -> str:
-    """primitive selector の base target を current catalog で検証する。"""
-
-    return validate_selector_target(
-        kind="primitive",
-        target=str(target),
-        selector_spec=ensure_primitive_selector_spec(),
-        n_inputs=None,
-    )
-
-
 def validate_effect_selector_target(target: str, *, n_inputs: int) -> str:
     """effect selector の base target を arity 別 catalog で検証する。"""
 
@@ -492,13 +465,13 @@ def validate_effect_selector_target(target: str, *, n_inputs: int) -> str:
     except _NoSelectableOperationsError:
         raise _target_error(
             kind="effect",
-            target=str(target),
+            target=identity_string(target, name="effect selector target"),
             choices=(),
             n_inputs=count,
         ) from None
     return validate_selector_target(
         kind="effect",
-        target=str(target),
+        target=identity_string(target, name="effect selector target"),
         selector_spec=selector_spec,
         n_inputs=count,
     )
@@ -512,7 +485,6 @@ __all__ = [
     "ensure_effect_selector_spec",
     "ensure_primitive_selector_spec",
     "ensure_selector_spec_registered",
-    "selector_display_arg",
     "selector_effect_n_inputs",
     "selector_help_identity",
     "selector_kind",
@@ -520,6 +492,5 @@ __all__ = [
     "selector_search_terms",
     "validate_effect_selector_n_inputs",
     "validate_effect_selector_target",
-    "validate_primitive_selector_target",
     "validate_selector_target",
 ]

@@ -9,10 +9,14 @@ import pyglet
 import pytest
 
 from grafix.core.parameters import ParamStore
+from grafix.interactive.gl import draw_renderer as draw_renderer_module
 from grafix.interactive.gl.draw_renderer import DrawRenderer, _aspect_fit_viewport
 from grafix.interactive.parameter_gui import gui as gui_module
 from grafix.interactive.parameter_gui import pyglet_backend
-from grafix.interactive.render_settings import RenderSettings
+from grafix.interactive.parameter_gui.store_bridge import (
+    parameter_table_view_for_store,
+)
+from grafix.api.render import RenderOptions
 
 
 class _FakeWindow:
@@ -47,6 +51,9 @@ class _FakeImGui:
     def get_io(self) -> Any:
         return self.io
 
+    def get_style(self) -> Any:
+        return SimpleNamespace(item_spacing=(0.0, 0.0))
+
     def set_current_context(self, _context: object) -> None:
         pass
 
@@ -62,6 +69,9 @@ class _FakeImGui:
     def begin(self, _title: str, *, flags: int) -> None:
         assert flags == 7
 
+    def get_content_region_available_width(self) -> float:
+        return 768.0
+
     def button(self, _label: str) -> bool:
         return False
 
@@ -72,6 +82,9 @@ class _FakeImGui:
         return False, bool(value)
 
     def text_disabled(self, _text: str) -> None:
+        pass
+
+    def separator(self) -> None:
         pass
 
     def begin_child(
@@ -90,6 +103,9 @@ class _FakeImGui:
     def end(self) -> None:
         pass
 
+    def is_any_item_active(self) -> bool:
+        return False
+
     def render(self) -> None:
         pass
 
@@ -107,11 +123,12 @@ class _FakeImGuiRenderer:
 
 def test_parameter_gui_draw_keeps_requested_logical_width_on_retina(
     monkeypatch: pytest.MonkeyPatch,
+    initialized_parameter_gui: gui_module.ParameterGUI,
 ) -> None:
     window = _FakeWindow(width=800, height=1000, scale=2.0)
     imgui = _FakeImGui()
     renderer = _FakeImGuiRenderer()
-    gui = gui_module.ParameterGUI.__new__(gui_module.ParameterGUI)
+    gui = cast(Any, initialized_parameter_gui)
     gui._closed = False
     gui._prev_time = time.monotonic()
     gui._imgui = cast(Any, imgui)
@@ -147,6 +164,25 @@ def test_parameter_gui_draw_keeps_requested_logical_width_on_retina(
         "render_store_parameter_table",
         lambda *_a, **_k: False,
     )
+    monkeypatch.setattr(gui, "_render_toolbar_area", lambda **_kwargs: False)
+    monkeypatch.setattr(gui, "_render_midi_clear_notice", lambda: False)
+
+    def render_parameter_table_toolbar() -> bool:
+        gui._parameter_table_view = parameter_table_view_for_store(
+            gui._store,
+            show_inactive_params=False,
+        )
+        return False
+
+    monkeypatch.setattr(
+        gui,
+        "_render_parameter_table_toolbar",
+        render_parameter_table_toolbar,
+    )
+    monkeypatch.setattr(gui, "_render_reconcile_orphan_control", lambda: False)
+    monkeypatch.setattr(gui, "_maybe_preview_range_edit_by_midi", lambda: None)
+    monkeypatch.setattr(gui, "_render_range_edit_mode", lambda: False)
+    monkeypatch.setattr(gui, "_render_bottom_drawer", lambda **_kwargs: None)
     fake_pyglet = SimpleNamespace(
         gl=SimpleNamespace(glClearColor=lambda *_args: None),
     )
@@ -229,7 +265,8 @@ def test_draw_window_is_resizable(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     result = draw_window_module.create_draw_window(
-        RenderSettings(canvas_size=(320, 240), render_scale=1.5)
+        RenderOptions(canvas_size=(320, 240)),
+        render_scale=1.5,
     )
 
     assert result is sentinel
@@ -260,7 +297,9 @@ def test_aspect_fit_viewport_centers_canvas_without_distortion(
     assert _aspect_fit_viewport(framebuffer_size, canvas_size) == expected
 
 
-def test_draw_renderer_uses_aspect_fit_size_for_viewport_and_line_width() -> None:
+def test_draw_renderer_uses_aspect_fit_size_for_viewport_and_line_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Context:
         def __init__(self) -> None:
             self.viewport: tuple[int, int, int, int] | None = None
@@ -269,16 +308,37 @@ def test_draw_renderer_uses_aspect_fit_size_for_viewport_and_line_width() -> Non
         def clear(self, *args: object, **kwargs: object) -> None:
             self.clear_calls.append((args, dict(kwargs)))
 
+    class Mesh:
+        def __init__(self, _ctx: object, _program: object) -> None:
+            return None
+
+    class Window:
+        def switch_to(self) -> None:
+            return None
+
     uniform = SimpleNamespace(value=(1.0, 1.0))
+    program = {
+        "viewport_size": uniform,
+        "line_width_px": SimpleNamespace(value=0.0),
+        "color": SimpleNamespace(value=(0.0, 0.0, 0.0, 1.0)),
+        "projection": SimpleNamespace(write=lambda _value: None),
+    }
     context = Context()
-    renderer = DrawRenderer.__new__(DrawRenderer)
-    renderer.ctx = cast(Any, context)
-    renderer.program = {"viewport_size": uniform}
-    renderer._canvas_w = 800
-    renderer._canvas_h = 800
-    renderer._framebuffer_size = (1, 1)
-    renderer._viewport = (0, 0, 1, 1)
-    renderer._viewport_size = (1, 1)
+    monkeypatch.setattr(
+        draw_renderer_module.moderngl,
+        "create_context",
+        lambda **_kwargs: context,
+    )
+    monkeypatch.setattr(
+        draw_renderer_module.Shader,
+        "create_shader",
+        lambda _context: program,
+    )
+    monkeypatch.setattr(draw_renderer_module, "LineMesh", Mesh)
+    renderer = DrawRenderer(
+        cast(Any, Window()),
+        RenderOptions(canvas_size=(800, 800)),
+    )
 
     renderer.viewport(1200, 800)
 

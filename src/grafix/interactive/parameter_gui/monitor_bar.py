@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from grafix.interactive.runtime.monitor import MonitorSnapshot
+
 from .theme import PARAMETER_GUI_PALETTE
 
 StatusToken = Literal["muted", "warning", "error"]
@@ -25,7 +27,7 @@ def _fmt_int(n: int) -> str:
 
 
 def monitor_status_lines(
-    snapshot: Any,
+    snapshot: MonitorSnapshot,
     *,
     midi_status: str | None,
     compact: bool,
@@ -37,14 +39,14 @@ def monitor_status_lines(
     rss_mb = float(snapshot.rss_mb)
     vertices = int(snapshot.vertices)
     lines = int(snapshot.lines)
-    transport_t = float(getattr(snapshot, "transport_t", 0.0))
-    transport_waiting = bool(getattr(snapshot, "transport_waiting", False))
-    transport_recording = bool(getattr(snapshot, "transport_recording", False))
-    frame_error = getattr(snapshot, "frame_error", None)
-    capture_count = int(getattr(snapshot, "capture_request_count", 0))
-    capture_notice = getattr(snapshot, "capture_notice", None)
-    autosave_status = str(getattr(snapshot, "autosave_status", "clean"))
-    recovered_session = bool(getattr(snapshot, "recovered_session", False))
+    transport_t = float(snapshot.transport_t)
+    transport_waiting = bool(snapshot.transport_waiting)
+    transport_recording = bool(snapshot.transport_recording)
+    frame_error = snapshot.frame_error
+    capture_count = int(snapshot.capture_request_count)
+    capture_notice = snapshot.capture_notice
+    autosave_status = str(snapshot.autosave_status)
+    recovered_session = bool(snapshot.recovered_session)
 
     if frame_error:
         state = MonitorLine("FRAME ERROR", "error")
@@ -95,14 +97,14 @@ def monitor_status_lines(
     return telemetry, MonitorLine(geometry)
 
 
-def monitor_alert_lines(snapshot: Any) -> tuple[MonitorLine, ...]:
+def monitor_alert_lines(snapshot: MonitorSnapshot) -> tuple[MonitorLine, ...]:
     """狭い status 列に押し込まない、詳細を含む全幅 alert を返す。"""
 
     result: list[MonitorLine] = []
-    transport_t = float(getattr(snapshot, "transport_t", 0.0))
-    transport_requested_t = float(getattr(snapshot, "transport_requested_t", transport_t))
-    transport_waiting = bool(getattr(snapshot, "transport_waiting", False))
-    transport_speed = float(getattr(snapshot, "transport_speed", 1.0))
+    transport_t = float(snapshot.transport_t)
+    transport_requested_t = float(snapshot.transport_requested_t)
+    transport_waiting = bool(snapshot.transport_waiting)
+    transport_speed = float(snapshot.transport_speed)
     if transport_waiting:
         result.append(
             MonitorLine(
@@ -113,11 +115,11 @@ def monitor_alert_lines(snapshot: Any) -> tuple[MonitorLine, ...]:
             )
         )
 
-    capture_count = int(getattr(snapshot, "capture_request_count", 0))
-    capture_count_limit = int(getattr(snapshot, "capture_request_limit", 0))
-    capture_bytes = int(getattr(snapshot, "capture_retained_bytes", 0))
-    capture_byte_limit = int(getattr(snapshot, "capture_byte_limit", 0))
-    capture_notice = getattr(snapshot, "capture_notice", None)
+    capture_count = int(snapshot.capture_request_count)
+    capture_count_limit = int(snapshot.capture_request_limit)
+    capture_bytes = int(snapshot.capture_retained_bytes)
+    capture_byte_limit = int(snapshot.capture_byte_limit)
+    capture_notice = snapshot.capture_notice
     if capture_count > 0 or capture_bytes > 0:
         result.append(
             MonitorLine(
@@ -131,7 +133,7 @@ def monitor_alert_lines(snapshot: Any) -> tuple[MonitorLine, ...]:
     if capture_notice:
         result.append(MonitorLine(str(capture_notice), "warning"))
 
-    frame_error = getattr(snapshot, "frame_error", None)
+    frame_error = snapshot.frame_error
     if frame_error:
         result.append(
             MonitorLine(
@@ -139,8 +141,8 @@ def monitor_alert_lines(snapshot: Any) -> tuple[MonitorLine, ...]:
                 "error",
             )
         )
-    autosave_status = str(getattr(snapshot, "autosave_status", "clean"))
-    autosave_error = getattr(snapshot, "autosave_error", None)
+    autosave_status = str(snapshot.autosave_status)
+    autosave_error = snapshot.autosave_error
     if autosave_status == "failed":
         result.append(
             MonitorLine(
@@ -154,7 +156,7 @@ def monitor_alert_lines(snapshot: Any) -> tuple[MonitorLine, ...]:
 
 def render_monitor_status(
     imgui: Any,
-    snapshot: Any,
+    snapshot: MonitorSnapshot,
     *,
     midi_status: str | None,
     compact: bool = False,
@@ -172,7 +174,7 @@ def render_monitor_status(
             _text_semantic(imgui, line.text, token=line.token, wrapped=False)
 
 
-def render_monitor_alerts(imgui: Any, snapshot: Any) -> None:
+def render_monitor_alerts(imgui: Any, snapshot: MonitorSnapshot) -> None:
     """Controls / Status の下へ、詳細を含む actionable alert を全幅描画する。"""
 
     for line in monitor_alert_lines(snapshot):
@@ -182,26 +184,10 @@ def render_monitor_alerts(imgui: Any, snapshot: Any) -> None:
             _text_semantic(imgui, line.text, token=line.token, wrapped=True)
 
 
-def render_monitor_bar(imgui: Any, snapshot: Any, *, midi_status: str | None) -> None:
-    """通常 status の後に actionable alert を描画する。"""
-
-    render_monitor_status(
-        imgui,
-        snapshot,
-        midi_status=midi_status,
-        compact=False,
-    )
-    render_monitor_alerts(imgui, snapshot)
-
-
 def _text_muted(imgui: Any, text: str) -> None:
     """通常状態を主操作より弱い文字で描く。"""
 
-    render = getattr(imgui, "text_disabled", None)
-    if callable(render):
-        render(str(text))
-        return
-    imgui.text(str(text))
+    imgui.text_disabled(str(text))
 
 
 def _text_semantic(
@@ -213,23 +199,15 @@ def _text_semantic(
 ) -> None:
     """重要度を文字と semantic color の双方で示す。"""
 
-    push = getattr(imgui, "push_style_color", None)
-    pop = getattr(imgui, "pop_style_color", None)
-    color_text = getattr(imgui, "COLOR_TEXT", None)
-    if callable(push) and callable(pop) and color_text is not None:
-        push(color_text, *PARAMETER_GUI_PALETTE[token])
-        try:
-            _render_text(imgui, str(text), wrapped=wrapped)
-        finally:
-            pop()
-        return
-    _render_text(imgui, str(text), wrapped=wrapped)
+    imgui.push_style_color(imgui.COLOR_TEXT, *PARAMETER_GUI_PALETTE[token])
+    try:
+        _render_text(imgui, str(text), wrapped=wrapped)
+    finally:
+        imgui.pop_style_color()
 
 
 def _render_text(imgui: Any, text: str, *, wrapped: bool) -> None:
     if wrapped:
-        render = getattr(imgui, "text_wrapped", None)
-        if callable(render):
-            render(str(text))
-            return
-    imgui.text(str(text))
+        imgui.text_wrapped(str(text))
+    else:
+        imgui.text(str(text))

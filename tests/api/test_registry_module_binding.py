@@ -127,5 +127,5 @@ def test_deferred_preset_decorator_and_p_lookup_use_current_registry(
 
     assert initial.revision == 0
     assert replacement.revision == 1
-    assert replacement.get("module_bound_preset") is wrapped
+    assert replacement["preset.module_bound_preset"].func is wrapped
     assert P.module_bound_preset is wrapped

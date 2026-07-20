@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
+from grafix.core.effects.repeat import repeat as repeat_impl
 from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple
@@ -43,6 +45,39 @@ def test_repeat_count_zero_is_noop() -> None:
     out = realize(E.repeat(count=0, offset=(10.0, 0.0, 0.0))(g))
     np.testing.assert_allclose(out.coords, base.coords, rtol=0.0, atol=1e-6)
     assert out.offsets.tolist() == base.offsets.tolist()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"count": -1}, "count"),
+        ({"radius": -1.0}, "radius"),
+        ({"n_theta": 0}, "n_theta"),
+        ({"n_radius": 0}, "n_radius"),
+        ({"curve": float("nan")}, "curve"),
+        ({"curve": 0.0}, "curve"),
+    ],
+)
+def test_repeat_rejects_invalid_scalar_parameters(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    base = realize(G.repeat_test_line_0_1())
+
+    with pytest.raises(ValueError, match=match):
+        repeat_impl((base.coords, base.offsets), **kwargs)  # type: ignore[arg-type]
+
+
+def test_repeat_rejects_invalid_layout_and_vec3_parameters() -> None:
+    base = realize(G.repeat_test_line_0_1())
+    geometry = (base.coords, base.offsets)
+
+    with pytest.raises(ValueError, match="layout"):
+        repeat_impl(geometry, layout="spiral")
+    with pytest.raises(TypeError, match="offset"):
+        repeat_impl(geometry, offset=[0.0, 0.0, 0.0])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="scale"):
+        repeat_impl(geometry, scale=(1.0, float("nan"), 1.0))
 
 
 def test_repeat_offset_interpolates_over_count() -> None:

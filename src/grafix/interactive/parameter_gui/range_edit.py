@@ -139,7 +139,7 @@ def range_edit_session_for_store(
             matches = False
         else:
             matches = cc_i in {int(value) for value in assigned if value is not None}
-        if not matches or (str(key.op), str(key.arg)) in disabled:
+        if not matches or (key.op, key.arg) in disabled:
             continue
         if meta.kind not in {"float", "int", "vec3"}:
             continue

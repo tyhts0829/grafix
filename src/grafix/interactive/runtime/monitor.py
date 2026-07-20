@@ -8,8 +8,22 @@ from dataclasses import dataclass
 import os
 import time
 
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string,
+    exact_string_choice,
+    finite_real,
+)
+
 from .diagnostics import DiagnosticAction, DiagnosticCenter, DiagnosticEvent
 from .perf import PerfSnapshot
+
+
+def _optional_string(value: object, *, name: str) -> str | None:
+    if value is None:
+        return None
+    return exact_string(value, name=name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +39,6 @@ class MonitorSnapshot:
     transport_t: float = 0.0
     transport_requested_t: float = 0.0
     transport_waiting: bool = False
-    transport_playing: bool = True
     transport_speed: float = 1.0
     transport_recording: bool = False
     capture_request_count: int = 0
@@ -38,6 +51,80 @@ class MonitorSnapshot:
     autosave_error: str | None = None
     recovered_session: bool = False
     profiler: PerfSnapshot | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("fps", "cpu_percent", "rss_mb"):
+            object.__setattr__(
+                self,
+                field_name,
+                finite_real(
+                    getattr(self, field_name),
+                    name=field_name,
+                    minimum=0.0,
+                ),
+            )
+        for field_name in (
+            "vertices",
+            "lines",
+            "capture_request_count",
+            "capture_request_limit",
+            "capture_retained_bytes",
+            "capture_byte_limit",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                exact_integer(
+                    getattr(self, field_name),
+                    name=field_name,
+                    minimum=0,
+                ),
+            )
+        for field_name in ("transport_t", "transport_requested_t"):
+            object.__setattr__(
+                self,
+                field_name,
+                finite_real(getattr(self, field_name), name=field_name),
+            )
+        object.__setattr__(
+            self,
+            "transport_speed",
+            finite_real(
+                self.transport_speed,
+                name="transport_speed",
+                minimum=0.0,
+                minimum_inclusive=False,
+            ),
+        )
+        for field_name in (
+            "transport_waiting",
+            "transport_recording",
+            "recovered_session",
+        ):
+            exact_bool(getattr(self, field_name), name=field_name)
+        for field_name in (
+            "frame_error",
+            "capture_notice",
+            "autosave_error",
+        ):
+            _optional_string(getattr(self, field_name), name=field_name)
+        exact_string_choice(
+            self.autosave_status,
+            name="autosave_status",
+            choices=("clean", "dirty", "saving", "failed"),
+        )
+        if not isinstance(self.diagnostics, tuple) or any(
+            not isinstance(event, DiagnosticEvent)
+            for event in self.diagnostics
+        ):
+            raise TypeError(
+                "diagnostics は DiagnosticEvent の tuple である必要があります"
+            )
+        if self.profiler is not None and not isinstance(
+            self.profiler,
+            PerfSnapshot,
+        ):
+            raise TypeError("profiler は PerfSnapshot または None である必要があります")
 
 
 class RuntimeMonitor:
@@ -60,9 +147,19 @@ class RuntimeMonitor:
             FPS を更新する最小間隔（秒）。
         """
 
-        self._cpu_mem_sample_interval_s = float(cpu_mem_sample_interval_s)
+        self._cpu_mem_sample_interval_s = finite_real(
+            cpu_mem_sample_interval_s,
+            name="cpu_mem_sample_interval_s",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
 
-        self._fps_sample_interval_s = float(fps_sample_interval_s)
+        self._fps_sample_interval_s = finite_real(
+            fps_sample_interval_s,
+            name="fps_sample_interval_s",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
         self._fps = 0.0
         self._fps_window_t0: float | None = None
         self._fps_window_frames = 0
@@ -78,7 +175,6 @@ class RuntimeMonitor:
         self._transport_t = 0.0
         self._transport_requested_t = 0.0
         self._transport_waiting = False
-        self._transport_playing = True
         self._transport_speed = 1.0
         self._transport_recording = False
         self._capture_request_count = 0
@@ -86,8 +182,17 @@ class RuntimeMonitor:
         self._capture_retained_bytes = 0
         self._capture_byte_limit = 0
         self._capture_notice: str | None = None
+        if diagnostic_center is not None and not isinstance(
+            diagnostic_center,
+            DiagnosticCenter,
+        ):
+            raise TypeError(
+                "diagnostic_center は DiagnosticCenter または None である必要があります"
+            )
         self._diagnostic_center = (
-            diagnostic_center if diagnostic_center is not None else DiagnosticCenter()
+            DiagnosticCenter()
+            if diagnostic_center is None
+            else diagnostic_center
         )
         self._autosave_status = "clean"
         self._autosave_error: str | None = None
@@ -99,7 +204,7 @@ class RuntimeMonitor:
         except Exception as exc:
             raise RuntimeError("RuntimeMonitor には psutil が必要です") from exc
 
-        self._process = psutil.Process(int(os.getpid()))
+        self._process = psutil.Process(os.getpid())
 
     def tick_frame(self) -> None:
         """フレーム境界を通知し、FPS/CPU/Mem を更新する。"""
@@ -108,51 +213,51 @@ class RuntimeMonitor:
 
         # --- FPS ---
         if self._fps_window_t0 is None:
-            self._fps_window_t0 = float(now)
+            self._fps_window_t0 = now
             self._fps_window_frames = 0
 
         self._fps_window_frames += 1
-        dt = float(now - float(self._fps_window_t0))
-        if dt >= float(self._fps_sample_interval_s) and dt > 0.0:
-            self._fps = float(self._fps_window_frames) / float(dt)
-            self._fps_window_t0 = float(now)
+        dt = now - self._fps_window_t0
+        if dt >= self._fps_sample_interval_s and dt > 0.0:
+            self._fps = self._fps_window_frames / dt
+            self._fps_window_t0 = now
             self._fps_window_frames = 0
 
         # --- CPU / Mem（一定周期）---
         last = self._last_sample_t
         if last is None:
-            self._last_sample_t = float(now)
-            self._last_cpu_total_s = float(self._cpu_total_s())
-            self._rss_mb = float(self._rss_bytes()) / (1024.0 * 1024.0)
+            self._last_sample_t = now
+            self._last_cpu_total_s = self._cpu_total_s()
+            self._rss_mb = self._rss_bytes() / (1024.0 * 1024.0)
             return
 
-        if float(now - last) < float(self._cpu_mem_sample_interval_s):
+        if now - last < self._cpu_mem_sample_interval_s:
             return
 
-        cpu_total_s = float(self._cpu_total_s())
-        prev_cpu_total_s = float(self._last_cpu_total_s or 0.0)
-        wall_dt = float(now - last)
+        cpu_total_s = self._cpu_total_s()
+        prev_cpu_total_s = self._last_cpu_total_s or 0.0
+        wall_dt = now - last
 
         # 子プロセスが終了すると合算値が減ることがあるため、負の Δ は “リセット” 扱いにする。
         if cpu_total_s < prev_cpu_total_s:
-            self._last_sample_t = float(now)
-            self._last_cpu_total_s = float(cpu_total_s)
-            self._rss_mb = float(self._rss_bytes()) / (1024.0 * 1024.0)
+            self._last_sample_t = now
+            self._last_cpu_total_s = cpu_total_s
+            self._rss_mb = self._rss_bytes() / (1024.0 * 1024.0)
             return
 
-        cpu_dt = float(cpu_total_s - prev_cpu_total_s)
+        cpu_dt = cpu_total_s - prev_cpu_total_s
         if wall_dt > 0.0:
             self._cpu_percent = 100.0 * cpu_dt / wall_dt
 
-        self._rss_mb = float(self._rss_bytes()) / (1024.0 * 1024.0)
-        self._last_sample_t = float(now)
-        self._last_cpu_total_s = float(cpu_total_s)
+        self._rss_mb = self._rss_bytes() / (1024.0 * 1024.0)
+        self._last_sample_t = now
+        self._last_cpu_total_s = cpu_total_s
 
     def set_draw_counts(self, *, vertices: int, lines: int) -> None:
         """描画対象の頂点数/ライン数（polyline 本数）を設定する。"""
 
-        self._vertices = int(vertices)
-        self._lines = int(lines)
+        self._vertices = exact_integer(vertices, name="vertices", minimum=0)
+        self._lines = exact_integer(lines, name="lines", minimum=0)
 
     @property
     def diagnostic_center(self) -> DiagnosticCenter:
@@ -174,21 +279,24 @@ class RuntimeMonitor:
     ) -> None:
         """user scene の直近 error を設定する。成功 frame では None に戻す。"""
 
+        normalized_message = _optional_string(message, name="message")
+        normalized_details = exact_string(details, name="details")
+        normalized_source = _optional_string(source, name="source")
         previous = self._frame_error
-        self._frame_error = None if message is None else str(message)
-        if message is not None and previous != str(message):
+        self._frame_error = normalized_message
+        if normalized_message is not None and previous != normalized_message:
             actions = [DiagnosticAction("copy", "Copy details")]
-            if source is not None:
+            if normalized_source is not None:
                 actions.append(DiagnosticAction("open", "Open source"))
             self.publish_diagnostic(
                 DiagnosticEvent(
                     category="scene",
                     severity="error",
-                    summary=str(message),
-                    details=str(details),
-                    source=source,
+                    summary=normalized_message,
+                    details=normalized_details,
+                    source=normalized_source,
                     actions=tuple(actions),
-                    dedupe_key=f"frame-error:{message}",
+                    dedupe_key=f"frame-error:{normalized_message}",
                 )
             )
 
@@ -198,20 +306,24 @@ class RuntimeMonitor:
         t: float,
         requested_t: float | None = None,
         waiting: bool = False,
-        playing: bool,
         speed: float,
         recording: bool = False,
     ) -> None:
         """preview transport の現在状態を設定する。"""
 
-        self._transport_t = float(t)
-        self._transport_requested_t = float(
-            t if requested_t is None else requested_t
+        self._transport_t = finite_real(t, name="t")
+        self._transport_requested_t = finite_real(
+            t if requested_t is None else requested_t,
+            name="requested_t",
         )
-        self._transport_waiting = bool(waiting)
-        self._transport_playing = bool(playing)
-        self._transport_speed = float(speed)
-        self._transport_recording = bool(recording)
+        self._transport_waiting = exact_bool(waiting, name="waiting")
+        self._transport_speed = finite_real(
+            speed,
+            name="speed",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+        self._transport_recording = exact_bool(recording, name="recording")
 
     def set_capture_queue(
         self,
@@ -224,19 +336,36 @@ class RuntimeMonitor:
     ) -> None:
         """capture queue の count/byte pressure と直近の明示拒否を設定する。"""
 
-        self._capture_request_count = max(0, int(request_count))
-        self._capture_request_limit = max(0, int(request_limit))
-        self._capture_retained_bytes = max(0, int(retained_bytes))
-        self._capture_byte_limit = max(0, int(byte_limit))
+        self._capture_request_count = exact_integer(
+            request_count,
+            name="request_count",
+            minimum=0,
+        )
+        self._capture_request_limit = exact_integer(
+            request_limit,
+            name="request_limit",
+            minimum=0,
+        )
+        self._capture_retained_bytes = exact_integer(
+            retained_bytes,
+            name="retained_bytes",
+            minimum=0,
+        )
+        self._capture_byte_limit = exact_integer(
+            byte_limit,
+            name="byte_limit",
+            minimum=0,
+        )
+        normalized_notice = _optional_string(notice, name="notice")
         previous_notice = self._capture_notice
-        self._capture_notice = None if notice is None else str(notice)
-        if notice is not None and previous_notice != str(notice):
+        self._capture_notice = normalized_notice
+        if normalized_notice is not None and previous_notice != normalized_notice:
             self.publish_diagnostic(
                 DiagnosticEvent(
                     category="export",
                     severity="warning",
-                    summary=str(notice),
-                    dedupe_key=f"capture-notice:{notice}",
+                    summary=normalized_notice,
+                    dedupe_key=f"capture-notice:{normalized_notice}",
                 )
             )
 
@@ -249,13 +378,17 @@ class RuntimeMonitor:
     ) -> None:
         """ParamStore autosave の user-facing 状態を設定する。"""
 
-        status_s = str(status)
-        if status_s not in {"clean", "dirty", "saving", "failed"}:
-            raise ValueError(f"未対応の autosave status: {status_s!r}")
+        status_s = exact_string_choice(
+            status,
+            name="status",
+            choices=("clean", "dirty", "saving", "failed"),
+        )
+        normalized_error = _optional_string(error, name="error")
+        normalized_source = _optional_string(source, name="source")
         previous = self._autosave_status
         previous_error = self._autosave_error
         self._autosave_status = status_s
-        self._autosave_error = None if error is None else str(error)
+        self._autosave_error = normalized_error
         if status_s == "failed" and (
             previous != "failed" or previous_error != self._autosave_error
         ):
@@ -266,7 +399,7 @@ class RuntimeMonitor:
                     severity="error",
                     summary=summary,
                     details=self._autosave_error or "",
-                    source=source,
+                    source=normalized_source,
                     actions=(DiagnosticAction("retry", "Retry"),),
                     dedupe_key=f"autosave:{self._autosave_error}",
                 )
@@ -275,7 +408,7 @@ class RuntimeMonitor:
     def set_recovered_session(self, active: bool) -> None:
         """未確定の session recovery があるかを status surface へ反映する。"""
 
-        self._recovered_session = bool(active)
+        self._recovered_session = exact_bool(active, name="active")
 
     def set_profiler(self, snapshot: PerfSnapshot) -> None:
         """Inspector へ渡す直近の bounded profiler snapshot を設定する。"""
@@ -288,27 +421,26 @@ class RuntimeMonitor:
         """現在の監視値をスナップショットとして返す。"""
 
         return MonitorSnapshot(
-            fps=float(self._fps),
-            cpu_percent=float(self._cpu_percent),
-            rss_mb=float(self._rss_mb),
-            vertices=int(self._vertices),
-            lines=int(self._lines),
+            fps=self._fps,
+            cpu_percent=self._cpu_percent,
+            rss_mb=self._rss_mb,
+            vertices=self._vertices,
+            lines=self._lines,
             frame_error=self._frame_error,
-            transport_t=float(self._transport_t),
-            transport_requested_t=float(self._transport_requested_t),
-            transport_waiting=bool(self._transport_waiting),
-            transport_playing=bool(self._transport_playing),
-            transport_speed=float(self._transport_speed),
-            transport_recording=bool(self._transport_recording),
-            capture_request_count=int(self._capture_request_count),
-            capture_request_limit=int(self._capture_request_limit),
-            capture_retained_bytes=int(self._capture_retained_bytes),
-            capture_byte_limit=int(self._capture_byte_limit),
+            transport_t=self._transport_t,
+            transport_requested_t=self._transport_requested_t,
+            transport_waiting=self._transport_waiting,
+            transport_speed=self._transport_speed,
+            transport_recording=self._transport_recording,
+            capture_request_count=self._capture_request_count,
+            capture_request_limit=self._capture_request_limit,
+            capture_retained_bytes=self._capture_retained_bytes,
+            capture_byte_limit=self._capture_byte_limit,
             capture_notice=self._capture_notice,
             diagnostics=self._diagnostic_center.snapshot(),
             autosave_status=self._autosave_status,
             autosave_error=self._autosave_error,
-            recovered_session=bool(self._recovered_session),
+            recovered_session=self._recovered_session,
             profiler=self._profiler,
         )
 

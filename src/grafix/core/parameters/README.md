@@ -56,7 +56,8 @@
 
 - 実装: `src/grafix/core/parameters/frame_params.py`
 - 役割:
-  - (key, base, meta, effective, source, explicit, chain_id, step_index) を蓄積する
+  - parameter の (key, base, meta, effective, source, explicit) を蓄積する
+  - effect chain は完全な code topology を `FrameEffectChainRecord` として別に蓄積する
   - label の観測もここへ集める（`FrameParamsBuffer.set_label`）
 
 ### 5) `merge_frame_params(store, records)`（フレーム終了時に永続化）
@@ -69,6 +70,12 @@
 
 ## 重要な補足
 
+- parameter kind は `bool/int/float/str/font/choice/vec3/rgb` の 8 種だけで、
+  `ParamMeta`・UI 値・MIDI CC は `validation.py` の共通契約で検証する。
+- UI の型違い、非有限値、無効な choice は暗黙変換せず拒否する。保存済みの stale choice は
+  GUI 上で unavailable として残すが、明示的な再選択まで effective 値には採用しない。
+- scalar MIDI CC は `float/int/choice`、3 要素 tuple は `vec3` だけに割り当てられ、
+  CC 番号は厳密な int の `0..127` とする。
 - worker（multiprocessing）では `parameter_context_from_snapshot(...)` を使う:
   - 実装: `src/grafix/core/parameters/context.py`
   - frame task は revision だけを持ち、変更時だけ bounded control queue で snapshot 本体を受け取る

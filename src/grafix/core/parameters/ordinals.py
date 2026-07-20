@@ -13,6 +13,8 @@ Notes
 
 from __future__ import annotations
 
+from .identity import identity_string
+
 
 class GroupOrdinals:
     """op ごとの (site_id -> ordinal) を管理する。
@@ -24,12 +26,12 @@ class GroupOrdinals:
     ----------
     _by_op : dict[str, dict[str, int]]
         op -> {site_id: ordinal} の内部テーブル。
-        キーは外部から渡された値を `str(...)` へ正規化して保持する。
+        キーは canonical な空でない文字列だけを保持する。
 
     Notes
     -----
-    - `as_dict` / `replace_from_dict` は永続化（例: JSON）用の変換を想定する。
-    - ordinal の欠番を詰めて 1..N にしたい場合は `compact` / `compact_all` を呼ぶ。
+    - `as_dict` / `replace` は永続化用の値をコピーする。
+    - ordinal の欠番を詰めて 1..N にしたい場合は `compact` を呼ぶ。
     """
 
     def __init__(self) -> None:
@@ -52,11 +54,10 @@ class GroupOrdinals:
             登録済みなら ordinal、未登録なら None。
         """
 
-        # 外部から渡る op / site_id は型が揺れてもよい前提で、内部キーは str に寄せる。
-        mapping = self._by_op.get(str(op))
+        mapping = self._by_op.get(identity_string(op, name="op"))
         if mapping is None:
             return None
-        return mapping.get(str(site_id))
+        return mapping.get(identity_string(site_id, name="site_id"))
 
     def get_or_assign(self, op: str, site_id: str) -> int:
         """既存 ordinal を返し、未登録なら採番して返す。
@@ -77,8 +78,8 @@ class GroupOrdinals:
             既存または新規に割り当てた ordinal（1 始まり）。
         """
 
-        op = str(op)
-        site_id = str(site_id)
+        op = identity_string(op, name="op")
+        site_id = identity_string(site_id, name="site_id")
         mapping = self._by_op.setdefault(op, {})
         if site_id in mapping:
             return int(mapping[site_id])
@@ -106,9 +107,9 @@ class GroupOrdinals:
             変更後の site_id。
         """
 
-        op = str(op)
-        old_site_id = str(old_site_id)
-        new_site_id = str(new_site_id)
+        op = identity_string(op, name="op")
+        old_site_id = identity_string(old_site_id, name="old_site_id")
+        new_site_id = identity_string(new_site_id, name="new_site_id")
 
         mapping = self._by_op.get(op)
         if mapping is None:
@@ -140,8 +141,8 @@ class GroupOrdinals:
             削除対象の site_id。
         """
 
-        op = str(op)
-        site_id = str(site_id)
+        op = identity_string(op, name="op")
+        site_id = identity_string(site_id, name="site_id")
         mapping = self._by_op.get(op)
         if mapping is None:
             return
@@ -158,23 +159,12 @@ class GroupOrdinals:
             対象 op。
         """
 
-        op = str(op)
+        op = identity_string(op, name="op")
         mapping = self._by_op.get(op)
         if not mapping:
             self._by_op.pop(op, None)
             return
         self._compact_mapping_in_place(mapping)
-
-    def compact_all(self) -> None:
-        """すべての op について ordinal を 1..N に詰め直す。"""
-
-        # 内部状態が壊れていても（例: 外部入力の混入）、ここで dict 以外や空を掃除しつつ詰め直す。
-        for op in list(self._by_op.keys()):
-            mapping = self._by_op.get(op)
-            if not isinstance(mapping, dict) or not mapping:
-                self._by_op.pop(op, None)
-                continue
-            self._compact_mapping_in_place(mapping)
 
     def as_dict(self) -> dict[str, dict[str, int]]:
         """内部辞書のコピーを返す。
@@ -187,36 +177,19 @@ class GroupOrdinals:
 
         return {op: dict(mapping) for op, mapping in self._by_op.items()}
 
-    def replace_from_dict(self, by_op: object) -> None:
-        """dict 由来の値で内部辞書を置き換える。
-
-        JSON などから復元した値を受け取り、内部表現（str -> int）に正規化して格納する。
-        不正な要素はスキップし、`by_op` 自体が dict でなければ空にリセットする。
+    def replace(self, by_op: dict[str, dict[str, int]]) -> None:
+        """検証済み ordinal のディープコピーで内部辞書を置き換える。
 
         Parameters
         ----------
         by_op
-            `op -> {site_id: ordinal}` 形式を期待するが、実際には object として受ける。
+            `op -> {site_id: ordinal}` 形式の canonical 値。
         """
 
-        if not isinstance(by_op, dict):
-            self._by_op = {}
-            return
-
-        out: dict[str, dict[str, int]] = {}
-        for op, raw_mapping in by_op.items():
-            if not isinstance(raw_mapping, dict):
-                continue
-            cleaned: dict[str, int] = {}
-            for site_id, ordinal in raw_mapping.items():
-                try:
-                    # JSON 由来の値などを想定し、キーは str、ordinal は int に寄せる。
-                    cleaned[str(site_id)] = int(ordinal)  # type: ignore[arg-type]
-                except Exception:
-                    continue
-            if cleaned:
-                out[str(op)] = cleaned
-        self._by_op = out
+        self._by_op = {
+            op: dict(mapping)
+            for op, mapping in by_op.items()
+        }
 
     @staticmethod
     def _compact_mapping_in_place(mapping: dict[str, int]) -> None:
@@ -227,18 +200,13 @@ class GroupOrdinals:
 
         def _sort_key(item: tuple[str, int]) -> tuple[int, str]:
             site_id, ordinal = item
-            try:
-                ordinal_i = int(ordinal)
-            except Exception:
-                # ordinal が壊れていてもクラッシュさせず、先頭側に寄せる。
-                ordinal_i = 0
-            return ordinal_i, str(site_id)
+            return ordinal, site_id
 
         # 相対順は ordinal を基準に保つ。タイブレークは site_id に寄せて決定性を確保する。
         ordered_site_ids = [site_id for site_id, _ in sorted(mapping.items(), key=_sort_key)]
         mapping.clear()
         for i, site_id in enumerate(ordered_site_ids, start=1):
-            mapping[str(site_id)] = int(i)
+            mapping[site_id] = i
 
 
 __all__ = ["GroupOrdinals"]

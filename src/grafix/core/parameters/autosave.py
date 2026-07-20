@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from math import isfinite
 from pathlib import Path
 from typing import Literal
+
+from grafix.core.value_validation import exact_bool, finite_real
 
 from .persistence import save_param_store
 from .store import ParamStore
@@ -30,14 +31,29 @@ class ParamStoreAutosave:
         clock: Callable[[], float] = time.monotonic,
         save: SaveParamStore = save_param_store,
     ) -> None:
-        if not isfinite(float(debounce_seconds)) or debounce_seconds < 0.0:
-            raise ValueError("debounce_seconds must be finite and >= 0")
-        if not isfinite(float(max_interval_seconds)) or max_interval_seconds <= 0.0:
-            raise ValueError("max_interval_seconds must be finite and > 0")
+        if not isinstance(store, ParamStore):
+            raise TypeError("store は ParamStore である必要があります")
+        if not isinstance(path, Path):
+            raise TypeError("path は Path である必要があります")
+        debounce = finite_real(
+            debounce_seconds,
+            name="debounce_seconds",
+            minimum=0.0,
+        )
+        max_interval = finite_real(
+            max_interval_seconds,
+            name="max_interval_seconds",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+        if not callable(clock):
+            raise TypeError("clock は callable である必要があります")
+        if not callable(save):
+            raise TypeError("save は callable である必要があります")
         self._store = store
-        self._path = Path(path)
-        self._debounce_seconds = float(debounce_seconds)
-        self._max_interval_seconds = float(max_interval_seconds)
+        self._path = path
+        self._debounce_seconds = debounce
+        self._max_interval_seconds = max_interval
         self._clock = clock
         self._save = save
         self._observed_revision = store.revision
@@ -85,7 +101,11 @@ class ParamStoreAutosave:
         操作中の frame を停止させない。
         """
 
-        current_time = self._clock() if now is None else float(now)
+        suspended = exact_bool(suspended, name="suspended")
+        current_time = finite_real(
+            self._clock() if now is None else now,
+            name="now" if now is not None else "clock()",
+        )
         self._observe(current_time)
         if suspended:
             self._was_suspended = True
@@ -112,7 +132,7 @@ class ParamStoreAutosave:
     def flush(self) -> bool:
         """未保存の変更があれば、debounce を待たずに保存する。"""
 
-        current_time = self._clock()
+        current_time = finite_real(self._clock(), name="clock()")
         self._observe(current_time)
         if not self.dirty:
             return False

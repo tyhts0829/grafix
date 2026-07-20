@@ -227,7 +227,6 @@ def test_fill_scanline_kernel_is_bitwise_equal_to_numpy_reference() -> None:
     actual = _scanline_endpoints_njit(
         ex1,
         ey1,
-        ex2,
         ey2,
         edx,
         edy,
@@ -262,7 +261,6 @@ def test_fill_scanline_kernel_is_bitwise_equal_to_numpy_reference() -> None:
         actual = _scanline_endpoints_njit(
             ex1,
             ey1,
-            ex2,
             ey2,
             edx,
             edy,
@@ -294,7 +292,6 @@ def test_fill_scanline_kernel_matches_numpy_signed_zero_sort_order() -> None:
     actual = _scanline_endpoints_njit(
         ex1,
         ey1,
-        ex2,
         ey2,
         edx,
         edy,
@@ -321,7 +318,6 @@ def test_fill_scanline_kernel_does_not_overwrite_for_nan_pair_width() -> None:
         actual = _scanline_endpoints_njit(
             ex1,
             ey1,
-            ex2,
             ey2,
             edx,
             edy,

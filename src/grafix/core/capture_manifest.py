@@ -6,16 +6,20 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from math import isfinite
 from pathlib import Path
 from typing import Final
 
-from grafix.core.capture_provenance import (
-    CaptureProvenance,
-    unavailable_capture_provenance,
+from grafix.core.capture_provenance import CaptureProvenance
+from grafix.core.value_validation import (
+    exact_bool,
+    exact_integer,
+    exact_string,
+    exact_string_choice,
+    finite_real,
+    positive_integer_pair,
 )
 
-CAPTURE_MANIFEST_SCHEMA_VERSION = 2
+CAPTURE_MANIFEST_SCHEMA_VERSION = 3
 _UTF8: Final = "utf-8"
 
 
@@ -34,9 +38,12 @@ class RecordingManifest:
     last_error: str | None = None
 
     def __post_init__(self) -> None:
-        fps = float(self.fps)
-        if not isfinite(fps) or fps <= 0.0:
-            raise ValueError("recording fps は正の有限値である必要があります")
+        fps = finite_real(
+            self.fps,
+            name="recording fps",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
         object.__setattr__(self, "fps", fps)
         for name in (
             "frame_count",
@@ -44,14 +51,18 @@ class RecordingManifest:
             "duplicated_frame_count",
             "error_count",
         ):
-            value = int(getattr(self, name))
-            if value < 0:
-                raise ValueError(f"{name} は 0 以上である必要があります")
+            value = exact_integer(getattr(self, name), name=name, minimum=0)
             object.__setattr__(self, name, value)
-        policy = str(self.error_policy).strip().casefold()
-        if policy != "pause":
-            raise ValueError("recording error_policy は 'pause' である必要があります")
+        policy = exact_string_choice(
+            self.error_policy,
+            name="recording error_policy",
+            choices=("pause",),
+        )
         object.__setattr__(self, "error_policy", policy)
+        for name in ("stop_reason", "abort_reason", "last_error"):
+            value = getattr(self, name)
+            if value is not None:
+                exact_string(value, name=name)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -69,44 +80,51 @@ class RecordingManifest:
 
 @dataclass(frozen=True, slots=True)
 class CaptureManifest:
-    """1 回の capture に対応する JSON 化可能な manifest v2。"""
+    """1 回の capture に対応する JSON 化可能な manifest v3。"""
 
     t: float
     canvas_size: tuple[int, int]
     format: str
     artifact_paths: tuple[Path, ...]
-    provenance: CaptureProvenance | None = None
-    output_size: tuple[int, int] | None = None
+    provenance: CaptureProvenance
+    output_size: tuple[int, int]
     recording: RecordingManifest | None = None
 
     def __post_init__(self) -> None:
-        capture_t = float(self.t)
-        if not isfinite(capture_t):
-            raise ValueError("t は有限値である必要がある")
+        capture_t = finite_real(self.t, name="t")
+        canvas_size = positive_integer_pair(self.canvas_size, name="canvas_size")
 
-        canvas_size = (int(self.canvas_size[0]), int(self.canvas_size[1]))
-        if canvas_size[0] <= 0 or canvas_size[1] <= 0:
-            raise ValueError("canvas_size は正の (width, height) である必要がある")
-
-        artifact_format = str(self.format).strip().lstrip(".").lower()
+        artifact_format = exact_string(self.format, name="format")
         if not artifact_format:
             raise ValueError("format は空でない必要がある")
+        if (
+            artifact_format != artifact_format.strip()
+            or artifact_format != artifact_format.casefold()
+            or artifact_format.startswith(".")
+        ):
+            raise ValueError("format は小文字の拡張子名を '.' なしで指定してください")
 
-        artifact_paths = tuple(Path(path) for path in self.artifact_paths)
+        if not isinstance(self.artifact_paths, tuple):
+            raise TypeError("artifact_paths は Path の tuple である必要があります")
+        artifact_paths = self.artifact_paths
         if not artifact_paths:
             raise ValueError("artifact_paths は 1 件以上必要です")
+        if any(not isinstance(path, Path) for path in artifact_paths):
+            raise TypeError("artifact_paths は Path の tuple である必要があります")
         if any(not path.name for path in artifact_paths):
             raise ValueError("artifact_paths はファイル名を含む必要がある")
 
-        output_size = self.output_size
-        if output_size is not None:
-            output_size = (int(output_size[0]), int(output_size[1]))
-            if output_size[0] <= 0 or output_size[1] <= 0:
-                raise ValueError("output_size は正の (width, height) である必要があります")
+        output_size = positive_integer_pair(self.output_size, name="output_size")
 
-        provenance = self.provenance
-        if provenance is not None and float(provenance.frame.t) != capture_t:
+        if not isinstance(self.provenance, CaptureProvenance):
+            raise TypeError("provenance は CaptureProvenance である必要があります")
+        if self.provenance.frame.t != capture_t:
             raise ValueError("provenance.frame.t は manifest.t と一致する必要があります")
+        if self.recording is not None and not isinstance(
+            self.recording,
+            RecordingManifest,
+        ):
+            raise TypeError("recording は RecordingManifest または None である必要があります")
 
         object.__setattr__(self, "t", capture_t)
         object.__setattr__(self, "canvas_size", canvas_size)
@@ -118,25 +136,15 @@ class CaptureManifest:
         """安定した JSON schema の dict を返す。"""
 
         width, height = self.canvas_size
-        provenance = self.provenance or unavailable_capture_provenance(t=self.t)
-        sections = provenance.manifest_sections()
+        sections = self.provenance.manifest_sections()
         output: dict[str, object] = {
             "format": self.format,
             "artifact_paths": [str(path) for path in self.artifact_paths],
             "canvas_size": {"width": width, "height": height},
-            "size": (
-                None
-                if self.output_size is None
-                else {"width": self.output_size[0], "height": self.output_size[1]}
-            ),
+            "size": {"width": self.output_size[0], "height": self.output_size[1]},
         }
         payload = {
             "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
-            # v1 の top-level identity は diff/readability のため v2 でも保持する。
-            "t": self.t,
-            "canvas_size": {"width": width, "height": height},
-            "format": self.format,
-            "artifact_paths": [str(path) for path in self.artifact_paths],
             **sections,
             "output": output,
             "recording": None if self.recording is None else self.recording.as_dict(),
@@ -322,6 +330,7 @@ def publish_capture_generation(
     process crash の回復 journal は別機能として扱う。
     """
 
+    overwrite = exact_bool(overwrite, name="overwrite")
     staged = tuple(Path(path) for path in staged_artifact_paths)
     finals = tuple(Path(path) for path in artifact_paths)
     target_manifest = Path(manifest_path)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 
 import numpy as np
-import pytest
 
 from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer
@@ -134,10 +133,3 @@ def test_export_svg_is_deterministic(tmp_path) -> None:
     export_svg(layers, b, canvas_size=(100, 100))
 
     assert a.read_bytes() == b.read_bytes()
-
-
-def test_export_svg_rejects_canvas_size_none(tmp_path) -> None:
-    layers = [_realized_layer(coords=[[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]], offsets=[0, 2])]
-    with pytest.raises(ValueError):
-        export_svg(layers, tmp_path / "out.svg", canvas_size=None)
-

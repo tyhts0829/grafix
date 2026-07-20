@@ -28,6 +28,30 @@ def _state() -> WorkspaceState:
     )
 
 
+@pytest.mark.parametrize(
+    ("ui_scale", "error"),
+    (
+        (True, TypeError),
+        ("1.25", TypeError),
+        (float("nan"), ValueError),
+        (float("inf"), ValueError),
+        (0.0, ValueError),
+        (-1.0, ValueError),
+    ),
+)
+def test_workspace_state_validates_ui_scale(
+    ui_scale: object,
+    error: type[Exception],
+) -> None:
+    with pytest.raises(error, match="ui_scale"):
+        WorkspaceState(
+            preview_rect=WindowRect(100, 120, 800, 700),
+            inspector_rect=None,
+            inspector_visible=False,
+            ui_scale=ui_scale,  # type: ignore[arg-type]
+        )
+
+
 def test_workspace_state_roundtrip_uses_versioned_json(tmp_path: Path) -> None:
     path = tmp_path / "workspace.json"
     expected = _state()

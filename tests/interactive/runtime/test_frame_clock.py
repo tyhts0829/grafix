@@ -3,7 +3,6 @@ import time
 import pytest
 
 from grafix.interactive.runtime.frame_clock import (
-    RealTimeClock,
     RecordingClock,
     TimeBookmark,
     TransportClock,
@@ -38,9 +37,9 @@ def test_recording_clock_advances_by_fixed_fps():
     assert clock.t() == pytest.approx(2.0)
 
 
-def test_real_time_clock_returns_elapsed_seconds():
+def test_transport_clock_returns_elapsed_seconds():
     start_time = time.perf_counter() - 1.0
-    clock = RealTimeClock(start_time=start_time)
+    clock = TransportClock(start_time=start_time)
     assert 0.5 < clock.t() < 1.5
 
 
@@ -154,8 +153,8 @@ def test_transport_epoch_changes_only_at_discontinuities():
     assert clock.snapshot().epoch == 4
 
 
-def test_transport_snapshot_keeps_legacy_three_positional_arguments():
-    snapshot = TransportSnapshot(1.5, False, 0.5)
+def test_transport_snapshot_uses_keyword_constructor():
+    snapshot = TransportSnapshot(t=1.5, is_playing=False, speed=0.5, epoch=0)
     assert snapshot.t == pytest.approx(1.5)
     assert snapshot.is_playing is False
     assert snapshot.speed == pytest.approx(0.5)
@@ -264,9 +263,92 @@ def test_transport_rejects_invalid_step_fps(fps: float):
         clock.step_frame(fps=fps)
 
 
-def test_real_time_clock_keeps_legacy_name_and_supports_transport_controls():
-    now = FakeTime(5.0)
-    clock = RealTimeClock(start_time=now.value, time_source=now)
-    clock.pause()
-    clock.seek(3.0)
-    assert clock.t() == pytest.approx(3.0)
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"start_time": "0"}, "start_time"),
+        ({"initial_t": "0"}, "initial_t"),
+        ({"playing": 1}, "playing"),
+        ({"speed": True}, "speed"),
+    ],
+)
+def test_transport_constructor_rejects_implicit_scalar_coercion(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(TypeError, match=match):
+        TransportClock(time_source=FakeTime(), **kwargs)  # type: ignore[arg-type]
+
+
+def test_transport_operations_reject_implicit_scalar_coercion() -> None:
+    clock = TransportClock(start_time=0.0, time_source=FakeTime())
+
+    with pytest.raises(TypeError, match="loop_in"):
+        clock.set_loop("0", 1.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="t"):
+        clock.seek("1")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="t"):
+        clock.synchronize(True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="bookmark t"):
+        clock.set_bookmark("bad", t="1")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="fps"):
+        clock.step_frame(fps="60")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="frames"):
+        clock.step_frame(frames=1.0)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"t": "1", "is_playing": False, "speed": 1.0, "epoch": 0},
+        {"t": 1.0, "is_playing": 0, "speed": 1.0, "epoch": 0},
+        {"t": 1.0, "is_playing": False, "speed": True, "epoch": 0},
+        {"t": 1.0, "is_playing": False, "speed": 1.0, "epoch": False},
+    ],
+)
+def test_transport_snapshot_rejects_implicit_scalar_coercion(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(TypeError):
+        TransportSnapshot(**kwargs)  # type: ignore[arg-type]
+
+
+def test_transport_snapshot_requires_canonical_nested_values() -> None:
+    bookmark = TimeBookmark(name="intro", t=1.0)
+    with pytest.raises(TypeError, match="tuple"):
+        TransportSnapshot(
+            t=1.0,
+            is_playing=False,
+            speed=1.0,
+            epoch=0,
+            bookmarks=[bookmark],  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="同時"):
+        TransportSnapshot(
+            t=1.0,
+            is_playing=False,
+            speed=1.0,
+            epoch=0,
+            loop_in=0.0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("t0", "fps", "error"),
+    [
+        ("0", 60.0, TypeError),
+        (0.0, "60", TypeError),
+        (True, 60.0, TypeError),
+        (0.0, False, TypeError),
+        (float("nan"), 60.0, ValueError),
+        (0.0, float("inf"), ValueError),
+        (0.0, 0.0, ValueError),
+    ],
+)
+def test_recording_clock_rejects_noncanonical_or_invalid_values(
+    t0: object,
+    fps: object,
+    error: type[Exception],
+) -> None:
+    with pytest.raises(error):
+        RecordingClock(t0=t0, fps=fps)  # type: ignore[arg-type]

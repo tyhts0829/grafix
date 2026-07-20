@@ -13,24 +13,17 @@ from collections.abc import Callable
 from pathlib import Path
 
 from grafix.core.output_paths import output_path_for_draw
+from grafix.core.value_validation import (
+    exact_string,
+    finite_real,
+    positive_integer_pair,
+)
 
 
 DEFAULT_VIDEO_FINALIZE_TIMEOUT_S = 30.0
 _DEFAULT_PROCESS_ABORT_TIMEOUT_S = 4.0
 _MAX_PROCESS_ABORT_RESERVE_S = 1.0
 _MIN_PROCESS_REAP_GRACE_S = 0.5
-
-
-class VideoPublishError(RuntimeError):
-    """完成した動画を final path へ公開できなかったことを表す。
-
-    ``recovery_path`` は encoder 完了・file fsync 済みの staging であり、
-    呼び出し側が回収・改名・削除の所有権を持つ。
-    """
-
-    def __init__(self, message: str, *, recovery_path: Path) -> None:
-        super().__init__(message)
-        self.recovery_path = Path(recovery_path)
 
 
 def default_video_output_path(
@@ -43,7 +36,15 @@ def default_video_output_path(
     パスは `output/{kind}/` 配下で sketch_dir のサブディレクトリ構造をミラーする。
     """
 
-    suffix = str(ext).lstrip(".") or "mp4"
+    suffix = exact_string(ext, name="ext")
+    if (
+        not suffix
+        or suffix != suffix.strip()
+        or suffix.startswith(".")
+        or "/" in suffix
+        or "\\" in suffix
+    ):
+        raise ValueError("ext は '.' なしの空でない拡張子名で指定してください")
     return output_path_for_draw(kind="video", ext=suffix, draw=draw, run_id=run_id)
 
 
@@ -53,7 +54,15 @@ def _ffmpeg_command(
     size: tuple[int, int],
     fps: float,
 ) -> list[str]:
-    width, height = size
+    if not isinstance(output_path, Path):
+        raise TypeError("output_path は Path である必要があります")
+    width, height = positive_integer_pair(size, name="size")
+    frame_rate = finite_real(
+        fps,
+        name="fps",
+        minimum=0.0,
+        minimum_inclusive=False,
+    )
     return [
         "ffmpeg",
         "-hide_banner",
@@ -65,9 +74,9 @@ def _ffmpeg_command(
         "-pix_fmt",
         "rgb24",
         "-video_size",
-        f"{int(width)}x{int(height)}",
+        f"{width}x{height}",
         "-framerate",
-        str(float(fps)),
+        str(frame_rate),
         "-i",
         "-",
         "-vf",
@@ -99,17 +108,6 @@ def _fsync_file(path: Path) -> None:
 
     with path.open("rb") as file_obj:
         os.fsync(file_obj.fileno())
-
-
-def _fsync_directory(path: Path) -> None:
-    """rename/link による directory entry を best-effort ではなく確定する。"""
-
-    flags = os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0))
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _abort_process(
@@ -159,17 +157,6 @@ def _abort_process(
                 pass
 
 
-def _unlink_if_identity(path: Path, expected: tuple[int, int]) -> None:
-    """今回 publish した inode のままなら rollback する。"""
-
-    try:
-        result = path.stat(follow_symlinks=False)
-        if (int(result.st_dev), int(result.st_ino)) == expected:
-            path.unlink()
-    except BaseException:
-        pass
-
-
 class VideoRecorder:
     """raw RGB フレーム列を動画へ保存する録画器。
 
@@ -183,29 +170,27 @@ class VideoRecorder:
         output_path: Path,
         size: tuple[int, int],
         fps: float,
-        no_clobber: bool = False,
     ) -> None:
         """録画器を初期化して ffmpeg を起動する。"""
 
-        _output_path = Path(output_path)
-        _output_path.parent.mkdir(parents=True, exist_ok=True)
+        if not isinstance(output_path, Path):
+            raise TypeError("output_path は Path である必要があります")
+        normalized_size = positive_integer_pair(size, name="size")
+        frame_rate = finite_real(
+            fps,
+            name="fps",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        _fps = float(fps)
-        if not math.isfinite(_fps) or _fps <= 0:
-            raise ValueError("fps は有限の正の値である必要がある")
-
-        width, height = size
-        if int(width) <= 0 or int(height) <= 0:
-            raise ValueError("size は正の (width, height) である必要がある")
-
-        self.path = _output_path
-        self.size = (int(width), int(height))
-        self.fps = _fps
-        self.no_clobber = bool(no_clobber)
+        self.path = output_path
+        self.size = normalized_size
+        self.fps = frame_rate
         self._frame_bytes = self.size[0] * self.size[1] * 3
         self._proc: subprocess.Popen[bytes] | None = None
-        # ffmpeg は最終ファイルを直接開かない。正常終了後に同一ファイルシステム上で
-        # atomic replace することで、録画途中や encoder 失敗時も既存動画を保持する。
+        # ffmpeg は final path を直接開かない。完成・fsync 済み staging の publish は
+        # capture transaction が所有する。
         temporary_path = _temporary_video_output_path(self.path)
         self._temporary_path: Path | None = temporary_path
 
@@ -251,6 +236,8 @@ class VideoRecorder:
     def write_frame_rgb24(self, frame: bytes) -> None:
         """1 フレーム分の RGB24 バイト列を書き込む。"""
 
+        if type(frame) is not bytes:
+            raise TypeError("frame は bytes である必要があります")
         proc = self._proc
         if proc is None:
             raise RuntimeError("録画は終了しています")
@@ -279,20 +266,18 @@ class VideoRecorder:
             _abort_process(proc)
         self._remove_temporary_output()
 
-    def _finish_encoding(
+    def finish(
         self,
         *,
         timeout_s: float = DEFAULT_VIDEO_FINALIZE_TIMEOUT_S,
-    ) -> Path | None:
-        """ffmpeg を正常終了させ、fsync 済み staging path を返す。"""
+    ) -> Path:
+        """ffmpeg を正常終了し、fsync 済み staging の所有権を呼び出し側へ移す。"""
 
-        timeout = float(timeout_s)
-        if not math.isfinite(timeout) or timeout < 0.0:
-            raise ValueError("timeout_s は有限の 0 以上である必要があります")
+        timeout = finite_real(timeout_s, name="timeout_s", minimum=0.0)
 
         proc = self._proc
         if proc is None:
-            return None
+            raise RuntimeError("録画はすでに終了しています")
         # communicate に全budgetを渡すと、期限ちょうどのTimeoutExpired後に
         # kill済みprocessをreapする時間が0になりzombieを残し得る。通常は
         # timeoutの一部（最大1秒）をabort/reap用に予約する。timeout=0でも
@@ -357,81 +342,5 @@ class VideoRecorder:
                     f"録画ファイルの永続化に失敗しました: path={self.path}"
                 ) from exc
             raise
-        return temporary_path
-
-    def close_to_staging(
-        self,
-        *,
-        timeout_s: float = DEFAULT_VIDEO_FINALIZE_TIMEOUT_S,
-    ) -> Path | None:
-        """録画を終了し、完成 temp の所有権を呼び出し側へ移す。
-
-        capture manifest と同じ no-clobber generation transaction で公開したい
-        application layer 向け。返した path は呼び出し側が必ず publish または削除する。
-        """
-
-        temporary_path = self._finish_encoding(timeout_s=timeout_s)
-        if temporary_path is None:
-            return None
         self._temporary_path = None
         return temporary_path
-
-    def close(
-        self,
-        *,
-        timeout_s: float = DEFAULT_VIDEO_FINALIZE_TIMEOUT_S,
-    ) -> None:
-        """録画を終了し、ffmpeg を待って完成品を公開する。"""
-
-        temporary_path = self._finish_encoding(timeout_s=timeout_s)
-        if temporary_path is None:
-            return
-        linked_identity: tuple[int, int] | None = None
-        link_committed = False
-        try:
-            if self.no_clobber:
-                # Versioned capture は allocation 後に同名 path が作られても上書きしない。
-                # sibling temp からの hard link は atomic な no-clobber publish になる。
-                result = temporary_path.stat(follow_symlinks=False)
-                linked_identity = (int(result.st_dev), int(result.st_ino))
-                os.link(temporary_path, self.path, follow_symlinks=False)
-                link_committed = True
-                # final link の durability が確定するまで、fsync 済み temp を
-                # recovery copy として残す。成功後の temp unlink は成果物の
-                # durability に関与しない cleanup なので best-effort とする。
-                _fsync_directory(self.path.parent)
-                self._remove_temporary_output()
-            else:
-                # 後方互換の直接利用では、従来どおり成功時に完成品を atomic replace する。
-                os.replace(temporary_path, self.path)
-                self._temporary_path = None
-                _fsync_directory(self.path.parent)
-        except BaseException as exc:
-            # no-clobber publish の directory durability が確定しなかった場合は、
-            # 外部から差し替えられていない今回の inode だけを rollback する。
-            if (
-                linked_identity is not None
-                and (link_committed or not isinstance(exc, OSError))
-            ):
-                _unlink_if_identity(self.path, linked_identity)
-                try:
-                    _fsync_directory(self.path.parent)
-                except BaseException:
-                    pass
-            if isinstance(exc, OSError):
-                if self.no_clobber and temporary_path.exists():
-                    # encode と file fsync は完了済み。late collision や
-                    # directory fsync 失敗でこれを削除すると、長時間の録画を
-                    # 回収できない。exception とともに所有権を caller へ移す。
-                    self._temporary_path = None
-                    raise VideoPublishError(
-                        "録画ファイルの確定に失敗しました"
-                        f": path={self.path}, recovery={temporary_path}",
-                        recovery_path=temporary_path,
-                    ) from exc
-                self._remove_temporary_output()
-                raise RuntimeError(
-                    f"録画ファイルの確定に失敗しました: path={self.path}"
-                ) from exc
-            self._remove_temporary_output()
-            raise

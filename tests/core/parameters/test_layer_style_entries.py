@@ -18,6 +18,10 @@ def test_layer_style_records_can_be_merged_by_param_store():
             layer_site_id="layer:1",
             base_line_thickness=0.01,
             base_line_color_rgb01=(1.0, 0.0, 0.0),
+            effective_line_thickness=0.01,
+            effective_line_color_rgb01=(1.0, 0.0, 0.0),
+            line_thickness_source="code",
+            line_color_source="code",
             explicit_line_thickness=False,
             explicit_line_color=True,
         )

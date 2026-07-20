@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from grafix.core.value_validation import finite_real, rgb01_tuple
+
 from .store import ParamStore
 from .style_ops import ensure_style_entries
 from .style import (
@@ -24,6 +26,31 @@ class FrameStyle:
     global_line_color_rgb01: tuple[float, float, float]
     global_thickness: float
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "bg_color_rgb01",
+            rgb01_tuple(self.bg_color_rgb01, name="bg_color_rgb01"),
+        )
+        object.__setattr__(
+            self,
+            "global_line_color_rgb01",
+            rgb01_tuple(
+                self.global_line_color_rgb01,
+                name="global_line_color_rgb01",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "global_thickness",
+            finite_real(
+                self.global_thickness,
+                name="global_thickness",
+                minimum=0.0,
+                minimum_inclusive=False,
+            ),
+        )
+
 
 class StyleResolver:
     """ParamStore の style キーから、そのフレームの style を解決する。"""
@@ -36,11 +63,27 @@ class StyleResolver:
         base_global_thickness: float,
         base_global_line_color_rgb01: tuple[float, float, float],
     ) -> None:
+        if not isinstance(store, ParamStore):
+            raise TypeError("store は ParamStore である必要があります")
+        background = rgb01_tuple(
+            base_background_color_rgb01,
+            name="base_background_color_rgb01",
+        )
+        line_color = rgb01_tuple(
+            base_global_line_color_rgb01,
+            name="base_global_line_color_rgb01",
+        )
+        thickness = finite_real(
+            base_global_thickness,
+            name="base_global_thickness",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
         ensure_style_entries(
             store,
-            background_color_rgb01=base_background_color_rgb01,
-            global_thickness=float(base_global_thickness),
-            global_line_color_rgb01=base_global_line_color_rgb01,
+            background_color_rgb01=background,
+            global_thickness=thickness,
+            global_line_color_rgb01=line_color,
         )
 
         self._store = store
@@ -48,9 +91,9 @@ class StyleResolver:
         self._key_thickness = style_key("global_thickness")
         self._key_line_color = style_key("global_line_color")
 
-        self._base_background_rgb255 = rgb01_to_rgb255(base_background_color_rgb01)
-        self._base_thickness = float(base_global_thickness)
-        self._base_line_color_rgb255 = rgb01_to_rgb255(base_global_line_color_rgb01)
+        self._base_background_rgb255 = rgb01_to_rgb255(background)
+        self._base_thickness = thickness
+        self._base_line_color_rgb255 = rgb01_to_rgb255(line_color)
 
     def resolve(self) -> FrameStyle:
         """そのフレームで使う style を返す。"""
@@ -71,17 +114,21 @@ class StyleResolver:
 
         thickness_state = self._store.get_state(self._key_thickness)
         thickness = (
-            float(self._base_thickness)
+            self._base_thickness
             if thickness_state is None or not thickness_state.override
-            else float(thickness_state.ui_value)
+            else finite_real(
+                thickness_state.ui_value,
+                name="global_thickness",
+                minimum=0.0,
+                minimum_inclusive=False,
+            )
         )
 
         return FrameStyle(
             bg_color_rgb01=rgb255_to_rgb01(bg255),
             global_line_color_rgb01=rgb255_to_rgb01(line255),
-            global_thickness=float(thickness),
+            global_thickness=thickness,
         )
 
 
 __all__ = ["FrameStyle", "StyleResolver"]
-

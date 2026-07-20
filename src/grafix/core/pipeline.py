@@ -15,6 +15,12 @@ from grafix.core.realize import GeometryCacheKey, RealizeSession
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.resource_budget import ensure_resource_usage
 from grafix.core.scene import SceneItem, normalize_scene
+from grafix.core.value_validation import (
+    exact_integer,
+    exact_string,
+    finite_real,
+    rgb01_tuple,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +32,64 @@ class RealizedLayer:
     cache_key: GeometryCacheKey
     color: tuple[float, float, float]
     thickness: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.layer, Layer):
+            raise TypeError("RealizedLayer.layer は Layer である必要があります")
+        if not isinstance(self.realized, RealizedGeometry):
+            raise TypeError(
+                "RealizedLayer.realized は RealizedGeometry である必要があります"
+            )
+        cache_key = self.cache_key
+        if type(cache_key) is not tuple or len(cache_key) != 2:
+            raise TypeError(
+                "RealizedLayer.cache_key は (geometry_id, revision) tuple である必要があります"
+            )
+        geometry_id = exact_string(
+            cache_key[0],
+            name="RealizedLayer.cache_key.geometry_id",
+        )
+        revision = cache_key[1]
+        if type(revision) is not tuple or len(revision) != 2:
+            raise TypeError(
+                "RealizedLayer.cache_key revision は2要素の tuple である必要があります"
+            )
+        normalized_key: GeometryCacheKey = (
+            geometry_id,
+            (
+                exact_integer(
+                    revision[0],
+                    name="RealizedLayer.cache_key.primitive_revision",
+                    minimum=0,
+                ),
+                exact_integer(
+                    revision[1],
+                    name="RealizedLayer.cache_key.effect_revision",
+                    minimum=0,
+                ),
+            ),
+        )
+        if geometry_id != self.layer.geometry.id:
+            raise ValueError(
+                "RealizedLayer.cache_key geometry_id は Layer.geometry.id と"
+                "一致する必要があります"
+            )
+        object.__setattr__(self, "cache_key", normalized_key)
+        object.__setattr__(
+            self,
+            "color",
+            rgb01_tuple(self.color, name="RealizedLayer.color"),
+        )
+        object.__setattr__(
+            self,
+            "thickness",
+            finite_real(
+                self.thickness,
+                name="RealizedLayer.thickness",
+                minimum=0.0,
+                minimum_inclusive=False,
+            ),
+        )
 
 
 def realize_scene(

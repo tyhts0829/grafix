@@ -29,6 +29,19 @@ class _Style:
     item_inner_spacing: _Vec2
 
 
+class _Combo:
+    def __init__(self, owner: _ChoiceImgui, *, opened: bool) -> None:
+        self._owner = owner
+        self.opened = bool(opened)
+
+    def __enter__(self) -> _Combo:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        if self.opened:
+            self._owner.end_combo_calls += 1
+
+
 class _ChoiceImgui:
     """Adaptive choice の描画判断と入出力だけを記録する pyimgui fake。"""
 
@@ -61,9 +74,6 @@ class _ChoiceImgui:
     def get_content_region_available_width(self) -> float:
         return self.available_width
 
-    def get_content_region_avail(self) -> _Vec2:
-        return _Vec2(self.available_width, 100.0)
-
     def calc_text_size(self, text: str) -> _Vec2:
         return _Vec2(len(str(text)) * self.char_width, 16.0)
 
@@ -88,9 +98,9 @@ class _ChoiceImgui:
         label: str,
         preview: str,
         flags: int | None = None,
-    ) -> bool:
+    ) -> _Combo:
         self.combo_calls.append((str(label), str(preview), flags))
-        return self.popup_open
+        return _Combo(self, opened=self.popup_open)
 
     def input_text_with_hint(
         self,
@@ -101,18 +111,6 @@ class _ChoiceImgui:
         **_kwargs: object,
     ) -> tuple[bool, str]:
         self.filter_calls.append((str(label), str(hint), str(current)))
-        if self.filter_value is None:
-            return False, str(current)
-        return str(self.filter_value) != str(current), str(self.filter_value)
-
-    def input_text(
-        self,
-        label: str,
-        current: str,
-        *_args: object,
-        **_kwargs: object,
-    ) -> tuple[bool, str]:
-        self.filter_calls.append((str(label), "", str(current)))
         if self.filter_value is None:
             return False, str(current)
         return str(self.filter_value) != str(current), str(self.filter_value)
@@ -131,8 +129,8 @@ class _ChoiceImgui:
     def text(self, text: str) -> None:
         self.text_calls.append(str(text))
 
-    def end_combo(self) -> None:
-        self.end_combo_calls += 1
+    def text_disabled(self, text: str) -> None:
+        self.text_calls.append(str(text))
 
     @staticmethod
     def _visible_label(label: str) -> str:
@@ -264,43 +262,6 @@ def test_radio_combo_decision_is_stable_at_retina_scale(
         outcomes.append(bool(imgui.radio_labels))
 
     assert outcomes == [expects_radio, expects_radio]
-
-
-def test_choice_falls_back_to_count_without_width_api(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delattr(_ChoiceImgui, "get_content_region_available_width")
-
-    short_imgui = _ChoiceImgui(available_width=1.0)
-    monkeypatch.setitem(sys.modules, "imgui", short_imgui)
-    short_row = _choice_row(
-        choices=("a", "b", "c", "d"),
-        value="b",
-        site_id="no-width-short",
-    )
-    changed, value = widget_choice_radio(short_row)
-
-    assert changed is False
-    assert value == "b"
-    assert short_imgui.radio_labels
-    assert short_imgui.combo_calls == []
-
-    many_imgui = _ChoiceImgui(
-        available_width=10_000.0,
-        popup_open=False,
-    )
-    monkeypatch.setitem(sys.modules, "imgui", many_imgui)
-    many_row = _choice_row(
-        choices=("a", "b", "c", "d", "e"),
-        value="b",
-        site_id="no-width-many",
-    )
-    changed, value = widget_choice_radio(many_row)
-
-    assert changed is False
-    assert value == "b"
-    assert many_imgui.radio_labels == []
-    assert many_imgui.combo_calls
 
 
 @pytest.mark.parametrize("available_width", [0.0, -10.0])
@@ -466,7 +427,7 @@ def test_large_combo_filter_reports_no_match(
     assert imgui.end_combo_calls == 1
 
 
-def test_normal_stale_choice_is_coerced_to_first_choice_in_combo(
+def test_normal_stale_choice_is_preserved_as_unavailable_in_combo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     choices = ("a", "b", "c", "d", "e")
@@ -483,12 +444,14 @@ def test_normal_stale_choice_is_coerced_to_first_choice_in_combo(
 
     changed, value = widget_choice_radio(row)
 
-    assert changed is True
-    assert value == "a"
-    assert imgui.combo_calls == [("##value", "a", imgui.COMBO_HEIGHT_LARGE)]
+    assert changed is False
+    assert value == "removed"
+    assert imgui.combo_calls == [
+        ("##value", "removed (unavailable)", imgui.COMBO_HEIGHT_LARGE)
+    ]
 
 
-def test_normal_stale_choice_is_coerced_to_first_choice_in_radio(
+def test_normal_stale_choice_forces_unavailable_combo_instead_of_radio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     imgui = _ChoiceImgui(available_width=1_000.0)
@@ -501,10 +464,12 @@ def test_normal_stale_choice_is_coerced_to_first_choice_in_radio(
 
     changed, value = widget_choice_radio(row)
 
-    assert changed is True
-    assert value == "a"
-    assert imgui.radio_labels == [("a##0", True), ("b##1", False)]
-    assert imgui.combo_calls == []
+    assert changed is False
+    assert value == "removed"
+    assert imgui.radio_labels == []
+    assert imgui.combo_calls == [
+        ("##value", "removed (unavailable)", imgui.COMBO_HEIGHT_LARGE)
+    ]
 
 
 def test_empty_choice_list_is_rejected(

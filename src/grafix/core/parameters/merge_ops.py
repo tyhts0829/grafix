@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import cast
 from weakref import WeakKeyDictionary
 
 from .frame_params import FrameParamRecord
@@ -14,7 +13,6 @@ from .key import ParameterKey
 from .meta import ParamMeta, merge_code_meta_with_stored_gui_meta
 from .reconcile_ops import reconcile_loaded_groups_for_runtime
 from .runtime import ParamStoreRuntime
-from .source import ValueSource
 from .store import ParamStore
 from .view import (
     canonicalize_ui_value,
@@ -22,17 +20,13 @@ from .view import (
 )
 
 _MISSING = object()
-_VALUE_SOURCES = frozenset({"code", "ui", "midi_live", "midi_frozen"})
-
-
 @dataclass(slots=True)
 class _StableMergeEntry:
     """stable record の構造と直近 runtime 値をまとめた内部 cache entry。"""
 
     group: tuple[str, str]
     meta: ParamMeta
-    effect_step: tuple[str, int] | None
-    explicit: bool | None
+    explicit: bool
     last_effective: object
     last_source: object
     runtime_frame_token: int = 0
@@ -124,28 +118,22 @@ def _merge_frame_params(
 
     runtime = store._runtime_ref()
     ordinals = store._ordinals_ref()
-    effects = store._effects_ref()
     entries = cache.entries
     explicit_changes: list[tuple[ParameterKey, _StableMergeEntry]] = []
     structure_changed = False
 
     for rec in records:
         key = rec.key
-        desired_effect_step = _effect_step_for_record(rec)
         entry = entries.get(key)
 
         if (
             entry is None
             or merge_code_meta_with_stored_gui_meta(rec.meta, entry.meta)
             != entry.meta
-            or (
-                desired_effect_step is not None
-                and entry.effect_step != desired_effect_step
-            )
         ):
             # 初出・構造変更・cache 再構築時だけ汎用 path へ入る。stable path の
             # eligibility を判定するための records 全件 pre-scan は行わない。
-            group = (str(key.op), str(key.site_id))
+            group = (key.op, key.site_id)
             if group not in runtime.observed_groups:
                 runtime.observed_groups.add(group)
                 structure_changed = True
@@ -166,7 +154,8 @@ def _merge_frame_params(
                 store._ensure_state(
                     key,
                     base_value=canonicalize_ui_value(rec.base, rec.meta),
-                    initial_override=(not bool(rec.explicit)),
+                    explicit=rec.explicit,
+                    initial_override=not rec.explicit,
                 )
                 structure_changed = True
 
@@ -183,7 +172,7 @@ def _merge_frame_params(
             if (
                 state is not None
                 and existing_meta is not None
-                and str(desired_meta.kind) != str(existing_meta.kind)
+                and desired_meta.kind != existing_meta.kind
             ):
                 store._observe_history_key_before(key)
                 state.ui_value = canonicalize_ui_value_for_meta_change(
@@ -196,27 +185,11 @@ def _merge_frame_params(
                 store._set_meta(key, desired_meta)
                 structure_changed = True
 
-            current_effect_step = effects.get_step(key.op, key.site_id)
-            if (
-                desired_effect_step is not None
-                and current_effect_step != desired_effect_step
-            ):
-                effects.record_step(
-                    op=str(key.op),
-                    site_id=str(key.site_id),
-                    chain_id=desired_effect_step[0],
-                    step_index=desired_effect_step[1],
-                )
-                store._touch()
-                structure_changed = True
-                current_effect_step = desired_effect_step
-
             if entry is None:
                 entry = _StableMergeEntry(
                     group=group,
                     meta=desired_meta,
-                    effect_step=current_effect_step,
-                    explicit=store._explicit_by_key.get(key),
+                    explicit=store._explicit_by_key[key],
                     last_effective=runtime.last_effective_by_key.get(key, _MISSING),
                     last_source=runtime.last_source_by_key.get(key, _MISSING),
                 )
@@ -226,7 +199,6 @@ def _merge_frame_params(
                 # frame-local 状態は同じ entry に残して last-record-wins を守る。
                 entry.group = group
                 entry.meta = desired_meta
-                entry.effect_step = current_effect_step
 
         _merge_runtime_observation(
             runtime=runtime,
@@ -238,7 +210,7 @@ def _merge_frame_params(
         )
         _record_explicit_change(
             key=key,
-            explicit=bool(rec.explicit),
+            explicit=rec.explicit,
             entry=entry,
             frame_token=frame_token,
             explicit_changes=explicit_changes,
@@ -257,7 +229,7 @@ def _merge_frame_params(
     # 空 mapping でも呼ぶことで、既存の commit hook/例外伝播 semantics を維持する。
     _apply_explicit_override_follow_policy(store, explicit_by_key)
     for key, entry in explicit_changes:
-        entry.explicit = store._explicit_by_key.get(key)
+        entry.explicit = store._explicit_by_key[key]
 
 
 def _cache_for_store(store: ParamStore) -> _StableMergeCache:
@@ -266,12 +238,6 @@ def _cache_for_store(store: ParamStore) -> _StableMergeCache:
         cache = _StableMergeCache()
         _CACHE_BY_STORE[store] = cache
     return cache
-
-
-def _effect_step_for_record(rec: FrameParamRecord) -> tuple[str, int] | None:
-    if rec.chain_id is None or rec.step_index is None:
-        return None
-    return str(rec.chain_id), int(rec.step_index)
 
 
 def _same_runtime_value(left: object, right: object) -> bool:
@@ -296,12 +262,8 @@ def _merge_runtime_observation(
 ) -> None:
     """effective/source の実変更だけを保存し、rollback entry を遅延作成する。"""
 
-    effective_changed = rec.effective is not None and not _same_runtime_value(
-        rec.effective, entry.last_effective
-    )
-    source_changed = rec.source in _VALUE_SOURCES and not _same_runtime_value(
-        rec.source, entry.last_source
-    )
+    effective_changed = not _same_runtime_value(rec.effective, entry.last_effective)
+    source_changed = not _same_runtime_value(rec.source, entry.last_source)
     if not effective_changed and not source_changed:
         return
 
@@ -317,7 +279,7 @@ def _merge_runtime_observation(
         runtime.last_effective_by_key[key] = rec.effective
     if source_changed:
         entry.last_source = rec.source
-        runtime.last_source_by_key[key] = cast(ValueSource, rec.source)
+        runtime.last_source_by_key[key] = rec.source
 
     entry.runtime_differs = not (
         _same_runtime_value(entry.last_effective, entry.runtime_before_effective)
@@ -336,12 +298,12 @@ def _record_explicit_change(
     """explicit の最終差分だけを follow policy へ渡す。"""
 
     if entry.explicit_frame_token == frame_token:
-        entry.explicit_in_frame = bool(explicit)
+        entry.explicit_in_frame = explicit
         return
-    if entry.explicit == bool(explicit):
+    if entry.explicit == explicit:
         return
     entry.explicit_frame_token = frame_token
-    entry.explicit_in_frame = bool(explicit)
+    entry.explicit_in_frame = explicit
     explicit_changes.append((key, entry))
 
 
@@ -351,15 +313,8 @@ def _apply_explicit_override_follow_policy(
     """explicit/implicit の変化に追従して override を条件付きで更新する。"""
 
     for key, new_explicit in explicit_by_key_this_frame.items():
-        prev_explicit = store._explicit_by_key.get(key)
-        new_explicit = bool(new_explicit)
+        prev_explicit = store._explicit_by_key[key]
 
-        if prev_explicit is None:
-            # 旧 JSON（explicit 情報なし）もあるので、unknown の場合は触らず記録だけ行う。
-            store._set_explicit(key, new_explicit)
-            continue
-
-        prev_explicit = bool(prev_explicit)
         if prev_explicit == new_explicit:
             continue
 
@@ -370,8 +325,8 @@ def _apply_explicit_override_follow_policy(
 
         default_override_prev = not prev_explicit
         default_override_new = not new_explicit
-        if bool(state.override) == bool(default_override_prev):
-            next_override = bool(default_override_new)
+        if state.override == default_override_prev:
+            next_override = default_override_new
             if state.override != next_override:
                 state.override = next_override
                 store._touch()

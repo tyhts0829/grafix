@@ -45,22 +45,17 @@ def test_sync_slider_scenario_reports_phases_progress_and_exact_output() -> None
         if contract.severity == "hard"
     )
 
-    metric_by_identity = {
-        (metric.name, metric.phase): metric for metric in result.metrics
-    }
+    metric_by_name = {metric.name: metric for metric in result.metrics}
     for phase in ("warmup", "drag", "settle"):
-        metric = metric_by_identity[("ux01.frame_duration", phase)]
+        metric = metric_by_name[f"ux01.frame_duration.{phase}"]
+        assert metric.phase == phase
         assert metric.distribution is not None
         assert metric.distribution.count >= 1
-    latency = metric_by_identity[("ux01.input_to_present", "drag")]
+    latency = metric_by_name["ux01.input_to_present"]
+    assert latency.phase == "drag"
     assert latency.distribution is not None
     assert latency.distribution.count == 6
-    assert (
-        metric_by_identity[
-            ("ux01.final_input_revision_delta", "settle")
-        ].value
-        == 6
-    )
+    assert metric_by_name["ux01.final_input_revision_delta"].value == 6
 
 
 def test_runner_registry_exposes_sync_smoke_and_worker_interactive_cases() -> None:
@@ -142,6 +137,7 @@ def test_hosted_renderer_does_not_advance_scene_serial_for_stale_redisplay(
             self._layers: list[Any] = []
             self.last_realized_snapshot_revision: int | None = None
             self.last_evaluation_succeeded: bool | None = None
+            self.last_output_updated = False
 
         def run(self, *args: object, **kwargs: object) -> list[Any]:
             self._calls += 1
@@ -151,8 +147,10 @@ def test_hosted_renderer_does_not_advance_scene_serial_for_stale_redisplay(
                     self._inner.last_realized_snapshot_revision
                 )
                 self.last_evaluation_succeeded = True
+                self.last_output_updated = True
             else:
                 self.last_evaluation_succeeded = None
+                self.last_output_updated = False
             return self._layers
 
         def close(self) -> None:

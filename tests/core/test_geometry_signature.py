@@ -138,11 +138,10 @@ def test_non_finite_float_is_rejected(value: float) -> None:
         _geometry(value)
 
 
-def test_schema_version_is_part_of_signature() -> None:
-    schema_v1 = Geometry.create("signature-test", params={"value": 1}, schema_version=1)
-    schema_v2 = Geometry.create("signature-test", params={"value": 1}, schema_version=2)
+def test_geometry_signature_is_fixed_to_canonical_v2() -> None:
+    geometry = Geometry.create("signature-test", params={"value": 1})
 
-    assert schema_v1.id != schema_v2.id
+    assert geometry.id == "cab9e82cb486258a9ac6892af871ce82"
 
 
 def test_equal_id_implies_identical_typed_runtime_arguments() -> None:

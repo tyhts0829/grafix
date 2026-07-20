@@ -24,6 +24,8 @@ def test_override_priority_and_quantize():
                 key=key,
                 base=0.05,
                 meta=meta_r,
+                effective=0.05,
+                source="code",
                 explicit=True,
             )
         ],
@@ -85,6 +87,8 @@ def test_vec3_cc_applies_per_component():
                 key=key,
                 base=(0.0, 0.0, 0.0),
                 meta=meta_p,
+                effective=(0.0, 0.0, 0.0),
+                source="code",
                 explicit=True,
             )
         ],
@@ -125,6 +129,8 @@ def test_font_uses_base_when_override_false():
                 key=key,
                 base="A.ttf",
                 meta=meta_font,
+                effective="A.ttf",
+                source="code",
                 explicit=True,
             )
         ],
@@ -159,6 +165,8 @@ def test_bool_uses_code_or_ui_according_to_override() -> None:
                 key=key,
                 base=True,
                 meta=meta_bool,
+                effective=True,
+                source="code",
                 explicit=True,
             )
         ],

@@ -8,7 +8,7 @@ import pytest
 from grafix.core.parameters.codec import (
     dumps_param_store,
     encode_param_store,
-    loads_param_store,
+    loads_param_store_result,
 )
 from grafix.core.parameters.context import (
     parameter_context,
@@ -34,7 +34,6 @@ SEMANTIC_META = ParamMeta(
     kind="float",
     ui_min=0.1,
     ui_max=100.0,
-    choices=("fine", "coarse"),
     display_name="Stroke width",
     description="描画する線の太さ。",
     unit="mm",
@@ -57,6 +56,8 @@ def _store_with_semantic_meta() -> tuple[ParamStore, ParameterKey]:
                 key=key,
                 base=1.5,
                 meta=SEMANTIC_META,
+                effective=1.5,
+                source="code",
                 explicit=False,
             )
         ],
@@ -68,8 +69,59 @@ def test_meta_spec_roundtrip_preserves_all_semantic_fields() -> None:
     spec = meta_to_spec(SEMANTIC_META)
 
     assert spec["recommended_range"] == [0.2, 5.0]
-    assert spec["choices"] == ["fine", "coarse"]
+    assert spec["choices"] is None
     assert meta_from_spec(spec) == SEMANTIC_META
+
+
+@pytest.mark.parametrize("kind", ["unknown", "", "FLOAT"])
+def test_param_meta_rejects_unknown_kind(kind: str) -> None:
+    with pytest.raises(ValueError, match="kind"):
+        ParamMeta(kind=kind)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "choices",
+    [None, (), ("a", "a"), ("a", 1)],
+)
+def test_choice_requires_unique_exact_string_choices(choices: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="choice"):
+        ParamMeta(kind="choice", choices=choices)  # type: ignore[arg-type]
+
+
+def test_non_choice_rejects_choices() -> None:
+    with pytest.raises(ValueError, match="choices"):
+        ParamMeta(kind="float", choices=("a",))
+
+
+@pytest.mark.parametrize(
+    ("kind", "ui_min", "ui_max"),
+    [
+        ("bool", 0, None),
+        ("str", None, 1),
+        ("choice", 0, 1),
+        ("float", True, 1.0),
+        ("float", 0.0, float("inf")),
+        ("int", 1, 1),
+        ("vec3", 2.0, 1.0),
+    ],
+)
+def test_param_meta_rejects_invalid_kind_range(
+    kind: str,
+    ui_min: object,
+    ui_max: object,
+) -> None:
+    kwargs = (
+        {"choices": ("a", "b")}
+        if kind == "choice"
+        else {}
+    )
+    with pytest.raises((TypeError, ValueError)):
+        ParamMeta(  # type: ignore[arg-type]
+            kind=kind,
+            ui_min=ui_min,
+            ui_max=ui_max,
+            **kwargs,
+        )
 
 
 @pytest.mark.parametrize("step", [0.0, -0.1, math.nan, math.inf, -math.inf])
@@ -134,7 +186,7 @@ def test_codec_and_variation_roundtrip_preserve_semantic_meta() -> None:
     assert encoded_meta["scale"] == "log"
     assert encoded_meta["recommended_range"] == [0.2, 5.0]
 
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
 
     assert loaded.get_meta(key) == SEMANTIC_META
     variations = list_variations(loaded)
@@ -201,7 +253,6 @@ def test_merge_refreshes_code_owned_meta_and_preserves_stored_gui_range() -> Non
         SEMANTIC_META,
         ui_min=-10.0,
         ui_max=10.0,
-        choices=("stale",),
         display_name="Stale width",
         description=None,
         unit="px",
@@ -214,12 +265,30 @@ def test_merge_refreshes_code_owned_meta_and_preserves_stored_gui_range() -> Non
     )
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=1.5, meta=stale_meta, explicit=False)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=1.5,
+                meta=stale_meta,
+                effective=1.5,
+                source="code",
+                explicit=False,
+            )
+        ],
     )
 
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=1.5, meta=SEMANTIC_META, explicit=False)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=1.5,
+                meta=SEMANTIC_META,
+                effective=1.5,
+                source="code",
+                explicit=False,
+            )
+        ],
     )
 
     expected = replace(SEMANTIC_META, ui_min=-10.0, ui_max=10.0)
@@ -228,7 +297,16 @@ def test_merge_refreshes_code_owned_meta_and_preserves_stored_gui_range() -> Non
     revision = store.revision
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=1.5, meta=SEMANTIC_META, explicit=False)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=1.5,
+                meta=SEMANTIC_META,
+                effective=1.5,
+                source="code",
+                explicit=False,
+            )
+        ],
     )
     assert store.get_meta(key) == expected
     assert store.revision == revision
@@ -238,15 +316,11 @@ def test_resolver_refreshes_current_choices_without_losing_gui_range_or_value() 
     store = ParamStore()
     stale_meta = ParamMeta(
         kind="choice",
-        ui_min=-10.0,
-        ui_max=10.0,
         choices=("circle",),
         description="古い候補。",
     )
     current_meta = ParamMeta(
         kind="choice",
-        ui_min=0.0,
-        ui_max=1.0,
         choices=("circle", "rect"),
         description="現在登録されている候補。",
     )
@@ -271,14 +345,10 @@ def test_resolver_refreshes_current_choices_without_losing_gui_range_or_value() 
     key = ParameterKey(op="selector", site_id="site-1", arg="target")
     assert resolved == {"target": "circle"}
     assert store.get_state(key).ui_value == "circle"  # type: ignore[union-attr]
-    assert store.get_meta(key) == replace(
-        current_meta,
-        ui_min=-10.0,
-        ui_max=10.0,
-    )
+    assert store.get_meta(key) == current_meta
 
 
-def test_resolver_refreshes_current_kind_and_preserves_stored_gui_range() -> None:
+def test_kind_change_uses_current_code_owned_range() -> None:
     store = ParamStore()
     stale_meta = ParamMeta(kind="float", ui_min=-10.0, ui_max=10.0)
     current_meta = ParamMeta(kind="int", ui_min=0, ui_max=100)
@@ -303,11 +373,7 @@ def test_resolver_refreshes_current_kind_and_preserves_stored_gui_range() -> Non
 
     key = ParameterKey(op="semantic-op", site_id="site-1", arg="value")
     assert resolved == {"value": 2}
-    assert store.get_meta(key) == replace(
-        current_meta,
-        ui_min=-10.0,
-        ui_max=10.0,
-    )
+    assert store.get_meta(key) == current_meta
 
 
 @pytest.mark.parametrize(
@@ -384,11 +450,13 @@ def test_loaded_choices_follow_current_code_without_losing_saved_selection() -> 
                 key=key,
                 base="circle",
                 meta=stale_meta,
+                effective="circle",
+                source="code",
                 explicit=False,
             )
         ],
     )
-    loaded = loads_param_store(dumps_param_store(store))
+    loaded = loads_param_store_result(dumps_param_store(store)).store
     current_meta = ParamMeta(kind="choice", choices=("circle", "rect"))
 
     with parameter_context(loaded):
@@ -412,13 +480,21 @@ def test_worker_snapshot_records_current_code_owned_meta() -> None:
         SEMANTIC_META,
         ui_min=-10.0,
         ui_max=10.0,
-        choices=("stale",),
         display_name="Stale width",
         description=None,
     )
     merge_frame_params(
         store,
-        [FrameParamRecord(key=key, base=1.5, meta=stale_meta, explicit=False)],
+        [
+            FrameParamRecord(
+                key=key,
+                base=1.5,
+                meta=stale_meta,
+                effective=1.5,
+                source="code",
+                explicit=False,
+            )
+        ],
     )
 
     with parameter_context_from_snapshot(store_snapshot(store)) as frame_params:

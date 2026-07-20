@@ -9,7 +9,7 @@ from typing import Any
 from .key import ParameterKey
 from .meta import ParamMeta
 from .store import ParamStore
-from .view import canonicalize_ui_value, normalize_input
+from .validation import validate_cc_key, validate_parameter_value
 
 
 class _KeepCcKey:
@@ -30,43 +30,39 @@ def update_state_from_ui(
 ) -> tuple[bool, str | None]:
     """UI から渡された入力を正規化し、対応する ParamState に反映する。"""
 
-    normalized, err = normalize_input(ui_input_value, meta)
-    if err and normalized is None:
-        return False, err
-
-    canonical = canonicalize_ui_value(
-        ui_input_value if normalized is None else normalized,
-        meta,
-    )
+    try:
+        canonical = validate_parameter_value(
+            ui_input_value,
+            kind=meta.kind,
+            choices=meta.choices,
+        )
+        if override is not None and type(override) is not bool:
+            raise TypeError("override must be an exact bool or None")
+        canonical_cc = (
+            cc_key
+            if isinstance(cc_key, _KeepCcKey)
+            else validate_cc_key(cc_key, kind=meta.kind, op=key.op)
+        )
+    except (TypeError, ValueError) as exc:
+        return False, str(exc)
 
     # History の patch transaction は変更対象が判明した時点で、この 1 key
     # だけの変更前値を退避する。既存 key の slider 操作で store 全体を
     # deepcopy しないため、代入より前に通知する必要がある。
     store._observe_history_key_before(key)
-    state = store._ensure_state(key, base_value=canonical)
+    state = store._ensure_state(key, base_value=canonical, explicit=False)
     before = (state.ui_value, state.override, state.cc_key)
     state.ui_value = canonical
     if override is not None:
-        state.override = bool(override)
+        state.override = override
 
-    if not isinstance(cc_key, _KeepCcKey):
-        if cc_key is None:
-            state.cc_key = None
-        elif isinstance(cc_key, int):
-            state.cc_key = int(cc_key)
-        else:
-            a, b, c = cc_key
-            cc_tuple = (
-                None if a is None else int(a),
-                None if b is None else int(b),
-                None if c is None else int(c),
-            )
-            state.cc_key = None if cc_tuple == (None, None, None) else cc_tuple
+    if not isinstance(canonical_cc, _KeepCcKey):
+        state.cc_key = canonical_cc
 
     if (state.ui_value, state.override, state.cc_key) != before:
         store._touch(structure=False, value_keys=(key,))
 
-    return True, err
+    return True, None
 
 
 __all__ = ["update_state_from_ui"]

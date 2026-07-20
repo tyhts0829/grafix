@@ -20,6 +20,44 @@ _RESAMPLE_OPEN = 1
 _RESAMPLE_CLOSED = 2
 
 
+def float_cycle(value: float | Sequence[float]) -> tuple[float, ...]:
+    """float または float 列を循環利用できる非空タプルへ正規化する。"""
+
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return (float(value),)
+        if value.size <= 0:
+            raise ValueError("空のシーケンスは指定できません")
+        return tuple(float(item) for item in value.ravel())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        if len(value) <= 0:
+            raise ValueError("空のシーケンスは指定できません")
+        return tuple(float(item) for item in value)
+    return (float(value),)
+
+
+def round_half_away_from_zero(values: np.ndarray) -> np.ndarray:
+    """0.5 境界を絶対値方向へ丸める。"""
+
+    return np.sign(values) * np.floor(np.abs(values) + 0.5)
+
+
+@njit(cache=True, fastmath=True, inline="always")  # type: ignore[misc]
+def reflect_index(index: int, size: int) -> int:
+    """端点を重ねる reflect 境界条件の配列 index を返す。"""
+
+    reflected = int(index)
+    count = int(size)
+    if count <= 1:
+        return 0
+    while reflected < 0 or reflected >= count:
+        if reflected < 0:
+            reflected = -reflected
+        elif reflected >= count:
+            reflected = 2 * count - 2 - reflected
+    return int(reflected)
+
+
 def empty_geom() -> tuple[np.ndarray, np.ndarray]:
     """空のpacked geometryを標準dtypeで返す。"""
 
@@ -571,6 +609,19 @@ def _stable_canonicalize_direction(vector: np.ndarray) -> np.ndarray:
     return result
 
 
+def _cross3(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """3要素ベクトル同士の外積を返す。"""
+
+    return np.asarray(
+        (
+            left[1] * right[2] - left[2] * right[1],
+            left[2] * right[0] - left[0] * right[2],
+            left[0] * right[1] - left[1] * right[0],
+        ),
+        dtype=np.float64,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PlanarFrame:
     """全点から推定した、world座標と局所XY平面を結ぶ直交frame。"""
@@ -624,6 +675,26 @@ class PlanarFrame:
         if values.shape[-1] != 3:
             raise ValueError("points は末尾shapeが3である必要がある")
         return values @ self.basis + self.origin
+
+    def project(self, points: np.ndarray) -> np.ndarray:
+        """world座標をframeの局所XYへ射影する。"""
+
+        if not self.valid:
+            raise ValueError(f"無効な PlanarFrame は変換に使えない: {self.status}")
+        values = np.asarray(points, dtype=np.float64)
+        if values.shape[-1] != 3:
+            raise ValueError("points は末尾shapeが3である必要がある")
+        return (values - self.origin) @ self.inverse[:, :2]
+
+    def lift(self, points: np.ndarray) -> np.ndarray:
+        """frameの局所XY座標をworld座標へ持ち上げる。"""
+
+        if not self.valid:
+            raise ValueError(f"無効な PlanarFrame は変換に使えない: {self.status}")
+        values = np.asarray(points, dtype=np.float64)
+        if values.shape[-1] != 2:
+            raise ValueError("points は末尾shapeが2である必要がある")
+        return values @ self.basis[:2] + self.origin
 
     @classmethod
     def from_points(
@@ -760,12 +831,12 @@ class PlanarFrame:
                 return _invalid_planar_frame(status="linear", rank=1, origin=origin)
             x_axis = _canonicalize_direction(fallback / fallback_norm)
 
-        y_axis = np.cross(normal, x_axis)
+        y_axis = _cross3(normal, x_axis)
         y_norm = float(np.linalg.norm(y_axis))
         if y_norm <= 1e-14:
             return _invalid_planar_frame(status="linear", rank=1, origin=origin)
         y_axis /= y_norm
-        x_axis = np.cross(y_axis, normal)
+        x_axis = _cross3(y_axis, normal)
         x_axis /= float(np.linalg.norm(x_axis))
 
         basis = np.stack([x_axis, y_axis, normal], axis=0)
@@ -780,6 +851,119 @@ class PlanarFrame:
             rank=rank,
             status=status,
         )
+
+
+def _world_canonical_basis(normal: np.ndarray) -> np.ndarray | None:
+    """単位法線から world axis 優先の右手直交基底を返す。"""
+
+    canonical_normal = _stable_canonicalize_direction(normal)
+    world_axes = np.eye(3, dtype=np.float64)
+    projected = world_axes - np.outer(
+        world_axes @ canonical_normal,
+        canonical_normal,
+    )
+    lengths = np.linalg.norm(projected, axis=1)
+    axis_index = _stable_argmax(lengths)
+    axis_length = float(lengths[axis_index])
+    if not math.isfinite(axis_length) or axis_length <= 1e-14:
+        return None
+
+    x_axis = projected[axis_index] / axis_length
+    if float(np.dot(x_axis, world_axes[axis_index])) < 0.0:
+        x_axis = -x_axis
+    y_axis = _cross3(canonical_normal, x_axis)
+    y_length = float(np.linalg.norm(y_axis))
+    if not math.isfinite(y_length) or y_length <= 1e-14:
+        return None
+    y_axis /= y_length
+    x_axis = _cross3(y_axis, canonical_normal)
+    x_axis /= float(np.linalg.norm(x_axis))
+    return np.stack([x_axis, y_axis, canonical_normal], axis=0)
+
+
+def _axis_aligned_planar_frame(points: np.ndarray) -> PlanarFrame | None:
+    """明らかな axis-aligned rank-2 平面を canonical frame 化する。"""
+
+    extents = np.ptp(points, axis=0)
+    constant_axes = np.flatnonzero(extents == 0.0)
+    if constant_axes.size != 1:
+        return None
+    normal_index = int(constant_axes[0])
+    plane_axes = tuple(index for index in range(3) if index != normal_index)
+    planar = points[:, plane_axes] - points[0, plane_axes]
+    scale = float(np.max(np.linalg.norm(planar, axis=1)))
+    if not math.isfinite(scale) or scale <= 0.0:
+        return None
+    reference_index = int(np.argmax(np.linalg.norm(planar, axis=1)))
+    reference = planar[reference_index]
+    cross = reference[0] * planar[:, 1] - reference[1] * planar[:, 0]
+    # 境界的な rank 判定は汎用 PCA に任せ、明白な面だけを高速化する。
+    if float(np.max(np.abs(cross))) <= scale * scale * 1e-6:
+        return None
+
+    normal = np.zeros((3,), dtype=np.float64)
+    normal[normal_index] = 1.0
+    basis = _world_canonical_basis(normal)
+    if basis is None:
+        return None
+    origin = normal * float(np.mean(points[:, normal_index]))
+    return PlanarFrame(
+        origin=origin,
+        basis=basis,
+        inverse=basis.T,
+        residual=0.0,
+        rank=2,
+        status="planar",
+    )
+
+
+def _two_point_linear_frame(points: np.ndarray) -> PlanarFrame | None:
+    """二点直線へ canonical principal plane を補う。"""
+
+    direction = points[1] - points[0]
+    length = float(np.linalg.norm(direction))
+    if not math.isfinite(length) or length <= 0.0:
+        return None
+    x_axis = _stable_canonicalize_direction(direction / length)
+
+    world_axes = np.asarray(
+        (
+            (0.0, 0.0, 1.0),
+            (0.0, 1.0, 0.0),
+            (1.0, 0.0, 0.0),
+        ),
+        dtype=np.float64,
+    )
+    projected = world_axes - np.outer(world_axes @ x_axis, x_axis)
+    lengths = np.linalg.norm(projected, axis=1)
+    axis_index = _stable_argmax(lengths)
+    normal_length = float(lengths[axis_index])
+    if not math.isfinite(normal_length) or normal_length <= 1e-14:
+        return None
+    normal = _stable_canonicalize_direction(
+        projected[axis_index] / normal_length
+    )
+
+    y_axis = _cross3(normal, x_axis)
+    y_length = float(np.linalg.norm(y_axis))
+    if not math.isfinite(y_length) or y_length <= 1e-14:
+        return None
+    y_axis /= y_length
+    x_axis = _cross3(y_axis, normal)
+    x_axis /= float(np.linalg.norm(x_axis))
+
+    center = np.mean(points, axis=0)
+    origin = normal * float(np.dot(center, normal))
+    residual = float(np.max(np.abs((points - origin) @ normal)))
+    basis = np.stack([x_axis, y_axis, normal], axis=0)
+    return PlanarFrame(
+        origin=origin,
+        basis=basis,
+        inverse=basis.T,
+        residual=residual,
+        rank=2,
+        status="planar",
+    )
 
 
 def canonical_planar_frame(
@@ -817,33 +1001,40 @@ def canonical_planar_frame(
     values = np.asarray(points, dtype=np.float64)
     if values.ndim != 2 or values.shape[1] != 3:
         raise ValueError("points は shape (N,3) である必要がある")
+    fast_path_offsets = offsets is None
+    if offsets is not None:
+        packed_offsets = np.asarray(offsets)
+        fast_path_offsets = bool(
+            packed_offsets.ndim == 1
+            and packed_offsets.size >= 2
+            and np.issubdtype(packed_offsets.dtype, np.integer)
+            and int(packed_offsets[0]) == 0
+            and int(packed_offsets[-1]) == values.shape[0]
+            and np.all(np.diff(packed_offsets) > 0)
+        )
+    if (
+        fast_path_offsets
+        and values.shape[0]
+        and bool(np.all(np.isfinite(values)))
+    ):
+        axis_aligned = _axis_aligned_planar_frame(values)
+        if axis_aligned is not None:
+            return axis_aligned
+        if bool(allow_linear) and values.shape[0] == 2:
+            two_point = _two_point_linear_frame(values)
+            if two_point is not None:
+                return two_point
 
     source = PlanarFrame.from_points(values, offsets)
     if source.valid:
-        normal = _stable_canonicalize_direction(source.normal.copy())
-        world_axes = np.eye(3, dtype=np.float64)
-        projected = world_axes - np.outer(world_axes @ normal, normal)
-        lengths = np.linalg.norm(projected, axis=1)
-        axis_index = _stable_argmax(lengths)
-        axis_length = float(lengths[axis_index])
-        if not math.isfinite(axis_length) or axis_length <= 1e-14:
+        basis = _world_canonical_basis(source.normal.copy())
+        if basis is None:
             return source
-
-        x_axis = projected[axis_index] / axis_length
-        if float(np.dot(x_axis, world_axes[axis_index])) < 0.0:
-            x_axis = -x_axis
-        y_axis = np.cross(normal, x_axis)
-        y_length = float(np.linalg.norm(y_axis))
-        if not math.isfinite(y_length) or y_length <= 1e-14:
-            return source
-        y_axis /= y_length
-        x_axis = np.cross(y_axis, normal)
-        x_axis /= float(np.linalg.norm(x_axis))
 
         # world 原点から推定平面へ下ろした垂線の足を使うことで、入力の seam や
         # line 順が変わっても平面内原点を動かさない。
+        normal = basis[2]
         origin = normal * float(np.dot(source.origin, normal))
-        basis = np.stack([x_axis, y_axis, normal], axis=0)
         return PlanarFrame(
             origin=origin,
             basis=basis,
@@ -901,12 +1092,12 @@ def canonical_planar_frame(
         return source
     normal = _stable_canonicalize_direction(projected[axis_index] / normal_length)
 
-    y_axis = np.cross(normal, x_axis)
+    y_axis = _cross3(normal, x_axis)
     y_length = float(np.linalg.norm(y_axis))
     if not math.isfinite(y_length) or y_length <= 1e-14:
         return source
     y_axis /= y_length
-    x_axis = np.cross(y_axis, normal)
+    x_axis = _cross3(y_axis, normal)
     x_axis /= float(np.linalg.norm(x_axis))
 
     origin = normal * float(np.dot(center, normal))

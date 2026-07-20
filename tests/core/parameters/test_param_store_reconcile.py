@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from grafix.core.parameters import (
     ParameterKey,
     ParamMeta,
@@ -10,10 +12,17 @@ from grafix.core.parameters import (
     list_reconcile_orphans,
     manual_migrate_orphan,
 )
-from grafix.core.parameters.codec import dumps_param_store, loads_param_store
+from grafix.core.parameters.codec import (
+    dumps_param_store,
+    loads_param_store_result,
+)
 from grafix.core.parameters.context import parameter_context
+from grafix.core.parameters.effect_order_ops import merge_frame_effect_chains
 from grafix.core.parameters.effects import EffectStepTopology
-from grafix.core.parameters.frame_params import FrameParamRecord
+from grafix.core.parameters.frame_params import (
+    FrameEffectChainRecord,
+    FrameParamRecord,
+)
 from grafix.core.parameters.invariants import assert_invariants
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP, layer_style_records
 from grafix.core.parameters.labels_ops import set_label
@@ -31,7 +40,7 @@ def _roundtrip_store(store: ParamStore) -> ParamStore:
     payload = dumps_param_store(store)
     # to_json は json.dumps なので、ここで破損していないことも軽く確認する。
     json.loads(payload)
-    return loads_param_store(payload)
+    return loads_param_store_result(payload).store
 
 
 def _polyhedron_records(site_id: str) -> list[FrameParamRecord]:
@@ -49,18 +58,24 @@ def _polyhedron_records(site_id: str) -> list[FrameParamRecord]:
                     "icosahedron",
                 ),
             ),
+            effective="tetrahedron",
+            source="code",
             explicit=False,
         ),
         FrameParamRecord(
             key=ParameterKey(op="polyhedron", site_id=site_id, arg="center"),
             base=(0.0, 0.0, 0.0),
             meta=ParamMeta(kind="vec3", ui_min=-100.0, ui_max=100.0),
+            effective=(0.0, 0.0, 0.0),
+            source="code",
             explicit=False,
         ),
         FrameParamRecord(
             key=ParameterKey(op="polyhedron", site_id=site_id, arg="scale"),
             base=(1.0, 1.0, 1.0),
             meta=ParamMeta(kind="vec3", ui_min=0.0, ui_max=200.0),
+            effective=(1.0, 1.0, 1.0),
+            source="code",
             explicit=False,
         ),
     ]
@@ -75,12 +90,16 @@ def _sphere_records(site_id: str) -> list[FrameParamRecord]:
                 kind="choice",
                 choices=("latlon", "zigzag", "icosphere", "rings"),
             ),
+            effective="latlon",
+            source="code",
             explicit=False,
         ),
         FrameParamRecord(
             key=ParameterKey(op="sphere", site_id=site_id, arg="subdivisions"),
             base=0,
             meta=ParamMeta(kind="int", ui_min=0, ui_max=8),
+            effective=0,
+            source="code",
             explicit=False,
         ),
     ]
@@ -152,6 +171,32 @@ def test_prune_stale_loaded_groups_removes_old_entries_on_save_path():
     assert_invariants(store)
 
 
+def test_prune_groups_rejects_string_wrapper_keys_before_mutation() -> None:
+    class StringWrapper(str):
+        pass
+
+    store = ParamStore()
+    merge_frame_params(store, _polyhedron_records("strict-prune"))
+    key = ParameterKey(
+        op="polyhedron",
+        site_id="strict-prune",
+        arg="center",
+    )
+
+    with pytest.raises(TypeError, match="tuple\\[str, str\\]"):
+        prune_groups(
+            store,
+            [
+                (
+                    StringWrapper("polyhedron"),
+                    StringWrapper("strict-prune"),
+                )
+            ],  # type: ignore[list-item]
+        )
+
+    assert store.get_state(key) is not None
+
+
 def test_op_change_hides_loaded_group_in_gui_snapshot_and_prunes_on_save_path():
     # polyhedron -> sphere の差し替えで、旧 op のグループが GUI/保存に残らないこと。
     poly_site_id = "poly-site"
@@ -184,6 +229,10 @@ def test_layer_style_site_id_change_hides_loaded_group_and_prunes_on_save_path()
             layer_site_id=old_site_id,
             base_line_thickness=0.01,
             base_line_color_rgb01=(1.0, 0.0, 0.0),
+            effective_line_thickness=0.01,
+            effective_line_color_rgb01=(1.0, 0.0, 0.0),
+            line_thickness_source="code",
+            line_color_source="code",
             explicit_line_thickness=False,
             explicit_line_color=False,
         ),
@@ -196,6 +245,10 @@ def test_layer_style_site_id_change_hides_loaded_group_and_prunes_on_save_path()
             layer_site_id=new_site_id,
             base_line_thickness=0.01,
             base_line_color_rgb01=(1.0, 0.0, 0.0),
+            effective_line_thickness=0.01,
+            effective_line_color_rgb01=(1.0, 0.0, 0.0),
+            line_thickness_source="code",
+            line_color_source="code",
             explicit_line_thickness=False,
             explicit_line_color=False,
         ),
@@ -215,15 +268,12 @@ def test_layer_style_site_id_change_hides_loaded_group_and_prunes_on_save_path()
 
 
 def test_from_json_compacts_ordinals_across_all_ops():
-    payload = json.dumps(
-        {
-            "ordinals": {
-                LAYER_STYLE_OP: {"layer-site": 3},
-                "polyhedron": {"a": 2, "b": 5},
-            }
-        }
-    )
-    store = loads_param_store(payload)
+    payload = json.loads(dumps_param_store(ParamStore()))
+    payload["ordinals"] = {
+        LAYER_STYLE_OP: {"layer-site": 3},
+        "polyhedron": {"a": 2, "b": 5},
+    }
+    store = loads_param_store_result(json.dumps(payload)).store
     assert store.get_ordinal(LAYER_STYLE_OP, "layer-site") == 1
     assert store.get_ordinal("polyhedron", "a") == 1
     assert store.get_ordinal("polyhedron", "b") == 2
@@ -374,6 +424,18 @@ def test_prune_removes_stale_effect_steps_and_unused_chain_ordinals():
     original = ParamStore()
     old_key = ParameterKey(op="rotate", site_id=old_step_site_id, arg="angle")
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=360.0)
+    merge_frame_effect_chains(
+        original,
+        [
+            FrameEffectChainRecord(
+                chain_id=old_chain_id,
+                steps=(
+                    EffectStepTopology("rotate", old_step_site_id, 1, 0),
+                ),
+            )
+        ],
+        observation_complete=False,
+    )
     merge_frame_params(
         original,
         [
@@ -381,9 +443,9 @@ def test_prune_removes_stale_effect_steps_and_unused_chain_ordinals():
                 key=old_key,
                 base=0.0,
                 meta=meta,
+                effective=0.0,
+                source="code",
                 explicit=True,
-                chain_id=old_chain_id,
-                step_index=0,
             )
         ],
     )
@@ -391,6 +453,18 @@ def test_prune_removes_stale_effect_steps_and_unused_chain_ordinals():
 
     store = _roundtrip_store(original)
 
+    merge_frame_effect_chains(
+        store,
+        [
+            FrameEffectChainRecord(
+                chain_id=new_chain_id,
+                steps=(
+                    EffectStepTopology("rotate", new_step_site_id, 1, 0),
+                ),
+            )
+        ],
+        observation_complete=False,
+    )
     merge_frame_params(
         store,
         [
@@ -398,9 +472,9 @@ def test_prune_removes_stale_effect_steps_and_unused_chain_ordinals():
                 key=ParameterKey(op="rotate", site_id=new_step_site_id, arg="angle"),
                 base=0.0,
                 meta=meta,
+                effective=0.0,
+                source="code",
                 explicit=True,
-                chain_id=new_chain_id,
-                step_index=0,
             )
         ],
     )
@@ -506,9 +580,9 @@ def test_parameter_prune_does_not_remove_observed_code_topology_step() -> None:
                 key=ParameterKey(op="first", site_id="first-site", arg="amount"),
                 base=0.5,
                 meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                effective=0.5,
+                source="code",
                 explicit=False,
-                chain_id="metadata-removed-chain",
-                step_index=1,
             )
         ],
     )
@@ -534,6 +608,20 @@ def test_effect_chain_ordinals_do_not_duplicate_after_removing_first_chain():
     store = ParamStore()
     meta = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
 
+    merge_frame_effect_chains(
+        store,
+        [
+            FrameEffectChainRecord(
+                chain_id="c1",
+                steps=(EffectStepTopology("scale", "s0", 1, 0),),
+            ),
+            FrameEffectChainRecord(
+                chain_id="c2",
+                steps=(EffectStepTopology("rotate", "s1", 1, 0),),
+            ),
+        ],
+        observation_complete=False,
+    )
     merge_frame_params(
         store,
         [
@@ -541,17 +629,17 @@ def test_effect_chain_ordinals_do_not_duplicate_after_removing_first_chain():
                 key=ParameterKey(op="scale", site_id="s0", arg="x"),
                 base=0.0,
                 meta=meta,
+                effective=0.0,
+                source="code",
                 explicit=True,
-                chain_id="c1",
-                step_index=0,
             ),
             FrameParamRecord(
                 key=ParameterKey(op="rotate", site_id="s1", arg="x"),
                 base=0.0,
                 meta=meta,
+                effective=0.0,
+                source="code",
                 explicit=True,
-                chain_id="c2",
-                step_index=0,
             ),
         ],
     )
@@ -561,6 +649,16 @@ def test_effect_chain_ordinals_do_not_duplicate_after_removing_first_chain():
     prune_groups(store, [("scale", "s0")])
     assert store.chain_ordinals() == {"c2": 2}
 
+    merge_frame_effect_chains(
+        store,
+        [
+            FrameEffectChainRecord(
+                chain_id="c3",
+                steps=(EffectStepTopology("translate", "s2", 1, 0),),
+            )
+        ],
+        observation_complete=False,
+    )
     merge_frame_params(
         store,
         [
@@ -568,9 +666,9 @@ def test_effect_chain_ordinals_do_not_duplicate_after_removing_first_chain():
                 key=ParameterKey(op="translate", site_id="s2", arg="x"),
                 base=0.0,
                 meta=meta,
+                effective=0.0,
+                source="code",
                 explicit=True,
-                chain_id="c3",
-                step_index=0,
             )
         ],
     )
@@ -582,27 +680,29 @@ def test_effect_chain_ordinals_do_not_duplicate_after_removing_first_chain():
 
 
 def test_load_repairs_duplicate_chain_ordinals():
-    payload = json.dumps(
+    payload = json.loads(dumps_param_store(ParamStore()))
+    payload["ordinals"] = {"scale": {"s0": 1}, "rotate": {"s1": 1}}
+    payload["effect_steps"] = [
         {
-            "ordinals": {"scale": {"s0": 1}, "rotate": {"s1": 1}},
-            "effect_steps": [
-                {
-                    "op": "scale",
-                    "site_id": "s0",
-                    "chain_id": "a",
-                    "step_index": 0,
-                },
-                {
-                    "op": "rotate",
-                    "site_id": "s1",
-                    "chain_id": "b",
-                    "step_index": 0,
-                },
-            ],
-            "chain_ordinals": {"a": 1, "b": 1},  # 重複（壊れた過去データを模擬）
-        }
-    )
-    store = loads_param_store(payload)
+            "op": "scale",
+            "site_id": "s0",
+            "chain_id": "a",
+            "step_index": 0,
+            "n_inputs": 1,
+        },
+        {
+            "op": "rotate",
+            "site_id": "s1",
+            "chain_id": "b",
+            "step_index": 0,
+            "n_inputs": 1,
+        },
+    ]
+    payload["chain_ordinals"] = {
+        "a": 1,
+        "b": 1,
+    }  # 重複（壊れた過去データを模擬）
+    store = loads_param_store_result(json.dumps(payload)).store
     chain_ordinals = store.chain_ordinals()
     assert chain_ordinals["a"] == 1
     assert chain_ordinals["b"] == 2

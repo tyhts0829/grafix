@@ -22,6 +22,7 @@ from grafix.core.operation_diagnostics import (
 from grafix.core.preview_quality import PreviewQuality, preview_quality_context
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.devtools.benchmarks.schema import (
+    BenchmarkOutput,
     ContractResult,
     Metric,
     evaluate_contract,
@@ -62,7 +63,7 @@ _EXPECTED_CHECKSUMS = {
         "ebb0862ac419b5b1b2bd2d1f65c136ad68cc3e52b1c97f0af452e2a24383105f"
     ),
     "effect.remaining.bold.many_lines": (
-        "789cac989ad773c11b4f88e2fb291dbf758ae8d72214cbcb0bbd61771421bd4b"
+        "fd8ae218caf14a03280ddf293ccfb91316268eccd8df982efdc9d7a7a4be17b1"
     ),
     "effect.remaining.boolean.binary_regions": (
         "fa1154e8c00e4ceb0f0518f13a8037791bf6fe656e8ed0fa2defab8880c483ba"
@@ -80,7 +81,7 @@ _EXPECTED_CHECKSUMS = {
         "e05e5845c1b4355a3892eea85253af008382d1b0f0f2539cd2e4b5ae47942201"
     ),
     "effect.remaining.dash.many_lines_jitter": (
-        "b36992ea340e9518def16219211a6113048ee3b98a183f23a3f8c07485704e89"
+        "bfaf3b7a5c03402b6aff345c2a372a1fa2a02405db32752161340c7950a70ccb"
     ),
     "effect.remaining.deduplicate.dedup_duplicates": (
         "cbf1986f9218f0850dd3a671604f1b312a5044587958ac7c54e22bae4ab8e89c"
@@ -89,7 +90,7 @@ _EXPECTED_CHECKSUMS = {
         "96b2d7e87a0c720e9ad0017b04643806e119cc56f630b03a28c7e407421cacd5"
     ),
     "effect.remaining.drop.many_lines": (
-        "42f3edfd5292639ba6446db436f59100de7b9430b385a47b1a21c46c55878dcd"
+        "5f821aeed7b314a4e7a8e4a9e6afa05112d96aef53adcc2efc4eb0a529432a01"
     ),
     "effect.remaining.extrude.polyline_long": (
         "98929650c02d465087825c6e195159a5936d9e4b3cd6d25f78133cbe89f3a3d2"
@@ -104,7 +105,7 @@ _EXPECTED_CHECKSUMS = {
         "a6c232a43beb77d40153e25f324df47724980a77a35619de9d5cdfcb0f201637"
     ),
     "effect.remaining.highpass.many_lines": (
-        "7c8baf241647b99b301f7cd1ddb686bd644dc71d15c5142a63720e0e06445736"
+        "df8fe89ae7b84b467259e22b64dc93f4f85cb953c7840c8ed2e716acf18680e3"
     ),
     "effect.remaining.isocontour.rings_medium": (
         "909cb4d8136ad95650d9f5692f2f9fadf88939d4a9eb2f6d963fdd10793e21f2"
@@ -113,7 +114,7 @@ _EXPECTED_CHECKSUMS = {
         "0d22bfc91be16f5f57bf429404f4ee179cbc958092b246bcb21731d3b636e0d3"
     ),
     "effect.remaining.lowpass.many_lines": (
-        "554874e04349c321fb7ad9530674cb2d21635e447bbf667d762f16f0a99611b8"
+        "83afb067b864e968b513973112793227418124ab71c20a44bfd28e1af5d9f4f4"
     ),
     "effect.remaining.metaball.draft.rings_medium": (
         "1f66d4457127f82946bfbf1a20bb48cc16419dcdea18f264844e49ebdb007b25"
@@ -122,19 +123,19 @@ _EXPECTED_CHECKSUMS = {
         "3232fdae439eb72ac8a089f8976acae07c5fed8cbe36b0653efef2162b683fb2"
     ),
     "effect.remaining.mirror.many_lines": (
-        "fda8f3e37a557203f45394fa2651f8969dc030a5dde300cee5c3e802b0654b38"
+        "3839b2c1169bcc00480a1d3fb095d340c673d3ed806d756927cf28de71c616ec"
     ),
     "effect.remaining.mirror3d.many_lines": (
-        "727b1131d0aeb8a9e14cfd9d0a0ae83ec26c1f810cab5a63f927b99867f5d0a3"
+        "d367af93f2de5465de288350acfe0300ae9662727afe98f3fadf7e23640d76fa"
     ),
     "effect.remaining.offset_curve.many_lines": (
-        "fcd0869f490b3c3f7e34198b9346eed1c4ed367401b388c8561edbd3b89a6dd7"
+        "4d97941068f5cf5c4a283144f6134e9035dddb2ffc86599af9b65c8d61b65ef4"
     ),
     "effect.remaining.offset_curve.polyline_long": (
         "f45660b4d376bb6242dc7fdaa457168c1dbfd8136c06072fde96c0962872cdd1"
     ),
     "effect.remaining.partition.rings_medium": (
-        "f9ff86344ae1d1ac921dc593b495219549ec440913c8613aa9d42dc52985c2e6"
+        "a124d9487a40bc39b08f6b60fd6676ed7d6817bb505a976724636a0958432ace"
     ),
     "effect.remaining.pixelate.polyline_spaced_long": (
         "d49b75fa6d15cfe08c8d2b09113831194b92a2758bd224d84a84ee1ac7150f4d"
@@ -152,7 +153,7 @@ _EXPECTED_CHECKSUMS = {
         "a9700a14025467b8bb6f79fd502d531ac3d8f3c8bff47bd88b476ee3b2223445"
     ),
     "effect.remaining.repeat.many_lines": (
-        "5dbd95b936798a3b8e55ecb64db5b2f278cd9173312741d0ff01fa95eade07ca"
+        "73e99c99737f4afe9525f2327b10f1869ec3a435f4f90e2970b05f833f5db07c"
     ),
     "effect.remaining.resample.polyline_spaced_long": (
         "784df695614ea144de053e9799b0beaf4e6b0ab2983b24886c7cee7a5244b687"
@@ -368,15 +369,6 @@ class RemainingEffectBenchmarkState:
     effect_source_sha256: str
     util_source_sha256: str
     diagnostic_buffer: OperationDiagnosticBuffer | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RemainingEffectObservation:
-    """timed evaluator output を timer 外で検証・要約した結果。"""
-
-    geometry: RealizedGeometry
-    metrics: tuple[Metric, ...]
-    contracts: tuple[ContractResult, ...]
 
 
 def remaining_effect_benchmark_cases() -> tuple[RemainingEffectBenchmarkCase, ...]:
@@ -896,7 +888,16 @@ def setup_remaining_effect_benchmark(
     ensure_builtin_effect_registered(effect_name)
     spec = effect_registry[effect_name]
     arguments = dict(spec.defaults)
-    arguments.update(cast(dict[str, Any], parameters["arguments"]))
+    for name, value in cast(dict[str, Any], parameters["arguments"]).items():
+        meta = spec.meta.get(name)
+        if meta is not None and meta.kind in {"vec3", "rgb"}:
+            if not isinstance(value, list) or len(value) != 3:
+                raise TypeError(
+                    f"{effect_name}.{name} benchmark argument must be a "
+                    "three-item JSON array"
+                )
+            value = tuple(value)
+        arguments[name] = value
     args_tuple = tuple(sorted(arguments.items()))
 
     quality = cast(PreviewQuality, str(parameters["quality"]))
@@ -964,7 +965,7 @@ def run_remaining_effect(state: object) -> object:
 def observe_remaining_effect_output(
     state: object,
     output: object,
-) -> RemainingEffectObservation:
+) -> BenchmarkOutput:
     """raw evaluator output を timer 外で exact 検証・要約する。"""
 
     from grafix.devtools.benchmarks.runner import geometry_checksum
@@ -1172,8 +1173,8 @@ def observe_remaining_effect_output(
         expected=effect_state.expected_alias,
         reason="identity and array alias behavior remain exact against baseline",
     )
-    return RemainingEffectObservation(
-        geometry=timed_geometry,
+    return BenchmarkOutput(
+        value=timed_geometry,
         metrics=tuple(metrics),
         contracts=tuple(contracts),
     )
@@ -1761,7 +1762,6 @@ def _contract_operand(value: object) -> object:
 __all__ = [
     "RemainingEffectBenchmarkCase",
     "RemainingEffectBenchmarkState",
-    "RemainingEffectObservation",
     "observe_remaining_effect_output",
     "remaining_effect_benchmark_cases",
     "remaining_effect_measurement_context",

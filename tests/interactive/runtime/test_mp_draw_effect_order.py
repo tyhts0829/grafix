@@ -63,6 +63,8 @@ def test_effect_order_snapshot_reaches_worker_and_controls_dag(
             snapshot_revision=7,
             snapshot={},
             effect_order_snapshot=reverse_order,
+            epoch=0,
+            quality="draft",
         )
         reordered = _wait_for_revision(mp_draw, 7)
 
@@ -79,6 +81,8 @@ def test_effect_order_snapshot_reaches_worker_and_controls_dag(
             snapshot_revision=8,
             snapshot={},
             effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
         )
         code_order = _wait_for_revision(mp_draw, 8)
 
@@ -104,6 +108,8 @@ def test_failed_worker_result_discards_partial_effect_topology() -> None:
                     _ROTATE_KEY,
                 )
             },
+            epoch=0,
+            quality="draft",
         )
         result = _wait_for_revision(mp_draw, 1)
     finally:

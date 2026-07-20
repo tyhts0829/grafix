@@ -745,29 +745,33 @@ def metaball(
     tuple[np.ndarray, np.ndarray]
         生成した輪郭（外周＋穴）を含む実体ジオメトリ（coords, offsets）。
     """
-    coords, offsets = g
-    if coords.shape[0] == 0:
-        return coords, offsets
-
     r = float(radius)
     if not np.isfinite(r) or r <= 0.0:
-        return coords, offsets
+        raise ValueError("metaball: radius は正の有限値である必要がある")
 
     level = float(threshold)
-    if not np.isfinite(level):
-        return coords, offsets
+    if not np.isfinite(level) or level <= 0.0:
+        raise ValueError("metaball: threshold は正の有限値である必要がある")
 
     pitch = float(grid_pitch)
     if not np.isfinite(pitch) or pitch <= 0.0:
-        return coords, offsets
+        raise ValueError("metaball: grid_pitch は正の有限値である必要がある")
 
-    output_s = str(output)
-    if output_s not in {"exterior", "both"}:
-        return coords, offsets
+    if not isinstance(output, str):
+        raise TypeError("metaball: output は str である必要がある")
+    if output not in {"exterior", "both"}:
+        raise ValueError(f"metaball: 未知の output です: {output!r}")
+    output_s = output
 
     auto_close = float(auto_close_threshold)
     if not np.isfinite(auto_close) or auto_close < 0.0:
-        auto_close = 0.0
+        raise ValueError(
+            "metaball: auto_close_threshold は 0 以上の有限値である必要がある"
+        )
+
+    coords, offsets = g
+    if coords.shape[0] == 0:
+        return coords, offsets
 
     frame = PlanarFrame.from_points(coords, offsets)
     if not frame.is_planar(planarity_threshold(coords)):
