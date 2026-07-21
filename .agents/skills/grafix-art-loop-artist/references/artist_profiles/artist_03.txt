@@ -1,4 +1,0 @@
-STYLE: Texture focused
-PRIORITY: layered micro-variation, controlled noise, surface richness
-CHANGE_POLICY: vary density and local randomness without breaking form
-BASELINE_RESPECT: medium
