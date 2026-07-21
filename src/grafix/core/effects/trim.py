@@ -27,17 +27,6 @@ trim_meta = {
 }
 
 
-def _clamp01(value: float) -> float:
-    v = float(value)
-    if not np.isfinite(v):
-        return 0.0
-    if v <= 0.0:
-        return 0.0
-    if v >= 1.0:
-        return 1.0
-    return v
-
-
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
 def _build_arc_length_nb(v: np.ndarray) -> np.ndarray:
     n = v.shape[0]
@@ -226,42 +215,26 @@ def trim(
     tuple[np.ndarray, np.ndarray]
         トリム後の実体ジオメトリ（coords, offsets）。
 
+    Raises
+    ------
+    ValueError
+        `start_param` / `end_param` が 0 から 1 の範囲外、または
+        `start_param >= end_param` の場合。
+
     Notes
     -----
-    旧仕様踏襲:
-    - `start_param >= end_param` は no-op（入力を返す）。
     - トリム後に 2 点未満になる線は捨てる。
     - ただし、全線が捨てられた場合は no-op（入力を返す）。
     """
+    if not 0.0 <= start_param <= 1.0:
+        raise ValueError("trim の start_param は 0 以上 1 以下である必要がある")
+    if not 0.0 <= end_param <= 1.0:
+        raise ValueError("trim の end_param は 0 以上 1 以下である必要がある")
+    if start_param >= end_param:
+        raise ValueError("trim の start_param は end_param より小さい必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
-        return coords, offsets
-
-    requested_start = float(start_param)
-    requested_end = float(end_param)
-    sp = _clamp01(requested_start)
-    ep = _clamp01(requested_end)
-    if sp != requested_start:
-        emit_operation_diagnostic(
-            op="trim.start_param",
-            original_value=requested_start,
-            effective_value=sp,
-            reason="start parameter was clamped to [0, 1]",
-        )
-    if ep != requested_end:
-        emit_operation_diagnostic(
-            op="trim.end_param",
-            original_value=requested_end,
-            effective_value=ep,
-            reason="end parameter was clamped to [0, 1]",
-        )
-    if sp >= ep:
-        emit_operation_diagnostic(
-            op="trim.range",
-            original_value=(sp, ep),
-            effective_value="input_unchanged",
-            reason="trim start must be smaller than trim end",
-        )
         return coords, offsets
 
     results: list[np.ndarray] = []
@@ -274,7 +247,7 @@ def trim(
             results.append(line)
             continue
 
-        trimmed = _trim_polyline(line, sp, ep)
+        trimmed = _trim_polyline(line, start_param, end_param)
         if trimmed is not None and trimmed.shape[0] >= 2:
             results.append(trimmed)
 

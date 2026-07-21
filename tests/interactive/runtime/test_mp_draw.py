@@ -166,7 +166,7 @@ def initialized_mp_draw(monkeypatch: pytest.MonkeyPatch) -> Iterator[MpDraw]:
 def test_workers_report_ready_and_normal_close_leaves_no_children(
     n_worker: int,
 ) -> None:
-    """1 worker と従来の複数 worker が同じ lifecycle 契約を満たす。"""
+    """1 worker と複数 worker が同じ lifecycle 契約を満たす。"""
 
     mp_draw = MpDraw(_empty_draw, n_worker=n_worker)
     procs = list(mp_draw._procs)
@@ -630,10 +630,10 @@ def _valid_draw_result() -> DrawResult:
         epoch=0,
         generation=0,
         snapshot_revision=0,
-        layers=[],
-        records=[],
-        labels=[],
-        effect_chains=[],
+        layers=(),
+        records=(),
+        labels=(),
+        effect_chains=(),
     )
 
 
@@ -651,21 +651,21 @@ def _valid_draw_result() -> DrawResult:
             TypeError,
             id="revision-bool",
         ),
-        pytest.param("layers", (), TypeError, id="layers-tuple"),
-        pytest.param("layers", [object()], TypeError, id="layers-item"),
-        pytest.param("records", (), TypeError, id="records-tuple"),
-        pytest.param("records", [object()], TypeError, id="records-item"),
-        pytest.param("labels", (), TypeError, id="labels-tuple"),
-        pytest.param("labels", [object()], TypeError, id="labels-item"),
+        pytest.param("layers", [], TypeError, id="layers-list"),
+        pytest.param("layers", (object(),), TypeError, id="layers-item"),
+        pytest.param("records", [], TypeError, id="records-list"),
+        pytest.param("records", (object(),), TypeError, id="records-item"),
+        pytest.param("labels", [], TypeError, id="labels-list"),
+        pytest.param("labels", (object(),), TypeError, id="labels-item"),
         pytest.param(
             "effect_chains",
-            (),
+            [],
             TypeError,
-            id="effect-chains-tuple",
+            id="effect-chains-list",
         ),
         pytest.param(
             "effect_chains",
-            [object()],
+            (object(),),
             TypeError,
             id="effect-chains-item",
         ),
@@ -712,33 +712,33 @@ def test_draw_result_rejects_noncanonical_queue_payload(
     [
         pytest.param(
             "layers",
-            [
+            (
                 Layer(
                     geometry=Geometry.create(op="concat"),
                     site_id="layer",
-                )
-            ],
+                ),
+            ),
             id="layers",
         ),
         pytest.param(
             "records",
-            [_valid_frame_param_record()],
+            (_valid_frame_param_record(),),
             id="records",
         ),
         pytest.param(
             "labels",
-            [
+            (
                 FrameLabelRecord(
                     op="line",
                     site_id="site",
                     label="Line",
-                )
-            ],
+                ),
+            ),
             id="labels",
         ),
         pytest.param(
             "effect_chains",
-            [
+            (
                 FrameEffectChainRecord(
                     chain_id="chain",
                     steps=(
@@ -749,8 +749,8 @@ def test_draw_result_rejects_noncanonical_queue_payload(
                             code_index=0,
                         ),
                     ),
-                )
-            ],
+                ),
+            ),
             id="effect-chains",
         ),
     ],
@@ -1025,9 +1025,7 @@ def test_constructor_failure_stops_partial_processes_and_closes_all_queues(
 ) -> None:
     context = _ConstructorFaultContext(process_start_failure_call=2)
     _install_constructor_fault_context(monkeypatch, context)
-    active_children_before = {
-        proc.pid for proc in mp.active_children() if proc.pid is not None
-    }
+    active_children_before = {proc.pid for proc in mp.active_children() if proc.pid is not None}
 
     with pytest.raises(RuntimeError) as exc_info:
         MpDraw(_empty_draw, n_worker=2)
@@ -1041,9 +1039,7 @@ def test_constructor_failure_stops_partial_processes_and_closes_all_queues(
     assert context.processes[1].start_calls == 1
     assert all(queue.close_calls == 1 for queue in context.queues)
     assert all(queue.join_thread_calls == 1 for queue in context.queues)
-    assert all(
-        queue.cancel_join_thread_calls == 1 for queue in context.queues
-    )
+    assert all(queue.cancel_join_thread_calls == 1 for queue in context.queues)
     assert {
         proc.pid for proc in mp.active_children() if proc.pid is not None
     } == active_children_before
@@ -1097,13 +1093,9 @@ def test_hung_evaluation_restarts_worker_and_recovers_without_child_leak() -> No
         assert mp_draw.latest_successful_result() is successful
 
         assert all(not proc.is_alive() for proc in old_procs)
-        new_pids = {
-            int(proc.pid) for proc in mp_draw._procs if proc.pid is not None
-        }
+        new_pids = {int(proc.pid) for proc in mp_draw._procs if proc.pid is not None}
         all_worker_pids.update(new_pids)
-        assert new_pids.isdisjoint(
-            {int(proc.pid) for proc in old_procs if proc.pid is not None}
-        )
+        assert new_pids.isdisjoint({int(proc.pid) for proc in old_procs if proc.pid is not None})
 
         # 新世代は snapshot ACK をまだ持たないため、task 同梱 snapshot だけで
         # 新しい revision を評価できなければならない。
@@ -1124,9 +1116,7 @@ def test_hung_evaluation_restarts_worker_and_recovers_without_child_leak() -> No
     finally:
         mp_draw.close()
 
-    active_pids = {
-        int(proc.pid) for proc in mp.active_children() if proc.pid is not None
-    }
+    active_pids = {int(proc.pid) for proc in mp.active_children() if proc.pid is not None}
     assert all_worker_pids.isdisjoint(active_pids)
 
 
@@ -1241,9 +1231,7 @@ def test_worker_roundtrip_preserves_frozen_midi_value_source() -> None:
     with parameter_context(store):
         _midi_parameter_draw(0.0)
     snapshot = store_snapshot(store)
-    radius_key = next(
-        key for key in snapshot if key.op == "circle" and key.arg == "radius"
-    )
+    radius_key = next(key for key in snapshot if key.op == "circle" and key.arg == "radius")
     radius_meta = store.get_meta(radius_key)
     assert radius_meta is not None
     ok, error = update_state_from_ui(
@@ -1310,10 +1298,10 @@ def test_batched_drain_keeps_success_time_when_a_later_result_is_an_error(
         epoch=0,
         generation=0,
         snapshot_revision=0,
-        layers=normalize_scene(_empty_draw(0.25)),
-        records=[],
-        labels=[],
-        effect_chains=[],
+        layers=tuple(normalize_scene(_empty_draw(0.25))),
+        records=(),
+        labels=(),
+        effect_chains=(),
     )
     failed = DrawResult(
         frame_id=11,
@@ -1321,10 +1309,10 @@ def test_batched_drain_keeps_success_time_when_a_later_result_is_an_error(
         epoch=0,
         generation=0,
         snapshot_revision=0,
-        layers=[],
-        records=[],
-        labels=[],
-        effect_chains=[],
+        layers=(),
+        records=(),
+        labels=(),
+        effect_chains=(),
         error="later frame failed",
     )
     result_q: queue.Queue[object] = queue.Queue()
@@ -1351,10 +1339,10 @@ def test_draw_result_uses_keyword_constructor() -> None:
         epoch=0,
         generation=0,
         snapshot_revision=0,
-        layers=[],
-        records=[],
-        labels=[],
-        effect_chains=[],
+        layers=(),
+        records=(),
+        labels=(),
+        effect_chains=(),
         error="draw error",
     )
 
@@ -1369,26 +1357,26 @@ def test_result_drain_discards_old_epoch_and_keeps_diagnostic(
 ) -> None:
     stale_error = DrawResult(
         frame_id=10,
-        layers=[],
-        records=[],
-        labels=[],
+        layers=(),
+        records=(),
+        labels=(),
         error="old timeline failure",
         t=99.0,
         epoch=1,
         generation=0,
         snapshot_revision=0,
-        effect_chains=[],
+        effect_chains=(),
     )
     fresh = DrawResult(
         frame_id=11,
-        layers=normalize_scene(_empty_draw(2.0)),
-        records=[],
-        labels=[],
+        layers=tuple(normalize_scene(_empty_draw(2.0))),
+        records=(),
+        labels=(),
         t=2.0,
         epoch=2,
         generation=0,
         snapshot_revision=0,
-        effect_chains=[],
+        effect_chains=(),
     )
     result_q: queue.Queue[object] = queue.Queue()
     result_q.put(stale_error)
@@ -1419,10 +1407,10 @@ def test_result_drain_rejects_result_from_old_worker_generation(
         t=0.0,
         epoch=0,
         snapshot_revision=0,
-        layers=normalize_scene(_empty_draw(0.0)),
-        records=[],
-        labels=[],
-        effect_chains=[],
+        layers=tuple(normalize_scene(_empty_draw(0.0))),
+        records=(),
+        labels=(),
+        effect_chains=(),
         generation=1,
     )
     stale = DrawResult(
@@ -1430,10 +1418,10 @@ def test_result_drain_rejects_result_from_old_worker_generation(
         t=9.0,
         epoch=0,
         snapshot_revision=0,
-        layers=normalize_scene(_empty_draw(9.0)),
-        records=[],
-        labels=[],
-        effect_chains=[],
+        layers=tuple(normalize_scene(_empty_draw(9.0))),
+        records=(),
+        labels=(),
+        effect_chains=(),
         generation=0,
     )
     result_q: queue.Queue[object] = queue.Queue()
@@ -1464,14 +1452,14 @@ def test_begin_epoch_invalidates_cached_result_and_queued_task(
 ) -> None:
     cached = DrawResult(
         frame_id=3,
-        layers=normalize_scene(_empty_draw(3.0)),
-        records=[],
-        labels=[],
+        layers=tuple(normalize_scene(_empty_draw(3.0))),
+        records=(),
+        labels=(),
         t=3.0,
         epoch=0,
         generation=0,
         snapshot_revision=0,
-        effect_chains=[],
+        effect_chains=(),
     )
     task = _DrawTask(
         frame_id=4,
@@ -1641,10 +1629,10 @@ class _BatchedSuccessThenErrorMpDraw:
             epoch=0,
             generation=0,
             snapshot_revision=0,
-            layers=normalize_scene(_empty_draw(0.25)),
-            records=[],
-            labels=[],
-            effect_chains=[],
+            layers=tuple(normalize_scene(_empty_draw(0.25))),
+            records=(),
+            labels=(),
+            effect_chains=(),
         )
         self.error = DrawResult(
             frame_id=11,
@@ -1652,10 +1640,10 @@ class _BatchedSuccessThenErrorMpDraw:
             epoch=0,
             generation=0,
             snapshot_revision=0,
-            layers=[],
-            records=[],
-            labels=[],
-            effect_chains=[],
+            layers=(),
+            records=(),
+            labels=(),
+            effect_chains=(),
             error="later frame failed",
         )
         self.poll_calls = 0
@@ -1851,10 +1839,10 @@ def test_scene_runner_mp_fresh_empty_topology_finishes_effect_chain_generation()
 
         epoch_mp.result = DrawResult(
             frame_id=1,
-            layers=normalize_scene(_empty_draw(0.1)),
-            records=[],
-            labels=[],
-            effect_chains=[],
+            layers=tuple(normalize_scene(_empty_draw(0.1))),
+            records=(),
+            labels=(),
+            effect_chains=(),
             t=0.1,
             epoch=0,
             generation=0,
@@ -1892,15 +1880,18 @@ def test_scene_runner_uses_background_evaluation_for_positive_worker_count(
     monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
     runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=n_worker)
     try:
-        assert runner.run(
-            1.25,
-            store=ParamStore(),
-            cc_snapshot=None,
-            defaults=LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01),
-            recording=False,
-            transport_epoch=0,
-            quality="draft",
-        ) == []
+        assert (
+            runner.run(
+                1.25,
+                store=ParamStore(),
+                cc_snapshot=None,
+                defaults=LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01),
+                recording=False,
+                transport_epoch=0,
+                quality="draft",
+            )
+            == []
+        )
 
         fake = _IdleMpDraw.instances[-1]
         assert fake.n_worker == n_worker
@@ -2249,14 +2240,14 @@ def test_scene_runner_does_not_rerealize_same_mp_result(
 ) -> None:
     result = DrawResult(
         frame_id=1,
-        layers=normalize_scene(_empty_draw(1.0)),
-        records=[],
-        labels=[],
+        layers=tuple(normalize_scene(_empty_draw(1.0))),
+        records=(),
+        labels=(),
         t=1.0,
         epoch=0,
         generation=0,
         snapshot_revision=0,
-        effect_chains=[],
+        effect_chains=(),
     )
     mp_draw = _EpochMpDraw(result)
     original_realize_scene = scene_runner_module.realize_scene
@@ -2347,14 +2338,14 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
 
     old_preview = DrawResult(
         frame_id=1,
-        layers=normalize_scene(_empty_draw(1.0)),
-        records=[],
-        labels=[],
+        layers=tuple(normalize_scene(_empty_draw(1.0))),
+        records=(),
+        labels=(),
         t=1.0,
         epoch=0,
         generation=0,
         snapshot_revision=3,
-        effect_chains=[],
+        effect_chains=(),
     )
     epoch_mp = _EpochMpDraw(old_preview)
     runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
@@ -2413,14 +2404,14 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
 def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
     initial = DrawResult(
         frame_id=10,
-        layers=normalize_scene(_empty_draw(2.0)),
-        records=[],
-        labels=[],
+        layers=tuple(normalize_scene(_empty_draw(2.0))),
+        records=(),
+        labels=(),
         t=2.0,
         epoch=0,
         generation=0,
         snapshot_revision=4,
-        effect_chains=[],
+        effect_chains=(),
     )
     epoch_mp = _EpochMpDraw(initial)
     runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
@@ -2456,14 +2447,14 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
 
         epoch_mp.result = DrawResult(
             frame_id=11,
-            layers=normalize_scene(_empty_draw(20.0)),
-            records=[],
-            labels=[],
+            layers=tuple(normalize_scene(_empty_draw(20.0))),
+            records=(),
+            labels=(),
             t=20.0,
             epoch=1,
             generation=0,
             snapshot_revision=9,
-            effect_chains=[],
+            effect_chains=(),
         )
         epoch_mp._published = False
         fresh = runner.run(
@@ -2506,9 +2497,9 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
         generation=0,
         snapshot_revision=0,
         layers=batched.success.layers,
-        records=[record],
-        labels=[],
-        effect_chains=[
+        records=(record,),
+        labels=(),
+        effect_chains=(
             FrameEffectChainRecord(
                 chain_id="worker-chain",
                 steps=(
@@ -2519,8 +2510,8 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
                         code_index=0,
                     ),
                 ),
-            )
-        ],
+            ),
+        ),
     )
 
     realize_calls = 0

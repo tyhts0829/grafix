@@ -13,7 +13,6 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
-from .argument_validation import finite_vec3, integer_scalar
 
 repeat_meta = {
     "layout": ParamMeta(
@@ -101,19 +100,19 @@ repeat_meta = {
 
 def _layout_is(name: str):
     def _pred(v: Mapping[str, Any]) -> bool:
-        return str(v.get("layout", "grid")) == name
+        return v.get("layout", "grid") == name
 
     return _pred
 
 
 def _curve_visible(v: Mapping[str, Any]) -> bool:
-    layout = str(v.get("layout", "grid"))
+    layout = v.get("layout", "grid")
     if layout == "radial":
-        return bool(v.get("cumulative_scale")) or bool(v.get("cumulative_rotate"))
+        return v.get("cumulative_scale") is True or v.get("cumulative_rotate") is True
     return (
-        bool(v.get("cumulative_scale"))
-        or bool(v.get("cumulative_offset"))
-        or bool(v.get("cumulative_rotate"))
+        v.get("cumulative_scale") is True
+        or v.get("cumulative_offset") is True
+        or v.get("cumulative_rotate") is True
     )
 
 
@@ -129,7 +128,7 @@ repeat_ui_visible = {
     "n_radius": _layout_is("radial"),
     # 共通
     "curve": _curve_visible,
-    "pivot": lambda v: not bool(v.get("auto_center", True)),
+    "pivot": lambda v: v.get("auto_center", True) is False,
 }
 
 
@@ -412,41 +411,20 @@ def repeat(
     Notes
     -----
     変換順序は「中心移動 → スケール → 回転 → 平行移動 → 中心に戻す」。
-    回転は旧仕様（Rz・Ry・Rx の合成）を踏襲する。
+    回転は Rz・Ry・Rx の順に合成する。
     `layout="radial"` のとき、スケール/回転の補間パラメータ t は生成されるコピーの順序で 0→1 に変化する（位相でも変化する）。
     """
-    if not isinstance(layout, str):
-        raise TypeError("repeat: layout は str である必要がある")
-    if layout not in {"grid", "radial"}:
-        raise ValueError(f"repeat: 未知の layout です: {layout!r}")
-    layout_s = layout
-    count_i = integer_scalar(count, name="repeat: count")
-    if count_i < 0:
+    if count < 0:
         raise ValueError("repeat: count は 0 以上である必要がある")
-    n_theta_i = integer_scalar(n_theta, name="repeat: n_theta")
-    if n_theta_i <= 0:
+    if n_theta <= 0:
         raise ValueError("repeat: n_theta は正の整数である必要がある")
-    n_radius_i = integer_scalar(n_radius, name="repeat: n_radius")
-    if n_radius_i <= 0:
+    if n_radius <= 0:
         raise ValueError("repeat: n_radius は正の整数である必要がある")
 
-    radius_f = float(radius)
-    if not np.isfinite(radius_f) or radius_f < 0.0:
+    if radius < 0.0:
         raise ValueError("repeat: radius は 0 以上の有限値である必要がある")
-    theta_f = float(theta)
-    if not np.isfinite(theta_f):
-        raise ValueError("repeat: theta は有限値である必要がある")
-    curve_f = float(curve)
-    if not np.isfinite(curve_f) or curve_f < 0.1:
+    if curve < 0.1:
         raise ValueError("repeat: curve は 0.1 以上の有限値である必要がある")
-
-    pivot_value = finite_vec3(pivot, name="repeat: pivot")
-    scale_value = finite_vec3(scale, name="repeat: scale")
-    rotation_value = finite_vec3(
-        rotation_step,
-        name="repeat: rotation_step",
-    )
-    offset_value = finite_vec3(offset, name="repeat: offset")
 
     coords, offsets = g
     if coords.shape[0] == 0:
@@ -460,21 +438,21 @@ def repeat(
     if auto_center:
         center = coords.astype(np.float64, copy=False).mean(axis=0)
     else:
-        center = np.asarray(pivot_value, dtype=np.float64)
+        center = np.asarray(pivot, dtype=np.float64)
 
     center32 = np.asarray(center, dtype=np.float32)
-    scale_end = np.asarray(scale_value, dtype=np.float32)
-    rotate_end_deg = np.asarray(rotation_value, dtype=np.float32)
+    scale_end = np.asarray(scale, dtype=np.float32)
+    rotate_end_deg = np.asarray(rotation_step, dtype=np.float32)
     rotate_end = np.deg2rad(rotate_end_deg).astype(np.float32, copy=False)
 
     base_tail = offsets[1:]
 
-    if layout_s == "grid":
-        n_dups = count_i
+    if layout == "grid":
+        n_dups = count
         if n_dups == 0:
             return coords, offsets
 
-        offset_end = np.asarray(offset_value, dtype=np.float32)
+        offset_end = np.asarray(offset, dtype=np.float32)
 
         copies = n_dups + 1
         ensure_geometry_output(
@@ -488,11 +466,11 @@ def repeat(
         _repeat_fill_all(
             coords,
             base_tail,
-            int(n_dups),
-            curve_f,
-            bool(cumulative_scale),
-            bool(cumulative_offset),
-            bool(cumulative_rotate),
+            n_dups,
+            curve,
+            cumulative_scale,
+            cumulative_offset,
+            cumulative_rotate,
             center32,
             out_coords,
             out_offsets,
@@ -502,10 +480,10 @@ def repeat(
         )
         return out_coords, out_offsets
 
-    if n_radius_i == 1:
-        copies = n_theta_i
+    if n_radius == 1:
+        copies = n_theta
     else:
-        copies = 1 + (n_radius_i - 1) * n_theta_i
+        copies = 1 + (n_radius - 1) * n_theta
 
     ensure_geometry_output(
         "repeat",
@@ -514,23 +492,23 @@ def repeat(
         hint="n_theta/n_radius または入力 geometry の複雑さを減らしてください",
     )
 
-    theta_rad = float(np.deg2rad(theta_f))
+    theta_rad = float(np.deg2rad(theta))
 
     out_coords = np.empty((n_vertices * copies, 3), dtype=np.float32)
     out_offsets = np.empty((n_lines * copies + 1,), dtype=np.int32)
     _repeat_fill_radial(
         coords,
         base_tail,
-        curve_f,
-        bool(cumulative_scale),
-        bool(cumulative_rotate),
+        curve,
+        cumulative_scale,
+        cumulative_rotate,
         center32,
         out_coords,
         out_offsets,
-        float(radius_f),
+        radius,
         float(theta_rad),
-        int(n_theta_i),
-        int(n_radius_i),
+        n_theta,
+        n_radius,
         scale_end,
         rotate_end,
     )

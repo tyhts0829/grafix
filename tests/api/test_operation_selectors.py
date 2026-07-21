@@ -223,6 +223,18 @@ def test_selector_resolution_rejects_non_bool_target_explicit(
         )
 
 
+def test_resolved_selection_params_are_read_only() -> None:
+    selected = resolve_primitive_selection(
+        target="circle",
+        target_explicit=True,
+        params_by_target=(),
+        site_id="immutable-primitive-selector",
+    )
+
+    with pytest.raises(TypeError):
+        selected.params["radius"] = 2.0  # type: ignore[index]
+
+
 @pytest.mark.parametrize("invalid", [0, 1, "", None, object()])
 def test_effect_selector_step_rejects_non_bool_target_explicit(
     invalid: object,
@@ -266,14 +278,11 @@ def test_e_select_reports_public_error_if_catalog_disappears_before_apply() -> N
         {
             name: spec
             for name, spec in effect_specs.items()
-            if name
-            not in {selector_op, "selector_test_delayed_removed_effect"}
+            if name not in {selector_op, "selector_test_delayed_removed_effect"}
         }
     )
     try:
-        inputs = tuple(
-            G.line(key=f"delayed-removed-{index}") for index in range(3)
-        )
+        inputs = tuple(G.line(key=f"delayed-removed-{index}") for index in range(3))
         with pytest.raises(ValueError) as exc_info:
             builder(*inputs)
         message = str(exc_info.value)
@@ -415,14 +424,10 @@ def test_private_selector_specs_are_not_exposed_in_public_catalogs() -> None:
     E.select(target="boolean", n_inputs=2)
 
     private_primitives = {
-        name: primitive_registry[name]
-        for name in primitive_registry
-        if name.startswith("_")
+        name: primitive_registry[name] for name in primitive_registry if name.startswith("_")
     }
     private_effects = {
-        name: effect_registry[name]
-        for name in effect_registry
-        if name.startswith("_")
+        name: effect_registry[name] for name in effect_registry if name.startswith("_")
     }
     assert private_primitives
     assert {0} <= {spec.n_inputs for spec in private_primitives.values()}
@@ -437,7 +442,7 @@ def test_private_selector_specs_are_not_exposed_in_public_catalogs() -> None:
 
 
 def test_e_select_copies_params_by_target_before_builder_application() -> None:
-    rotation = [0.0, 0.0, 45.0]
+    rotation = (0.0, 0.0, 45.0)
     params_by_target: dict[str, dict[str, object]] = {
         "rotate": {
             "rotation": rotation,
@@ -445,20 +450,22 @@ def test_e_select_copies_params_by_target_before_builder_application() -> None:
     }
     original = {
         "rotate": {
-            "rotation": [0.0, 0.0, 45.0],
+            "rotation": (0.0, 0.0, 45.0),
         }
     }
     selected = E.select(
         target="rotate",
         params_by_target=params_by_target,
     )
+    selected_hash = hash(selected)
 
     assert params_by_target == original
-    rotation[:] = [90.0, 90.0, 90.0]
+    params_by_target["rotate"]["rotation"] = (90.0, 90.0, 90.0)
     params_by_target.clear()
 
     geometry = selected(G.line(key="source"))
 
+    assert hash(selected) == selected_hash
     assert dict(geometry.args)["rotation"] == (0.0, 0.0, 45.0)
 
 

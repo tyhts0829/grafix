@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from grafix.core.parameters.collapsed_header import effect_chain_collapsed_header_key
 from grafix.core.parameters.effect_order_ops import merge_frame_effect_chains
 from grafix.core.parameters.frame_params import (
     FrameEffectChainRecord,
@@ -9,6 +12,7 @@ from grafix.core.parameters.effects import EffectStepTopology
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.labels_ops import set_label
 from grafix.core.parameters.memento import (
+    ParamStoreMemento,
     capture_param_store_memento,
     restore_param_store_memento,
 )
@@ -16,6 +20,7 @@ from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.store import ParamStore
+from grafix.core.parameters.state import ParamState
 from grafix.core.parameters.style import STYLE_GLOBAL_THICKNESS, style_key
 from grafix.core.parameters.style_ops import ensure_style_entries
 from grafix.core.parameters.ui_ops import update_state_from_ui
@@ -72,7 +77,9 @@ def _populated_store() -> tuple[ParamStore, ParameterKey]:
         cc_key=17,
     )
     set_label(store, op=key.op, site_id=key.site_id, label="primary wobble")
-    store._collapsed_headers_ref().add("effect_chain:chain-1")
+    store._collapsed_headers_ref().add(
+        effect_chain_collapsed_header_key("chain-1")
+    )
     store._touch()
     return store, key
 
@@ -124,7 +131,9 @@ def test_memento_restores_gui_state_but_keeps_code_owned_structure_and_runtime()
     assert store.get_ordinal(key.op, key.site_id) == 1
     assert store.get_effect_step(key.op, key.site_id) == ("chain-1", 0)
     assert store.chain_ordinals() == {"chain-1": 1}
-    assert store._collapsed_headers_ref() == {"effect_chain:chain-1"}
+    assert store._collapsed_headers_ref() == {
+        effect_chain_collapsed_header_key("chain-1")
+    }
     assert id(store._runtime_ref()) == runtime_identity
     assert store._runtime_ref().loaded_groups == {
         ("runtime", "before"),
@@ -353,3 +362,18 @@ def test_memento_does_not_restore_order_after_effect_arity_change() -> None:
     assert restore_param_store_memento(store, memento) is False
     assert store.revision == revision
     assert store.effect_order_overrides() == {}
+
+
+def test_memento_rejects_corrupt_non_bool_override() -> None:
+    key = ParameterKey("line", "site", "length")
+    state = ParamState(override=True, ui_value=1.0)
+    state.override = 1  # type: ignore[assignment]
+
+    with pytest.raises(TypeError, match="overrides must be exact bool"):
+        ParamStoreMemento(
+            states={key: state},
+            meta={key: ParamMeta(kind="float")},
+            collapsed_by_header={},
+            effect_order_state={},
+            effect_topology_signatures={},
+        )

@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import assert_never
 
@@ -38,8 +39,8 @@ from grafix.core.parameters.style import (
     STYLE_GLOBAL_LINE_COLOR,
     STYLE_GLOBAL_THICKNESS,
     STYLE_OP,
-    coerce_rgb255,
     rgb255_to_rgb01,
+    validate_rgb255,
 )
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.preset_registry import preset_registry
@@ -112,10 +113,11 @@ def _effective_or_ui_value(
 
 
 def _py_literal(value: object) -> str:
-    """任意の値を「Python のリテラルっぽい」文字列へ変換する。
+    """canonical parameter 値を Python リテラルへ変換する。
 
-    スニペットは「コピペしてそのまま実行できる」ことが最優先のため、まずは代表的な型だけを
-    明示的にハンドリングし、それ以外は `repr()` に寄せる。
+    Copy Code に未知オブジェクトの ``repr`` を混ぜると、実行不能な文字列や
+    メモリアドレス依存の出力を生成し得る。Parameter 値と selector 用の内部 dict だけを
+    明示的に受理し、それ以外は拒否する。
 
     Parameters
     ----------
@@ -130,30 +132,26 @@ def _py_literal(value: object) -> str:
 
     if value is None:
         return "None"
-    if isinstance(value, bool):
+    if type(value) is bool:
         return "True" if value else "False"
-    if isinstance(value, int):
-        return str(int(value))
-    if isinstance(value, float):
-        # `str(0.1)` は丸めが入り得るので、基本は `repr(float)` で “再現可能な表現” を優先する。
-        return repr(float(value))
-    if isinstance(value, str):
-        return repr(str(value))
-    if isinstance(value, tuple):
+    if type(value) is int:
+        return str(value)
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("snippet の float は有限値である必要があります")
+        return repr(value)
+    if type(value) is str:
+        return repr(value)
+    if type(value) is tuple:
         # 1 要素タプルは末尾カンマが無いとただの括弧式になるため、必ず付ける。
         return "(" + ", ".join(_py_literal(v) for v in value) + (")" if len(value) != 1 else ",)")
-    if isinstance(value, list):
-        return "[" + ", ".join(_py_literal(v) for v in value) + "]"
-    if isinstance(value, Mapping):
-        items = ", ".join(
-            f"{_py_literal(k)}: {_py_literal(v)}" for k, v in value.items()
-        )
+    if type(value) is dict:
+        items = ", ".join(f"{_py_literal(k)}: {_py_literal(v)}" for k, v in value.items())
         return "{" + items + "}"
-    # numpy scalar などは repr が長くなりやすいので、まずは str に寄せる。
-    try:
-        return repr(value)
-    except Exception:
-        return repr(str(value))
+    raise TypeError(
+        "snippet の値は None、exact scalar、tuple、plain dict "
+        f"のいずれかである必要があります: {type(value).__name__}"
+    )
 
 
 def _format_kwargs_call(prefix: str, *, op: str, kwargs: Sequence[tuple[str, str]]) -> str:
@@ -243,15 +241,11 @@ def _selector_kwargs(
             "Copy Code を生成できません。target と登録順を確認してください。"
         )
 
-    non_gui_args = tuple(
-        arg for arg in target_spec.accepted_args if arg not in target_spec.meta
-    )
+    non_gui_args = tuple(arg for arg in target_spec.accepted_args if arg not in target_spec.meta)
     if non_gui_args or target_spec.accepts_var_kwargs:
         details: list[str] = []
         if non_gui_args:
-            details.append(
-                "GUI 非公開引数 " + ", ".join(repr(arg) for arg in non_gui_args)
-            )
+            details.append("GUI 非公開引数 " + ", ".join(repr(arg) for arg in non_gui_args))
         if target_spec.accepts_var_kwargs:
             details.append("GUI から復元できない **kwargs")
         detail = " と ".join(details)
@@ -302,11 +296,7 @@ def _selector_rows_for_site(
 ) -> list[ParameterRow]:
     """selector site の非表示行を含む全 ParameterRow を返す。"""
 
-    site_rows = [
-        row
-        for row in indexed_rows
-        if row.op == op and row.site_id == site_id
-    ]
+    site_rows = [row for row in indexed_rows if row.op == op and row.site_id == site_id]
     if not site_rows:
         raise AssertionError("layout が参照する selector site が model rows に存在しません")
     return site_rows
@@ -367,16 +357,22 @@ def snippet_for_block(
         by_arg = {r.arg: r for r in style_rows}
         if STYLE_BACKGROUND_COLOR in by_arg:
             # UI は 0-255 の RGB を持つので、スニペットでは 0-1 の浮動小数へ変換して貼れる形にする。
-            bg255 = coerce_rgb255(
-                _effective_or_ui_value(by_arg[STYLE_BACKGROUND_COLOR], last_effective_by_key=last_effective_by_key)
+            bg255 = validate_rgb255(
+                _effective_or_ui_value(
+                    by_arg[STYLE_BACKGROUND_COLOR], last_effective_by_key=last_effective_by_key
+                )
             )
             global_items.append(("background_color", _py_literal(rgb255_to_rgb01(bg255))))
         if STYLE_GLOBAL_THICKNESS in by_arg:
-            thickness = _effective_or_ui_value(by_arg[STYLE_GLOBAL_THICKNESS], last_effective_by_key=last_effective_by_key)
+            thickness = _effective_or_ui_value(
+                by_arg[STYLE_GLOBAL_THICKNESS], last_effective_by_key=last_effective_by_key
+            )
             global_items.append(("line_thickness", _py_literal(thickness)))
         if STYLE_GLOBAL_LINE_COLOR in by_arg:
-            line255 = coerce_rgb255(
-                _effective_or_ui_value(by_arg[STYLE_GLOBAL_LINE_COLOR], last_effective_by_key=last_effective_by_key)
+            line255 = validate_rgb255(
+                _effective_or_ui_value(
+                    by_arg[STYLE_GLOBAL_LINE_COLOR], last_effective_by_key=last_effective_by_key
+                )
             )
             global_items.append(("line_color", _py_literal(rgb255_to_rgb01(line255))))
 
@@ -413,12 +409,16 @@ def snippet_for_block(
             layer_items: list[tuple[str, str]] = []
             if LAYER_STYLE_LINE_COLOR in by_arg2:
                 # layer_style の color/thickness も 0-1 の RGB に寄せて出す。
-                rgb255 = coerce_rgb255(
-                    _effective_or_ui_value(by_arg2[LAYER_STYLE_LINE_COLOR], last_effective_by_key=last_effective_by_key)
+                rgb255 = validate_rgb255(
+                    _effective_or_ui_value(
+                        by_arg2[LAYER_STYLE_LINE_COLOR], last_effective_by_key=last_effective_by_key
+                    )
                 )
                 layer_items.append(("color", _py_literal(rgb255_to_rgb01(rgb255))))
             if LAYER_STYLE_LINE_THICKNESS in by_arg2:
-                th = _effective_or_ui_value(by_arg2[LAYER_STYLE_LINE_THICKNESS], last_effective_by_key=last_effective_by_key)
+                th = _effective_or_ui_value(
+                    by_arg2[LAYER_STYLE_LINE_THICKNESS], last_effective_by_key=last_effective_by_key
+                )
                 layer_items.append(("thickness", _py_literal(th)))
             layer_items = _with_explicit_key(
                 layer_items,
@@ -486,7 +486,9 @@ def snippet_for_block(
             site_id=row0.site_id,
             explicit_key_by_site=explicit_key_by_site,
         )
-        return _indent_code(_format_kwargs_call(prefix, op=call_name, kwargs=kwargs).rstrip() + "\n")
+        return _indent_code(
+            _format_kwargs_call(prefix, op=call_name, kwargs=kwargs).rstrip() + "\n"
+        )
 
     if group_type is GroupType.PRIMITIVE:
         row0 = rows[0]
@@ -514,8 +516,7 @@ def snippet_for_block(
             if note is not None:
                 return _indent_code(note.rstrip() + "\n")
             return _indent_code(
-                _format_kwargs_call(prefix, op="select", kwargs=kwargs).rstrip()
-                + "\n"
+                _format_kwargs_call(prefix, op="select", kwargs=kwargs).rstrip() + "\n"
             )
         kwargs = _with_explicit_key(
             [
@@ -534,9 +535,7 @@ def snippet_for_block(
             site_id=row0.site_id,
             explicit_key_by_site=explicit_key_by_site,
         )
-        return _indent_code(
-            _format_kwargs_call(prefix, op=op, kwargs=kwargs).rstrip() + "\n"
-        )
+        return _indent_code(_format_kwargs_call(prefix, op=op, kwargs=kwargs).rstrip() + "\n")
 
     if group_type is GroupType.EFFECT_CHAIN:
         prefix = "E."

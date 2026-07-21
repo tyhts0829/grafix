@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import difflib
-from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,27 +68,6 @@ def recovered_session_diagnostic(primary_path: Path) -> DiagnosticEvent:
     )
 
 
-def _replace_store_contents(target: ParamStore, source: ParamStore) -> None:
-    """共有中の ParamStore identity を保ったまま primary 内容へ置換する。"""
-
-    previous_revision = int(target.revision)
-    target._states = deepcopy(source._states)
-    target._meta = deepcopy(source._meta)
-    target._explicit_by_key = deepcopy(source._explicit_by_key)
-    target._labels = deepcopy(source._labels)
-    target._ordinals = deepcopy(source._ordinals)
-    target._effects = deepcopy(source._effects)
-    target._collapsed_headers = deepcopy(source._collapsed_headers)
-    target._locked_keys = deepcopy(source._locked_keys)
-    target._favorite_keys = deepcopy(source._favorite_keys)
-    target._variations = deepcopy(source._variations)
-    target._runtime = deepcopy(source._runtime)
-    target._revision = max(previous_revision, int(source.revision))
-    target._snapshot_cache_revision = -1
-    target._snapshot_cache = None
-    target._touch()
-
-
 @dataclass(slots=True)
 class ParamStoreRecoverySession:
     """現在 store と primary/recovery file の判断操作を所有する。"""
@@ -119,7 +97,7 @@ class ParamStoreRecoverySession:
         """primary を同一 store object へ戻し、recovery journal を破棄する。"""
 
         primary = load_param_store(self.primary_path)
-        _replace_store_contents(self.store, primary)
+        self.store.replace_contents_from(primary)
         self.recovery_path.unlink(missing_ok=True)
         return param_store_load_diagnostic_events(
             self.store,

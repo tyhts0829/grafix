@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import math
-from typing import Any
 
 import numpy as np
 
@@ -69,34 +68,6 @@ wave_meta = {
         description="回転と平行移動の基準となる波形中央の XYZ 座標を指定します。",
     ),
 }
-
-
-def _finite_float(value: Any, *, name: str) -> float:
-    """引数を有限なfloatへ正規化する。"""
-
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"wave の {name} は有限な数値である必要がある") from exc
-    if not math.isfinite(normalized):
-        raise ValueError(f"wave の {name} は有限な数値である必要がある")
-    return normalized
-
-
-def _center3(value: Any) -> tuple[float, float, float]:
-    """centerを有限な3成分座標へ正規化する。"""
-
-    try:
-        cx, cy, cz = value
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "wave の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
-    return (
-        _finite_float(cx, name="center[0]"),
-        _finite_float(cy, name="center[1]"),
-        _finite_float(cz, name="center[2]"),
-    )
 
 
 def _assign_float32_component(
@@ -171,26 +142,23 @@ def wave(
         kind、頂点数、長さ、有限性、または出力可能な数値範囲が不正な場合。
     """
 
-    kind_s = str(kind)
+    kind_s = kind
     if kind_s not in _KIND_ORDER:
         choices = ", ".join(repr(choice) for choice in _KIND_ORDER)
         raise ValueError(f"wave の kind は {choices} のいずれかである必要がある")
 
-    try:
-        samples_i = int(samples)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("wave の samples は整数である必要がある") from exc
+    samples_i = samples
     if samples_i < 2:
         raise ValueError("wave の samples は 2 以上である必要がある")
 
-    length_f = _finite_float(length, name="length")
+    length_f = length
     if length_f < 0.0:
         raise ValueError("wave の length は 0 以上である必要がある")
-    amplitude_f = _finite_float(amplitude, name="amplitude")
-    cycles_f = _finite_float(cycles, name="cycles")
-    phase_f = _finite_float(phase, name="phase")
-    angle_f = _finite_float(angle, name="angle")
-    cx, cy, cz = _center3(center)
+    amplitude_f = amplitude
+    cycles_f = cycles
+    phase_f = phase
+    angle_f = angle
+    cx, cy, cz = center
     if abs(cz) > _FLOAT32_MAX:
         raise ValueError("wave の出力 Z 座標は有限な float32 の範囲である必要がある")
 

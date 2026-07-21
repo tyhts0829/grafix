@@ -22,6 +22,7 @@ from grafix.devtools.benchmarks.schema import (
     case_compatibility_key,
     environment_compatibility_key,
     evaluate_contract,
+    freeze_json_object,
     summarize_samples,
     write_benchmark_run,
 )
@@ -33,6 +34,7 @@ def _write_valid_run(
     warnings: tuple[str, ...] = (),
     contract_actual: float = 12.5,
 ) -> None:
+    empty_object = freeze_json_object({})
     spec = CaseSpec(
         case_id="system.example",
         version=1,
@@ -40,17 +42,18 @@ def _write_valid_run(
         category="system",
         suite="pipeline",
         fixture="fixture",
-        parameters={},
+        parameters=empty_object,
         seed=0,
         source_sha256="source",
         compatibility_key=case_compatibility_key(
             case_id="system.example",
             version=1,
             fixture="fixture",
-            parameters={},
+            parameters=empty_object,
             seed=0,
             source_sha256="source",
         ),
+        tags=("scaling",),
     )
     sample = Sample(elapsed_ns=1_250_000, iterations=1)
     run = BenchmarkRun(
@@ -68,8 +71,12 @@ def _write_valid_run(
         ),
         source=SourceIdentity(commit="abcdef", dirty=False, diff_sha256=""),
         environment=EnvironmentFingerprint(
-            compatibility_key=environment_compatibility_key({}, {}),
-            values={},
+            compatibility_key=environment_compatibility_key(
+                empty_object,
+                empty_object,
+            ),
+            values=empty_object,
+            unavailable=empty_object,
         ),
         cases=(
             CaseResult(

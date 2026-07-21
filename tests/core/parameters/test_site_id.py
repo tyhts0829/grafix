@@ -1,9 +1,10 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from grafix.core.parameters import key as key_module
-from grafix.core.parameters.key import caller_site_id
+from grafix.core.parameters.key import caller_site_id, make_site_id
 
 
 def test_site_id_stable_same_expression():
@@ -79,3 +80,14 @@ def test_automatic_site_id_uses_location_cache() -> None:
     assert len(set(ids)) == 1
     assert info.misses == 1
     assert info.hits == 2
+
+
+@pytest.mark.parametrize("factory", [make_site_id, caller_site_id])
+def test_site_id_fails_when_python_frame_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    factory: Callable[[], str],
+) -> None:
+    monkeypatch.setattr(key_module.inspect, "currentframe", lambda: None)
+
+    with pytest.raises(RuntimeError, match="frame could not be resolved"):
+        factory()

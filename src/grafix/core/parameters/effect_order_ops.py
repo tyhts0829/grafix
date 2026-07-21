@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import TypeAlias
 
+from .collapsed_header import effect_chain_collapsed_header_key
 from .effects import (
     EffectOrder,
     EffectOrderPlacement,
@@ -37,11 +38,10 @@ def begin_effect_chain_generation(store: ParamStore) -> None:
     進めず、失敗evaluationでは保留状態も既存chainも維持する。
     """
 
-    prefix = "effect_chain:"
     collapsed_chain_ids = {
-        header[len(prefix) :]
+        header.chain_id
         for header in store._collapsed_headers_ref()
-        if header.startswith(prefix) and len(header) > len(prefix)
+        if header.kind == "effect_chain" and header.chain_id is not None
     }
     store._effects_ref().begin_observation_generation(
         additional_chain_ids=collapsed_chain_ids,
@@ -81,7 +81,9 @@ def merge_frame_effect_chains(
         if stale_chain_ids:
             collapsed = store._collapsed_headers_ref()
             for chain_id in stale_chain_ids:
-                collapsed.discard(f"effect_chain:{chain_id}")
+                collapsed.discard(
+                    effect_chain_collapsed_header_key(chain_id)
+                )
             changed = True
     if changed:
         store._touch()

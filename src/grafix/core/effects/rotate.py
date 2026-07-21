@@ -28,7 +28,7 @@ rotate_meta = {
 }
 
 rotate_ui_visible = {
-    "pivot": lambda v: not bool(v.get("auto_center", True)),
+    "pivot": lambda v: v.get("auto_center", True) is False,
 }
 
 _F_ORDER_MIN_VERTICES = 1024
@@ -64,32 +64,17 @@ def rotate(
     if coords.shape[0] == 0:
         return coords, offsets
 
-    rx_deg, ry_deg, rz_deg = float(rotation[0]), float(rotation[1]), float(rotation[2])
+    rx_deg, ry_deg, rz_deg = rotation
     if rx_deg == 0.0 and ry_deg == 0.0 and rz_deg == 0.0:
         return coords, offsets
 
     rx, ry, rz = np.deg2rad([rx_deg, ry_deg, rz_deg]).astype(np.float64)
 
-    large_canonical_coords = bool(
-        type(coords) is np.ndarray
-        and coords.dtype == np.float32
-        and coords.ndim == 2
-        and coords.shape[1] == 3
-        and coords.flags.c_contiguous
-        and coords.shape[0] >= _F_ORDER_MIN_VERTICES
-    )
-    coords_abs_max = (
-        float(np.max(np.abs(coords))) if large_canonical_coords else float("nan")
-    )
-    optimize_buffers = bool(large_canonical_coords and np.isfinite(coords_abs_max))
+    optimize_buffers = coords.shape[0] >= _F_ORDER_MIN_VERTICES
     if auto_center:
-        # ndarray subclass は従来の ufunc/matmul dispatch を維持する。
         center = coords.astype(np.float64, copy=False).mean(axis=0)
     else:
-        center = np.array(
-            [float(pivot[0]), float(pivot[1]), float(pivot[2])],
-            dtype=np.float64,
-        )
+        center = np.asarray(pivot, dtype=np.float64)
 
     cx, sx = np.cos(rx), np.sin(rx)
     cy, sy = np.cos(ry), np.sin(ry)
@@ -112,6 +97,7 @@ def rotate(
 
     if optimize_buffers:
         float32_limit = float(np.finfo(np.float32).max)
+        coords_abs_max = float(np.max(np.abs(coords)))
         center_abs_max = float(np.max(np.abs(center)))
         rot_abs_max = float(np.max(np.abs(rot)))
         if (
@@ -122,7 +108,7 @@ def rotate(
             and rot_abs_max <= 2.0
             and np.geterr()["under"] == "ignore"
         ):
-            # K=3 の積順は従来の ``shifted @ rot.T`` のまま、BLAS が効率良く
+            # K=3 の積順は ``shifted @ rot.T`` のまま、BLAS が効率良く
             # 列を読める Fortran-order の working buffer だけを使う。
             shifted = coords.astype(np.float64, order="F", copy=True)
             shifted -= center

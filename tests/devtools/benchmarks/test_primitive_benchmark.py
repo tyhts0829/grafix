@@ -5,6 +5,7 @@ import pytest
 
 from grafix.devtools.benchmarks.primitive_benchmark import (
     PrimitiveBenchmarkState,
+    primitive_benchmark_cases,
 )
 from grafix.devtools.benchmarks.runner import (
     case_definitions,
@@ -46,6 +47,16 @@ _COMMON_METRICS = {
 }
 
 
+def test_primitive_case_arguments_are_owned_and_read_only() -> None:
+    case = primitive_benchmark_cases()[0]
+    with pytest.raises(TypeError):
+        case.arguments["radius"] = 999.0  # type: ignore[index]
+
+    parameters = case.parameters()
+    parameters["arguments"]["radius"] = 999.0
+    assert case.arguments["radius"] == 120.0
+
+
 def test_primitive_suite_covers_every_builtin_with_direct_actual_work() -> None:
     definitions = select_case_definitions(suites=("primitives",))
 
@@ -57,14 +68,11 @@ def test_primitive_suite_covers_every_builtin_with_direct_actual_work() -> None:
         assert definition.category == "primitive"
         assert definition.suite == "primitives"
         assert "primitives" in definition.selectable_suites
-        assert {"actual-work", "direct-raw", "exact-checksum"} <= set(
-            definition.tags
-        )
+        assert {"actual-work", "direct-raw", "exact-checksum"} <= set(definition.tags)
         assert definition.postprocess is not None
 
     cold_ids = {
-        definition.case_id
-        for definition in select_case_definitions(suites=("primitive-cold",))
+        definition.case_id for definition in select_case_definitions(suites=("primitive-cold",))
     }
     assert cold_ids == {
         "primitive.asemic.cold_unique_bezier",
@@ -74,10 +82,7 @@ def test_primitive_suite_covers_every_builtin_with_direct_actual_work() -> None:
 
 @pytest.mark.parametrize(
     "case_id",
-    tuple(
-        definition.case_id
-        for definition in select_case_definitions(suites=("primitives",))
-    ),
+    tuple(definition.case_id for definition in select_case_definitions(suites=("primitives",))),
 )
 def test_each_primitive_direct_case_emits_common_metrics_and_hard_contracts(
     case_id: str,
@@ -88,7 +93,7 @@ def test_each_primitive_direct_case_emits_common_metrics_and_hard_contracts(
         if definition.case_id == case_id
     )
     primitive = str(definition.parameters["primitive"])
-    state = definition.setup(dict(definition.parameters), 20260719)
+    state = definition.setup(definition.materialize_parameters(), 20260719)
     assert isinstance(state, PrimitiveBenchmarkState)
     assert state.raw_function.__module__ == f"grafix.core.primitives.{primitive}"
     assert state.raw_function.__name__ == primitive

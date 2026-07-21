@@ -247,7 +247,7 @@ def test_boolean_rejects_non_coplanar_inputs() -> None:
         boolean(first, _geometry(second_line), mode="union")
 
 
-def test_boolean_rejects_nonplanar_single_input_and_nonfinite_geometry() -> None:
+def test_boolean_rejects_nonplanar_single_input() -> None:
     nonplanar = _geometry(
         [
             (0.0, 0.0, 0.0),
@@ -257,13 +257,8 @@ def test_boolean_rejects_nonplanar_single_input_and_nonfinite_geometry() -> None
             (0.0, 0.0, 0.0),
         ]
     )
-    nonfinite = _geometry(_square(0.0, 0.0, 2.0, 2.0))
-    nonfinite[0][2, 1] = np.nan
-
     with pytest.raises(ValueError, match="同一"):
         boolean(nonplanar, _geometry(), mode="union")
-    with pytest.raises(ValueError, match="非有限"):
-        boolean(nonfinite, _geometry(), mode="union")
 
 
 def test_boolean_checks_resource_budget_and_preserves_input() -> None:

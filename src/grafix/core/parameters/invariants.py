@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from .collapsed_header import CollapsedHeaderKey
 from .key import ParameterKey
 from .labels import MAX_LABEL_LENGTH
 from .meta import ParamMeta
@@ -42,6 +43,9 @@ def assert_invariants(store: ParamStore) -> None:
         assert isinstance(key, ParameterKey)
         assert key in store._states
         assert key in store._meta
+
+    for header in store._collapsed_headers_ref():
+        assert type(header) is CollapsedHeaderKey
 
     labels = store._labels_ref().as_dict()
     for (op, site_id), label in labels.items():

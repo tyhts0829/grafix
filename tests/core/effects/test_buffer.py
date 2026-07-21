@@ -51,16 +51,6 @@ def test_buffer_rejects_quad_segs_outside_supported_range(
         )
 
 
-def test_buffer_rejects_unknown_join_and_nonfinite_distance() -> None:
-    base = realize(G.buffer_test_segment_xy())
-    geometry = (base.coords, base.offsets)
-
-    with pytest.raises(ValueError, match="join"):
-        buffer_impl(geometry, join="unknown")
-    with pytest.raises(ValueError, match="distance"):
-        buffer_impl(geometry, distance=float("nan"))
-
-
 def test_buffer_expands_bounds_xy() -> None:
     g = G.buffer_test_segment_xy()
     out = E.buffer(distance=0.1, quad_segs=4, join="round")(g)

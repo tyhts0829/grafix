@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
 from grafix.core.effects.displace import displace as displace_impl
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -50,6 +51,46 @@ def displace_test_radial_points_xy() -> GeomTuple:
     )
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
     return coords, offsets
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"min_gradient_factor": -0.1}, "min_gradient_factor"),
+        ({"min_gradient_factor": 1.1}, "min_gradient_factor"),
+        ({"max_gradient_factor": 0.9}, "max_gradient_factor"),
+        ({"max_gradient_factor": 4.1}, "max_gradient_factor"),
+    ],
+)
+def test_displace_rejects_invalid_factor_ranges_through_public_effect(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    empty = G.displace_test_empty()
+
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.displace(**kwargs)(empty))  # type: ignore[arg-type]
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert match in str(exc_info.value.__cause__)
+
+
+@pytest.mark.parametrize(
+    "gradient_radius",
+    [(0.0, 0.5, 0.5), (-0.5, 0.5, 0.5)],
+)
+def test_displace_radial_rejects_nonpositive_radius_before_empty_input(
+    gradient_radius: tuple[float, float, float],
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(
+            E.displace(
+                gradient_profile="radial",
+                gradient_radius=gradient_radius,
+            )(G.displace_test_empty())
+        )
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "gradient_radius" in str(exc_info.value.__cause__)
 
 
 def test_displace_amplitude_zero_is_noop() -> None:

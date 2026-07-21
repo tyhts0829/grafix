@@ -32,8 +32,13 @@ from collections.abc import Iterable
 from grafix.core.effect_registry import effect_registry
 from grafix.core.primitive_registry import primitive_registry
 
+from .collapsed_header import (
+    effect_chain_collapsed_header_key,
+    group_collapsed_header_keys,
+)
+from .identity import GroupKey
 from .key import ParameterKey
-from .reconcile_ops import GroupKey, reconcile_loaded_groups_for_runtime
+from .reconcile_ops import reconcile_loaded_groups_for_runtime
 from .store import ParamStore
 
 
@@ -87,7 +92,7 @@ def prune_stale_loaded_groups(store: ParamStore) -> None:
     if stale_chain_ids:
         collapsed = store._collapsed_headers_ref()
         for chain_id in stale_chain_ids:
-            collapsed.discard(f"effect_chain:{chain_id}")
+            collapsed.discard(effect_chain_collapsed_header_key(chain_id))
         store._touch()
 
 
@@ -245,7 +250,9 @@ def prune_groups(
             site_id,
             preserve_observed_topology=preserve_observed_effect_topology,
         )
-        collapsed.discard(f"primitive:{op}:{site_id}")
+        collapsed.difference_update(
+            group_collapsed_header_keys((op, site_id))
+        )
         runtime.loaded_groups.discard((op, site_id))
         runtime.observed_groups.discard((op, site_id))
 
@@ -258,7 +265,9 @@ def prune_groups(
     chain_ids_after = set(effects.chain_ordinals().keys())
     # 消えた chain に対応する collapsed 状態も取り除き、UI 側にゴミが残らないようにする。
     for removed_chain_id in chain_ids_before - chain_ids_after:
-        collapsed.discard(f"effect_chain:{removed_chain_id}")
+        collapsed.discard(
+            effect_chain_collapsed_header_key(removed_chain_id)
+        )
 
     store._touch()
 

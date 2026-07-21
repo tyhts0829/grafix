@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -62,11 +63,15 @@ def test_quantize_vec_step_xyz() -> None:
     assert realized.offsets.tolist() == [0, 2]
 
 
-def test_quantize_step_non_positive_is_noop() -> None:
-    g = G.quantize_test_vec_step_xyz()
-    snapped = E.quantize(step=(0.0, 0.5, 1.0))(g)
-    realized = realize(snapped)
+@pytest.mark.parametrize(
+    "step",
+    [(0.0, 0.5, 1.0), (1.0, -0.5, 1.0)],
+)
+def test_quantize_rejects_non_positive_step_before_empty_input(
+    step: tuple[float, float, float],
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.quantize(step=step)(G.polyline(points=())))
 
-    expected = np.array([[2.4, 0.74, -0.6], [1.0, 0.25, 0.5]], dtype=np.float32)
-    np.testing.assert_allclose(realized.coords, expected, rtol=0.0, atol=1e-6)
-    assert realized.offsets.tolist() == [0, 2]
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "step" in str(exc_info.value.__cause__)

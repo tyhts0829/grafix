@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from .collapsed_header import encode_collapsed_header_key
 from .codec_parser import (
     PARAM_STORE_SCHEMA_VERSION,
     ParamStoreDecodeIssue,
@@ -38,9 +39,7 @@ def encode_param_store(
 
     labels = store._labels_ref().as_dict()
     effects = store._effects_ref()
-    persisted_keys = tuple(
-        key for key in store._states if key in store._meta
-    )
+    persisted_keys = tuple(key for key in store._states if key in store._meta)
     return {
         "schema_version": PARAM_STORE_SCHEMA_VERSION,
         "states": [
@@ -49,13 +48,9 @@ def encode_param_store(
                 "site_id": key.site_id,
                 "arg": key.arg,
                 "override": (
-                    bool(store._states[key].override)
+                    store._states[key].override
                     if preserve_explicit_overrides
-                    else (
-                        False
-                        if store._explicit_by_key[key]
-                        else bool(store._states[key].override)
-                    )
+                    else (False if store._explicit_by_key[key] else store._states[key].override)
                 ),
                 "ui_value": _json_array(store._states[key].ui_value),
                 "cc_key": _json_array(store._states[key].cc_key),
@@ -93,19 +88,22 @@ def encode_param_store(
                 "op": key.op,
                 "site_id": key.site_id,
                 "arg": key.arg,
-                "explicit": bool(store._explicit_by_key[key]),
+                "explicit": store._explicit_by_key[key],
             }
             for key in persisted_keys
         ],
         "ui": {
-            "collapsed_headers": sorted(store._collapsed_headers_ref()),
+            "collapsed_headers": [
+                encode_collapsed_header_key(key)
+                for key in sorted(
+                    store._collapsed_headers_ref(),
+                    key=lambda item: item.sort_key(),
+                )
+            ],
             "effect_order_overrides": [
                 {
                     "chain_id": chain_id,
-                    "steps": [
-                        {"op": op, "site_id": site_id}
-                        for op, site_id in step_keys
-                    ],
+                    "steps": [{"op": op, "site_id": site_id} for op, site_id in step_keys],
                 }
                 for chain_id, step_keys in sorted(
                     effects.order_overrides().items(),
@@ -128,8 +126,7 @@ def encode_param_store(
             ],
         },
         "variations": [
-            _encode_variation(variation)
-            for variation in store._variations_ref().values()
+            _encode_variation(variation) for variation in store._variations_ref().values()
         ],
     }
 
@@ -175,28 +172,24 @@ def _store_from_parsed(
         }
     )
     store._explicit_by_key.update(parsed.explicit_by_key)
-    store._labels_ref().replace(parsed.labels)
-    store._ordinals_ref().replace(parsed.ordinals)
+    store._labels_ref().replace(dict(parsed.labels))
+    store._ordinals_ref().replace({op: dict(by_site) for op, by_site in parsed.ordinals.items()})
     store._effects_ref().replace_persisted_state(
-        topologies=parsed.topologies,
-        chain_ordinals=parsed.chain_ordinals,
-        order_overrides=parsed.effect_order_overrides,
+        topologies=dict(parsed.topologies),
+        chain_ordinals=dict(parsed.chain_ordinals),
+        order_overrides=dict(parsed.effect_order_overrides),
     )
     store._collapsed_headers_ref().update(parsed.collapsed_headers)
     store._locked_keys_ref().update(parsed.locked_parameters)
     store._replace_favorite_keys(parsed.favorite_parameters)
-    store._variations_ref().update(
-        {variation.name: variation for variation in parsed.variations}
-    )
+    store._variations_ref().update({variation.name: variation for variation in parsed.variations})
 
     if not preserve_explicit_overrides:
         for key, is_explicit in store._explicit_by_key.items():
             if is_explicit:
                 store._states[key].override = False
 
-    store._runtime_ref().loaded_groups = {
-        (key.op, key.site_id) for key in store._states
-    }
+    store._runtime_ref().loaded_groups = {(key.op, key.site_id) for key in store._states}
     store._touch()
     return store
 

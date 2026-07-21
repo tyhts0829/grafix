@@ -6,8 +6,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, Literal
 
+# prune_ops が effect registry を参照するため、parameters package を先に初期化する。
 from ._param_resolution import resolve_api_params, set_api_label
 from ._operation_selector import (
     FrozenParamsByTarget,
@@ -16,10 +17,13 @@ from ._operation_selector import (
     validate_effect_selector_n_inputs,
     validate_effect_selector_target,
 )
-from grafix.core.builtins import ensure_builtin_effect_registered, ensure_builtin_effects_registered
+from grafix.core.builtins import (
+    ensure_builtin_effect_registered,
+    ensure_builtin_effects_registered,
+)
 from grafix.core.effect_registry import EffectFunc
 from grafix.core.geometry import Geometry
-from grafix.core.op_registry import OpCatalogEntry
+from grafix.core.op_registry import OpCatalogEntry, OpSpec
 from grafix.core.operation_selector import effect_selector_op
 from grafix.core.parameters import (
     caller_site_id,
@@ -38,12 +42,25 @@ from grafix.core.value_validation import exact_bool
 import grafix.core.effect_registry as effect_registry_module
 
 from ._op_validation import validate_operation_kwargs
+from ._unset import _UNSET_TARGET, _UnsetTarget
 
 
-_DEFAULT_TARGET = cast(str, object())
+@dataclass(frozen=True, slots=True, init=False)
+class _EffectOperationStep:
+    """通常 effect の canonical immutable step。"""
+
+    op: str
+    args: tuple[tuple[str, Any], ...]
+    site_id: str
+
+    @property
+    def parameter_op(self) -> str:
+        """Parameter topology で使う operation 名。"""
+
+        return self.op
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class _EffectSelectorStep:
     """DAG 構築時に実 effect step へ lower する selector 設定。"""
 
@@ -53,8 +70,44 @@ class _EffectSelectorStep:
     params_by_target: FrozenParamsByTarget
     site_id: str
 
+    @property
+    def parameter_op(self) -> str:
+        """Parameter topology で使う selector operation 名。"""
 
-_EffectStep = tuple[str, dict[str, Any], str] | _EffectSelectorStep
+        return effect_selector_op(self.n_inputs)
+
+
+_EffectStep = _EffectOperationStep | _EffectSelectorStep
+
+
+@dataclass(frozen=True, slots=True)
+class _LoweredEffectStep:
+    """通常 step / selector step を同じ DAG 構築形へ lower した値。"""
+
+    parameter_op: str
+    op: str
+    args: tuple[tuple[str, Any], ...]
+    site_id: str
+    n_inputs: int
+
+
+def _make_effect_operation_step(
+    *,
+    op: str,
+    params: dict[str, Any],
+    site_id: str,
+) -> _EffectOperationStep:
+    """検証済み通常 effect 引数を immutable step に固定する。"""
+
+    step = object.__new__(_EffectOperationStep)
+    object.__setattr__(step, "op", identity_string(op, name="effect step op"))
+    object.__setattr__(step, "args", tuple(sorted(params.items())))
+    object.__setattr__(
+        step,
+        "site_id",
+        identity_string(site_id, name="effect step site_id"),
+    )
+    return step
 
 
 def _make_effect_selector_step(
@@ -77,15 +130,70 @@ def _make_effect_selector_step(
         kind="effect",
         n_inputs=count,
     )
-    return _EffectSelectorStep(
-        target=target_s,
-        target_explicit=exact_bool(
+    step = object.__new__(_EffectSelectorStep)
+    object.__setattr__(step, "target", target_s)
+    object.__setattr__(
+        step,
+        "target_explicit",
+        exact_bool(
             target_explicit,
             name="effect selector target_explicit",
         ),
-        n_inputs=count,
-        params_by_target=frozen_params,
-        site_id=identity_string(site_id, name="effect selector site_id"),
+    )
+    object.__setattr__(step, "n_inputs", count)
+    object.__setattr__(step, "params_by_target", frozen_params)
+    object.__setattr__(
+        step,
+        "site_id",
+        identity_string(site_id, name="effect selector site_id"),
+    )
+    return step
+
+
+def _lower_effect_step(
+    step: _EffectStep,
+    *,
+    operation_spec: OpSpec[EffectFunc] | None,
+) -> _LoweredEffectStep:
+    """通常/selector step を一つの immutable DAG 引数形へ lower する。"""
+
+    if isinstance(step, _EffectSelectorStep):
+        selected = resolve_effect_selection(
+            target=step.target,
+            target_explicit=step.target_explicit,
+            n_inputs=step.n_inputs,
+            params_by_target=step.params_by_target,
+            site_id=step.site_id,
+        )
+        return _LoweredEffectStep(
+            parameter_op=step.parameter_op,
+            op=selected.target,
+            args=tuple(sorted(selected.params.items())),
+            site_id=step.site_id,
+            n_inputs=step.n_inputs,
+        )
+
+    if operation_spec is None:
+        raise RuntimeError("通常 effect step の current spec がありません")
+    spec = operation_spec
+    current_params = validate_operation_kwargs(
+        op=step.op,
+        spec=spec,
+        params=dict(step.args),
+    )
+    resolved = resolve_api_params(
+        op=step.op,
+        site_id=step.site_id,
+        user_params=current_params,
+        defaults=spec.defaults,
+        meta=spec.meta,
+    )
+    return _LoweredEffectStep(
+        parameter_op=step.parameter_op,
+        op=step.op,
+        args=tuple(sorted(resolved.items())),
+        site_id=step.site_id,
+        n_inputs=spec.n_inputs,
     )
 
 
@@ -101,12 +209,33 @@ class EffectBuilder:
     Notes
     -----
     E.scale(...).rotate(...)(g) のようにメソッドチェーンで
-    Geometry に対する effect パイプラインを構築する。
+    Geometry に対する effect パイプラインを構築する。step と引数はすべて
+    immutable tuple に固定されるため、builder は値として比較・hash 化できる。
     """
 
     steps: tuple[_EffectStep, ...]
     chain_id: str
     label_name: str | None = None
+
+    def __post_init__(self) -> None:
+        """step 列と identity を canonical immutable 形に限定する。"""
+
+        if type(self.steps) is not tuple or any(
+            type(step) not in {_EffectOperationStep, _EffectSelectorStep}
+            for step in self.steps
+        ):
+            raise TypeError("EffectBuilder.steps は immutable effect step tuple が必要です")
+        object.__setattr__(
+            self,
+            "chain_id",
+            identity_string(self.chain_id, name="effect chain_id"),
+        )
+        if self.label_name is not None:
+            object.__setattr__(
+                self,
+                "label_name",
+                identity_string(self.label_name, name="effect label"),
+            )
 
     def __call__(self, geometry: Geometry, *more_geometries: Geometry) -> Geometry:
         """保持している effect 列を Geometry に適用する。
@@ -127,18 +256,19 @@ class EffectBuilder:
         # ここでは実体変換は行わず、あくまで Geometry DAG（レシピ）を構築する。
         registry = effect_registry_module.effect_registry
         code_topology: list[EffectStepTopology] = []
+        operation_specs: list[OpSpec[EffectFunc] | None] = []
         for code_index, step in enumerate(self.steps):
-            if isinstance(step, _EffectSelectorStep):
-                parameter_op = effect_selector_op(step.n_inputs)
-                n_inputs = int(step.n_inputs)
-                site_id = step.site_id
+            if isinstance(step, _EffectOperationStep):
+                operation_spec = registry[step.op]
+                n_inputs = operation_spec.n_inputs
             else:
-                parameter_op, _params, site_id = step
-                n_inputs = int(registry[parameter_op].n_inputs)
+                operation_spec = None
+                n_inputs = step.n_inputs
+            operation_specs.append(operation_spec)
             code_topology.append(
                 EffectStepTopology(
-                    op=parameter_op,
-                    site_id=site_id,
+                    op=step.parameter_op,
+                    site_id=step.site_id,
                     n_inputs=n_inputs,
                     code_index=code_index,
                 )
@@ -173,75 +303,37 @@ class EffectBuilder:
         result = geometry
         for step_index, topology_step in enumerate(effective_topology):
             step = self.steps[topology_step.code_index]
-            if isinstance(step, _EffectSelectorStep):
-                selected = resolve_effect_selection(
-                    target=step.target,
-                    target_explicit=step.target_explicit,
-                    n_inputs=step.n_inputs,
-                    params_by_target=step.params_by_target,
-                    site_id=step.site_id,
-                )
-                set_api_label(
-                    op=selected.selector_op,
-                    site_id=step.site_id,
-                    label=self.label_name,
-                )
-                n_inputs = int(step.n_inputs)
-                if step_index == 0:
-                    if len(first_inputs) != n_inputs:
-                        raise TypeError(
-                            f"effect {selected.target!r} は入力 Geometry を "
-                            f"{n_inputs} 個必要とします"
-                        )
-                    inputs = first_inputs
-                else:
-                    if n_inputs != 1:
-                        raise TypeError(
-                            "multi-input effect はチェーンの先頭にのみ使用できます"
-                            f": {selected.target!r}"
-                        )
-                    inputs = (result,)
-                result = Geometry.create(
-                    op=selected.target,
-                    inputs=inputs,
-                    params=selected.params,
-                )
-                continue
-
-            op, params, site_id = step
-            # site_id は「その effect ステップが宣言された呼び出し箇所」。
-            # 例: E.scale(...).rotate(...)(g) の scale と rotate を別の GUI 行として扱うため、
-            # apply（__call__）時点ではなく「ステップ追加時点」で固定された site_id を使う。
-            spec = registry[op]
-
-            resolved = resolve_api_params(
-                op=op,
-                site_id=site_id,
-                user_params=params,
-                defaults=spec.defaults,
-                meta=spec.meta,
+            lowered = _lower_effect_step(
+                step,
+                operation_spec=operation_specs[topology_step.code_index],
             )
-
-            # E(name="...") で付与されたラベルは、各ステップの (op, site_id) に保存する。
-            # GUI 側でヘッダ表示などに使う想定。
-            set_api_label(op=op, site_id=site_id, label=self.label_name)
+            set_api_label(
+                op=lowered.parameter_op,
+                site_id=lowered.site_id,
+                label=self.label_name,
+            )
 
             # 直前までの result を inputs として 1 段 effect ノードを積む。
             # これを steps の数だけ繰り返すことでチェーン全体の DAG になる。
-            n_inputs = spec.n_inputs
+            n_inputs = lowered.n_inputs
             if step_index == 0:
                 if len(first_inputs) != n_inputs:
                     raise TypeError(
-                        f"effect {op!r} は入力 Geometry を {n_inputs} 個必要とします"
+                        f"effect {lowered.op!r} は入力 Geometry を {n_inputs} 個必要とします"
                     )
                 inputs = first_inputs
             else:
                 if n_inputs != 1:
                     raise TypeError(
-                        f"multi-input effect はチェーンの先頭にのみ使用できます: {op!r}"
+                        "multi-input effect はチェーンの先頭にのみ使用できます"
+                        f": {lowered.op!r}"
                     )
                 inputs = (result,)
-            result = Geometry.create(op=op, inputs=inputs, params=resolved)
+            result = Geometry._from_canonical_args(
+                op=lowered.op,
+                inputs=inputs,
+                args=lowered.args,
+            )
         return result
 
     def __getattr__(self, name: str) -> Callable[..., "EffectBuilder"]:
@@ -288,14 +380,20 @@ class EffectBuilder:
             instance_key = params.pop("instance_key", None)
             shared = params.pop("shared", False)
             spec = effect_registry_module.effect_registry[name]
-            validate_operation_kwargs(op=name, spec=spec, params=params)
+            params = validate_operation_kwargs(op=name, spec=spec, params=params)
             site_id = caller_site_id(
                 skip=1,
                 key=key,
                 instance_key=instance_key,
                 shared=shared,
             )
-            new_steps = self.steps + ((name, dict(params), site_id),)
+            new_steps = self.steps + (
+                _make_effect_operation_step(
+                    op=name,
+                    params=params,
+                    site_id=site_id,
+                ),
+            )
             return EffectBuilder(
                 steps=new_steps,
                 chain_id=self.chain_id,
@@ -307,7 +405,7 @@ class EffectBuilder:
     def select(
         self,
         *,
-        target: str = _DEFAULT_TARGET,
+        target: str | _UnsetTarget = _UNSET_TARGET,
         n_inputs: Literal[1] = 1,
         params_by_target: Mapping[str, Mapping[str, Any]] | None = None,
         key: str | int | None = None,
@@ -348,7 +446,7 @@ class EffectBuilder:
             instance_key=instance_key,
             shared=shared,
         )
-        target_explicit = target is not _DEFAULT_TARGET
+        target_explicit = target is not _UNSET_TARGET
         target_name = (
             identity_string(target, name="effect selector target")
             if target_explicit
@@ -419,7 +517,7 @@ class EffectNamespace:
     def select(
         self,
         *,
-        target: str = _DEFAULT_TARGET,
+        target: str | _UnsetTarget = _UNSET_TARGET,
         n_inputs: int = 1,
         params_by_target: Mapping[str, Mapping[str, Any]] | None = None,
         key: str | int | None = None,
@@ -455,7 +553,7 @@ class EffectNamespace:
             instance_key=instance_key,
             shared=shared,
         )
-        target_explicit = target is not _DEFAULT_TARGET
+        target_explicit = target is not _UNSET_TARGET
         target_name = (
             identity_string(target, name="effect selector target")
             if target_explicit
@@ -518,7 +616,7 @@ class EffectNamespace:
             instance_key = params.pop("instance_key", None)
             shared = params.pop("shared", False)
             spec = effect_registry_module.effect_registry[name]
-            validate_operation_kwargs(op=name, spec=spec, params=params)
+            params = validate_operation_kwargs(op=name, spec=spec, params=params)
             site_id = caller_site_id(
                 skip=1,
                 key=key,
@@ -526,7 +624,13 @@ class EffectNamespace:
                 shared=shared,
             )
             return EffectBuilder(
-                steps=((name, dict(params), site_id),),
+                steps=(
+                    _make_effect_operation_step(
+                        op=name,
+                        params=params,
+                        site_id=site_id,
+                    ),
+                ),
                 chain_id=site_id,
                 label_name=self._pending_label,
             )

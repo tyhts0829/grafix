@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import hashlib
 import random
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, dataclass
+from enum import Enum
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,40 @@ def test_parameter_snapshot_hash_tracks_effective_frame_values() -> None:
     assert second_parameters.revision >= first_parameters.revision
     with pytest.raises(FrozenInstanceError):
         first.provenance.frame.t = 9.0  # type: ignore[misc]
+
+
+def test_provenance_json_rejects_unknown_duck_typed_and_dataclass_values() -> None:
+    @dataclass
+    class ArbitraryRecord:
+        value: int
+
+    class DuckArray:
+        def item(self) -> int:
+            return 1
+
+        def tolist(self) -> list[int]:
+            return [1]
+
+    class ArbitraryEnum(Enum):
+        ITEM = "item"
+
+    for value in (
+        object(),
+        ArbitraryRecord(1),
+        ArbitraryEnum.ITEM,
+        DuckArray(),
+        {1, 2},
+    ):
+        with pytest.raises(TypeError):
+            provenance_module._canonical_json(value)
+
+
+def test_provenance_json_rejects_non_string_keys_and_nonfinite_numbers() -> None:
+    with pytest.raises(TypeError, match="keys"):
+        provenance_module._canonical_json({1: "integer", "1": "string"})
+    for value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="finite"):
+            provenance_module._canonical_json({"value": value})
 
 
 def test_parameter_snapshot_is_cached_until_store_or_effective_revision_changes(

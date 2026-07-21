@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
@@ -76,7 +77,7 @@ def test_effect_decorator_excludes_each_geometry_input(
     assert spec.provenance.endswith(".catalog_effect")
 
 
-def test_effect_reuses_validated_offsets_when_only_coords_change(
+def test_effect_reuses_immutable_offsets_and_snapshots_changed_coords(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
@@ -99,9 +100,11 @@ def test_effect_reuses_validated_offsets_when_only_coords_change(
     )
     result = registry["coords_only_effect"].evaluator([input_geometry], ())
 
-    assert result.coords is output_coords
+    assert result.coords is not output_coords
+    assert not np.shares_memory(result.coords, output_coords)
     assert result.offsets is input_geometry.offsets
     assert result.coords.flags.writeable is False
+    assert output_coords.flags.writeable is True
     np.testing.assert_array_equal(
         result.coords,
         np.asarray(
@@ -111,7 +114,7 @@ def test_effect_reuses_validated_offsets_when_only_coords_change(
     )
 
 
-def test_effect_trusted_offsets_conditions_fall_back_to_normal_conversion(
+def test_effect_rejects_noncanonical_coords_instead_of_converting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
@@ -132,13 +135,11 @@ def test_effect_trusted_offsets_conditions_fall_back_to_normal_conversion(
         ),
         offsets=np.asarray([0, 2], dtype=np.int32),
     )
-    result = registry["converted_effect"].evaluator([input_geometry], ())
+    with pytest.raises(ValueError, match=r"\(coords, offsets\) が不正") as exc_info:
+        registry["converted_effect"].evaluator([input_geometry], ())
 
-    assert result.coords.dtype == np.float32
-    assert result.offsets.dtype == np.int32
-    assert result.coords is not output_coords
-    assert result.offsets is input_geometry.offsets
-    np.testing.assert_array_equal(result.coords, output_coords)
+    assert isinstance(exc_info.value.__cause__, TypeError)
+    assert "float32" in str(exc_info.value.__cause__)
 
 
 def test_effect_different_offsets_use_normal_validation(
@@ -162,11 +163,43 @@ def test_effect_different_offsets_use_normal_validation(
     )
     result = registry["repartition_effect"].evaluator([input_geometry], ())
 
-    assert result.coords is output_coords
-    assert result.offsets is output_offsets
+    assert result.coords is not output_coords
+    assert result.offsets is not output_offsets
+    assert not np.shares_memory(result.coords, output_coords)
+    assert not np.shares_memory(result.offsets, output_offsets)
     assert result.offsets is not input_geometry.offsets
     assert result.coords.flags.writeable is False
     assert result.offsets.flags.writeable is False
+
+
+class _TupleSubclass(tuple):
+    pass
+
+
+_NamedGeometryTuple = namedtuple("_NamedGeometryTuple", ("coords", "offsets"))
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_effect_rejects_tuple_subclass_output(
+    monkeypatch: pytest.MonkeyPatch,
+    named: bool,
+) -> None:
+    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
+    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
+
+    @effect_registry_module.effect
+    def tuple_subclass_effect(g: GeomTuple) -> GeomTuple:
+        if named:
+            return _NamedGeometryTuple(g[0], g[1])  # type: ignore[return-value]
+        return _TupleSubclass((g[0], g[1]))  # type: ignore[return-value]
+
+    input_geometry = RealizedGeometry(
+        coords=np.zeros((2, 3), dtype=np.float32),
+        offsets=np.asarray([0, 2], dtype=np.int32),
+    )
+
+    with pytest.raises(TypeError, match="期待する戻り値"):
+        registry["tuple_subclass_effect"].evaluator([input_geometry], ())
 
 
 def test_effect_trusted_offsets_length_mismatch_uses_existing_error(
@@ -190,6 +223,51 @@ def test_effect_trusted_offsets_length_mismatch_uses_existing_error(
         r"\(coords, offsets\) が不正です",
     ):
         registry["invalid_coords_effect"].evaluator([input_geometry], ())
+
+
+@pytest.mark.parametrize(
+    ("coords", "offsets"),
+    [
+        (
+            np.zeros((2, 2), dtype=np.float32),
+            np.asarray([0, 2], dtype=np.int32),
+        ),
+        (
+            np.zeros((2, 3), dtype=np.float64),
+            np.asarray([0, 2], dtype=np.int32),
+        ),
+        (
+            np.zeros((2, 3), dtype=np.float32),
+            np.asarray([0, 2], dtype=np.int64),
+        ),
+        (
+            np.asarray([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0]], dtype=np.float32),
+            np.asarray([0, 2], dtype=np.int32),
+        ),
+        (
+            np.zeros((3, 3), dtype=np.float32)[::2],
+            np.asarray([0, 2], dtype=np.int32),
+        ),
+        (
+            np.zeros((2, 3), dtype=np.float32),
+            np.asarray([0, 1, 2, 2], dtype=np.int32)[::2],
+        ),
+    ],
+)
+def test_user_primitive_rejects_every_noncanonical_output_array(
+    monkeypatch: pytest.MonkeyPatch,
+    coords: np.ndarray,
+    offsets: np.ndarray,
+) -> None:
+    registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
+    monkeypatch.setattr(primitive_registry_module, "primitive_registry", registry)
+
+    @primitive_registry_module.primitive
+    def invalid_output_primitive() -> GeomTuple:
+        return coords, offsets
+
+    with pytest.raises(ValueError, match=r"\(coords, offsets\) が不正"):
+        registry["invalid_output_primitive"].evaluator(())
 
 
 def test_new_op_spec_catalog_fields_have_compatible_defaults() -> None:

@@ -7,12 +7,10 @@
 from __future__ import annotations
 
 import math
-from typing import cast
 
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import GeomTuple
 
@@ -63,7 +61,7 @@ def line(
         `center` の基準点。
         `"center"` は中心、`"left"` は左端（angle 方向の逆側）、`"right"` は右端（angle 方向）。
     length : float, optional
-        線分の長さ。
+        0 以上の線分の長さ。
     angle : float, optional
         回転角 [deg]。0° で +X 方向。
 
@@ -71,44 +69,39 @@ def line(
     -------
     tuple[np.ndarray, np.ndarray]
         2 点の線分としての実体ジオメトリ（coords, offsets）。
-    """
-    anchor_s = cast(
-        str,
-        validate_parameter_value(
-            anchor,
-            kind="choice",
-            choices=_ANCHOR_CHOICES,
-        ),
-    )
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "line の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
 
-    length_f = float(length)
-    angle_deg = float(angle)
-    cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
+    Raises
+    ------
+    ValueError
+        `length` が負の場合。
+    """
+    if length < 0.0:
+        raise ValueError("line の length は 0 以上である必要がある")
+
+    anchor_s = anchor
+    cx, cy, cz = center
+
+    length_f = length
+    angle_deg = angle
 
     theta = math.radians(angle_deg)
     dx = length_f * math.cos(theta)
     dy = length_f * math.sin(theta)
 
     if anchor_s == "center":
-        x0, y0 = cx_f - 0.5 * dx, cy_f - 0.5 * dy
-        x1, y1 = cx_f + 0.5 * dx, cy_f + 0.5 * dy
+        x0, y0 = cx - 0.5 * dx, cy - 0.5 * dy
+        x1, y1 = cx + 0.5 * dx, cy + 0.5 * dy
     elif anchor_s == "left":
-        x0, y0 = cx_f, cy_f
-        x1, y1 = cx_f + dx, cy_f + dy
+        x0, y0 = cx, cy
+        x1, y1 = cx + dx, cy + dy
     else:  # anchor_s == "right"
-        x0, y0 = cx_f - dx, cy_f - dy
-        x1, y1 = cx_f, cy_f
+        x0, y0 = cx - dx, cy - dy
+        x1, y1 = cx, cy
 
     coords = np.array(
         [
-            [x0, y0, cz_f],
-            [x1, y1, cz_f],
+            [x0, y0, cz],
+            [x1, y1, cz],
         ],
         dtype=np.float32,
     )

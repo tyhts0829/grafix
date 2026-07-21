@@ -8,7 +8,6 @@ import math
 import re
 import secrets
 import sys
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +26,8 @@ from grafix.devtools.benchmarks.runner import (
 from grafix.devtools.benchmarks.schema import (
     BenchmarkRun,
     RunMeta,
+    freeze_json_object,
+    materialize_json_object,
     write_benchmark_run,
 )
 
@@ -127,7 +128,7 @@ def _list_cases(args: argparse.Namespace) -> int:
             "suite": definition.suite,
             "selectable_suites": list(definition.selectable_suites),
             "fixture": definition.fixture,
-            "parameters": definition.parameters,
+            "parameters": definition.materialize_parameters(),
             "checksum_policy": definition.checksum_policy,
             "tags": list(definition.tags),
         }
@@ -167,27 +168,15 @@ def _run(args: argparse.Namespace, *, argv: list[str]) -> int:
         return 2
 
     profile_defaults = _PROFILE_DEFAULTS[str(args.profile)]
-    samples = (
-        int(profile_defaults["samples"])
-        if args.samples is None
-        else int(args.samples)
-    )
-    warmup = (
-        int(profile_defaults["warmup"])
-        if args.warmup is None
-        else int(args.warmup)
-    )
+    samples = int(profile_defaults["samples"]) if args.samples is None else int(args.samples)
+    warmup = int(profile_defaults["warmup"]) if args.warmup is None else int(args.warmup)
     target_ms = (
         float(profile_defaults["target_ns"]) / 1_000_000.0
         if args.target_ms is None
         else float(args.target_ms)
     )
     timeout_seconds = float(args.timeout)
-    if (
-        not math.isfinite(target_ms)
-        or not math.isfinite(timeout_seconds)
-        or target_ms < 0.0
-    ):
+    if not math.isfinite(target_ms) or not math.isfinite(timeout_seconds) or target_ms < 0.0:
         print("target は有限な非負値、timeout は有限値である必要があります", file=sys.stderr)  # noqa: T201
         return 2
     target_ns = (
@@ -195,9 +184,7 @@ def _run(args: argparse.Namespace, *, argv: list[str]) -> int:
         if args.target_ms is None
         else int(target_ms * 1_000_000.0)
     )
-    if str(args.mode) != "warm" and (
-        args.warmup is not None or args.target_ms is not None
-    ):
+    if str(args.mode) != "warm" and (args.warmup is not None or args.target_ms is not None):
         print(
             "cold mode では --warmup/--target-ms を指定できません",
             file=sys.stderr,
@@ -253,9 +240,7 @@ def _run(args: argparse.Namespace, *, argv: list[str]) -> int:
         ),
         source=collect_source_identity(root=Path(__file__).resolve().parent),
         environment=collect_environment_fingerprint(
-            environment_overrides=_effective_child_environment(
-                mode=str(args.mode)
-            )
+            environment_overrides=_effective_child_environment(mode=str(args.mode))
         ),
         cases=tuple(results),
         warnings=warnings,
@@ -284,7 +269,13 @@ def _compare(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print(f"benchmark compare failed: {exc}", file=sys.stderr)  # noqa: T201
         return 2
-    payload = asdict(comparison)
+    payload = {
+        "base_run_id": comparison.base_run_id,
+        "head_run_id": comparison.head_run_id,
+        "environment_compatible": comparison.environment_compatible,
+        "rows": [materialize_json_object(freeze_json_object(row)) for row in comparison.rows],
+        "warnings": list(comparison.warnings),
+    }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if args.output:
         atomic_write_text(args.output, text)
@@ -292,18 +283,14 @@ def _compare(args: argparse.Namespace) -> int:
     else:
         print(text, end="")  # noqa: T201
     checksum_failure = any(
-        row["base_status"] == "ok"
-        and row["head_status"] == "ok"
-        and not row["checksum_equal"]
+        row["base_status"] == "ok" and row["head_status"] == "ok" and not row["checksum_equal"]
         for row in comparison.rows
     )
     status_failure = any(
-        row["base_status"] != "ok" or row["head_status"] != "ok"
-        for row in comparison.rows
+        row["base_status"] != "ok" or row["head_status"] != "ok" for row in comparison.rows
     )
     hard_contract_failure = any(
-        not row["base_hard_contracts_passed"]
-        or not row["head_hard_contracts_passed"]
+        not row["base_hard_contracts_passed"] or not row["head_hard_contracts_passed"]
         for row in comparison.rows
     )
     return int(checksum_failure or status_failure or hard_contract_failure)
@@ -328,20 +315,13 @@ def _report(args: argparse.Namespace) -> int:
 
 
 def _split_values(values: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(
-        item.strip()
-        for value in values
-        for item in value.split(",")
-        if item.strip()
-    )
+    return tuple(item.strip() for value in values for item in value.split(",") if item.strip())
 
 
 def _run_id(explicit: str) -> str:
     if explicit:
         if _RUN_ID_PATTERN.fullmatch(explicit) is None:
-            raise SystemExit(
-                "--run-id は英数字で始まる英数字・_・.・- の 128 文字以内です"
-            )
+            raise SystemExit("--run-id は英数字で始まる英数字・_・.・- の 128 文字以内です")
         return explicit
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     return f"{timestamp}_{secrets.token_hex(3)}"

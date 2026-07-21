@@ -14,6 +14,7 @@ from grafix.devtools.benchmarks.schema import (
     BenchmarkSchemaError,
     CaseResult,
     Metric,
+    case_result_to_dict,
     read_benchmark_run,
 )
 
@@ -344,6 +345,7 @@ def _scaling_rows(runs: tuple[BenchmarkRun, ...]) -> str:
         for result in run.cases:
             if "scaling" not in result.spec.tags:
                 continue
+            parameters = case_result_to_dict(result)["spec"]["parameters"]
             median_ms = (
                 ""
                 if result.stats is None
@@ -353,7 +355,7 @@ def _scaling_rows(runs: tuple[BenchmarkRun, ...]) -> str:
                 "<tr>"
                 f"<td>{escape(run.meta.run_id)}</td>"
                 f"<td><code>{escape(result.spec.case_id)}</code></td>"
-                f"<td><code>{escape(json.dumps(result.spec.parameters, sort_keys=True))}</code></td>"
+                f"<td><code>{escape(json.dumps(parameters, sort_keys=True))}</code></td>"
                 f"<td>{median_ms}</td>"
                 "</tr>"
             )

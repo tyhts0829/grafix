@@ -21,15 +21,12 @@
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .argument_validation import exact_bool, integer_scalar, known_choice
 from .util import (
     DEFAULT_MAX_GRID_CELLS,
     GridSpec,
@@ -147,48 +144,24 @@ def isocontour(
     tuple[np.ndarray, np.ndarray]
         抽出した等値線のポリライン列（coords, offsets）。
     """
-    mode_s = known_choice(
-        mode,
-        choices=_MODE_CHOICES,
-        name="isocontour: mode",
-    )
-    level_step_i = integer_scalar(
-        level_step,
-        name="isocontour: level_step",
-    )
-    keep_original_b = exact_bool(
-        keep_original,
-        name="isocontour: keep_original",
-    )
+    if grid_pitch <= 0.0:
+        raise ValueError("isocontour: grid_pitch は正である必要がある")
+    if spacing <= 0.0:
+        raise ValueError("isocontour: spacing は正である必要がある")
+    if max_dist < 0.0:
+        raise ValueError("isocontour: max_dist は 0 以上である必要がある")
+    if auto_close_threshold < 0.0:
+        raise ValueError("isocontour: auto_close_threshold は 0 以上である必要がある")
+    if gamma <= 0.0:
+        raise ValueError("isocontour: gamma は正である必要がある")
+    if level_step < 1:
+        raise ValueError("isocontour: level_step は 1 以上である必要がある")
+
     mask_coords, mask_offsets = mask
     if mask_coords.shape[0] == 0:
         return empty_geom()
 
-    pitch = float(grid_pitch)
-    if pitch <= 0.0 or not math.isfinite(pitch):
-        return empty_geom()
-
-    spacing_f = float(spacing)
-    if spacing_f <= 0.0 or not math.isfinite(spacing_f):
-        return empty_geom()
-
-    phase_f = float(phase)
-    if not math.isfinite(phase_f):
-        return empty_geom()
-
-    max_d = float(max_dist)
-    if not math.isfinite(max_d):
-        return empty_geom()
-    if max_d < 0.0:
-        return empty_geom()
-
-    auto_close = float(auto_close_threshold)
-    if not math.isfinite(auto_close) or auto_close < 0.0:
-        auto_close = float(_AUTO_CLOSE_THRESHOLD_DEFAULT)
-
-    gamma_f = float(gamma)
-    if not math.isfinite(gamma_f) or gamma_f <= 0.0:
-        gamma_f = 1.0
+    pitch = grid_pitch
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
     if not frame.is_planar(planarity_threshold(mask_coords)):
@@ -199,7 +172,7 @@ def isocontour(
     rings = extract_planar_rings(
         coords_xy_all,
         mask_offsets,
-        auto_close_threshold=auto_close,
+        auto_close_threshold=auto_close_threshold,
     )
     if not rings:
         return empty_geom()
@@ -208,7 +181,7 @@ def isocontour(
     maxs = np.max(np.stack([r0.maxs for r0 in rings], axis=0), axis=0)
 
     # SDF は「輪郭から max_dist だけ離れた範囲」まで必要なので、AABB を余裕を持って拡張する。
-    margin = max(0.0, max_d) + 2.0 * pitch
+    margin = max_dist + 2.0 * pitch
     grid = GridSpec.from_bbox(
         mins,
         maxs,
@@ -233,23 +206,25 @@ def isocontour(
         ring_offsets=ring_offsets,
         ring_mins=ring_mins,
         ring_maxs=ring_maxs,
-        max_distance=float(max_d),
-        gamma=float(gamma_f),
+        max_distance=max_dist,
+        gamma=gamma,
         pitch=float(pitch),
     )
 
     # 2) `sin()` の 0 交差を取ることで複数レベルの等値線を一括抽出する。
     #    spacing_eff を大きくすると「間引き」になり、密度調整に使える。
-    level_step_i = max(1, level_step_i)
-    spacing_eff = float(spacing_f) * float(level_step_i)
-    field = np.sin(np.pi * (sdf - float(phase_f)) / spacing_eff).astype(np.float64, copy=False)
+    spacing_eff = spacing * level_step
+    field = np.sin(np.pi * (sdf - phase) / spacing_eff).astype(
+        np.float64,
+        copy=False,
+    )
 
-    if mode_s == "inside":
-        lo, hi = -max_d, 0.0
-    elif mode_s == "outside":
-        lo, hi = 0.0, max_d
+    if mode == "inside":
+        lo, hi = -max_dist, 0.0
+    elif mode == "outside":
+        lo, hi = 0.0, max_dist
     else:
-        lo, hi = -max_d, max_d
+        lo, hi = -max_dist, max_dist
 
     # 3) Marching Squares で線分を列挙し、端点の SDF が [lo, hi] に入るものだけ残す。
     loops_xy = marching_squares_loops(
@@ -271,7 +246,7 @@ def isocontour(
         out = frame.to_world(v3).astype(np.float32, copy=False)
         out_lines.append(out)
 
-    if keep_original_b:
+    if keep_original:
         # 生成結果に元の入力を足すオプション（デバッグ・比較用途）。
         for i in range(int(mask_offsets.size) - 1):
             s = int(mask_offsets[i])

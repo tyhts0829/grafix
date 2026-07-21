@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
+from enum import Enum
 from inspect import signature
 from typing import Any, cast
 
@@ -11,6 +12,14 @@ import numpy as np
 import pytest
 
 import grafix.core.primitive_registry as primitive_registry_module
+import grafix.core.effect_registry as effect_registry_module
+from grafix.core.builtins import (
+    ensure_builtin_effect_registered,
+    ensure_builtin_effects_registered,
+    ensure_builtin_ops_registered,
+    ensure_builtin_primitive_registered,
+    ensure_builtin_primitives_registered,
+)
 from grafix.core.effect_registry import effect
 from grafix.core.op_registry import OpKind, OpRegistry, OpSpec
 from grafix.core.parameters.meta import ParamMeta
@@ -52,7 +61,7 @@ def _empty_geometry() -> GeomTuple:
 def test_op_spec_copies_mappings_and_is_frozen() -> None:
     choices = ["a", "b"]
     meta = {"x": ParamMeta(kind="choice", choices=choices)}
-    defaults = {"x": 1.0}
+    defaults = {"x": "a"}
     rules = {"x": lambda _values: True}
     spec = OpSpec(
         evaluator=_evaluator,
@@ -71,12 +80,209 @@ def test_op_spec_copies_mappings_and_is_frozen() -> None:
 
     assert tuple(spec.meta) == ("x",)
     assert spec.meta["x"].choices == ("a", "b")
-    assert dict(spec.defaults) == {"x": 1.0}
+    assert dict(spec.defaults) == {"x": "a"}
     assert tuple(spec.ui_visible) == ("x",)
     with pytest.raises(TypeError):
         spec.meta["y"] = ParamMeta(kind="int")  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         spec.n_inputs = 1  # type: ignore[misc]
+
+
+def test_op_spec_normalizes_defaults_with_parameter_validator() -> None:
+    spec = OpSpec(
+        evaluator=_evaluator,
+        meta={
+            "count": ParamMeta(kind="int"),
+            "offset": ParamMeta(kind="vec3"),
+        },
+        defaults={
+            "count": np.int64(3),
+            "offset": (np.float32(1.0), np.int64(2), 3.0),
+        },
+        param_order=("count", "offset"),
+        ui_visible={},
+        n_inputs=0,
+        kind="primitive",
+    )
+
+    assert spec.defaults == {"count": 3, "offset": (1.0, 2.0, 3.0)}
+    assert type(spec.defaults["count"]) is int
+    assert all(type(value) is float for value in spec.defaults["offset"])
+
+
+@pytest.mark.parametrize(
+    ("meta", "defaults"),
+    [
+        ({"count": ParamMeta(kind="int")}, {}),
+        ({}, {"count": 1}),
+    ],
+)
+def test_op_spec_rejects_mismatched_meta_and_defaults(
+    meta: Mapping[str, ParamMeta],
+    defaults: Mapping[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="meta/default"):
+        OpSpec(
+            evaluator=_evaluator,
+            meta=meta,
+            defaults=defaults,
+            param_order=tuple(meta),
+            ui_visible={},
+            n_inputs=0,
+            kind="primitive",
+        )
+
+
+def test_op_spec_rejects_mutable_or_wrong_typed_parameter_default() -> None:
+    with pytest.raises(TypeError, match="vec3"):
+        OpSpec(
+            evaluator=_evaluator,
+            meta={"offset": ParamMeta(kind="vec3")},
+            defaults={"offset": [1.0, 2.0, 3.0]},
+            param_order=("offset",),
+            ui_visible={},
+            n_inputs=0,
+            kind="primitive",
+        )
+
+
+def test_decorator_rejects_mutable_code_owned_default() -> None:
+    mutable_default = [1.0, 2.0]
+
+    def mutable_default_primitive(
+        *,
+        points: object = mutable_default,
+    ) -> GeomTuple:
+        _ = points
+        return _empty_geometry()
+
+    with pytest.raises(TypeError, match="immutable"):
+        primitive(mutable_default_primitive)
+
+
+def test_decorator_rejects_enum_code_owned_default() -> None:
+    class MutableEnum(Enum):
+        ITEM = []
+
+    def enum_default_primitive(*, mode: object = MutableEnum.ITEM) -> GeomTuple:
+        _ = mode
+        return _empty_geometry()
+
+    with pytest.raises(TypeError, match="immutable"):
+        primitive(enum_default_primitive)
+
+
+@pytest.mark.parametrize(
+    "ui_visible",
+    (
+        {1: lambda _values: True},
+        {"": lambda _values: True},
+        {"x": []},
+    ),
+)
+def test_op_spec_rejects_noncanonical_ui_visible_entries(
+    ui_visible: Mapping[object, object],
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        OpSpec(
+            evaluator=_evaluator,
+            meta={"x": ParamMeta(kind="float")},
+            defaults={"x": 1.0},
+            param_order=("x",),
+            ui_visible=ui_visible,  # type: ignore[arg-type]
+            n_inputs=0,
+            kind="primitive",
+        )
+
+
+def test_decorators_reject_wrapper_owned_callable_arguments() -> None:
+    def reserved_primitive(
+        *,
+        activate: bool = True,
+        key: str | None = None,
+        instance_key: str | None = None,
+        shared: bool = False,
+    ) -> GeomTuple:
+        _ = activate, key, instance_key, shared
+        return _empty_geometry()
+
+    def reserved_effect(
+        g: GeomTuple,
+        *,
+        activate: bool = True,
+        key: str | None = None,
+        instance_key: str | None = None,
+        shared: bool = False,
+    ) -> GeomTuple:
+        _ = activate, key, instance_key, shared
+        return g
+
+    def reserved_geometry_input(activate: GeomTuple) -> GeomTuple:
+        return activate
+
+    with pytest.raises(ValueError, match="wrapper 予約引数"):
+        primitive(reserved_primitive)
+    with pytest.raises(ValueError, match="wrapper 予約引数"):
+        effect(reserved_effect)
+    with pytest.raises(ValueError, match="wrapper 予約引数"):
+        effect(reserved_geometry_input)
+
+
+def test_primitive_decorator_rejects_non_keyword_passable_arguments() -> None:
+    def positional_only(value: float = 1.0, /) -> GeomTuple:
+        _ = value
+        return _empty_geometry()
+
+    def variadic(*values: float) -> GeomTuple:
+        _ = values
+        return _empty_geometry()
+
+    with pytest.raises(TypeError, match="keyword"):
+        primitive(positional_only)
+    with pytest.raises(TypeError, match="可変位置引数"):
+        primitive(variadic)
+
+
+def test_effect_decorator_requires_unambiguous_geometry_inputs() -> None:
+    def insufficient(first: GeomTuple) -> GeomTuple:
+        return first
+
+    def keyword_only(*, g: GeomTuple) -> GeomTuple:
+        return g
+
+    def variadic_geometry(*geometries: GeomTuple) -> GeomTuple:
+        return geometries[0]
+
+    def default_geometry(g: GeomTuple = _empty_geometry()) -> GeomTuple:
+        return g
+
+    with pytest.raises(TypeError, match="2 個"):
+        effect(n_inputs=2)(insufficient)
+    with pytest.raises(TypeError, match="位置引数"):
+        effect(keyword_only)
+    with pytest.raises(TypeError, match="位置引数"):
+        effect(variadic_geometry)
+    with pytest.raises(TypeError, match="default"):
+        effect(default_geometry)
+
+
+def test_effect_decorator_rejects_non_keyword_passable_operation_arguments() -> None:
+    def positional_only(
+        g: GeomTuple,
+        amount: float = 1.0,
+        /,
+    ) -> GeomTuple:
+        _ = amount
+        return g
+
+    def variadic(g: GeomTuple, *amounts: float) -> GeomTuple:
+        _ = amounts
+        return g
+
+    with pytest.raises(TypeError, match="keyword"):
+        effect(positional_only)
+    with pytest.raises(TypeError, match="可変位置引数"):
+        effect(variadic)
 
 
 @pytest.mark.parametrize("n_inputs", [True, 1.0, "1"])
@@ -190,6 +396,48 @@ def test_registry_requires_explicit_replace_and_advances_revision() -> None:
     registry.register("sample", second, replace=True)
     assert registry["sample"] is second
     assert registry.revision == 2
+
+
+def test_builtin_catalog_restores_cached_modules_after_live_registry_clear() -> None:
+    ensure_builtin_ops_registered()
+    primitive_registry = primitive_registry_module.primitive_registry
+    effect_registry = effect_registry_module.effect_registry
+    original_primitives = dict(primitive_registry.items())
+    original_effects = dict(effect_registry.items())
+    circle_spec = primitive_registry["circle"]
+    scale_spec = effect_registry["scale"]
+
+    try:
+        primitive_registry.replace_all({})
+        effect_registry.replace_all({})
+
+        assert ensure_builtin_primitive_registered("circle")
+        assert ensure_builtin_effect_registered("scale")
+        assert primitive_registry["circle"] is circle_spec
+        assert effect_registry["scale"] is scale_spec
+
+        ensure_builtin_primitives_registered()
+        ensure_builtin_effects_registered()
+        assert len(primitive_registry) == 20
+        assert len(effect_registry) == 37
+    finally:
+        primitive_registry.replace_all(original_primitives)
+        effect_registry.replace_all(original_effects)
+
+
+def test_builtin_ensure_does_not_replace_explicit_live_override() -> None:
+    ensure_builtin_primitive_registered("circle")
+    registry = primitive_registry_module.primitive_registry
+    original = dict(registry.items())
+    replacement = replace(registry["circle"], description="explicit replacement")
+
+    try:
+        registry.replace_all({"circle": replacement})
+
+        assert not ensure_builtin_primitive_registered("circle")
+        assert registry["circle"] is replacement
+    finally:
+        registry.replace_all(original)
 
 
 @pytest.mark.parametrize("invalid", (1, object()))

@@ -12,7 +12,7 @@ from grafix.api import E, G
 from grafix.core.effects.drop import drop as drop_impl
 from grafix.core.operation_diagnostics import operation_diagnostic_context
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -82,6 +82,12 @@ def drop_test_lines_xneg_xpos() -> GeomTuple:
     )
     offsets = np.array([0, 2, 4], dtype=np.int32)
     return coords, offsets
+
+
+@primitive
+def drop_test_empty() -> GeomTuple:
+    """空ジオメトリを返す。"""
+    return np.zeros((0, 3), dtype=np.float32), np.zeros((1,), dtype=np.int32)
 
 
 def test_drop_interval_drop_mode_respects_index_offset() -> None:
@@ -192,27 +198,6 @@ def test_drop_probability_clamps_range() -> None:
     assert out_over.offsets.tolist() == [0]
 
 
-@pytest.mark.parametrize(
-    "probability_base",
-    [
-        (float("nan"), 0.0, 0.0),
-        (float("inf"), 0.0, 0.0),
-    ],
-)
-def test_drop_probability_non_finite_is_rejected(
-    probability_base: tuple[float, float, float],
-) -> None:
-    g = G.drop_test_lines5()
-    base = realize(g)
-
-    with pytest.raises(ValueError, match="probability_base"):
-        drop_impl(
-            (base.coords, base.offsets),
-            probability_base=probability_base,
-            probability_slope=(0.0, 0.0, 0.0),
-        )
-
-
 def test_drop_unknown_keep_mode_is_rejected_eagerly() -> None:
     with pytest.raises(ValueError, match="keep_mode"):
         E.drop(interval=1, keep_mode="wat")
@@ -221,6 +206,14 @@ def test_drop_unknown_keep_mode_is_rejected_eagerly() -> None:
 def test_drop_unknown_by_is_rejected_eagerly() -> None:
     with pytest.raises(ValueError, match="by"):
         E.drop(interval=1, by="wat", keep_mode="drop")
+
+
+def test_drop_rejects_negative_interval_before_empty_input() -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.drop(interval=-1)(G.drop_test_empty()))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "interval" in str(exc_info.value.__cause__)
 
 
 def test_drop_face_mode_with_lines_only_is_noop() -> None:
@@ -385,22 +378,26 @@ def _many_two_point_lines(n_lines: int = 512) -> GeomTuple:
         },
     ),
 )
-def test_drop_many_two_point_fast_path_matches_generic_bitwise(
+def test_drop_many_two_point_fast_path_matches_size_fallback_bitwise(
     arguments: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     coords, offsets = _many_two_point_lines()
-    generic_coords = np.asfortranarray(coords)
     coords.setflags(write=False)
     offsets.setflags(write=False)
-    generic_coords.setflags(write=False)
     input_bytes = coords.tobytes()
 
     actual_coords, actual_offsets = drop_impl(
         (coords, offsets),
         **arguments,
     )
+    monkeypatch.setattr(
+        drop_module,
+        "_TWO_POINT_FAST_PATH_MAX_LINES",
+        int(offsets.size) - 2,
+    )
     expected_coords, expected_offsets = drop_impl(
-        (generic_coords, offsets),
+        (coords, offsets),
         **arguments,
     )
 

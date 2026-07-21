@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.core.effects.subdivide import MAX_SUBDIVISIONS, subdivide
 from grafix.core.effects.util import GridSpec
@@ -63,15 +64,12 @@ def test_subdivide_clamp_emits_one_original_and_effective_payload() -> None:
     assert diagnostic.severity == "warning"
 
 
-def test_subdivide_negative_value_emits_one_clamp_diagnostic() -> None:
+def test_subdivide_negative_value_raises_without_diagnostic() -> None:
     with operation_diagnostic_context() as buffer:
-        subdivide(_line(), subdivisions=-2)
+        with pytest.raises(ValueError, match="subdivisions"):
+            subdivide(_line(), subdivisions=-2)
 
-    assert len(buffer) == 1
-    diagnostic = buffer.snapshot()[0]
-    assert diagnostic.original_value == -2
-    assert diagnostic.effective_value == 0
-    assert "clamped" in diagnostic.reason
+    assert buffer.snapshot() == ()
 
 
 def test_subdivide_float32_early_stop_reports_actual_effective_level() -> None:

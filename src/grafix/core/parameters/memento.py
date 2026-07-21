@@ -7,6 +7,12 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, replace
 
+from .collapsed_header import (
+    CollapsedHeaderKey,
+    STYLE_COLLAPSED_HEADER_KEY,
+    effect_chain_collapsed_header_key,
+    group_collapsed_header_keys,
+)
 from .effects import EffectChainIndex, EffectTopologySignature
 from .key import ParameterKey
 from .meta import ParamMeta
@@ -63,8 +69,8 @@ class ParamStorePatch:
         *,
         before_by_key: dict[ParameterKey, _ParamGuiEntry],
         after_by_key: dict[ParameterKey, _ParamGuiEntry],
-        collapsed_before: dict[str, bool],
-        collapsed_after: dict[str, bool],
+        collapsed_before: dict[CollapsedHeaderKey, bool],
+        collapsed_after: dict[CollapsedHeaderKey, bool],
     ) -> None:
         self._before_by_key = before_by_key
         self._after_by_key = after_by_key
@@ -78,7 +84,7 @@ class ParamStorePatch:
         return frozenset(self._before_by_key)
 
     @property
-    def changed_headers(self) -> frozenset[str]:
+    def changed_headers(self) -> frozenset[CollapsedHeaderKey]:
         """この entry が変更する collapse header を返す。"""
 
         return frozenset(self._collapsed_before)
@@ -92,7 +98,7 @@ class ParamStorePatchCapture:
     def __init__(self, store: ParamStore) -> None:
         self._store = store
         self._before_by_key: dict[ParameterKey, _ParamGuiEntry] = {}
-        self._collapsed_before: frozenset[str] | None = None
+        self._collapsed_before: frozenset[CollapsedHeaderKey] | None = None
 
     def observe_key(self, key: ParameterKey) -> None:
         """key を最初に変更する直前の値だけを保存する。"""
@@ -100,7 +106,10 @@ class ParamStorePatchCapture:
         if key not in self._before_by_key:
             self._before_by_key[key] = _capture_gui_entry(self._store, key)
 
-    def observe_headers(self, headers: frozenset[str] | None = None) -> None:
+    def observe_headers(
+        self,
+        headers: frozenset[CollapsedHeaderKey] | None = None,
+    ) -> None:
         """collapse set を最初に変更する直前だけ保存する。"""
 
         if self._collapsed_before is None:
@@ -122,8 +131,8 @@ class ParamStorePatchCapture:
             before_by_key[key] = before
             after_by_key[key] = after
 
-        collapsed_before: dict[str, bool] = {}
-        collapsed_after: dict[str, bool] = {}
+        collapsed_before: dict[CollapsedHeaderKey, bool] = {}
+        collapsed_after: dict[CollapsedHeaderKey, bool] = {}
         if self._collapsed_before is not None:
             after_headers = frozenset(self._store._collapsed_headers_ref())
             for header in self._collapsed_before ^ after_headers:
@@ -143,25 +152,24 @@ class ParamStorePatchCapture:
 def _known_collapse_headers(
     states: dict[ParameterKey, ParamState],
     effects: EffectChainIndex,
-) -> set[str]:
+) -> set[CollapsedHeaderKey]:
     """Store 構造から、現在存在し得る GUI header ID を返す。"""
 
     groups = {(key.op, key.site_id) for key in states}
-    known: set[str] = set()
+    known: set[CollapsedHeaderKey] = set()
     style_ops = {"__style__", "__layer_style__"}
     if any(op in style_ops for op, _site_id in groups):
-        known.add("style:global")
+        known.add(STYLE_COLLAPSED_HEADER_KEY)
     for op, site_id in groups:
         if op in style_ops:
             continue
         # core は preset registry に依存しない。同じ group の候補を両方
         # 記録し、実際に使われる方だけが collapsed set と一致する。
-        known.add(f"primitive:{op}:{site_id}")
-        known.add(f"preset:{op}:{site_id}")
+        known.update(group_collapsed_header_keys((op, site_id)))
 
     for group, (chain_id, _step_index) in effects.step_info_by_site().items():
         if group in groups:
-            known.add(f"effect_chain:{chain_id}")
+            known.add(effect_chain_collapsed_header_key(chain_id))
     return known
 
 
@@ -191,7 +199,7 @@ class ParamStoreMemento:
         *,
         states: dict[ParameterKey, ParamState],
         meta: dict[ParameterKey, ParamMeta],
-        collapsed_by_header: dict[str, bool],
+        collapsed_by_header: dict[CollapsedHeaderKey, bool],
         effect_order_state: dict[
             str,
             tuple[tuple[str, str], ...] | None,
@@ -199,8 +207,16 @@ class ParamStoreMemento:
         effect_topology_signatures: dict[str, EffectTopologySignature],
     ) -> None:
         # memento と復元先で可変オブジェクトを共有しない。
+        if any(type(state) is not ParamState for state in states.values()):
+            raise TypeError("memento states must be ParamState values")
+        if any(type(state.override) is not bool for state in states.values()):
+            raise TypeError("memento state overrides must be exact bool values")
         self._states = deepcopy(states)
         self._meta = deepcopy(meta)
+        if any(type(key) is not CollapsedHeaderKey for key in collapsed_by_header):
+            raise TypeError("collapsed header keys must be CollapsedHeaderKey values")
+        if any(type(value) is not bool for value in collapsed_by_header.values()):
+            raise TypeError("collapsed header states must be exact bool values")
         self._collapsed_by_header = dict(collapsed_by_header)
         self._effect_order_state = deepcopy(effect_order_state)
         self._effect_topology_signatures = deepcopy(
@@ -271,7 +287,7 @@ def param_store_memento_matches(
     for header, saved_collapsed in memento._collapsed_by_header.items():
         if header not in current_known_headers:
             continue
-        if (header in collapsed) != bool(saved_collapsed):
+        if (header in collapsed) != saved_collapsed:
             return False
     candidate_effects = deepcopy(store._effects_ref())
     if candidate_effects.restore_order_state(
@@ -309,7 +325,7 @@ def restore_param_store_memento(
             or current_state.ui_value != saved_state.ui_value
             or current_state.cc_key != saved_state.cc_key
         ):
-            current_state.override = bool(saved_state.override)
+            current_state.override = saved_state.override
             current_state.ui_value = deepcopy(saved_state.ui_value)
             current_state.cc_key = deepcopy(saved_state.cc_key)
             changed_value_keys.append(_key)
@@ -378,7 +394,7 @@ def _apply_gui_entry(
         or current_state.cc_key != saved_state.cc_key
     )
     if state_changed:
-        current_state.override = bool(saved_state.override)
+        current_state.override = saved_state.override
         current_state.ui_value = deepcopy(saved_state.ui_value)
         current_state.cc_key = deepcopy(saved_state.cc_key)
 

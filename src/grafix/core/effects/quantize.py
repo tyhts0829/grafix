@@ -31,12 +31,17 @@ def quantize(
     g : tuple[np.ndarray, np.ndarray]
         入力実体ジオメトリ（coords, offsets）。
     step : tuple[float, float, float], default (1.0, 1.0, 1.0)
-        各軸の格子間隔 (sx, sy, sz)。いずれかが 0 以下なら no-op。
+        各軸の格子間隔 (sx, sy, sz)。すべて正である必要がある。
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         量子化後の実体ジオメトリ（coords, offsets）。頂点数と offsets は維持。
+
+    Raises
+    ------
+    ValueError
+        `step` のいずれかの成分が 0 以下の場合。
 
     Notes
     -----
@@ -44,15 +49,15 @@ def quantize(
     - +0.5 は +1 側
     - -0.5 は -1 側
     """
+    sx, sy, sz = step
+    if sx <= 0.0 or sy <= 0.0 or sz <= 0.0:
+        raise ValueError("quantize の step は全成分が 0 より大きい必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    sx, sy, sz = float(step[0]), float(step[1]), float(step[2])
-    if sx <= 0.0 or sy <= 0.0 or sz <= 0.0:
-        return coords, offsets
-
-    step_vec = np.array([sx, sy, sz], dtype=np.float64)
+    step_vec = np.asarray(step, dtype=np.float64)
     coords64 = coords.astype(np.float64, copy=False)
     q = coords64 / step_vec
     q_rounded = round_half_away_from_zero(q)

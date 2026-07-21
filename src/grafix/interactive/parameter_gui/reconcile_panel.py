@@ -7,7 +7,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from grafix.core.parameters.reconcile import GroupKey, ReconcileOrphan
+from grafix.core.parameters.identity import GroupKey
+from grafix.core.parameters.reconcile import ReconcileOrphan
 
 
 @dataclass(frozen=True, slots=True)

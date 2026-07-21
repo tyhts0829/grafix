@@ -7,7 +7,6 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .argument_validation import finite_vec3, integer_scalar
 from .util import empty_geom
 
 # 高速 path の float64 中間配列・bool mask を 1 line あたり 192 bytes と
@@ -20,7 +19,7 @@ drop_meta = {
         kind="int",
         ui_min=0,
         ui_max=100,
-        description="線または面をインデックス順に一定間隔で対象にする。1 以上で有効、0 以下で無効。",
+        description="線または面をインデックス順に一定間隔で対象にする。1 以上で有効、0 で無効。",
     ),
     "index_offset": ParamMeta(
         kind="int",
@@ -105,12 +104,6 @@ def _has_uniform_two_point_lines(
     if (
         n_lines < _TWO_POINT_FAST_PATH_MIN_LINES
         or n_lines > _TWO_POINT_FAST_PATH_MAX_LINES
-        or coords.__class__ is not np.ndarray
-        or offsets.__class__ is not np.ndarray
-        or coords.dtype != np.float32
-        or offsets.dtype != np.int32
-        or not coords.flags.c_contiguous
-        or not offsets.flags.c_contiguous
         or coords.shape != (2 * n_lines, 3)
     ):
         return False
@@ -189,38 +182,26 @@ def drop(
     -------
     tuple[np.ndarray, np.ndarray]
         条件適用後の実体ジオメトリ（coords, offsets）。
-    """
-    if not isinstance(by, str):
-        raise TypeError("drop: by は str である必要がある")
-    if by not in {"line", "face"}:
-        raise ValueError(f"drop: 未知の by です: {by!r}")
-    if not isinstance(keep_mode, str):
-        raise TypeError("drop: keep_mode は str である必要がある")
-    if keep_mode not in {"drop", "keep"}:
-        raise ValueError(f"drop: 未知の keep_mode です: {keep_mode!r}")
 
-    by_mode = by
-    keep = keep_mode
-    interval_i = integer_scalar(interval, name="drop: interval")
-    eff_interval = interval_i if interval_i >= 1 else None
-    index_offset_i = integer_scalar(index_offset, name="drop: index_offset")
+    Raises
+    ------
+    ValueError
+        `interval` または `seed` が負の場合。
+    """
+    if interval < 0:
+        raise ValueError("drop: interval は 0 以上である必要がある")
+
+    eff_interval = interval if interval >= 1 else None
+    effective_index_offset = index_offset
     if eff_interval is not None:
-        index_offset_i %= eff_interval
-    seed_i = integer_scalar(seed, name="drop: seed")
-    if seed_i < 0:
+        effective_index_offset %= eff_interval
+    if seed < 0:
         raise ValueError("drop: seed は 0 以上である必要がある")
 
-    min_length_f = float(min_length)
-    max_length_f = float(max_length)
-    if not np.isfinite(min_length_f) or not np.isfinite(max_length_f):
-        raise ValueError("drop: min_length/max_length は有限値である必要がある")
-    use_min = np.isfinite(min_length_f) and min_length_f >= 0.0
-    use_max = np.isfinite(max_length_f) and max_length_f >= 0.0
+    use_min = min_length >= 0.0
+    use_max = max_length >= 0.0
 
-    base_px, base_py, base_pz = finite_vec3(
-        probability_base,
-        name="drop: probability_base",
-    )
+    base_px, base_py, base_pz = probability_base
 
     if base_px < 0.0:
         base_px = 0.0
@@ -235,10 +216,7 @@ def drop(
     elif base_pz > 1.0:
         base_pz = 1.0
 
-    slope_x, slope_y, slope_z = finite_vec3(
-        probability_slope,
-        name="drop: probability_slope",
-    )
+    slope_x, slope_y, slope_z = probability_slope
 
     prob_enabled = (
         (base_px != 0.0)
@@ -262,7 +240,7 @@ def drop(
 
     rng = None
     if prob_enabled:
-        rng = np.random.default_rng(seed_i)
+        rng = np.random.default_rng(seed)
 
     center = np.zeros((3,), dtype=np.float64)
     inv_extent = np.zeros((3,), dtype=np.float64)
@@ -275,19 +253,16 @@ def drop(
             e = float(extent[k])
             inv_extent[k] = 0.0 if e < 1e-9 else 1.0 / e
 
-    uniform_two_point_lines = by_mode == "line" and _has_uniform_two_point_lines(
+    uniform_two_point_lines = by == "line" and _has_uniform_two_point_lines(
         coords,
         offsets,
         n_lines=n_lines,
     )
-    if uniform_two_point_lines and (
-        not (use_min or use_max or prob_enabled)
-        or bool(np.all(np.isfinite(coords)))
-    ):
+    if uniform_two_point_lines:
         selected = np.zeros((n_lines,), dtype=bool)
 
-        if eff_interval is not None and index_offset_i < n_lines:
-            selected[index_offset_i::eff_interval] = True
+        if eff_interval is not None and effective_index_offset < n_lines:
+            selected[effective_index_offset::eff_interval] = True
 
         points = coords.reshape(n_lines, 2, 3)
         if use_min or use_max:
@@ -298,9 +273,9 @@ def drop(
             )
             two_point_lengths = np.sqrt(np.sum(delta * delta, axis=1))
             if use_min:
-                selected |= two_point_lengths <= min_length_f
+                selected |= two_point_lengths <= min_length
             if use_max:
-                selected |= two_point_lengths >= max_length_f
+                selected |= two_point_lengths >= max_length
 
         if rng is not None:
             centroids = np.add(
@@ -327,7 +302,7 @@ def drop(
             p_eff = 1.0 - (1.0 - p_x) * (1.0 - p_y) * (1.0 - p_z)
             selected |= rng.random(n_lines) < p_eff
 
-        keep_mask = ~selected if keep == "drop" else selected
+        keep_mask = ~selected if keep_mode == "drop" else selected
         return _pack_uniform_two_point_lines(coords, keep_mask)
 
     def _p_eff_for_range(start: int, end: int) -> float:
@@ -373,7 +348,7 @@ def drop(
 
         return 1.0 - (1.0 - p_x) * (1.0 - p_y) * (1.0 - p_z)
 
-    if by_mode == "line":
+    if by == "line":
         lengths: np.ndarray | None = None
         if use_min or use_max:
             lengths = _compute_polyline_lengths(coords, offsets, close=False)
@@ -383,16 +358,16 @@ def drop(
             cond = False
 
             if eff_interval is not None:
-                cond = cond or (((i - index_offset_i) % eff_interval) == 0)
+                cond = cond or (((i - effective_index_offset) % eff_interval) == 0)
 
             if lengths is not None:
                 L = float(lengths[i])
-                if use_min and L <= min_length_f:
+                if use_min and L <= min_length:
                     cond = True
-                if use_max and L >= max_length_f:
+                if use_max and L >= max_length:
                     cond = True
 
-            # 旧仕様に合わせて、乱数は全行で消費する（他条件の有無で結果が変わらないようにする）。
+            # 他条件の有無で確率判定が変わらないよう、乱数は全行で消費する。
             if rng is not None:
                 start = int(offsets[i])
                 end = int(offsets[i + 1])
@@ -400,7 +375,7 @@ def drop(
                 if float(rng.random()) < p_eff:
                     cond = True
 
-            if keep == "drop":
+            if keep_mode == "drop":
                 keep_mask[i] = not cond
             else:
                 keep_mask[i] = cond
@@ -429,13 +404,15 @@ def drop(
 
             cond = False
             if eff_interval is not None:
-                cond = cond or (((face_index - index_offset_i) % eff_interval) == 0)
+                cond = cond or (
+                    ((face_index - effective_index_offset) % eff_interval) == 0
+                )
 
             if lengths is not None:
                 L = float(lengths[i])
-                if use_min and L <= min_length_f:
+                if use_min and L <= min_length:
                     cond = True
-                if use_max and L >= max_length_f:
+                if use_max and L >= max_length:
                     cond = True
 
             if rng is not None:
@@ -443,7 +420,7 @@ def drop(
                 if float(rng.random()) < p_eff:
                     cond = True
 
-            if keep == "drop":
+            if keep_mode == "drop":
                 keep_mask[i] = not cond
             else:
                 keep_mask[i] = cond

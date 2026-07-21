@@ -8,7 +8,6 @@ from numba import njit  # type: ignore[attr-defined, import-untyped]
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .argument_validation import finite_vec3
 from .util import empty_geom, round_half_away_from_zero
 
 MAX_TOTAL_VERTICES = 10_000_000
@@ -246,7 +245,7 @@ def pixelate(
         各軸の正の有限な格子間隔 (sx, sy, sz)。
     corner : {"auto","xy","yx"}, default "auto"
         対角（x と y が同時に動く）を 2 手へ分解するときの順序。
-        `"auto"` は major axis first（現状互換）。
+        `"auto"` は major axis first。
         `"xy"` は常に x→y、`"yx"` は常に y→x。
 
     Returns
@@ -260,16 +259,11 @@ def pixelate(
     - Z は `step[2]` でスナップした後、各入力セグメントの階段ステップ数に沿って線形補間する。
     - 対角の分解順序は `corner` に従う。
     """
-    sx, sy, sz = finite_vec3(step, name="pixelate: step")
+    sx, sy, sz = step
     if not all(value > 0.0 for value in (sx, sy, sz)):
         raise ValueError("pixelate: step は正の有限値3要素である必要がある")
 
-    if not isinstance(corner, str):
-        raise TypeError("pixelate: corner は str である必要がある")
-    if corner not in {"auto", "xy", "yx"}:
-        raise ValueError(f"pixelate: 未知の corner です: {corner!r}")
-    corner_s = corner
-    corner_mode = 0 if corner_s == "auto" else 1 if corner_s == "xy" else 2
+    corner_mode = 0 if corner == "auto" else 1 if corner == "xy" else 2
 
     coords, offsets = g
     if coords.shape[0] == 0:

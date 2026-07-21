@@ -1,4 +1,4 @@
-"""interactive.midi.factory をテスト（mido 依存無し）。"""
+"""interactive.midi.factory の required mido 境界をテストする。"""
 
 from __future__ import annotations
 
@@ -55,20 +55,44 @@ def test_factory_rejects_unknown_mode() -> None:
         )
 
 
-def test_auto_returns_none_when_mido_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(sys.modules, "mido", None)
-    assert factory.create_midi_controller(
-        port_name="auto", mode="7bit", profile_name="main"
-    ) is None
-
-
-def test_explicit_port_raises_when_mido_is_missing(
+def test_auto_propagates_missing_required_mido(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setitem(sys.modules, "mido", None)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ModuleNotFoundError):
+        factory.create_midi_controller(
+            port_name="auto",
+            mode="7bit",
+            profile_name="main",
+        )
+
+
+def test_explicit_port_propagates_missing_required_mido(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "mido", None)
+    with pytest.raises(ModuleNotFoundError):
         factory.create_midi_controller(
             port_name="TX-6 Bluetooth", mode="7bit", profile_name="main"
+        )
+
+
+def test_auto_propagates_mido_backend_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mido = types.ModuleType("mido")
+
+    def fail() -> list[str]:
+        raise RuntimeError("backend failed")
+
+    mido.get_input_names = fail  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mido", mido)
+
+    with pytest.raises(RuntimeError, match="backend failed"):
+        factory.create_midi_controller(
+            port_name="auto",
+            mode="7bit",
+            profile_name="main",
         )
 
 
@@ -146,6 +170,7 @@ def test_auto_does_not_fall_back_when_explicit_priorities_are_unavailable(
         ({"priority_inputs": (["P1", "7bit"],)}, TypeError),
         ({"priority_inputs": (("P1", "16bit"),)}, ValueError),
         ({"port_name": 1}, TypeError),
+        ({"port_name": _StringSubclass("auto")}, TypeError),
         ({"port_name": ""}, ValueError),
     ],
 )

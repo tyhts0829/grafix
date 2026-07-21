@@ -20,7 +20,6 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
 
-from .argument_validation import exact_bool, known_choice
 from .util import (
     PlanarFrame,
     extract_planar_rings,
@@ -78,7 +77,7 @@ warp_meta = {
         ui_max=200.0,
         description=(
             "レンズ強度をマスク境界から遷移させる距離幅。"
-            "0 以下では距離遷移を使わず対象全体へ一様に適用する。"
+            "0 では距離遷移を使わず対象全体へ一様に適用する。"
         ),
     ),
     "inside_only": ParamMeta(
@@ -129,13 +128,13 @@ warp_meta = {
         kind="float",
         ui_min=0.0,
         ui_max=200.0,
-        description="吸着または反発の対象とする目標距離からの最大差。0 以下で制限なし。",
+        description="吸着または反発の対象とする目標距離からの最大差。0 で制限なし。",
     ),
     "falloff": ParamMeta(
         kind="float",
         ui_min=0.0,
         ui_max=200.0,
-        description="吸着または反発の強さを目標位置からの距離で減衰させる尺度。0 以下で減衰なし。",
+        description="吸着または反発の強さを目標位置からの距離で減衰させる尺度。0 で減衰なし。",
     ),
 }
 
@@ -538,7 +537,7 @@ def warp(
     profile : str, default "band"
         `mode="lens"` の距離プロファイル。
     band : float, default 20.0
-        `mode="lens"` の距離スケール [mm]。0 以下はハード扱い。
+        `mode="lens"` の距離スケール [mm]。0 はハード扱い。
     inside_only : bool, default True
         `mode="lens"` で mask 内側だけに効かせるか。
     auto_center : bool, default True
@@ -568,35 +567,29 @@ def warp(
     -------
     tuple[np.ndarray, np.ndarray]
         変形後の実体ジオメトリ（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        `strength`、`band`、`snap_band`、`falloff` のいずれかが負の場合。
     """
-    mode_s = known_choice(mode, choices=_MODE_CHOICES, name="warp: mode")
-    kind_s = known_choice(kind, choices=_KIND_CHOICES, name="warp: kind")
-    profile_s = known_choice(
-        profile,
-        choices=_PROFILE_CHOICES,
-        name="warp: profile",
-    )
-    direction_s = known_choice(
-        direction,
-        choices=_DIRECTION_CHOICES,
-        name="warp: direction",
-    )
-    inside_only_b = exact_bool(inside_only, name="warp: inside_only")
-    auto_center_b = exact_bool(auto_center, name="warp: auto_center")
-    show_mask_b = exact_bool(show_mask, name="warp: show_mask")
-    keep_original_b = exact_bool(
-        keep_original,
-        name="warp: keep_original",
-    )
+    if strength < 0.0:
+        raise ValueError("warp の strength は 0 以上である必要がある")
+    if band < 0.0:
+        raise ValueError("warp の band は 0 以上である必要がある")
+    if snap_band < 0.0:
+        raise ValueError("warp の snap_band は 0 以上である必要がある")
+    if falloff < 0.0:
+        raise ValueError("warp の falloff は 0 以上である必要がある")
 
     base_coords, base_offsets = base
     mask_coords, mask_offsets = mask
 
     def _with_extras(result: GeomTuple) -> GeomTuple:
         out_geoms: list[GeomTuple] = [result]
-        if keep_original_b and result is not base:
+        if keep_original and result is not base:
             out_geoms.append(base)
-        if show_mask_b:
+        if show_mask:
             out_geoms.append(mask)
         return (
             concat_geom_tuples(*out_geoms)
@@ -609,45 +602,22 @@ def warp(
     if mask_coords.shape[0] == 0:
         return _with_extras(base)
 
-    strength_f = float(strength)
-    if not math.isfinite(strength_f) or strength_f == 0.0:
+    if strength == 0.0:
         return _with_extras(base)
 
     # mode-specific params
-    if mode_s == "lens":
-        band_f = float(band)
-        if not math.isfinite(band_f):
-            return _with_extras(base)
+    if mode == "lens":
+        angle_rad = float(np.deg2rad(angle))
+        shx, shy, _ = shear
 
-        scale_f = float(scale)
-        angle_rad = float(np.deg2rad(float(angle)))
-        shx = float(shear[0])
-        shy = float(shear[1])
-
-        if kind_s == "scale" and scale_f == 1.0:
+        if kind == "scale" and scale == 1.0:
             return _with_extras(base)
-        if kind_s in {"rotate", "swirl"} and angle_rad == 0.0:
+        if kind in {"rotate", "swirl"} and angle_rad == 0.0:
             return _with_extras(base)
-        if kind_s == "shear" and shx == 0.0 and shy == 0.0:
+        if kind == "shear" and shx == 0.0 and shy == 0.0:
             return _with_extras(base)
     else:
-        dir_sign = 1.0 if direction_s == "attract" else -1.0
-
-        bias_f = float(bias)
-        if not math.isfinite(bias_f):
-            return _with_extras(base)
-
-        snap_band_f = float(snap_band)
-        if not math.isfinite(snap_band_f):
-            return _with_extras(base)
-        if snap_band_f < 0.0:
-            snap_band_f = 0.0
-
-        falloff_f = float(falloff)
-        if not math.isfinite(falloff_f):
-            return _with_extras(base)
-        if falloff_f < 0.0:
-            falloff_f = 0.0
+        dir_sign = 1.0 if direction == "attract" else -1.0
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
     threshold = planarity_threshold(mask_coords)
@@ -671,7 +641,7 @@ def warp(
     ring_vertices, ring_offsets, ring_mins, ring_maxs = pack_planar_rings(rings)
     base_xy = aligned_base[:, 0:2].astype(np.float64, copy=False)
 
-    if mode_s == "lens":
+    if mode == "lens":
         n_segments = int(ring_vertices.shape[0]) - len(rings)
         if not _use_optimized_lens_path(
             base_point_count=int(base_xy.shape[0]),
@@ -703,57 +673,55 @@ def warp(
         mins = np.min(np.stack([r0.mins for r0 in rings], axis=0), axis=0)
         maxs = np.max(np.stack([r0.maxs for r0 in rings], axis=0), axis=0)
 
-        if auto_center_b:
+        if auto_center:
             center2 = 0.5 * (mins + maxs)
         else:
-            pivot3 = np.array(
-                [[float(pivot[0]), float(pivot[1]), float(pivot[2])]], dtype=np.float64
-            )
+            pivot3 = np.asarray((pivot,), dtype=np.float64)
             pivot_xy = frame.to_local(pivot3)[0, 0:2]
             center2 = pivot_xy.astype(np.float64, copy=False)
 
-        if band_f <= 0.0:
-            if inside_only_b:
+        if band <= 0.0:
+            if inside_only:
                 w = (d < 0.0).astype(np.float64)
             else:
                 w = np.ones_like(d, dtype=np.float64)
         else:
-            if inside_only_b:
-                t = (-d) / float(band_f)
+            if inside_only:
+                t = (-d) / band
             else:
-                t = np.abs(d) / float(band_f)
+                t = np.abs(d) / band
             s = _smoothstep(t)
-            if profile_s == "ramp":
+            if profile == "ramp":
                 w = s
             else:
                 w = 4.0 * s * (1.0 - s)
-            if inside_only_b:
+            if inside_only:
                 w[~(d < 0.0)] = 0.0
 
         max_w = float(np.max(w)) if w.size else 0.0
         if not math.isfinite(max_w) or max_w <= 0.0:
             return _with_extras(base)
 
-        mix = (strength_f * w).astype(np.float64, copy=False)
+        mix = (strength * w).astype(np.float64, copy=False)
         np.clip(mix, 0.0, 1e9, out=mix)
 
         v = base_xy - center2[None, :]
 
-        if kind_s == "scale":
-            target_xy = center2[None, :] + float(scale_f) * v
-        elif kind_s == "rotate":
+        if kind == "scale":
+            target_xy = center2[None, :] + scale * v
+        elif kind == "rotate":
             c = float(math.cos(angle_rad))
             s_ = float(math.sin(angle_rad))
             rx = c * v[:, 0] - s_ * v[:, 1]
             ry = s_ * v[:, 0] + c * v[:, 1]
             target_xy = np.stack([rx, ry], axis=1)
             target_xy += center2[None, :]
-        elif kind_s == "shear":
+        elif kind == "shear":
             rx = v[:, 0] + float(shx) * v[:, 1]
             ry = float(shy) * v[:, 0] + v[:, 1]
             target_xy = np.stack([rx, ry], axis=1)
             target_xy += center2[None, :]
-        else:  # kind_s == "swirl"
+        else:  # kind == "swirl"
             span = maxs - mins
             r_ref = 0.5 * float(np.linalg.norm(span))
             if not math.isfinite(r_ref) or r_ref <= 1e-12:
@@ -776,7 +744,7 @@ def warp(
         restored = frame.to_world(out3).astype(np.float32, copy=False)
         return _with_extras((restored, base_offsets))
 
-    # mode_s == "attract"
+    # mode == "attract"
     d, gx, gy = _evaluate_warp_sdf_points_numba(
         base_xy,
         ring_vertices,
@@ -784,16 +752,16 @@ def warp(
         ring_mins,
         ring_maxs,
     )
-    delta = bias_f - d
+    delta = bias - d
     abs_delta = np.abs(delta)
 
     w = np.ones_like(delta, dtype=np.float64)
-    if snap_band_f > 0.0:
-        w = (abs_delta <= snap_band_f).astype(np.float64)
-    if falloff_f > 0.0:
-        w *= np.exp(-abs_delta / falloff_f)
+    if snap_band > 0.0:
+        w = (abs_delta <= snap_band).astype(np.float64)
+    if falloff > 0.0:
+        w *= np.exp(-abs_delta / falloff)
 
-    shift = dir_sign * strength_f * w * delta
+    shift = dir_sign * strength * w * delta
     out_aligned = aligned_base.copy()
     out_aligned[:, 0] += shift * gx
     out_aligned[:, 1] += shift * gy

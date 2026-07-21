@@ -9,8 +9,6 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .argument_validation import known_choice
-
 _GRADIENT_PROFILES = ("linear", "radial")
 
 displace_meta = {
@@ -87,7 +85,7 @@ PHASE_SEED: float = 1000.0
 # 勾配適用時に 0 へ落としきらず「最低でもこの係数までは残す」ための下限。
 MIN_GRADIENT_FACTOR_DEFAULT: float = 0.1
 
-# 勾配パラメータの内部クランプ（旧仕様の踏襲）。
+# 勾配計算に用いる固定スケール。
 GX = 40
 FGX = 40
 
@@ -507,18 +505,14 @@ def _apply_noise_to_coords(
     cy = half + np.float32(gradient_center_offset[1])
     cz = half + np.float32(gradient_center_offset[2])
 
-    rx = np.float32(abs(np.float32(gradient_radius[0])))
-    ry = np.float32(abs(np.float32(gradient_radius[1])))
-    rz = np.float32(abs(np.float32(gradient_radius[2])))
-    if rx < 1e-6:
-        rx = np.float32(1e-6)
-    if ry < 1e-6:
-        ry = np.float32(1e-6)
-    if rz < 1e-6:
-        rz = np.float32(1e-6)
-    inv_rx = np.float32(1.0) / rx
-    inv_ry = np.float32(1.0) / ry
-    inv_rz = np.float32(1.0) / rz
+    if gradient_profile_mode == 1:
+        inv_rx = np.float32(1.0) / np.float32(gradient_radius[0])
+        inv_ry = np.float32(1.0) / np.float32(gradient_radius[1])
+        inv_rz = np.float32(1.0) / np.float32(gradient_radius[2])
+    else:
+        inv_rx = np.float32(0.0)
+        inv_ry = np.float32(0.0)
+        inv_rz = np.float32(0.0)
 
     fx_base = np.float32(frequency[0])
     fy_base = np.float32(frequency[1])
@@ -820,7 +814,7 @@ def displace(
         - `"linear"`: `raw = 1 + g * (t - c)`（一次、片側が強くなる）
         - `"radial"`: `raw = 1 - g * d`（中心からの距離で変化、等値線が円/楕円）
     gradient_radius : tuple[float, float, float], default (0.5, 0.5, 0.5)
-        `"radial"` の距離 `d` を作るための半径（bbox 正規化座標、各軸別）。
+        `"radial"` の距離 `d` を作るための正の半径（bbox 正規化座標、各軸別）。
 
         例: `gradient_radius=(0.5, 0.5, 0.5)` なら bbox 中心から各辺までが概ね半径 1 になる。
     min_gradient_factor : float, default 0.1
@@ -834,70 +828,53 @@ def displace(
     -------
     tuple[np.ndarray, np.ndarray]
         変位後の実体ジオメトリ（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        `gradient_profile="radial"` で `gradient_radius` の成分が 0 以下の場合。
     """
-    profile = known_choice(
-        gradient_profile,
-        choices=_GRADIENT_PROFILES,
-        name="displace: gradient_profile",
-    )
+    if gradient_profile == "radial" and any(
+        component <= 0.0 for component in gradient_radius
+    ):
+        raise ValueError(
+            "displace の radial gradient_radius は全成分が 0 より大きい必要がある"
+        )
+    if not 0.0 <= min_gradient_factor <= 1.0:
+        raise ValueError(
+            "displace: min_gradient_factor は 0.0 以上 1.0 以下である必要がある"
+        )
+    if not 1.0 <= max_gradient_factor <= 4.0:
+        raise ValueError(
+            "displace: max_gradient_factor は 1.0 以上 4.0 以下である必要がある"
+        )
+    if max_gradient_factor < min_gradient_factor:
+        raise ValueError(
+            "displace: max_gradient_factor は min_gradient_factor 以上である必要がある"
+        )
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    ax = float(amplitude[0])
-    ay = float(amplitude[1])
-    az = float(amplitude[2])
+    ax, ay, az = amplitude
     if ax == 0.0 and ay == 0.0 and az == 0.0:
         return coords, offsets
 
-    min_factor_val = float(min_gradient_factor)
-    if min_factor_val < 0.0:
-        min_factor_val = 0.0
-    elif min_factor_val > 1.0:
-        min_factor_val = 1.0
-
-    max_factor_val = float(max_gradient_factor)
-    if max_factor_val < 1.0:
-        max_factor_val = 1.0
-    elif max_factor_val > 4.0:
-        max_factor_val = 4.0
-    if max_factor_val < min_factor_val:
-        max_factor_val = min_factor_val
-
-    profile_mode = 1 if profile == "radial" else 0
+    profile_mode = 1 if gradient_profile == "radial" else 0
 
     new_coords = _apply_noise_to_coords(
         coords,
         (ax, ay, az),
-        (
-            float(amplitude_gradient[0]),
-            float(amplitude_gradient[1]),
-            float(amplitude_gradient[2]),
-        ),
-        (
-            float(spatial_freq[0]),
-            float(spatial_freq[1]),
-            float(spatial_freq[2]),
-        ),
-        (
-            float(frequency_gradient[0]),
-            float(frequency_gradient[1]),
-            float(frequency_gradient[2]),
-        ),
-        (
-            float(gradient_center_offset[0]),
-            float(gradient_center_offset[1]),
-            float(gradient_center_offset[2]),
-        ),
+        amplitude_gradient,
+        spatial_freq,
+        frequency_gradient,
+        gradient_center_offset,
         profile_mode,
-        (
-            float(gradient_radius[0]),
-            float(gradient_radius[1]),
-            float(gradient_radius[2]),
-        ),
-        float(t),
-        np.float32(min_factor_val),  # type: ignore[arg-type]
-        np.float32(max_factor_val),  # type: ignore[arg-type]
+        gradient_radius,
+        t,
+        np.float32(min_gradient_factor),  # type: ignore[arg-type]
+        np.float32(max_gradient_factor),  # type: ignore[arg-type]
         NOISE_PERMUTATION_TABLE,
         NOISE_GRADIENTS_3D,
     )

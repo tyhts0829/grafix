@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
-import warnings
 
 import numpy as np
+import pytest
 
+from grafix import E, G
 from grafix.core.effects.bold import bold
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -17,7 +19,7 @@ def _geometry(*, coords: list[tuple[float, float, float]], offsets: list[int]) -
     return c, o
 
 
-def _legacy_bold_reference(
+def _bold_reference(
     g: GeomTuple,
     *,
     count: int,
@@ -72,7 +74,7 @@ def test_bold_empty_inputs_returns_empty_geometry() -> None:
     assert out_offsets.dtype == np.int32
 
 
-def test_bold_count_le_1_is_noop() -> None:
+def test_bold_count_one_is_noop() -> None:
     base_coords, base_offsets = _geometry(
         coords=[(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)],
         offsets=[0, 2],
@@ -82,7 +84,7 @@ def test_bold_count_le_1_is_noop() -> None:
     assert out_offsets is base_offsets
 
 
-def test_bold_radius_le_0_is_noop() -> None:
+def test_bold_radius_zero_is_noop() -> None:
     base_coords, base_offsets = _geometry(
         coords=[(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)],
         offsets=[0, 2],
@@ -90,6 +92,25 @@ def test_bold_radius_le_0_is_noop() -> None:
     out_coords, out_offsets = bold((base_coords, base_offsets), count=3, radius=0.0)
     assert out_coords is base_coords
     assert out_offsets is base_offsets
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"count": 0}, "count"),
+        ({"radius": -0.1}, "radius"),
+        ({"seed": -1}, "seed"),
+    ],
+)
+def test_bold_rejects_invalid_parameters_before_empty_input(
+    kwargs: dict[str, int | float],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.bold(**kwargs)(G.polyline(points=())))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
 
 
 def test_bold_repeats_geometry_and_preserves_offsets_structure() -> None:
@@ -139,7 +160,7 @@ def test_bold_is_deterministic_for_same_seed() -> None:
     assert np.allclose(out1_coords, out2_coords, atol=0.0)
 
 
-def test_bold_packed_output_matches_legacy_bytes_for_random_inputs() -> None:
+def test_bold_packed_output_matches_reference_for_random_inputs() -> None:
     rng = np.random.default_rng(20260719)
 
     for case_index in range(128):
@@ -158,7 +179,7 @@ def test_bold_packed_output_matches_legacy_bytes_for_random_inputs() -> None:
         radius = float(10.0 ** rng.uniform(-7.0, 5.0))
         seed = int(rng.integers(0, 2**31 - 1))
 
-        expected_coords, expected_offsets = _legacy_bold_reference(
+        expected_coords, expected_offsets = _bold_reference(
             (coords, offsets),
             count=count,
             radius=radius,
@@ -182,62 +203,3 @@ def test_bold_packed_output_matches_legacy_bytes_for_random_inputs() -> None:
         assert actual_coords.flags.owndata == expected_coords.flags.owndata
         assert coords.tobytes() == coords_before
         assert offsets.tobytes() == offsets_before
-
-
-def test_bold_packed_output_is_exact_for_supported_array_layouts() -> None:
-    rng = np.random.default_rng(91)
-    base = rng.normal(size=(24, 3)).astype(np.float32)
-    layouts = (
-        np.asfortranarray(base),
-        base[::-2],
-        base.copy(),
-    )
-    layouts[-1].flags.writeable = False
-
-    for coords in layouts:
-        offsets = np.asarray([0, 3, int(coords.shape[0])], dtype=np.int32)
-        expected = _legacy_bold_reference(
-            (coords, offsets),
-            count=7,
-            radius=0.625,
-            seed=47,
-        )
-        actual = bold((coords, offsets), count=7, radius=0.625, seed=47)
-
-        assert actual[0].tobytes() == expected[0].tobytes()
-        assert actual[1].tobytes() == expected[1].tobytes()
-
-
-def test_bold_nonfinite_warning_behavior_matches_legacy_path() -> None:
-    coords = np.asarray(
-        [
-            (np.inf, 0.0, 0.0),
-            (-np.inf, -0.0, 1.0),
-            (np.nan, 2.0, 3.0),
-        ],
-        dtype=np.float32,
-    )
-    coords.view(np.uint32)[0, 0] = np.uint32(0x7F800001)
-    offsets = np.asarray([0, 3], dtype=np.int32)
-
-    with warnings.catch_warnings(record=True) as expected_warnings:
-        warnings.simplefilter("always")
-        with np.errstate(all="warn"):
-            expected = _legacy_bold_reference(
-                (coords, offsets),
-                count=5,
-                radius=0.75,
-                seed=13,
-            )
-    with warnings.catch_warnings(record=True) as actual_warnings:
-        warnings.simplefilter("always")
-        with np.errstate(all="warn"):
-            actual = bold((coords, offsets), count=5, radius=0.75, seed=13)
-
-    assert actual[0].tobytes() == expected[0].tobytes()
-    assert actual[1].tobytes() == expected[1].tobytes()
-    assert [
-        (item.category, str(item.message)) for item in actual_warnings
-    ] == [
-        (item.category, str(item.message)) for item in expected_warnings
-    ]

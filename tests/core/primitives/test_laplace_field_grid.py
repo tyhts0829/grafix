@@ -5,10 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from grafix.core.geometry import Geometry
+from grafix import G
 from grafix.core.primitives.laplace_field_grid import (
     _split_by_mask,
-    laplace_field_grid as raw_laplace_field_grid,
 )
 from grafix.core.realize import RealizeError, realize
 from grafix.core.primitives import laplace_field_grid as _laplace_field_grid_module  # noqa: F401
@@ -64,7 +63,7 @@ def test_laplace_field_grid_runs_and_finite(preset: str) -> None:
     else:  # preset == "exp"
         params.update({"k_re": 0.35, "k_im": 0.6})
 
-    g = Geometry.create("laplace_field_grid", params=params)
+    g = G.laplace_field_grid(**params)
     realized = realize(g)
     _assert_realized_basic_invariants(realized.coords, realized.offsets)
     assert realized.coords.shape[0] > 0
@@ -74,22 +73,19 @@ def test_laplace_field_grid_cylinder_respects_gap_mask() -> None:
     """cylinder_uniform で円内部（gap 込み）に点が侵入しない。"""
     a = 1.0
     gap = 0.02
-    g = Geometry.create(
-        "laplace_field_grid",
-        params={
-            "preset": "cylinder_uniform",
-            "u_min": -4.0,
-            "u_max": 4.0,
-            "v_min": -4.0,
-            "v_max": 4.0,
-            "n_u": 10,
-            "n_v": 10,
-            "samples": 250,
-            "a": a,
-            "U": 1.0,
-            "gap": gap,
-            "draw_boundary": False,
-        },
+    g = G.laplace_field_grid(
+        preset="cylinder_uniform",
+        u_min=-4.0,
+        u_max=4.0,
+        v_min=-4.0,
+        v_max=4.0,
+        n_u=10,
+        n_v=10,
+        samples=250,
+        a=a,
+        U=1.0,
+        gap=gap,
+        draw_boundary=False,
     )
     realized = realize(g)
     _assert_realized_basic_invariants(realized.coords, realized.offsets)
@@ -100,37 +96,61 @@ def test_laplace_field_grid_cylinder_respects_gap_mask() -> None:
 
 def test_laplace_field_grid_rejects_invalid_samples() -> None:
     """samples<2 は ValueError。"""
-    g = Geometry.create(
-        "laplace_field_grid",
-        params={
-            "preset": "exp",
-            "n_u": 2,
-            "n_v": 2,
-            "samples": 1,
-        },
-    )
+    g = G.laplace_field_grid(preset="exp", n_u=2, n_v=2, samples=1)
     with pytest.raises(RealizeError):
         realize(g)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"u_min": 1.0, "u_max": -1.0}, "u_min"),
+        ({"v_min": 1.0, "v_max": -1.0}, "v_min"),
+    ],
+)
+def test_laplace_field_grid_rejects_reversed_ranges(
+    kwargs: dict[str, float],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.laplace_field_grid(preset="exp", **kwargs))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
+
+
+def test_laplace_field_grid_allows_degenerate_ranges() -> None:
+    realized = realize(
+        G.laplace_field_grid(
+            preset="exp",
+            u_min=0.0,
+            u_max=0.0,
+            v_min=0.0,
+            v_max=0.0,
+            n_u=1,
+            n_v=1,
+            samples=2,
+        )
+    )
+
+    _assert_realized_basic_invariants(realized.coords, realized.offsets)
+
+
 def test_laplace_field_grid_allows_a_zero() -> None:
     """a=0 でも例外にならない（円柱なし＝一様場の退化ケース）。"""
-    g = Geometry.create(
-        "laplace_field_grid",
-        params={
-            "preset": "cylinder_uniform",
-            "u_min": -2.0,
-            "u_max": 2.0,
-            "v_min": -2.0,
-            "v_max": 2.0,
-            "n_u": 6,
-            "n_v": 6,
-            "samples": 120,
-            "a": 0.0,
-            "U": 1.0,
-            "gap": 0.02,
-            "draw_boundary": True,
-        },
+    g = G.laplace_field_grid(
+        preset="cylinder_uniform",
+        u_min=-2.0,
+        u_max=2.0,
+        v_min=-2.0,
+        v_max=2.0,
+        n_u=6,
+        n_v=6,
+        samples=120,
+        a=0.0,
+        U=1.0,
+        gap=0.02,
+        draw_boundary=True,
     )
     realized = realize(g)
     _assert_realized_basic_invariants(realized.coords, realized.offsets)
@@ -139,23 +159,20 @@ def test_laplace_field_grid_allows_a_zero() -> None:
 
 def test_laplace_field_grid_allows_U_zero() -> None:
     """U=0 でも例外にならない（線は省略され、境界のみ描画される）。"""
-    g = Geometry.create(
-        "laplace_field_grid",
-        params={
-            "preset": "cylinder_uniform",
-            "u_min": -2.0,
-            "u_max": 2.0,
-            "v_min": -2.0,
-            "v_max": 2.0,
-            "n_u": 6,
-            "n_v": 6,
-            "samples": 120,
-            "a": 1.0,
-            "U": 0.0,
-            "gap": 0.02,
-            "draw_boundary": True,
-            "boundary_samples": 200,
-        },
+    g = G.laplace_field_grid(
+        preset="cylinder_uniform",
+        u_min=-2.0,
+        u_max=2.0,
+        v_min=-2.0,
+        v_max=2.0,
+        n_u=6,
+        n_v=6,
+        samples=120,
+        a=1.0,
+        U=0.0,
+        gap=0.02,
+        draw_boundary=True,
+        boundary_samples=200,
     )
     realized = realize(g)
     _assert_realized_basic_invariants(realized.coords, realized.offsets)
@@ -175,36 +192,27 @@ def test_laplace_field_grid_presets_are_distinct() -> None:
         "samples": 120,
     }
 
-    g_cyl = Geometry.create(
-        "laplace_field_grid",
-        params={
-            **base,
-            "preset": "cylinder_uniform",
-            "a": 1.0,
-            "U": 1.0,
-            "gap": 0.01,
-            "draw_boundary": False,
-        },
+    g_cyl = G.laplace_field_grid(
+        **base,
+        preset="cylinder_uniform",
+        a=1.0,
+        U=1.0,
+        gap=0.01,
+        draw_boundary=False,
     )
-    g_mob = Geometry.create(
-        "laplace_field_grid",
-        params={
-            **base,
-            "preset": "mobius",
-            "alpha_re": 1.0,
-            "alpha_im": 0.0,
-            "beta_re": 0.3,
-            "beta_im": 0.2,
-            "gamma_re": 0.1,
-            "gamma_im": 0.0,
-            "delta_re": 1.0,
-            "delta_im": 0.0,
-        },
+    g_mob = G.laplace_field_grid(
+        **base,
+        preset="mobius",
+        alpha_re=1.0,
+        alpha_im=0.0,
+        beta_re=0.3,
+        beta_im=0.2,
+        gamma_re=0.1,
+        gamma_im=0.0,
+        delta_re=1.0,
+        delta_im=0.0,
     )
-    g_exp = Geometry.create(
-        "laplace_field_grid",
-        params={**base, "preset": "exp", "k_re": 0.4, "k_im": 0.8},
-    )
+    g_exp = G.laplace_field_grid(**base, preset="exp", k_re=0.4, k_im=0.8)
 
     r_cyl = realize(g_cyl)
     r_mob = realize(g_mob)
@@ -256,20 +264,3 @@ def test_split_by_mask_fast_paths_preserve_runs(mask: np.ndarray) -> None:
     for actual_piece, expected_piece in zip(actual, expected, strict=True):
         np.testing.assert_array_equal(actual_piece, expected_piece)
         assert np.shares_memory(actual_piece, points)
-
-
-def test_laplace_empty_output_keeps_transform_parameters_lazy() -> None:
-    """線が無い場合は従来どおりcenter/scale/rotateを評価しない。"""
-
-    coords, offsets = raw_laplace_field_grid(
-        preset="exp",
-        n_u=0,
-        n_v=0,
-        samples=2,
-        center=object(),  # type: ignore[arg-type]
-        scale=object(),  # type: ignore[arg-type]
-        rotate=object(),  # type: ignore[arg-type]
-    )
-
-    assert coords.shape == (0, 3)
-    assert offsets.tolist() == [0]

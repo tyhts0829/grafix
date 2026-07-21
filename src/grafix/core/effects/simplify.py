@@ -11,7 +11,6 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
-from .argument_validation import known_choice
 from .util import RESAMPLE_CLOSED_DISTANCE_EPS
 
 _SCRATCH_BYTES_PER_VERTEX = 64
@@ -267,7 +266,7 @@ def simplify(
     g : tuple[np.ndarray, np.ndarray]
         簡略化する実体ジオメトリ（coords, offsets）。
     tolerance : float, default 0.05
-        元の線から許容する最大 XYZ 距離。0 以下または非有限なら入力をそのまま返す。
+        元の線から許容する最大 XYZ 距離。0 なら入力をそのまま返す。
     closed : {"auto", "open", "closed"}, default "auto"
         ``"open"`` は開曲線として両端を残し、``"closed"`` は 3 点以上の線を
         閉曲線として扱う。``"auto"`` は端点距離が 0.01 以下なら閉曲線とみなす。
@@ -276,23 +275,18 @@ def simplify(
     -------
     tuple[np.ndarray, np.ndarray]
         簡略化後の実体ジオメトリ（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        `tolerance` が負の場合。
     """
 
-    closed_mode = known_choice(
-        closed,
-        choices=_CLOSED_CHOICES,
-        name="simplify: closed",
-    )
+    if tolerance < 0.0:
+        raise ValueError("simplify の tolerance は 0 以上である必要がある")
+
     coords, offsets = g
-    tolerance_size = float(tolerance)
-    if (
-        coords.shape[0] == 0
-        or not np.isfinite(tolerance_size)
-        or tolerance_size <= 0.0
-    ):
-        return coords, offsets
-    # 非有限座標に対して距離順を定義せず、部分的な簡略化もしない。
-    if not bool(np.all(np.isfinite(coords))):
+    if coords.shape[0] == 0 or tolerance == 0.0:
         return coords, offsets
 
     line_count = max(0, int(offsets.size) - 1)
@@ -315,7 +309,7 @@ def simplify(
         hint="入力頂点数を減らすか、resample を先に適用してください",
     )
 
-    tolerance_sq = tolerance_size * tolerance_size
+    tolerance_sq = tolerance * tolerance
     plans: list[_SimplifyLinePlan] = []
     changed = False
     total_output_vertices = 0
@@ -328,7 +322,7 @@ def simplify(
 
         near_closed = point_count >= 3 and _endpoints_are_near(points)
         use_closed = point_count >= 3 and (
-            closed_mode == "closed" or (closed_mode == "auto" and near_closed)
+            closed == "closed" or (closed == "auto" and near_closed)
         )
         if use_closed:
             plan = _plan_closed_line(

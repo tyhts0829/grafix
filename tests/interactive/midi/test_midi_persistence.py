@@ -23,11 +23,15 @@ class DummyCcMsg:
 class DummyInPort:
     def __init__(self, messages: list[object]) -> None:
         self._messages = list(messages)
+        self.closed = False
 
     def iter_pending(self):
         out = list(self._messages)
         self._messages.clear()
         return out
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_persistence_path_roundtrip(tmp_path: Path) -> None:

@@ -74,19 +74,12 @@ def test_collapse_rejects_negative_growth_parameters() -> None:
         collapse_impl(geometry, subdivisions=-1)
 
 
-def test_collapse_rejects_invalid_mask_vectors() -> None:
+def test_collapse_rejects_mask_base_outside_probability_range() -> None:
     base = realize(G.collapse_test_line2_x_a())
     geometry = (base.coords, base.offsets)
 
     with pytest.raises(ValueError, match="intensity_mask_base"):
         collapse_impl(geometry, intensity_mask_base=(-0.1, 1.0, 1.0))
-    with pytest.raises(TypeError, match="intensity_mask_slope"):
-        collapse_impl(
-            geometry,
-            intensity_mask_slope=[0.0, 0.0, 0.0],  # type: ignore[arg-type]
-        )
-    with pytest.raises(ValueError, match="pivot"):
-        collapse_impl(geometry, pivot=(0.0, float("inf"), 0.0))
 
 
 def test_collapse_outputs_non_connected_segments() -> None:

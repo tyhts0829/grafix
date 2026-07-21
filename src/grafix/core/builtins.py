@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import importlib
+from types import MappingProxyType
 
-_BUILTIN_PRIMITIVE_MODULES = {
+_BUILTIN_PRIMITIVE_MODULES = MappingProxyType({
     name: f"grafix.core.primitives.{name}"
     for name in (
         "arc",
@@ -32,9 +33,9 @@ _BUILTIN_PRIMITIVE_MODULES = {
         "torus",
         "wave",
     )
-}
+})
 
-_BUILTIN_EFFECT_MODULES = {
+_BUILTIN_EFFECT_MODULES = MappingProxyType({
     name: f"grafix.core.effects.{name}"
     for name in (
         "collapse",
@@ -75,27 +76,43 @@ _BUILTIN_EFFECT_MODULES = {
         "boolean",
         "offset_curve",
     )
-}
+})
 
 
 def ensure_builtin_primitive_registered(name: str) -> bool:
-    """``name`` が組み込み primitive なら対応 module だけ import する。"""
+    """builtin primitive を catalog から live registry へ不足時だけ登録する。"""
 
-    module = _BUILTIN_PRIMITIVE_MODULES.get(str(name))
+    module = _BUILTIN_PRIMITIVE_MODULES.get(name)
     if module is None:
         return False
     importlib.import_module(module)
-    return True
+    from . import primitive_registry as registry_module
+
+    spec = registry_module.builtin_primitive_catalog.get(name)
+    if spec is None:
+        raise RuntimeError(f"builtin primitive spec が記録されていません: {name!r}")
+    registry = registry_module.primitive_registry
+    if name not in registry:
+        registry.register(name, spec)
+    return registry[name] is spec
 
 
 def ensure_builtin_effect_registered(name: str) -> bool:
-    """``name`` が組み込み effect なら対応 module だけ import する。"""
+    """builtin effect を catalog から live registry へ不足時だけ登録する。"""
 
-    module = _BUILTIN_EFFECT_MODULES.get(str(name))
+    module = _BUILTIN_EFFECT_MODULES.get(name)
     if module is None:
         return False
     importlib.import_module(module)
-    return True
+    from . import effect_registry as registry_module
+
+    spec = registry_module.builtin_effect_catalog.get(name)
+    if spec is None:
+        raise RuntimeError(f"builtin effect spec が記録されていません: {name!r}")
+    registry = registry_module.effect_registry
+    if name not in registry:
+        registry.register(name, spec)
+    return registry[name] is spec
 
 
 def ensure_builtin_primitives_registered() -> None:

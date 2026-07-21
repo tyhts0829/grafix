@@ -246,25 +246,17 @@ def test_resample_preserves_input_and_is_byte_deterministic() -> None:
     assert first[1].tobytes() == second[1].tobytes()
 
 
-def test_resample_invalid_step_is_identity() -> None:
+def test_resample_zero_step_is_identity() -> None:
     coords, offsets = _geom([[(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)]])
 
-    for step in (0.0, -1.0, np.nan, np.inf):
-        out_coords, out_offsets = resample((coords, offsets), step=step)
-        assert out_coords is coords
-        assert out_offsets is offsets
-
-
-def test_resample_nonfinite_geometry_is_identity() -> None:
-    coords, offsets = _geom(
-        [[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]]
-    )
-    coords[1, 2] = np.nan
-
-    out_coords, out_offsets = resample((coords, offsets), step=0.1)
-
+    out_coords, out_offsets = resample((coords, offsets), step=0.0)
     assert out_coords is coords
     assert out_offsets is offsets
+
+
+def test_resample_rejects_negative_step_before_empty_input() -> None:
+    with pytest.raises(ValueError, match="step"):
+        resample(_geom([]), step=-1.0)
 
 
 def test_resample_resource_boundary_and_overflow() -> None:

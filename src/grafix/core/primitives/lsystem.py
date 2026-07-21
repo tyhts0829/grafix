@@ -9,12 +9,10 @@ from __future__ import annotations
 import math
 import warnings
 from functools import lru_cache
-from typing import cast
 
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.primitive_registry import primitive
 from grafix.core.realized_geometry import (
     GeomTuple,
@@ -139,11 +137,7 @@ def _parse_rules_text(rules: str) -> dict[str, str]:
 def _expand_lsystem(axiom: str, rules: dict[str, str], *, iters: int) -> str:
     """L-system を展開して最終文字列を返す。"""
     s = axiom
-    n = iters
-    if n <= 0:
-        return s
-
-    for _ in range(n):
+    for _ in range(iters):
         parts: list[str] = []
         for ch in s:
             parts.append(rules.get(ch, ch))
@@ -176,14 +170,11 @@ def _turtle_to_geom_tuple(
     batch_random: bool,
 ) -> GeomTuple:
     """タートル解釈し、開ポリライン列をpacked geometryとして返す。"""
-    x, y = float(start_xy[0]), float(start_xy[1])
-    heading = math.radians(float(heading_deg))
-    angle_base = math.radians(float(angle_deg))
-    step_base = float(step)
-
-    jitter_f = float(jitter)
-    if jitter_f < 0.0:
-        jitter_f = 0.0
+    x, y = start_xy
+    heading = math.radians(heading_deg)
+    angle_base = math.radians(angle_deg)
+    step_base = step
+    jitter_f = jitter
 
     rng = np.random.default_rng(seed)
     random_values: np.ndarray | None = None
@@ -191,11 +182,6 @@ def _turtle_to_geom_tuple(
     if (
         batch_random
         and 0.0 < jitter_f <= 0.25
-        and math.isfinite(x)
-        and math.isfinite(y)
-        and math.isfinite(heading)
-        and math.isfinite(angle_base)
-        and math.isfinite(step_base)
         and abs(heading) <= 20.0 * math.pi
         and abs(angle_base) <= 2.0 * math.pi
     ):
@@ -299,7 +285,7 @@ def _turtle_to_geom_tuple(
         if len(prev) >= 2:
             lines_xy.append(prev)
 
-    zf = float(z)
+    zf = z
     if not lines_xy:
         return empty_geom_tuple()
 
@@ -364,7 +350,7 @@ def lsystem(
         プリセット種別。
         `"custom"` の場合は `axiom` と `rules` を使用する。
     iters : int, default 5
-        展開回数（0 で axiom をそのまま解釈する）。
+        0 以上の展開回数（0 で axiom をそのまま解釈する）。
     center : tuple[float, float, float], default (0,0,0)
         開始点の座標 (cx, cy, cz)。
     heading : float, default 90.0
@@ -372,12 +358,12 @@ def lsystem(
     angle : float, default 25.0
         回転角 [deg]（`+/-`）。
     step : float, default 6.0
-        前進距離（`F/f`）。
+        0 より大きい前進距離（`F/f`）。
     jitter : float, default 0.0
         角度/距離の相対ゆらぎ（0 以上）。
         `jitter>0` のとき、各 `F/f` と `+/-` ごとに `U(-jitter, +jitter)` を掛ける。
     seed : int, default 0
-        乱数 seed（決定性）。
+        0 以上の乱数 seed（決定性）。
     axiom : str, default "X"
         初期文字列（展開の出発点）。`kind="custom"` のときのみ使用する。
 
@@ -408,37 +394,27 @@ def lsystem(
     -------
     tuple[np.ndarray, np.ndarray]
         生成された枝ポリライン列（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        `iters`、`jitter`、`seed` のいずれかが負、または `step` が 0 以下の場合。
     """
-    kind_s = cast(
-        str,
-        validate_parameter_value(
-            kind,
-            kind="choice",
-            choices=_KIND_CHOICES,
-        ),
-    )
-    iters_i = cast(
-        int,
-        validate_parameter_value(iters, kind="int", choices=None),
-    )
-    seed_i = cast(
-        int,
-        validate_parameter_value(seed, kind="int", choices=None),
-    )
-    ax = cast(
-        str,
-        validate_parameter_value(axiom, kind="str", choices=None),
-    )
-    rules_text = cast(
-        str,
-        validate_parameter_value(rules, kind="str", choices=None),
-    )
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "lsystem の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
+    if iters < 0:
+        raise ValueError("lsystem の iters は 0 以上である必要がある")
+    if step <= 0.0:
+        raise ValueError("lsystem の step は 0 より大きい必要がある")
+    if jitter < 0.0:
+        raise ValueError("lsystem の jitter は 0 以上である必要がある")
+    if seed < 0:
+        raise ValueError("lsystem の seed は 0 以上である必要がある")
+
+    kind_s = kind
+    iters_i = iters
+    seed_i = seed
+    ax = axiom
+    rules_text = rules
+    cx, cy, cz = center
 
     if kind_s == "custom":
         rules_map = _parse_rules_text(rules_text)
@@ -452,12 +428,12 @@ def lsystem(
 
     return _turtle_to_geom_tuple(
         program,
-        start_xy=(float(cx), float(cy)),
-        heading_deg=float(heading),
-        angle_deg=float(angle),
-        step=float(step),
-        jitter=float(jitter),
+        start_xy=(cx, cy),
+        heading_deg=heading,
+        angle_deg=angle,
+        step=step,
+        jitter=jitter,
         seed=seed_i,
-        z=float(cz),
+        z=cz,
         batch_random=batch_random,
     )

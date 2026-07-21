@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import warnings
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,11 +26,11 @@ from grafix.devtools.benchmarks.schema import (
     ContractResult,
     Metric,
     evaluate_contract,
+    freeze_json_object,
+    materialize_json_object,
 )
 
-_EXCLUDED_EFFECTS = frozenset(
-    {"fill", "subdivide", "scale", "rotate", "translate"}
-)
+_EXCLUDED_EFFECTS = frozenset({"fill", "subdivide", "scale", "rotate", "translate"})
 _JIT_EFFECTS = frozenset(
     {
         "collapse",
@@ -186,10 +186,7 @@ _EXPECTED_DIAGNOSTICS: dict[str, list[list[object]]] = {
             "growth.iters",
             64,
             32,
-            (
-                "draft preview capped simulation iterations; final capture "
-                "keeps the requested value"
-            ),
+            ("draft preview capped simulation iterations; final capture keeps the requested value"),
             "info",
         ]
     ],
@@ -205,10 +202,7 @@ _EXPECTED_DIAGNOSTICS: dict[str, list[list[object]]] = {
             "metaball.grid_pitch",
             0.75,
             2.6376173738046162,
-            (
-                "draft preview coarsened the field grid; final capture keeps "
-                "the requested pitch"
-            ),
+            ("draft preview coarsened the field grid; final capture keeps the requested pitch"),
             "info",
         ],
     ],
@@ -234,10 +228,7 @@ _EXPECTED_DIAGNOSTICS: dict[str, list[list[object]]] = {
             "reaction_diffusion.steps",
             800,
             600,
-            (
-                "draft preview capped cells × steps work; final capture keeps "
-                "the requested value"
-            ),
+            ("draft preview capped cells × steps work; final capture keeps the requested value"),
             "info",
         ],
     ],
@@ -253,19 +244,14 @@ _EXPECTED_LAYOUT: dict[str, object] = {
     "offsets_f_contiguous": True,
     "coords_writeable": False,
     "offsets_writeable": False,
-    "coords_owndata": True,
-    "offsets_owndata": True,
+    "coords_owndata": False,
+    "offsets_owndata": False,
     "coords_aligned": True,
     "offsets_aligned": True,
 }
 _EXPECTED_LAYOUT_OVERRIDES: dict[str, dict[str, object]] = {
-    # immutable baseline では float64 work array の float32 view を返す。
-    "effect.remaining.displace.polyline_long": {
-        "coords_owndata": False,
-    },
-    # immutable baseline の final case は標準 shape=(0, 3) empty geometry。
+    # shape=(0, 3) は C/F の両方に contiguous と判定される。
     "effect.remaining.reaction_diffusion.final.rings_medium": {
-        "coords_strides": [0, 0],
         "coords_f_contiguous": True,
     },
 }
@@ -290,11 +276,18 @@ class RemainingEffectBenchmarkCase:
     label: str
     effect: str
     fixture: str
-    arguments: dict[str, Any]
+    arguments: Mapping[str, object]
     work_kind: str
     quality: PreviewQuality = "final"
     tags: tuple[str, ...] = ()
     selectable_suites: tuple[str, ...] = ("effects-remaining",)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "arguments",
+            freeze_json_object(self.arguments),
+        )
 
     def parameters(self) -> dict[str, Any]:
         """JSON-compatible な case parameter を返す。"""
@@ -303,7 +296,7 @@ class RemainingEffectBenchmarkCase:
             "case_id": self.case_id,
             "effect": self.effect,
             "fixture": self.fixture,
-            "arguments": self.arguments,
+            "arguments": materialize_json_object(freeze_json_object(self.arguments)),
             "work_kind": self.work_kind,
             "quality": self.quality,
             "expected_checksum": _EXPECTED_CHECKSUMS.get(self.case_id),
@@ -316,11 +309,9 @@ class RemainingEffectBenchmarkCase:
             "expected_alias": {
                 "output_is_input": False,
                 "coords_is_input": False,
-                "offsets_is_input": self.case_id
-                in _EXPECTED_OFFSETS_ALIAS,
+                "offsets_is_input": self.case_id in _EXPECTED_OFFSETS_ALIAS,
                 "coords_alias_input": False,
-                "offsets_alias_input": self.case_id
-                in _EXPECTED_OFFSETS_ALIAS,
+                "offsets_alias_input": self.case_id in _EXPECTED_OFFSETS_ALIAS,
             },
         }
 
@@ -853,16 +844,8 @@ def remaining_effect_benchmark_cases() -> tuple[RemainingEffectBenchmarkCase, ..
             tags=(*common_tags, *case.tags),
             selectable_suites=(
                 *case.selectable_suites,
-                *(
-                    ("effects-remaining-jit",)
-                    if case.effect in _JIT_EFFECTS
-                    else ()
-                ),
-                *(
-                    ("effects-remaining-cold",)
-                    if case.effect in _PROCESS_COLD_EFFECTS
-                    else ()
-                ),
+                *(("effects-remaining-jit",) if case.effect in _JIT_EFFECTS else ()),
+                *(("effects-remaining-cold",) if case.effect in _PROCESS_COLD_EFFECTS else ()),
             ),
         )
         for case in cases
@@ -893,8 +876,7 @@ def setup_remaining_effect_benchmark(
         if meta is not None and meta.kind in {"vec3", "rgb"}:
             if not isinstance(value, list) or len(value) != 3:
                 raise TypeError(
-                    f"{effect_name}.{name} benchmark argument must be a "
-                    "three-item JSON array"
+                    f"{effect_name}.{name} benchmark argument must be a three-item JSON array"
                 )
             value = tuple(value)
         arguments[name] = value
@@ -972,16 +954,12 @@ def observe_remaining_effect_output(
 
     effect_state = cast(RemainingEffectBenchmarkState, state)
     if not isinstance(output, RealizedGeometry):
-        raise TypeError(
-            f"{effect_state.effect} evaluator output must be RealizedGeometry"
-        )
+        raise TypeError(f"{effect_state.effect} evaluator output must be RealizedGeometry")
 
     timed_geometry = output
     timed_checksum = geometry_checksum(timed_geometry)
     diagnostic_objects = (
-        ()
-        if effect_state.diagnostic_buffer is None
-        else effect_state.diagnostic_buffer.snapshot()
+        () if effect_state.diagnostic_buffer is None else effect_state.diagnostic_buffer.snapshot()
     )
     timed_diagnostics = _diagnostic_values(diagnostic_objects)
 
@@ -996,8 +974,7 @@ def observe_remaining_effect_output(
     repeated_checksum = geometry_checksum(repeated_geometry)
     repeated_diagnostics = _diagnostic_values(diagnostic_buffer.snapshot())
     repeated_warnings = [
-        [record.category.__name__, str(record.message)]
-        for record in warning_records
+        [record.category.__name__, str(record.message)] for record in warning_records
     ]
 
     layout = _layout_values(timed_geometry)
@@ -1189,9 +1166,7 @@ def target_remaining_effect_names() -> frozenset[str]:
 def _build_inputs(*, fixture: str, seed: int) -> tuple[RealizedGeometry, ...]:
     from grafix.devtools.benchmarks.cases import build_default_cases
 
-    defaults = {
-        case.case_id: case.inputs for case in build_default_cases(seed=int(seed))
-    }
+    defaults = {case.case_id: case.inputs for case in build_default_cases(seed=int(seed))}
     if fixture in defaults:
         return defaults[fixture]
     if fixture == "rings_medium":
@@ -1399,12 +1374,8 @@ def _alias_values(
 ) -> dict[str, bool]:
     return {
         "output_is_input": any(geometry is value for value in inputs),
-        "coords_is_input": any(
-            geometry.coords is value.coords for value in inputs
-        ),
-        "offsets_is_input": any(
-            geometry.offsets is value.offsets for value in inputs
-        ),
+        "coords_is_input": any(geometry.coords is value.coords for value in inputs),
+        "offsets_is_input": any(geometry.offsets is value.offsets for value in inputs),
         "coords_alias_input": any(
             np.shares_memory(geometry.coords, value.coords) for value in inputs
         ),
@@ -1518,9 +1489,7 @@ def _specific_metrics(
         gauge("work.closed", str(args["closed"]), unit="text")
         counter("work.resampled_vertices", int(geometry.coords.shape[0]))
     elif state.effect == "simplify":
-        input_vertices = sum(
-            int(value.coords.shape[0]) for value in state.inputs
-        )
+        input_vertices = sum(int(value.coords.shape[0]) for value in state.inputs)
         gauge(
             "work.tolerance",
             float(args["tolerance"]),
@@ -1563,9 +1532,7 @@ def _specific_metrics(
         )
         counter("work.output_rings", int(geometry.offsets.size - 1))
     elif state.effect == "offset_curve":
-        input_paths = sum(
-            int(value.offsets.size - 1) for value in state.inputs
-        )
+        input_paths = sum(int(value.offsets.size - 1) for value in state.inputs)
         retained_paths = input_paths if bool(args["keep_original"]) else 0
         gauge(
             "work.distance",

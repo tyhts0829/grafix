@@ -9,7 +9,6 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .argument_validation import known_choice
 from .util import (
     RESAMPLE_CLOSED_DISTANCE_EPS,
     ResamplePlan,
@@ -166,9 +165,9 @@ def highpass(
     g : tuple[np.ndarray, np.ndarray]
         変形対象の実体ジオメトリ（coords, offsets）。
     step : float, default 0.5
-        再サンプル間隔（弧長）。
+        正の再サンプル間隔（弧長）。
     sigma : float, default 1.0
-        低域成分を作るガウス平滑半径（`sigma/step` が実効的なスケール）。
+        正のガウス平滑半径（`sigma/step` が実効的なスケール）。
     gain : float, default 1.0
         高周波強調係数。0 は no-op。
     closed : str, default "auto"
@@ -180,27 +179,19 @@ def highpass(
     tuple[np.ndarray, np.ndarray]
         highpass 適用後の実体ジオメトリ（coords, offsets）。
     """
-    closed_mode = known_choice(
-        closed,
-        choices=_CLOSED_CHOICES,
-        name="highpass: closed",
-    )
+    if step <= 0.0:
+        raise ValueError("highpass: step は正である必要がある")
+    if sigma <= 0.0:
+        raise ValueError("highpass: sigma は正である必要がある")
+
+    sigma_in_samples = sigma / step
+    if not np.isfinite(sigma_in_samples) or sigma_in_samples <= 0.0:
+        raise ValueError("highpass: sigma / step は正の有限値である必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
-
-    step_size = float(step)
-    sigma_size = float(sigma)
-    gain_size = float(gain)
-    if not np.isfinite(step_size) or not np.isfinite(sigma_size) or not np.isfinite(gain_size):
-        return coords, offsets
-    if step_size <= 0.0 or sigma_size <= 0.0:
-        return coords, offsets
-    if gain_size == 0.0:
-        return coords, offsets
-
-    sigma_in_samples = sigma_size / step_size
-    if not np.isfinite(sigma_in_samples) or sigma_in_samples <= 0.0:
+    if gain == 0.0:
         return coords, offsets
 
     n_lines = int(offsets.size) - 1
@@ -210,8 +201,8 @@ def highpass(
     plan = ResamplePlan.from_geometry(
         coords,
         offsets,
-        step=step_size,
-        closed=closed_mode,
+        step=step,
+        closed=closed,
         max_vertices=MAX_TOTAL_VERTICES,
         closed_distance=RESAMPLE_CLOSED_DISTANCE_EPS,
     )
@@ -233,7 +224,7 @@ def highpass(
         offsets_out,
         closed_flags,
         kernel,
-        float(gain_size),
+        gain,
         coords_out,
     )
     return coords_out, offsets_out

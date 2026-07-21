@@ -46,7 +46,7 @@ _SLIDER_KEY = ParameterKey(
 )
 _BASE_LINE = Geometry.create(
     "line",
-    params={"length": 2.0, "angle": 0.0},
+    params={"activate": True, "length": 2.0, "angle": 0.0},
 )
 
 
@@ -86,6 +86,7 @@ def interactive_slider_draw(_t: float) -> Geometry:
         "scale",
         inputs=(_BASE_LINE,),
         params={
+            "activate": True,
             "mode": "all",
             "auto_center": False,
             "pivot": (0.0, 0.0, 0.0),
@@ -557,6 +558,7 @@ def _scaled_line(scale_x: float) -> Geometry:
         "scale",
         inputs=(_BASE_LINE,),
         params={
+            "activate": True,
             "mode": "all",
             "auto_center": False,
             "pivot": (0.0, 0.0, 0.0),

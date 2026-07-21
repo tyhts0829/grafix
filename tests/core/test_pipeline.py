@@ -7,6 +7,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from grafix.api import G
 from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer, LayerStyleDefaults
 from grafix.core.parameters import ParamStore, parameter_context
@@ -20,12 +21,11 @@ from grafix.core.parameters.layer_style import (
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.pipeline import realize_scene
 from grafix.core.realize import RealizeSession
-from grafix.core.primitives import polygon as _polygon_module  # noqa: F401
 
 
 def test_realize_scene_normalizes_and_realizes_layers() -> None:
-    g1 = Geometry.create("polygon", params={"n_sides": 3})
-    g2 = Geometry.create("polygon", params={"n_sides": 6})
+    g1 = G.polygon(n_sides=3)
+    g2 = G.polygon(n_sides=6)
 
     def draw(t: float):
         return [Layer(g1, site_id="layer:1", color=None, thickness=None), g2]
@@ -44,7 +44,7 @@ def test_realize_scene_normalizes_and_realizes_layers() -> None:
 
 
 def test_realize_scene_reuses_explicit_session_between_frames() -> None:
-    geometry = Geometry.create("polygon", params={"n_sides": 5})
+    geometry = G.polygon(n_sides=5)
 
     def draw(_t: float) -> Geometry:
         return geometry
@@ -74,7 +74,7 @@ def test_realized_layer_validates_direct_construction(
     changes: dict[str, object],
     error: type[Exception],
 ) -> None:
-    geometry = Geometry.create("polygon", params={"n_sides": 3})
+    geometry = G.polygon(n_sides=3)
     valid = realize_scene(
         lambda _t: geometry,
         t=0.0,
@@ -88,7 +88,7 @@ def test_realized_layer_validates_direct_construction(
 
 
 def test_realize_scene_observes_and_applies_layer_style_overrides() -> None:
-    g = Geometry.create("polygon", params={"n_sides": 3})
+    g = G.polygon(n_sides=3)
 
     def draw(t: float):
         return [Layer(g, site_id="layer:1", color=None, thickness=None, name="bg")]
@@ -127,7 +127,7 @@ def test_realize_scene_observes_and_applies_layer_style_overrides() -> None:
 
 
 def test_realize_scene_records_layer_style_without_param_store() -> None:
-    g = Geometry.create("polygon", params={"n_sides": 3})
+    g = G.polygon(n_sides=3)
 
     def draw(t: float):
         return [Layer(g, site_id="layer:1", color=None, thickness=None, name="bg")]

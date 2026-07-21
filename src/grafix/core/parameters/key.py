@@ -87,7 +87,7 @@ def make_site_id(
         if frame is not None:
             frame = frame.f_back
     if frame is None:
-        return "<unknown>:0:0"
+        raise RuntimeError("parameter site frame could not be resolved")
 
     code = frame.f_code
     module_name = str(frame.f_globals.get("__name__", ""))
@@ -123,7 +123,7 @@ def caller_site_id(
             break
         frame = frame.f_back
     if frame is None:
-        return "<unknown>:0:0"
+        raise RuntimeError("parameter caller frame could not be resolved")
     return make_site_id(
         frame,
         key=key,

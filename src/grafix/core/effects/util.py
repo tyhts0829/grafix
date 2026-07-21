@@ -20,22 +20,6 @@ _RESAMPLE_OPEN = 1
 _RESAMPLE_CLOSED = 2
 
 
-def float_cycle(value: float | Sequence[float]) -> tuple[float, ...]:
-    """float または float 列を循環利用できる非空タプルへ正規化する。"""
-
-    if isinstance(value, np.ndarray):
-        if value.ndim == 0:
-            return (float(value),)
-        if value.size <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(float(item) for item in value.ravel())
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        if len(value) <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(float(item) for item in value)
-    return (float(value),)
-
-
 def round_half_away_from_zero(values: np.ndarray) -> np.ndarray:
     """0.5 境界を絶対値方向へ丸める。"""
 
@@ -2193,7 +2177,7 @@ def build_gaussian_kernel(*, sigma_in_samples: float, max_radius: int) -> np.nda
 
 @njit(cache=True)
 def _resample_needs_float64_nb(vertices: np.ndarray, closed: bool) -> bool:
-    """従来のfloat32距離計算がoverflowする入力ならTrueを返す。"""
+    """float32 の距離二乗が overflow する入力なら True を返す。"""
 
     count = int(vertices.shape[0])
     edge_count = count if closed and count >= 2 else max(0, count - 1)

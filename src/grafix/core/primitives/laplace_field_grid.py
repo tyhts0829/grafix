@@ -279,15 +279,9 @@ def _apply_transform(
     scale: float,
     rotate_deg: float,
 ) -> np.ndarray:
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "laplace_field_grid の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
-
-    s_f = float(scale)
-    theta = math.radians(float(rotate_deg))
+    cx, cy, cz = center
+    s_f = scale
+    theta = math.radians(rotate_deg)
     c = math.cos(theta)
     s = math.sin(theta)
 
@@ -300,9 +294,9 @@ def _apply_transform(
         out[:, 0] = c * x - s * y
         out[:, 1] = s * x + c * y
 
-    out[:, 0] += float(cx)
-    out[:, 1] += float(cy)
-    out[:, 2] += float(cz)
+    out[:, 0] += cx
+    out[:, 1] += cy
+    out[:, 2] += cz
     return out
 
 
@@ -318,37 +312,37 @@ def _clip_and_split(
     if not enabled:
         return [points]
     inside = (
-        (points[:, 0] >= float(xmin))
-        & (points[:, 0] <= float(xmax))
-        & (points[:, 1] >= float(ymin))
-        & (points[:, 1] <= float(ymax))
+        (points[:, 0] >= xmin)
+        & (points[:, 0] <= xmax)
+        & (points[:, 1] >= ymin)
+        & (points[:, 1] <= ymax)
     )
     return _split_by_mask(points, inside)
 
 
 LAPLACE_FIELD_GRID_UI_VISIBLE = {
-    "clip_xmin": lambda v: bool(v.get("clip", False)),
-    "clip_xmax": lambda v: bool(v.get("clip", False)),
-    "clip_ymin": lambda v: bool(v.get("clip", False)),
-    "clip_ymax": lambda v: bool(v.get("clip", False)),
-    "a": lambda v: str(v.get("preset", "cylinder_uniform")) == "cylinder_uniform",
-    "U": lambda v: str(v.get("preset", "cylinder_uniform")) == "cylinder_uniform",
-    "gap": lambda v: str(v.get("preset", "cylinder_uniform")) == "cylinder_uniform",
-    "draw_boundary": lambda v: str(v.get("preset", "cylinder_uniform"))
+    "clip_xmin": lambda v: v.get("clip", False),
+    "clip_xmax": lambda v: v.get("clip", False),
+    "clip_ymin": lambda v: v.get("clip", False),
+    "clip_ymax": lambda v: v.get("clip", False),
+    "a": lambda v: v.get("preset", "cylinder_uniform") == "cylinder_uniform",
+    "U": lambda v: v.get("preset", "cylinder_uniform") == "cylinder_uniform",
+    "gap": lambda v: v.get("preset", "cylinder_uniform") == "cylinder_uniform",
+    "draw_boundary": lambda v: v.get("preset", "cylinder_uniform")
     == "cylinder_uniform",
-    "boundary_samples": lambda v: str(v.get("preset", "cylinder_uniform"))
+    "boundary_samples": lambda v: v.get("preset", "cylinder_uniform")
     == "cylinder_uniform"
-    and bool(v.get("draw_boundary", True)),
-    "alpha_re": lambda v: str(v.get("preset", "cylinder_uniform")) == "mobius",
-    "alpha_im": lambda v: str(v.get("preset", "cylinder_uniform")) == "mobius",
-    "beta_re": lambda v: str(v.get("preset", "cylinder_uniform")) == "mobius",
-    "beta_im": lambda v: str(v.get("preset", "cylinder_uniform")) == "mobius",
-    "gamma_re": lambda v: str(v.get("preset", "cylinder_uniform")) == "mobius",
-    "gamma_im": lambda v: str(v.get("preset", "cylinder_uniform")) == "mobius",
-    "delta_re": lambda v: str(v.get("preset", "cylinder_uniform")) == "mobius",
-    "delta_im": lambda v: str(v.get("preset", "cylinder_uniform")) == "mobius",
-    "k_re": lambda v: str(v.get("preset", "cylinder_uniform")) == "exp",
-    "k_im": lambda v: str(v.get("preset", "cylinder_uniform")) == "exp",
+    and v.get("draw_boundary", True),
+    "alpha_re": lambda v: v.get("preset", "cylinder_uniform") == "mobius",
+    "alpha_im": lambda v: v.get("preset", "cylinder_uniform") == "mobius",
+    "beta_re": lambda v: v.get("preset", "cylinder_uniform") == "mobius",
+    "beta_im": lambda v: v.get("preset", "cylinder_uniform") == "mobius",
+    "gamma_re": lambda v: v.get("preset", "cylinder_uniform") == "mobius",
+    "gamma_im": lambda v: v.get("preset", "cylinder_uniform") == "mobius",
+    "delta_re": lambda v: v.get("preset", "cylinder_uniform") == "mobius",
+    "delta_im": lambda v: v.get("preset", "cylinder_uniform") == "mobius",
+    "k_re": lambda v: v.get("preset", "cylinder_uniform") == "exp",
+    "k_im": lambda v: v.get("preset", "cylinder_uniform") == "exp",
 }
 
 
@@ -360,9 +354,9 @@ def laplace_field_grid(
     u_max: float = 6.0,
     v_min: float = -6.0,
     v_max: float = 6.0,
-    n_u: int | float = 45,
-    n_v: int | float = 45,
-    samples: int | float = 900,
+    n_u: int = 45,
+    n_v: int = 45,
+    samples: int = 900,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
     rotate: float = 0.0,
@@ -375,7 +369,7 @@ def laplace_field_grid(
     U: float = 1.0,
     gap: float = 0.002,
     draw_boundary: bool = True,
-    boundary_samples: int | float = 720,
+    boundary_samples: int = 720,
     alpha_re: float = 1.0,
     alpha_im: float = 0.0,
     beta_re: float = 0.0,
@@ -394,10 +388,10 @@ def laplace_field_grid(
     preset : str, default "cylinder_uniform"
         `"cylinder_uniform" | "mobius" | "exp"`。
     u_min, u_max, v_min, v_max : float
-        W=u+iv 平面での描画範囲。
-    n_u, n_v : int | float, optional
+        W=u+iv 平面での描画範囲。それぞれ最小値は最大値以下である必要がある。
+    n_u, n_v : int, optional
         `u=const`（縦線）/ `v=const`（横線）の本数。
-    samples : int | float, optional
+    samples : int, optional
         1 本あたりのサンプル点数（2 以上）。
     center : tuple[float, float, float], optional
         平行移動ベクトル (cx, cy, cz)。
@@ -415,7 +409,7 @@ def laplace_field_grid(
         `U=0` の場合は写像が定義できないため、格子線は省略し（必要なら）境界円のみ描画する。
     draw_boundary : bool, default True
         `preset="cylinder_uniform"` で境界円を追加する。
-    boundary_samples : int | float, optional
+    boundary_samples : int, optional
         境界円のサンプル数（3 以上）。
     alpha_re..delta_im : float
         `preset="mobius"` の係数（複素数を re/im に分解して指定）。
@@ -426,33 +420,38 @@ def laplace_field_grid(
     -------
     tuple[np.ndarray, np.ndarray]
         ポリライン列としての実体ジオメトリ（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        u/v の最小値が最大値を超えるか、分割数またはサンプル数が定義域外の場合。
     """
 
-    preset_s = str(preset)
+    preset_s = preset
 
-    n_u_i = int(n_u)
-    n_v_i = int(n_v)
-    samples_i = int(samples)
+    n_u_i = n_u
+    n_v_i = n_v
+    samples_i = samples
     if n_u_i < 0 or n_v_i < 0:
         raise ValueError("laplace_field_grid の n_u/n_v は 0 以上が必要")
     if samples_i < 2:
         raise ValueError("laplace_field_grid の samples は 2 以上が必要")
 
-    u_min_f = float(u_min)
-    u_max_f = float(u_max)
-    v_min_f = float(v_min)
-    v_max_f = float(v_max)
+    u_min_f = u_min
+    u_max_f = u_max
+    v_min_f = v_min
+    v_max_f = v_max
     if u_min_f > u_max_f:
-        u_min_f, u_max_f = u_max_f, u_min_f
+        raise ValueError("laplace_field_grid の u_min は u_max 以下である必要がある")
     if v_min_f > v_max_f:
-        v_min_f, v_max_f = v_max_f, v_min_f
+        raise ValueError("laplace_field_grid の v_min は v_max 以下である必要がある")
 
-    clip_b = bool(clip)
+    clip_b = clip
     if clip_b:
-        xmin = float(clip_xmin)
-        xmax = float(clip_xmax)
-        ymin = float(clip_ymin)
-        ymax = float(clip_ymax)
+        xmin = clip_xmin
+        xmax = clip_xmax
+        ymin = clip_ymin
+        ymax = clip_ymax
         if not (xmin < xmax and ymin < ymax):
             raise ValueError("laplace_field_grid の clip 矩形が不正（min < max が必要）")
     else:
@@ -480,7 +479,7 @@ def laplace_field_grid(
         pieces = _split_by_mask(points, base_mask)
         for piece in pieces:
             transformed = _apply_transform(
-                piece, center=center, scale=float(scale), rotate_deg=float(rotate)
+                piece, center=center, scale=scale, rotate_deg=rotate
             )
             for clipped in _clip_and_split(
                 transformed, enabled=clip_b, xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax
@@ -488,16 +487,16 @@ def laplace_field_grid(
                 lines_out.append(clipped.astype(np.float32, copy=False))
 
     if preset_s == "cylinder_uniform":
-        a_f = float(a)
-        U_f = float(U)
-        gap_f = float(gap)
+        a_f = a
+        U_f = U
+        gap_f = gap
         if a_f < 0.0:
             raise ValueError("laplace_field_grid の a は 0 以上が必要")
         if gap_f < 0.0:
             raise ValueError("laplace_field_grid の gap は 0 以上が必要")
         if U_f == 0.0:
-            if bool(draw_boundary) and a_f > 0.0:
-                boundary_n = int(boundary_samples)
+            if draw_boundary and a_f > 0.0:
+                boundary_n = boundary_samples
                 if boundary_n < 3:
                     raise ValueError(
                         "laplace_field_grid の boundary_samples は 3 以上が必要"
@@ -533,8 +532,8 @@ def laplace_field_grid(
                 base_mask = finite & (np.abs(z) >= radius_min)
                 emit_line_from_z(z, base_mask=base_mask)
 
-        if bool(draw_boundary) and a_f > 0.0:
-            boundary_n = int(boundary_samples)
+        if draw_boundary and a_f > 0.0:
+            boundary_n = boundary_samples
             if boundary_n < 3:
                 raise ValueError("laplace_field_grid の boundary_samples は 3 以上が必要")
             theta = np.linspace(0.0, 2.0 * math.pi, num=boundary_n, dtype=np.float64)
@@ -543,10 +542,10 @@ def laplace_field_grid(
             emit_line_from_z(z, base_mask=base_mask)
 
     elif preset_s == "mobius":
-        alpha = complex(float(alpha_re), float(alpha_im))
-        beta = complex(float(beta_re), float(beta_im))
-        gamma = complex(float(gamma_re), float(gamma_im))
-        delta = complex(float(delta_re), float(delta_im))
+        alpha = complex(alpha_re, alpha_im)
+        beta = complex(beta_re, beta_im)
+        gamma = complex(gamma_re, gamma_im)
+        delta = complex(delta_re, delta_im)
         det = alpha * delta - beta * gamma
         if abs(det) < 1e-12:
             raise ValueError("laplace_field_grid の mobius 係数が不正（alpha*delta - beta*gamma ≈ 0）")
@@ -571,7 +570,7 @@ def laplace_field_grid(
                 emit_line_from_z(z, base_mask=base_mask)
 
     elif preset_s == "exp":
-        k = complex(float(k_re), float(k_im))
+        k = complex(k_re, k_im)
         if n_u_i > 0:
             v_samples_complex = v_samples.astype(np.complex128, copy=False)
             for u in u_line_values:

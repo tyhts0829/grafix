@@ -11,7 +11,6 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
-from .argument_validation import integer_scalar
 from .util import (
     PlanarFrame,
     RESAMPLE_CLOSED_DISTANCE_EPS,
@@ -20,8 +19,6 @@ from .util import (
     planarity_threshold,
 )
 
-_JOIN_STYLE_SET = {"round", "mitre", "bevel"}
-_SIDE_SET = {"left", "right", "both"}
 _QUAD_SEGS = 16
 _MITRE_LIMIT = 5.0
 _POINT_EPS = 1e-12
@@ -361,28 +358,17 @@ def offset_curve(
     left/right は入力 winding に対して定義し、出力を明示的に閉じる。
     """
 
-    distance_f = float(distance)
-    count_i = integer_scalar(count, name="offset_curve: count")
-    if not math.isfinite(distance_f) or distance_f <= 0.0:
+    if distance <= 0.0:
         raise ValueError("offset_curve: distance は正の有限値である必要がある")
-    if count_i <= 0:
+    if count <= 0:
         raise ValueError("offset_curve: count は正の整数である必要がある")
-    if not isinstance(side, str):
-        raise TypeError("offset_curve: side は str である必要がある")
-    if side not in _SIDE_SET:
-        raise ValueError(f"offset_curve: 未知の side です: {side!r}")
-    if not isinstance(join, str):
-        raise TypeError("offset_curve: join は str である必要がある")
-    if join not in _JOIN_STYLE_SET:
-        raise ValueError(f"offset_curve: 未知の join です: {join!r}")
-    side_s = side
-    join_s = join
+    maximum_distance = distance * count
+    if not math.isfinite(maximum_distance):
+        raise ValueError("offset_curve: distance * count は有限である必要がある")
 
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
-    if not bool(np.all(np.isfinite(coords))):
-        raise ValueError("offset_curve: 入力に非有限座標が含まれている")
 
     frame = canonical_planar_frame(coords, offsets, allow_linear=True)
     threshold = planarity_threshold(coords)
@@ -399,11 +385,11 @@ def offset_curve(
 
     requested_sides = (
         ("left", "right")
-        if side_s == "both"
-        else (side_s,)
+        if side == "both"
+        else (side,)
     )
     originals: list[np.ndarray] = []
-    if bool(keep_original):
+    if keep_original:
         for line_index in range(int(offsets.size) - 1):
             start = int(offsets[line_index])
             stop = int(offsets[line_index + 1])
@@ -438,7 +424,7 @@ def offset_curve(
 
     # GEOS が empty を返す自己交差線でも count 回の呼び出しが無制限に続かないよう、
     # 各試行が source と同程度の頂点列を返す保守的な work/output plan を先に検査する。
-    attempt_multiplier = count_i * len(requested_sides)
+    attempt_multiplier = count * len(requested_sides)
     planned_lines = len(prepared_sources) * attempt_multiplier
     planned_vertices = (
         sum(int(source.shape[0]) for source, _closed in prepared_sources)
@@ -455,16 +441,14 @@ def offset_curve(
     generated_vertices = 0
     for source, closed in prepared_sources:
         line_string = LineString(source)
-        for level in range(1, count_i + 1):
-            magnitude = distance_f * float(level)
-            if not math.isfinite(magnitude):
-                raise ValueError("offset_curve: distance * count は有限である必要がある")
+        for level in range(1, count + 1):
+            magnitude = distance * float(level)
             for selected_side in requested_sides:
                 signed_distance = magnitude if selected_side == "left" else -magnitude
                 offset = line_string.offset_curve(
                     signed_distance,
                     quad_segs=_QUAD_SEGS,
-                    join_style=join_s,
+                    join_style=join,
                     mitre_limit=_MITRE_LIMIT,
                 )
                 fragments = _normalized_fragments(

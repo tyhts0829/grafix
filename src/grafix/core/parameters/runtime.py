@@ -8,14 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Iterable, Literal
 
+from .identity import GroupKey
 from .key import ParameterKey
 from .reconcile import ReconcileOrphan
 from .source import ValueSource
 
 LoadProvenance = Literal["primary", "session_recovery", "quarantined"]
-GroupKey = tuple[str, str]
-
-
 @dataclass(slots=True)
 class _GroupVisibilityTracker:
     revision: int = 0
@@ -123,19 +121,19 @@ class ParamStoreLoadDiagnostic:
 class ParamStoreRuntime:
     """ParamStore の実行時情報。"""
 
-    loaded_groups: set[tuple[str, str]] = field(default_factory=_TrackedGroupSet)
-    observed_groups: set[tuple[str, str]] = field(default_factory=_TrackedGroupSet)
-    reconcile_applied: set[tuple[tuple[str, str], tuple[str, str]]] = field(
+    loaded_groups: set[GroupKey] = field(default_factory=_TrackedGroupSet)
+    observed_groups: set[GroupKey] = field(default_factory=_TrackedGroupSet)
+    reconcile_applied: set[tuple[GroupKey, GroupKey]] = field(
         default_factory=set
     )
-    display_order_by_group: dict[tuple[str, str], int] = field(default_factory=dict)
+    display_order_by_group: dict[GroupKey, int] = field(default_factory=dict)
     next_display_order: int = 1
     last_effective_by_key: dict[ParameterKey, object] = field(default_factory=dict)
     warned_unknown_args: set[tuple[str, str]] = field(default_factory=set)
     last_source_by_key: dict[ParameterKey, ValueSource] = field(default_factory=dict)
     load_provenance: LoadProvenance = "primary"
     load_diagnostics: tuple[ParamStoreLoadDiagnostic, ...] = ()
-    reconcile_orphans: dict[tuple[str, str], ReconcileOrphan] = field(
+    reconcile_orphans: dict[GroupKey, ReconcileOrphan] = field(
         default_factory=dict
     )
     # effective/source の最終 snapshot が変わった frame ごとに 1 回だけ進む。

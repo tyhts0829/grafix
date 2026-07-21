@@ -120,8 +120,10 @@ GUI ウィンドウは同じループで `ParameterGUIWindowSystem.draw_frame()`
   - `coords: np.ndarray` … `(N,3)` float32
   - `offsets: np.ndarray` … `(M+1,)` int32（各ポリラインの開始 index。`offsets[0]=0`, `offsets[-1]=N`）
 - 性質:
-  - `__post_init__` で shape/dtype 整合性を検証し、`writeable=False` に固定する
-  - 2D `(N,2)` 入力は `(N,3)`（z=0）へ補完する
+  - exact ndarray、C-contiguous、shape/dtype、有限座標、offset 整合性を検証する
+  - `(N,2)` や異なる dtype は変換せず拒否する
+  - mutable な caller 配列を共有せず immutable bytes-backed snapshot を保持し、
+    `writeable=True` への再変更も許さない（既存 snapshot は安全に再利用する）
 
 ### 4.3 Layer（Geometry とスタイルの分離）
 
@@ -152,7 +154,11 @@ GUI ウィンドウは同じループで `ParameterGUIWindowSystem.draw_frame()`
 
 ### 5.1 仕組み
 
-`src/grafix/core/primitive_registry.py` と `src/grafix/core/effect_registry.py` は、op 名 → frozen `OpSpec` を単一 dict で保持する。`OpSpec` は evaluator、meta、defaults、parameter 順、arity を同じ世代として扱い、明示 replace 時だけ registry revision を進める。
+`src/grafix/core/primitive_registry.py` と `src/grafix/core/effect_registry.py` は、
+live な op 名 → frozen `OpSpec` registry を持つ。`OpSpec` は evaluator、meta、
+canonical immutable defaults、parameter 順、arity を同じ世代として扱い、明示 replace
+時だけ registry revision を進める。組み込み spec は live registry と別の append-only catalog
+にも記録し、live registry の置換後も import 済み module の同じ spec を再登録できる。
 
 `src/grafix/core/preset_registry.py` も同じ所有原則に従い、canonical な
 `preset.<name>` → immutable `PresetSpec` を一つの dict で保持する。`PresetSpec` は
@@ -166,9 +172,11 @@ GUI metadata と実行関数が別 revision になることはない。
   `func(inputs: Sequence[RealizedGeometry], args: tuple[tuple[str, Any], ...]) -> RealizedGeometry`
 
 - primitive 関数の契約（デコレータで書く側）:
-  `f(...)-> (coords, offsets)`（`coords` は shape `(N,3)` のみ）
+  `f(...)-> (coords, offsets)`（float32/C-contiguous/finite の `coords(N,3)` と
+  int32/C-contiguous の `offsets(M+1,)`）
 - effect 関数の契約（デコレータで書く側）:
-  `f(g1, ..., gk, *, ...)-> (coords, offsets)`（`g` は `(coords, offsets)`、`k` は `n_inputs`）
+  `f(g1, ..., gk, *, ...)-> (coords, offsets)`（`g` と戻り値は同じ canonical tuple、
+  `k` は `n_inputs`）
 
 `@primitive` / `@effect` デコレータは “ユーザーが書く tuple I/O 関数” を “レジストリ契約の wrapper（内部は RealizedGeometry）” に変換して登録する。
 
@@ -178,6 +186,7 @@ GUI metadata と実行関数が別 revision になることはない。
 
 - `src/grafix/core/builtins.py` の明示 `op -> module` manifest を参照する
 - `G.<op>` / `E.<op>` または realize 時の未登録 op lookup が、対象 module だけを読み込む
+- import 済み module は append-only builtin catalog から欠落 spec を live registry へ戻す
 - list/stub generation のみ全 built-in を明示的に読み込む
 
 この方式により、公開 API の内容を維持しながら cold import と worker spawn を軽くする。

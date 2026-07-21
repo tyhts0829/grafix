@@ -89,7 +89,7 @@ class _G(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
-    def bezier(self, *, activate: bool = ..., p0: Sequence[float] = ..., p1: Sequence[float] = ..., p2: Sequence[float] = ..., p3: Sequence[float] = ..., segments: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
+    def bezier(self, *, activate: bool = ..., p0: tuple[float, ...] = ..., p1: tuple[float, ...] = ..., p2: tuple[float, ...] = ..., p3: tuple[float, ...] = ..., segments: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
         """
         4制御点からcubic Bezier curveを生成する。
 
@@ -276,7 +276,7 @@ class _G(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
-    def polyline(self, *, activate: bool = ..., points: Sequence[Sequence[float]] = ..., closed: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
+    def polyline(self, *, activate: bool = ..., points: tuple[tuple[float, ...], ...] = ..., closed: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
         """
         2D/3D point列から単一polylineを生成する。
 
@@ -337,7 +337,7 @@ class _G(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
-    def spline(self, *, activate: bool = ..., points: Sequence[Sequence[float]] = ..., closed: bool = ..., tension: float = ..., segments_per_span: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
+    def spline(self, *, activate: bool = ..., points: tuple[tuple[float, ...], ...] = ..., closed: bool = ..., tension: float = ..., segments_per_span: int = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
         """
         anchor点列を通るcentripetal Catmull–Rom曲線を生成する。
 
@@ -382,8 +382,8 @@ class _G(Protocol):
 
         引数:
             activate: このプリミティブによる形状生成を有効にする。, bool
-            major_radius: トーラス中心から管の中心線までの大半径を指定します。, float, range [-100.0, 100.0]
-            minor_radius: 管の中心線から表面までの小半径を指定します。, float, range [-100.0, 100.0]
+            major_radius: トーラス中心から管の中心線までの大半径を指定します。, float, range [0.0, 100.0]
+            minor_radius: 管の中心線から表面までの小半径を指定します。, float, range [0.0, 100.0]
             major_segments: 大円方向の分割数と子午線の本数を指定します。, int, range [3, 256]
             minor_segments: 管断面方向の分割数と緯線の本数を指定します。, int, range [3, 256]
             center: トーラス全体を平行移動する XYZ 座標を指定します。, vec3, range [0.0, 300.0]
@@ -518,7 +518,7 @@ class _EffectBuilder(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
-    def dash(self, *, activate: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+    def dash(self, *, activate: bool = ..., dash_length: float = ..., gap_length: float = ..., offset: float = ..., offset_jitter: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
         連続線を破線に変換する。
 
@@ -573,7 +573,7 @@ class _EffectBuilder(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            interval: 線または面をインデックス順に一定間隔で対象にする。1 以上で有効、0 以下で無効。, int, range [0, 100]
+            interval: 線または面をインデックス順に一定間隔で対象にする。1 以上で有効、0 で無効。, int, range [0, 100]
             index_offset: インデックスによる間引き判定の開始位置をずらす。, int, range [0, 100]
             min_length: 0 以上のとき、この長さ以下の線または面を対象にする。負値で無効。, float, range [-1.0, 200.0]
             max_length: 0 以上のとき、この長さ以上の線または面を対象にする。負値で無効。, float, range [-1.0, 200.0]
@@ -602,7 +602,7 @@ class _EffectBuilder(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
-    def fill(self, *, activate: bool = ..., angle_sets: int | Sequence[int] = ..., angle: float | Sequence[float] = ..., density: float | Sequence[float] = ..., spacing_gradient: float | Sequence[float] = ..., remove_boundary: bool | Sequence[bool] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+    def fill(self, *, activate: bool = ..., angle_sets: int = ..., angle: float = ..., density: float = ..., spacing_gradient: float = ..., remove_boundary: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
         閉領域をハッチングで塗りつぶす。
 
@@ -611,7 +611,7 @@ class _EffectBuilder(Protocol):
             angle_sets: 180 度を等分して重ねるハッチング方向の数。, int, range [1, 6]
             angle: ハッチング方向群の基準角を度単位で指定する。, float, range [0.0, 180.0]
             density: 領域を埋めるハッチング線の密度を指定する。, float, range [0.0, 1000.0]
-            spacing_gradient: スキャン方向に沿ってハッチング線の間隔を変化させる。, float, range [-5.0, 5.0]
+            spacing_gradient: スキャン方向に沿ってハッチング線の間隔を変化させる。, float, range [-4.0, 4.0]
             remove_boundary: 塗り線だけを残し、入力された境界線を出力から除く。, bool
             key: コード移動後も同じパラメータグループとして扱うための semantic identity。
             instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
@@ -979,7 +979,7 @@ class _EffectBuilder(Protocol):
             strength: 選択したワープ変形を元の座標へブレンドする強さ。, float, range [0.0, 2.0]
             kind: レンズモードでマスク領域へブレンドする座標変換の種類。, choice, choices { 'scale', 'rotate', 'shear', 'swirl' }
             profile: 距離幅が正のときに使うレンズ強度の形状。band は境界と遷移幅の両端で 0、中間で最大となり、ramp は境界から離れるほど増加する。, choice, choices { 'band', 'ramp' }
-            band: レンズ強度をマスク境界から遷移させる距離幅。0 以下では距離遷移を使わず対象全体へ一様に適用する。, float, range [0.0, 200.0]
+            band: レンズ強度をマスク境界から遷移させる距離幅。0 では距離遷移を使わず対象全体へ一様に適用する。, float, range [0.0, 200.0]
             inside_only: レンズ変形をマスクの内側にある頂点だけへ適用する。, bool
             auto_center: マスクのバウンディングボックス中心をレンズ変換の中心にする。, bool
             pivot: 自動中心が無効な場合にレンズ変換の中心とする点。, vec3, range [-100.0, 100.0]
@@ -988,8 +988,8 @@ class _EffectBuilder(Protocol):
             shear: レンズのシアー変換で X と Y 方向へ適用する係数。, vec3, range [-1.0, 1.0]
             direction: 頂点をマスク境界へ引き寄せるか、境界から遠ざけるか選ぶ。, choice, choices { 'attract', 'repel' }
             bias: 吸着または反発の目標位置をマスク境界からずらす符号付き距離。, float, range [-50.0, 50.0]
-            snap_band: 吸着または反発の対象とする目標距離からの最大差。0 以下で制限なし。, float, range [0.0, 200.0]
-            falloff: 吸着または反発の強さを目標位置からの距離で減衰させる尺度。0 以下で減衰なし。, float, range [0.0, 200.0]
+            snap_band: 吸着または反発の対象とする目標距離からの最大差。0 で制限なし。, float, range [0.0, 200.0]
+            falloff: 吸着または反発の強さを目標位置からの距離で減衰させる尺度。0 で減衰なし。, float, range [0.0, 200.0]
             show_mask: 変形結果に位置確認用のマスク輪郭を加えて出力する。, bool
             keep_original: 変形結果に比較用の元の入力線を加えて出力する。, bool
             key: コード移動後も同じパラメータグループとして扱うための semantic identity。
@@ -1137,7 +1137,7 @@ class _E(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
-    def dash(self, *, activate: bool = ..., dash_length: float | Sequence[float] = ..., gap_length: float | Sequence[float] = ..., offset: float | Sequence[float] = ..., offset_jitter: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+    def dash(self, *, activate: bool = ..., dash_length: float = ..., gap_length: float = ..., offset: float = ..., offset_jitter: float = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
         連続線を破線に変換する。
 
@@ -1192,7 +1192,7 @@ class _E(Protocol):
 
         引数:
             activate: このエフェクトによる形状変換を有効にする。, bool
-            interval: 線または面をインデックス順に一定間隔で対象にする。1 以上で有効、0 以下で無効。, int, range [0, 100]
+            interval: 線または面をインデックス順に一定間隔で対象にする。1 以上で有効、0 で無効。, int, range [0, 100]
             index_offset: インデックスによる間引き判定の開始位置をずらす。, int, range [0, 100]
             min_length: 0 以上のとき、この長さ以下の線または面を対象にする。負値で無効。, float, range [-1.0, 200.0]
             max_length: 0 以上のとき、この長さ以上の線または面を対象にする。負値で無効。, float, range [-1.0, 200.0]
@@ -1221,7 +1221,7 @@ class _E(Protocol):
             shared: True なら反復呼び出しで同じ semantic parameter group を意図的に共有する。instance_key とは同時指定できない。
         """
         ...
-    def fill(self, *, activate: bool = ..., angle_sets: int | Sequence[int] = ..., angle: float | Sequence[float] = ..., density: float | Sequence[float] = ..., spacing_gradient: float | Sequence[float] = ..., remove_boundary: bool | Sequence[bool] = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
+    def fill(self, *, activate: bool = ..., angle_sets: int = ..., angle: float = ..., density: float = ..., spacing_gradient: float = ..., remove_boundary: bool = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
         """
         閉領域をハッチングで塗りつぶす。
 
@@ -1230,7 +1230,7 @@ class _E(Protocol):
             angle_sets: 180 度を等分して重ねるハッチング方向の数。, int, range [1, 6]
             angle: ハッチング方向群の基準角を度単位で指定する。, float, range [0.0, 180.0]
             density: 領域を埋めるハッチング線の密度を指定する。, float, range [0.0, 1000.0]
-            spacing_gradient: スキャン方向に沿ってハッチング線の間隔を変化させる。, float, range [-5.0, 5.0]
+            spacing_gradient: スキャン方向に沿ってハッチング線の間隔を変化させる。, float, range [-4.0, 4.0]
             remove_boundary: 塗り線だけを残し、入力された境界線を出力から除く。, bool
             key: コード移動後も同じパラメータグループとして扱うための semantic identity。
             instance_key: loop/comprehension の反復ごとにパラメータグループを分ける identity。
@@ -1598,7 +1598,7 @@ class _E(Protocol):
             strength: 選択したワープ変形を元の座標へブレンドする強さ。, float, range [0.0, 2.0]
             kind: レンズモードでマスク領域へブレンドする座標変換の種類。, choice, choices { 'scale', 'rotate', 'shear', 'swirl' }
             profile: 距離幅が正のときに使うレンズ強度の形状。band は境界と遷移幅の両端で 0、中間で最大となり、ramp は境界から離れるほど増加する。, choice, choices { 'band', 'ramp' }
-            band: レンズ強度をマスク境界から遷移させる距離幅。0 以下では距離遷移を使わず対象全体へ一様に適用する。, float, range [0.0, 200.0]
+            band: レンズ強度をマスク境界から遷移させる距離幅。0 では距離遷移を使わず対象全体へ一様に適用する。, float, range [0.0, 200.0]
             inside_only: レンズ変形をマスクの内側にある頂点だけへ適用する。, bool
             auto_center: マスクのバウンディングボックス中心をレンズ変換の中心にする。, bool
             pivot: 自動中心が無効な場合にレンズ変換の中心とする点。, vec3, range [-100.0, 100.0]
@@ -1607,8 +1607,8 @@ class _E(Protocol):
             shear: レンズのシアー変換で X と Y 方向へ適用する係数。, vec3, range [-1.0, 1.0]
             direction: 頂点をマスク境界へ引き寄せるか、境界から遠ざけるか選ぶ。, choice, choices { 'attract', 'repel' }
             bias: 吸着または反発の目標位置をマスク境界からずらす符号付き距離。, float, range [-50.0, 50.0]
-            snap_band: 吸着または反発の対象とする目標距離からの最大差。0 以下で制限なし。, float, range [0.0, 200.0]
-            falloff: 吸着または反発の強さを目標位置からの距離で減衰させる尺度。0 以下で減衰なし。, float, range [0.0, 200.0]
+            snap_band: 吸着または反発の対象とする目標距離からの最大差。0 で制限なし。, float, range [0.0, 200.0]
+            falloff: 吸着または反発の強さを目標位置からの距離で減衰させる尺度。0 で減衰なし。, float, range [0.0, 200.0]
             show_mask: 変形結果に位置確認用のマスク輪郭を加えて出力する。, bool
             keep_original: 変形結果に比較用の元の入力線を加えて出力する。, bool
             key: コード移動後も同じパラメータグループとして扱うための semantic identity。

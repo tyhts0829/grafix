@@ -185,28 +185,22 @@ def test_simplify_mixed_lines_preserves_line_order_and_short_lines() -> None:
     )
 
 
-def test_simplify_invalid_tolerance_and_nonfinite_geometry_are_identity() -> None:
+def test_simplify_zero_tolerance_is_identity() -> None:
     coords, offsets = _geom(
         [[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]]
     )
-    for tolerance in (0.0, -1.0, np.nan, np.inf):
-        out_coords, out_offsets = simplify(
-            (coords, offsets),
-            tolerance=tolerance,
-            closed="open",
-        )
-        assert out_coords is coords
-        assert out_offsets is offsets
-
-    nonfinite = coords.copy()
-    nonfinite[1, 0] = np.nan
     out_coords, out_offsets = simplify(
-        (nonfinite, offsets),
-        tolerance=0.1,
+        (coords, offsets),
+        tolerance=0.0,
         closed="open",
     )
-    assert out_coords is nonfinite
+    assert out_coords is coords
     assert out_offsets is offsets
+
+
+def test_simplify_rejects_negative_tolerance_before_empty_input() -> None:
+    with pytest.raises(ValueError, match="tolerance"):
+        simplify(_geom([]), tolerance=-1.0, closed="open")
 
 
 def test_simplify_preserves_input_dtype_and_is_byte_deterministic() -> None:

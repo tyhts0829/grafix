@@ -77,29 +77,24 @@ def _load_packed_polyhedron(kind: str) -> GeomTuple:
 
     blob = npz_file.read_bytes()
     with np.load(BytesIO(blob), allow_pickle=False) as data:
-        if "arrays" in data.files:
-            raw_lines = list(data["arrays"])
-        else:
-            keys = sorted(
-                [k for k in data.files if k.startswith("arr_")],
-                key=lambda k: int(k.split("_")[1]),
+        keys = [f"arr_{index}" for index in range(len(data.files))]
+        if not keys or set(data.files) != set(keys):
+            raise ValueError(
+                "polyhedron データは arr_0 から連番の配列だけを含む必要がある"
+                f": file={npz_file.name}, keys={data.files!r}"
             )
-            if not keys:
-                raise ValueError(f"polyhedron データが空です: {npz_file.name}")
-            raw_lines = [data[k] for k in keys]
+        raw_lines = [data[key] for key in keys]
 
     polylines: list[np.ndarray] = []
     for i, line in enumerate(raw_lines):
-        arr = np.asarray(line, dtype=np.float32)
-        if arr.ndim != 2 or arr.shape[1] not in (2, 3):
+        arr = np.asarray(line)
+        if arr.dtype != np.float32 or arr.ndim != 2 or arr.shape[1] != 3:
             raise ValueError(
-                "polyhedron データの各ポリラインは shape (N,3) の配列である必要がある"
-                f": kind={kind!r}, index={i}, shape={arr.shape}"
+                "polyhedron データの各ポリラインは float32 shape (N,3) "
+                "の配列である必要がある"
+                f": kind={kind!r}, index={i}, dtype={arr.dtype}, shape={arr.shape}"
             )
-        if arr.shape[1] == 2:
-            z = np.zeros((arr.shape[0], 1), dtype=np.float32)
-            arr = np.concatenate([arr, z], axis=1)
-        polylines.append(arr.astype(np.float32, copy=False))
+        polylines.append(arr)
 
     if polylines:
         coords = np.concatenate(polylines, axis=0).astype(np.float32, copy=False)
@@ -132,23 +127,14 @@ def _copy_and_place_polyhedron(
     if base_coords.shape[0] == 0:
         return base_coords.copy(), base_offsets.copy()
 
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "polyhedron の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
-    try:
-        s_f = float(scale)
-    except Exception as exc:
-        raise ValueError("polyhedron の scale は float である必要がある") from exc
+    cx, cy, cz = center
+    s_f = scale
 
     coords = base_coords.copy()
     offsets = base_offsets.copy()
 
-    cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
-    if (cx_f, cy_f, cz_f) != (0.0, 0.0, 0.0) or s_f != 1.0:
-        center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
+    if (cx, cy, cz) != (0.0, 0.0, 0.0) or s_f != 1.0:
+        center_vec = np.array([cx, cy, cz], dtype=np.float32)
         coords = coords * np.float32(s_f) + center_vec
 
     return coords, offsets

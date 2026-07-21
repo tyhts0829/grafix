@@ -27,7 +27,7 @@ from .key import ParameterKey
 from .labels_ops import set_label
 from .meta import ParamMeta
 from .source import ValueSource
-from .style import coerce_rgb255, rgb01_to_rgb255, rgb255_to_rgb01
+from .style import rgb01_to_rgb255, rgb255_to_rgb01, validate_rgb255
 
 # Layer style を ParamStore 上で group 化するための op 名。
 # GUI 側は (op, site_id) を 1 ブロックとして表示し、その中に arg ごとの行を並べる。
@@ -184,8 +184,7 @@ def observe_and_apply_layer_style(
             layer_style_key(layer_site_id, LAYER_STYLE_LINE_COLOR)
         )
         if color_state is not None and color_state.override:
-            # UI 側の値は list 等で来る可能性があるので、RGB255 タプルへ正規化してから 0..1 に戻す。
-            rgb255 = coerce_rgb255(color_state.ui_value)
+            rgb255 = validate_rgb255(color_state.ui_value)
             color = rgb255_to_rgb01(rgb255)
             color_source = "ui"
 

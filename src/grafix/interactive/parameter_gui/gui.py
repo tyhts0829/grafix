@@ -1291,7 +1291,7 @@ class ParameterGUI:
             imgui.separator()
             reconnect_clicked, _selected = imgui.menu_item(
                 "Reconnect##midi_reconnect",
-                enabled=session is not None and session.state != "live",
+                enabled=session is not None and session.can_reconnect,
             )
             if reconnect_clicked and session is not None:
                 session.reconnect()

@@ -51,7 +51,7 @@ polygon_meta = {
 @primitive(meta=polygon_meta)
 def polygon(
     *,
-    n_sides: int | float = 6,
+    n_sides: int = 6,
     phase: float = 0.0,
     sweep: float = 360.0,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -61,12 +61,12 @@ def polygon(
 
     Parameters
     ----------
-    n_sides : int | float, optional
-        辺の数。3 未満は 3 にクランプする。
+    n_sides : int, optional
+        辺の数。3 以上。
     phase : float, optional
         頂点開始角 [deg]。0° で +X 軸上に頂点を置く。
     sweep : float, optional
-        描画する周回角 [deg]。
+        描画する周回角 [deg]。0° 以上 360° 以下。
         360° で全周、0°〜360° で部分周回になる。
         部分周回の場合、終点から始点へ直線で戻して閉じる（欠け部分が弦になる）。
     center : tuple[float, float, float], optional
@@ -78,29 +78,23 @@ def polygon(
     -------
     tuple[np.ndarray, np.ndarray]
         開始点を終端に重ねた閉じたポリラインとしての正多角形（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        ``n_sides`` が 3 未満、または ``sweep`` が 0° から 360° の範囲外の場合。
     """
-    sides = int(round(float(n_sides)))
-    if sides < 3:
-        sides = 3
+    if n_sides < 3:
+        raise ValueError("polygon の n_sides は 3 以上である必要がある")
+    if sweep < 0.0 or sweep > 360.0:
+        raise ValueError("polygon の sweep は 0 以上 360 以下である必要がある")
+    sides = n_sides
 
-    phase_deg = float(phase)
-    try:
-        sweep_deg = float(sweep)
-    except Exception as exc:
-        raise ValueError("polygon の sweep は float である必要がある") from exc
+    phase_deg = phase
+    sweep_deg = sweep
+    cx, cy, cz = center
+    s_f = scale
 
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "polygon の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
-    try:
-        s_f = float(scale)
-    except Exception as exc:
-        raise ValueError("polygon の scale は float である必要がある") from exc
-
-    sweep_deg = min(max(sweep_deg, 0.0), 360.0)
     if sweep_deg >= 360.0:
         angles = np.linspace(
             0.0,

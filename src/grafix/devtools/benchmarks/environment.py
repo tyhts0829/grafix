@@ -20,6 +20,7 @@ from grafix.devtools.benchmarks.schema import (
     SourceIdentity,
     case_compatibility_key,
     environment_compatibility_key,
+    freeze_json_object,
 )
 
 _DEPENDENCIES = (
@@ -167,11 +168,16 @@ def collect_environment_fingerprint(
             for name in _ENVIRONMENT_VARIABLES
         },
     }
-    compatibility_key = environment_compatibility_key(values, unavailable)
+    frozen_values = freeze_json_object(values)
+    frozen_unavailable = freeze_json_object(unavailable)
+    compatibility_key = environment_compatibility_key(
+        frozen_values,
+        frozen_unavailable,
+    )
     return EnvironmentFingerprint(
         compatibility_key=compatibility_key,
-        values=values,
-        unavailable=unavailable,
+        values=frozen_values,
+        unavailable=frozen_unavailable,
     )
 
 
@@ -184,19 +190,12 @@ def _geos_version(unavailable: dict[str, str]) -> str | None:
         unavailable["backend.geos"] = f"{type(exc).__name__}: {exc}"
         return None
 
-    value = getattr(shapely, "geos_version_string", None)
-    if value is None:
-        try:
-            from shapely import geos  # type: ignore[attr-defined]
-        except (ImportError, OSError) as exc:
-            unavailable["backend.geos"] = f"{type(exc).__name__}: {exc}"
-            return None
-        value = getattr(geos, "geos_version_string", None)
-
-    if value is None:
-        unavailable["backend.geos"] = "GEOS version is unavailable"
-        return None
-    return str(value)
+    version = shapely.geos_version_string
+    if type(version) is not str:
+        raise TypeError("shapely.geos_version_string must be an exact string")
+    if not version:
+        raise ValueError("shapely.geos_version_string must not be empty")
+    return version
 
 
 def make_case_spec(
@@ -226,9 +225,11 @@ def make_case_spec(
     for function in implementations:
         try:
             source = inspect.getsource(function).encode("utf-8")
-        except (OSError, TypeError):
-            code = getattr(function, "__code__", None)
-            source = repr(getattr(code, "co_code", function)).encode("utf-8")
+        except (OSError, TypeError) as exc:
+            raise ValueError(
+                "benchmark implementation source を取得できません: "
+                f"{function.__module__}.{function.__qualname__}"
+            ) from exc
         _update_framed_hash(
             digest,
             f"{function.__module__}.{function.__qualname__}".encode("utf-8"),
@@ -239,35 +240,33 @@ def make_case_spec(
         key=lambda path: str(path),
     ):
         _update_framed_hash(digest, source_path.name.encode("utf-8"))
-        try:
-            content = source_path.read_bytes()
-        except OSError as exc:
-            content = f"<unavailable:{type(exc).__name__}:{exc}>".encode("utf-8")
+        content = source_path.read_bytes()
         _update_framed_hash(digest, content)
     source_sha256 = digest.hexdigest()
+    frozen_parameters = freeze_json_object(parameters)
     return CaseSpec(
-        case_id=str(case_id),
-        version=int(version),
-        label=str(label),
-        category=str(category),
-        suite=str(suite),
-        fixture=str(fixture),
-        parameters=dict(parameters),
-        seed=int(seed),
+        case_id=case_id,
+        version=version,
+        label=label,
+        category=category,
+        suite=suite,
+        fixture=fixture,
+        parameters=frozen_parameters,
+        seed=seed,
         source_sha256=source_sha256,
         compatibility_key=case_compatibility_key(
             case_id=case_id,
             version=version,
             fixture=fixture,
-            parameters=dict(parameters),
+            parameters=frozen_parameters,
             seed=seed,
             source_sha256=source_sha256,
             checksum_policy=checksum_policy,
             self_sampling=self_sampling,
         ),
-        checksum_policy=str(checksum_policy),
-        tags=tuple(str(tag) for tag in tags),
-        self_sampling=bool(self_sampling),
+        checksum_policy=checksum_policy,
+        tags=tags,
+        self_sampling=self_sampling,
     )
 
 

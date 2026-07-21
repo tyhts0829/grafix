@@ -5,9 +5,10 @@
 - 元線と複製線の対応頂点を 2 点ポリラインで接続し、側面エッジ群を生成する。
 - `subdivisions` により事前に中点挿入で頂点密度を増やせる。
 
-旧仕様踏襲（重要）:
-- `delta` の長さ / `scale` / `subdivisions` は上限付きでクランプする。
-- `center_mode == "auto"` のときだけ重心中心スケールし、それ以外は原点中心スケール扱いとする。
+入力境界:
+- `delta` の長さと `scale` / `subdivisions` の上限は、生成量を抑えるためクランプする。
+- `scale` / `subdivisions` の負値は意味を持たないため拒否する。
+- `center_mode == "auto"` なら重心中心、`"origin"` なら原点中心でスケールする。
 - 図形に変化が無い引数（delta=(0,0,0) かつ scale=1 かつ subdivisions=0）は no-op として入力を返す。
 """
 
@@ -57,7 +58,7 @@ _CONNECT_RTOL = 1e-5
 
 @njit(cache=True)
 def _subdivide_midpoints(vertices: np.ndarray, subdivisions: int) -> np.ndarray:
-    """各セグメントへ中点挿入を繰り返す（旧 extrude の仕様踏襲、Numba 実装）。"""
+    """各セグメントへ中点挿入を繰り返す。"""
     if subdivisions <= 0 or vertices.shape[0] < 2:
         return vertices
 
@@ -110,23 +111,33 @@ def extrude(
     delta : tuple[float, float, float], default (0.0,0.0,0.0)
         押し出し量（dx, dy, dz）[mm]（長さは 0–200 にクランプ）。
     scale : float, default 0.5
-        複製線に適用するスケール係数（0–3 にクランプ）。
+        複製線に適用するスケール係数。3 を超える値はクランプする。
     subdivisions : int, default 4
-        中点挿入の細分回数（0–8 にクランプ）。
+        中点挿入の細分回数。8 を超える値はクランプする。
     center_mode : str, default "auto"
-        "auto" のとき複製線の重心中心でスケールし、それ以外は原点中心でスケールする。
+        "auto" なら複製線の重心中心、"origin" なら原点中心でスケールする。
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         押し出し結果（coords, offsets）。元線・複製線・側面エッジ群を含む。
+
+    Raises
+    ------
+    ValueError
+        `scale` または `subdivisions` が負の場合。
     """
+    if scale < 0.0:
+        raise ValueError("extrude の scale は 0 以上である必要がある")
+    if subdivisions < 0:
+        raise ValueError("extrude の subdivisions は 0 以上である必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    requested_scale = float(scale)
-    scale_clamped = max(0.0, min(MAX_SCALE, requested_scale))
+    requested_scale = scale
+    scale_clamped = min(MAX_SCALE, requested_scale)
     if scale_clamped != requested_scale:
         emit_operation_diagnostic(
             op="extrude.scale",
@@ -135,10 +146,8 @@ def extrude(
             reason="scale was clamped to the supported range",
         )
 
-    requested_subdivisions = int(subdivisions)
+    requested_subdivisions = subdivisions
     subdivisions_int = requested_subdivisions
-    if subdivisions_int < 0:
-        subdivisions_int = 0
     if subdivisions_int > MAX_SUBDIVISIONS:
         subdivisions_int = MAX_SUBDIVISIONS
     if subdivisions_int != requested_subdivisions:
@@ -149,8 +158,8 @@ def extrude(
             reason="subdivisions was clamped to the supported range",
         )
 
-    dx, dy, dz = float(delta[0]), float(delta[1]), float(delta[2])
-    extrude_vec = np.array([dx, dy, dz], dtype=np.float32)
+    dx, dy, dz = delta
+    extrude_vec = np.asarray(delta, dtype=np.float32)
     norm_sq = dx * dx + dy * dy + dz * dz
     if norm_sq > MAX_DISTANCE * MAX_DISTANCE:
         norm = float(np.sqrt(norm_sq))

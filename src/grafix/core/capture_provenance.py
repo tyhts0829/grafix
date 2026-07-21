@@ -7,9 +7,8 @@ import inspect
 import json
 import math
 import subprocess
-from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, is_dataclass, replace
-from enum import Enum
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal
@@ -41,51 +40,36 @@ def _sha256(payload: bytes) -> str:
 
 
 def _json_value(value: object) -> object:
-    """既知の runtime 値を決定的な JSON value へ射影する。"""
+    """owned provenance schema の値を strict JSON value へ射影する。"""
 
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or type(value) in {str, bool, int}:
         return value
-    if isinstance(value, float):
-        if math.isfinite(value):
-            return value
-        if math.isnan(value):
-            return "NaN"
-        return "Infinity" if value > 0.0 else "-Infinity"
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("provenance JSON numbers must be finite")
+        return value
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, Enum):
-        return _json_value(value.value)
-    if is_dataclass(value) and not isinstance(value, type):
-        return _json_value(asdict(value))
-    if isinstance(value, Mapping):
-        return {
-            str(key): _json_value(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        }
-    if isinstance(value, (list, tuple, set, frozenset)):
-        items = [_json_value(item) for item in value]
-        if isinstance(value, (set, frozenset)):
-            return sorted(items, key=lambda item: _canonical_json(item))
-        return items
-
-    item = getattr(value, "item", None)
-    if callable(item):
-        try:
-            return _json_value(item())
-        except (TypeError, ValueError):
-            pass
-    tolist = getattr(value, "tolist", None)
-    if callable(tolist):
-        try:
-            return _json_value(tolist())
-        except (TypeError, ValueError):
-            pass
-    return repr(value)
+    if type(value) is dict:
+        normalized: dict[str, object] = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise TypeError("provenance JSON object keys must be exact strings")
+            normalized[key] = _json_value(item)
+        return normalized
+    if isinstance(value, (list, tuple)):
+        if type(value) not in {list, tuple}:
+            raise TypeError(
+                f"unsupported provenance JSON sequence: {type(value)!r}"
+            )
+        return [_json_value(item) for item in value]
+    raise TypeError(f"unsupported provenance JSON value: {type(value)!r}")
 
 
 def _canonical_json(value: object) -> str:
     return json.dumps(
         _json_value(value),
+        allow_nan=False,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -184,7 +168,9 @@ class ConfigProvenance:
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> ConfigProvenance:
-        effective_json = _canonical_json(config)
+        if not isinstance(config, RuntimeConfig):
+            raise TypeError("config は RuntimeConfig である必要があります")
+        effective_json = _canonical_json(asdict(config))
         return cls(
             path=config.config_path,
             effective_json=effective_json,

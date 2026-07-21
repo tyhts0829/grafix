@@ -85,6 +85,9 @@
   - G/E/L/P の `key=` で semantic site の明示的な安定 ID を指定できる
   - loop/comprehension の個別 group は `instance_key=i`、意図的な共有 group は
     `shared=True` を使う（両者は同時指定できない）
+- 折りたたみ状態は `CollapsedHeaderKey` の
+  `style/primitive/preset/effect_chain` タグで識別し、ParamStore v4 では同じ tagged record を
+  main store と variation snapshot に保存する。
 
 ## Undo / Redo と Snapshot A/B の境界
 

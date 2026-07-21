@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from grafix.core.op_registry import (
+    BuiltinOpCatalog,
     CachePolicy,
     OpRegistry,
     OpSpec,
@@ -17,7 +18,6 @@ from grafix.core.op_registry import (
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.identity import identity_string
 from grafix.core.parameters.meta_spec import meta_dict_from_user
-from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.realized_geometry import (
     GeomTuple,
     RealizedGeometry,
@@ -29,6 +29,10 @@ from grafix.core.value_validation import exact_bool
 PrimitiveFunc = Callable[[tuple[tuple[str, Any], ...]], RealizedGeometry]
 primitive_registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
 """グローバルな primitive レジストリインスタンス。"""
+builtin_primitive_catalog: BuiltinOpCatalog[PrimitiveFunc] = BuiltinOpCatalog(
+    kind="primitive"
+)
+"""import 済み builtin primitive の append-only spec catalog。"""
 
 _PRIMITIVE_ACTIVATE_META = ParamMeta(
     kind="bool",
@@ -79,7 +83,7 @@ def primitive(
     overwrite = exact_bool(overwrite, name="overwrite")
     meta_norm = None if meta is None else meta_dict_from_user(meta)
     if meta_norm is not None:
-        reserved = {"activate", "key"} & set(meta_norm)
+        reserved = {"activate", "instance_key", "key", "shared"} & set(meta_norm)
         if reserved:
             names = ", ".join(sorted(reserved))
             raise ValueError(f"primitive の予約引数は meta に含められない: {names}")
@@ -88,18 +92,16 @@ def primitive(
         f: Callable[..., GeomTuple],
     ) -> Callable[..., GeomTuple]:
         module = identity_string(f.__module__, name="primitive module")
-        if meta_norm is None and module.startswith("grafix.core.primitives."):
+        is_builtin = module.startswith("grafix.core.primitives.")
+        if meta_norm is None and is_builtin:
             raise ValueError(f"組み込み primitive は meta 必須: {f.__module__}.{f.__name__}")
 
         def wrapper(args: tuple[tuple[str, Any], ...]) -> RealizedGeometry:
             params: dict[str, Any] = dict(args)
-            activate = validate_parameter_value(
-                params.pop("activate", True),
-                kind="bool",
-                choices=None,
-            )
-            if not activate:
-                return concat_realized_geometries()
+            if meta_norm is not None:
+                activate = params.pop("activate")
+                if activate is False:
+                    return concat_realized_geometries()
             out = f(**params)
             return realized_geometry_from_tuple(
                 out,
@@ -109,13 +111,14 @@ def primitive(
         defaults: dict[str, Any] = {}
         param_order: tuple[str, ...] = ()
         meta_with_activate: dict[str, ParamMeta] = {}
+        user_defaults, user_order = op_defaults_and_order(
+            kind="primitive",
+            func=f,
+            meta={} if meta_norm is None else meta_norm,
+            n_inputs=0,
+        )
         if meta_norm is not None:
             meta_with_activate = {"activate": _PRIMITIVE_ACTIVATE_META, **meta_norm}
-            user_defaults, user_order = op_defaults_and_order(
-                kind="primitive",
-                func=f,
-                meta=meta_norm,
-            )
             defaults = {"activate": True, **user_defaults}
             param_order = ("activate", *user_order)
 
@@ -134,11 +137,16 @@ def primitive(
                 n_inputs=0,
             ),
         )
-        primitive_registry.register(
-            f.__name__,
-            spec,
-            replace=overwrite,
-        )
+        if is_builtin:
+            builtin_primitive_catalog.record(f.__name__, spec)
+            if f.__name__ not in primitive_registry:
+                primitive_registry.register(f.__name__, spec)
+        else:
+            primitive_registry.register(
+                f.__name__,
+                spec,
+                replace=overwrite,
+            )
         return f
 
     if func is None:
@@ -146,4 +154,9 @@ def primitive(
     return decorator(func)
 
 
-__all__ = ["PrimitiveFunc", "primitive", "primitive_registry"]
+__all__ = [
+    "PrimitiveFunc",
+    "builtin_primitive_catalog",
+    "primitive",
+    "primitive_registry",
+]

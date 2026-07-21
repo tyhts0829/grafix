@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import RealizeSession, realize
+from grafix.core.realize import RealizeError, RealizeSession, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -44,6 +45,12 @@ def relax_test_shared_point() -> GeomTuple:
     return coords, offsets
 
 
+@primitive
+def relax_test_empty() -> GeomTuple:
+    """空ジオメトリを返す。"""
+    return np.zeros((0, 3), dtype=np.float32), np.zeros((1,), dtype=np.int32)
+
+
 def test_relax_zero_iterations_is_noop() -> None:
     g = G.relax_test_chain5()
     relaxed = E.relax(relaxation_iterations=0, step=0.5)(g)
@@ -51,6 +58,33 @@ def test_relax_zero_iterations_is_noop() -> None:
         base = session.realize(g)
         out = session.realize(relaxed)
     assert out is base
+
+
+def test_relax_zero_step_is_noop() -> None:
+    g = G.relax_test_chain5()
+    relaxed = E.relax(relaxation_iterations=10, step=0.0)(g)
+    with RealizeSession() as session:
+        base = session.realize(g)
+        out = session.realize(relaxed)
+    assert out is base
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"relaxation_iterations": -1}, "relaxation_iterations"),
+        ({"step": -0.1}, "step"),
+    ],
+)
+def test_relax_rejects_negative_parameters_before_empty_input(
+    kwargs: dict[str, int | float],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.relax(**kwargs)(G.relax_test_empty()))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
 
 
 def test_relax_moves_only_non_fixed_nodes() -> None:

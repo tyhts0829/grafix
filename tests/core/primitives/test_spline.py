@@ -1,4 +1,4 @@
-"""spline primitiveの補間規則とraw geometry契約を検証する。"""
+"""spline primitiveの補間規則とcanonical出力契約を検証する。"""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def test_spline_uses_centripetal_catmull_rom_parameterization() -> None:
 def test_spline_closed_removes_boundary_duplicate_and_closes_bit_exactly() -> None:
     """closed curveは共有anchorを重ねず、末尾だけを厳密な閉鎖点とする。"""
 
-    points = [
+    points = (
         (0.0, 0.0),
         (0.0, 0.0),
         (1.0, 0.0),
@@ -69,8 +69,7 @@ def test_spline_closed_removes_boundary_duplicate_and_closes_bit_exactly() -> No
         (0.0, 1.0),
         (0.0, 0.0),
         (0.0, 0.0),
-    ]
-    original = list(points)
+    )
 
     coords, offsets = spline(
         points=points,
@@ -78,7 +77,6 @@ def test_spline_closed_removes_boundary_duplicate_and_closes_bit_exactly() -> No
         segments_per_span=3,
     )
 
-    assert points == original
     assert coords.shape == (13, 3)
     assert offsets.tolist() == [0, 13]
     expected_anchors = np.array(
@@ -168,9 +166,11 @@ def test_spline_two_anchors_closed_traverse_two_spans_without_shared_duplicate()
 def test_spline_tension_one_keeps_every_sample_on_its_anchor_chord() -> None:
     """tension=1はanchorを維持したまま各spanを直線化する。"""
 
-    points = np.array(
-        ((0.0, 0.0), (1.0, 1.0), (4.0, 0.0), (5.0, 2.0)),
-        dtype=np.float64,
+    points = (
+        (0.0, 0.0),
+        (1.0, 1.0),
+        (4.0, 0.0),
+        (5.0, 2.0),
     )
     coords, _ = spline(
         points=points,
@@ -179,8 +179,8 @@ def test_spline_tension_one_keeps_every_sample_on_its_anchor_chord() -> None:
     )
 
     for span_index in range(3):
-        start = points[span_index]
-        chord = points[span_index + 1] - start
+        start = np.asarray(points[span_index], dtype=np.float64)
+        chord = np.asarray(points[span_index + 1], dtype=np.float64) - start
         samples = coords[
             span_index * 8 : (span_index + 1) * 8 + 1,
             :2,
@@ -190,56 +190,25 @@ def test_spline_tension_one_keeps_every_sample_on_its_anchor_chord() -> None:
         np.testing.assert_allclose(cross, 0.0, rtol=0.0, atol=1e-6)
 
 
-@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.int64])
-@pytest.mark.parametrize("closed", [False, True])
-def test_spline_ndarray_matches_sequence_numeric_conversion(
-    dtype: type[np.generic],
-    closed: bool,
-) -> None:
-    """numeric ndarrayもpoint3によるPython float正規化と同じ結果を返す。"""
-
-    source = np.array(((0, 0), (2, 3), (7, -1), (11, 4)), dtype=dtype)
-    array_coords, array_offsets = spline(
-        points=source,
-        closed=closed,
-        segments_per_span=5,
-    )
-    sequence_coords, sequence_offsets = spline(
-        points=source.tolist(),
-        closed=closed,
-        segments_per_span=5,
-    )
-
-    np.testing.assert_array_equal(array_coords, sequence_coords)
-    np.testing.assert_array_equal(array_offsets, sequence_offsets)
-    assert not np.shares_memory(array_coords, source)
-
-
 @pytest.mark.parametrize(
-    ("kwargs", "message"),
+    ("kwargs", "error", "message"),
     [
-        ({"segments_per_span": 0}, "segments_per_span.*1 以上"),
-        ({"segments_per_span": float("inf")}, "segments_per_span.*整数"),
-        ({"tension": -0.01}, "tension.*0 以上 1 以下"),
-        ({"tension": 1.01}, "tension.*0 以上 1 以下"),
-        ({"tension": float("nan")}, "tension.*有限"),
-        ({"points": ((0.0,),)}, "points.*2または3成分"),
-        ({"points": ((0.0, "x"),)}, "points.*2または3成分"),
-        ({"points": ((0.0, float("inf")),)}, "points.*有限"),
-        ({"points": ((0.0, float("nan")),)}, "points.*有限"),
-        ({"points": ((1e100, 0.0),)}, "points.*float32範囲内"),
-        ({"points": None}, "points.*シーケンス"),
-        ({"points": 3}, "points.*シーケンス"),
-        ({"points": np.array(1.0)}, "points.*シーケンス"),
+        ({"segments_per_span": 0}, ValueError, "segments_per_span.*1 以上"),
+        ({"tension": -0.01}, ValueError, "tension.*0 以上 1 以下"),
+        ({"tension": 1.01}, ValueError, "tension.*0 以上 1 以下"),
+        ({"points": ((0.0,),)}, TypeError, "points.*2または3成分"),
+        ({"points": ((0.0, "x"),)}, TypeError, "points.*exact int.*float"),
+        ({"points": ((1e100, 0.0),)}, ValueError, "points.*float32範囲内"),
     ],
 )
 def test_spline_rejects_invalid_parameters(
     kwargs: dict[str, object],
+    error: type[Exception],
     message: str,
 ) -> None:
     """補間を定義できない値を暗黙補正しない。"""
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(error, match=message):
         spline(**kwargs)  # type: ignore[arg-type]
 
 
@@ -406,10 +375,10 @@ def test_spline_resource_rejection_precedes_numpy_allocation(
         ((0.0, 0.0), (1.0, 2.0), (3.0, -1.0)),
     ],
 )
-def test_spline_raw_arrays_are_fresh_writable_c_contiguous(
+def test_spline_evaluator_arrays_are_fresh_writable_c_contiguous(
     points: tuple[tuple[float, ...], ...],
 ) -> None:
-    """raw呼び出しごとに独立した標準dtype配列を返す。"""
+    """evaluator呼び出しごとに独立した標準dtype配列を返す。"""
 
     coords_a, offsets_a = spline(points=points)
     coords_b, offsets_b = spline(points=points)

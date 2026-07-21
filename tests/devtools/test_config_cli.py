@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from grafix.__main__ import main as grafix_main
+from grafix.__main__ import _delegated_args, main as grafix_main
 from grafix.core.runtime_config import set_config_path
 from grafix.devtools import config_cli
 
@@ -28,10 +28,36 @@ def test_config_validate_returns_zero_for_valid_config(tmp_path: Path, capsys) -
         encoding="utf-8",
     )
 
-    assert config_cli.main(["validate", "--config", str(config_path)]) == 0
+    assert config_cli.main(["validate", str(config_path)]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == f"config valid: {config_path}\n"
+
+
+def test_config_cli_rejects_removed_config_option(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        config_cli.main(["validate", "--config", str(config_path)])
+
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ([], []),
+        (["--"], []),
+        (["--", "value"], ["value"]),
+        (["value", "--"], ["value", "--"]),
+    ],
+)
+def test_delegated_args_removes_only_the_parent_separator(
+    arguments: list[str],
+    expected: list[str],
+) -> None:
+    assert _delegated_args(arguments) == expected
 
 
 def test_config_validate_returns_two_and_suggests_typo(

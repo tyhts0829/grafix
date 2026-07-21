@@ -9,6 +9,7 @@ from grafix.core.parameters.codec import (
     encode_param_store,
     loads_param_store_result,
 )
+from grafix.core.parameters.collapsed_header import primitive_collapsed_header_key
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.invariants import assert_invariants
 from grafix.core.parameters.snapshot_ops import store_snapshot
@@ -159,9 +160,7 @@ def test_direct_decode_rejects_python_tuple_for_json_array_fields(
 
     assert result.store.get_state(key) is None
     assert any(
-        issue.section == "states"
-        and issue.index == 0
-        and reason in issue.reason
+        issue.section == "states" and issue.index == 0 and reason in issue.reason
         for issue in result.issues
     )
 
@@ -248,5 +247,125 @@ def test_snapshot_rejects_corrupt_non_bool_override() -> None:
     state = ParamState(override=True, ui_value=1.0)
     state.override = 1  # type: ignore[assignment]
 
-    with pytest.raises(TypeError, match="state.override must be an exact bool"):
+    with pytest.raises(TypeError, match="state.override.*bool"):
         ParamStateSnapshot.from_state(state)
+
+
+def test_snapshot_rejects_mutable_ui_value() -> None:
+    state = ParamState(override=True, ui_value=1.0)
+    state.ui_value = [1.0]
+
+    with pytest.raises(TypeError, match="state.ui_value"):
+        ParamStateSnapshot.from_state(state)
+
+
+@pytest.mark.parametrize("cc_key", ([1, 2, 3], 128, (None, None, None)))
+def test_snapshot_rejects_noncanonical_cc_key(cc_key: object) -> None:
+    state = ParamState(override=True, ui_value=1.0)
+    state.cc_key = cc_key  # type: ignore[assignment]
+
+    with pytest.raises((TypeError, ValueError), match="MIDI CC"):
+        ParamStateSnapshot.from_state(state)
+
+
+def test_snapshot_direct_constructor_enforces_class_invariants() -> None:
+    with pytest.raises(TypeError, match="state.override"):
+        ParamStateSnapshot(override=1, ui_value=1.0, cc_key=None)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="state.ui_value"):
+        ParamStateSnapshot(override=True, ui_value=[1.0], cc_key=None)
+    with pytest.raises(TypeError, match="MIDI CC"):
+        ParamStateSnapshot(
+            override=True,
+            ui_value=1.0,
+            cc_key=[1, 2, 3],  # type: ignore[arg-type]
+        )
+
+
+def test_param_state_rejects_non_bool_override_at_construction() -> None:
+    with pytest.raises(TypeError, match="override"):
+        ParamState(override=1)  # type: ignore[arg-type]
+
+
+def test_param_state_rejects_mutable_values_at_construction() -> None:
+    with pytest.raises(TypeError, match="ui_value"):
+        ParamState(ui_value=[1.0])
+    with pytest.raises(TypeError, match="MIDI CC"):
+        ParamState(ui_value=1.0, cc_key=[1, 2, 3])  # type: ignore[arg-type]
+
+
+def test_replace_contents_is_deep_and_invalidates_all_revision_domains() -> None:
+    target = ParamStore()
+    source = ParamStore()
+    target_key = ParameterKey("line", "target", "length")
+    source_key = ParameterKey("line", "source", "length")
+    meta = ParamMeta(kind="float", ui_min=0.0, ui_max=10.0)
+    merge_frame_params(
+        target,
+        [
+            FrameParamRecord(
+                key=target_key,
+                base=1.0,
+                meta=meta,
+                effective=1.0,
+                source="code",
+                explicit=False,
+            )
+        ],
+    )
+    merge_frame_params(
+        source,
+        [
+            FrameParamRecord(
+                key=source_key,
+                base=2.0,
+                meta=meta,
+                effective=2.0,
+                source="code",
+                explicit=False,
+            )
+        ],
+    )
+    source._favorite_keys_ref().add(source_key)
+    source._collapsed_headers_ref().add(
+        primitive_collapsed_header_key((source_key.op, source_key.site_id))
+    )
+    source._runtime_ref().observed_groups.add(("line", "observed"))
+
+    old_snapshot = store_snapshot(target)
+    old_runtime = target._runtime_ref()
+    revisions = (
+        target.revision,
+        target.table_revision,
+        target.value_revision,
+        target.style_revision,
+        target.favorite_revision,
+        old_runtime.effective_revision,
+        old_runtime.visibility_revision,
+    )
+
+    target.replace_contents_from(source)
+
+    assert target.get_state(target_key) is None
+    assert target.get_state(source_key) is not None
+    assert target._favorite_keys_snapshot() == frozenset({source_key})
+    assert target._collapsed_headers_ref() == {
+        primitive_collapsed_header_key((source_key.op, source_key.site_id))
+    }
+    assert store_snapshot(target) is not old_snapshot
+    assert target._runtime_ref() is not old_runtime
+    assert (
+        target.revision,
+        target.table_revision,
+        target.value_revision,
+        target.style_revision,
+        target.favorite_revision,
+        target._runtime_ref().effective_revision,
+        target._runtime_ref().visibility_revision,
+    ) == tuple(value + 1 for value in revisions)
+    assert target.value_changes_since(revisions[2]) is None
+    assert target._runtime_ref().effective_changes_since(revisions[5]) is None
+
+    source_state = source._get_state_ref(source_key)
+    assert source_state is not None
+    source_state.ui_value = 9.0
+    assert target.get_state(source_key).ui_value == 2.0  # type: ignore[union-attr]

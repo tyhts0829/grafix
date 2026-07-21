@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
 from grafix.core.op_registry import (
+    BuiltinOpCatalog,
     CachePolicy,
     OpRegistry,
     OpSpec,
@@ -17,7 +18,6 @@ from grafix.core.op_registry import (
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.identity import identity_string
 from grafix.core.parameters.meta_spec import meta_dict_from_user
-from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.realized_geometry import (
     GeomTuple,
     RealizedGeometry,
@@ -32,6 +32,8 @@ EffectFunc = Callable[
 ]
 effect_registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
 """グローバルな effect レジストリインスタンス。"""
+builtin_effect_catalog: BuiltinOpCatalog[EffectFunc] = BuiltinOpCatalog(kind="effect")
+"""import 済み builtin effect の append-only spec catalog。"""
 
 _EFFECT_ACTIVATE_META = ParamMeta(
     kind="bool",
@@ -87,7 +89,7 @@ def effect(
     overwrite = exact_bool(overwrite, name="overwrite")
     meta_norm = None if meta is None else meta_dict_from_user(meta)
     if meta_norm is not None:
-        reserved = {"activate", "key"} & set(meta_norm)
+        reserved = {"activate", "instance_key", "key", "shared"} & set(meta_norm)
         if reserved:
             names = ", ".join(sorted(reserved))
             raise ValueError(f"effect の予約引数は meta に含められない: {names}")
@@ -98,7 +100,8 @@ def effect(
         f: Callable[..., GeomTuple],
     ) -> Callable[..., GeomTuple]:
         module = identity_string(f.__module__, name="effect module")
-        if meta_norm is None and module.startswith("grafix.core.effects."):
+        is_builtin = module.startswith("grafix.core.effects.")
+        if meta_norm is None and is_builtin:
             raise ValueError(f"組み込み effect は meta 必須: {f.__module__}.{f.__name__}")
 
         meta_with_activate = (
@@ -112,26 +115,21 @@ def effect(
             args: tuple[tuple[str, Any], ...],
         ) -> RealizedGeometry:
             params: dict[str, Any] = dict(args)
-            activate = validate_parameter_value(
-                params.pop("activate", True),
-                kind="bool",
-                choices=None,
-            )
-            if not activate:
-                if not inputs:
-                    return concat_realized_geometries()
-                if len(inputs) == 1:
-                    return inputs[0]
-                return concat_realized_geometries(*inputs)
             if len(inputs) != n_inputs_i:
                 raise TypeError(
                     f"effect '{f.__name__}' は入力 Geometry を {n_inputs_i} 個必要とします"
                     f"（受け取った数: {len(inputs)}）"
                 )
+            if meta_norm is not None:
+                activate = params.pop("activate")
+                if activate is False:
+                    if len(inputs) == 1:
+                        return inputs[0]
+                    return concat_realized_geometries(*inputs)
 
             inputs_as_tuples = tuple((g.coords, g.offsets) for g in inputs)
             out = f(*inputs_as_tuples, **params)
-            if isinstance(out, tuple) and len(out) == 2:
+            if type(out) is tuple and len(out) == 2:
                 out_coords, out_offsets = out
                 for g in inputs:
                     if out_coords is g.coords and out_offsets is g.offsets:
@@ -147,12 +145,13 @@ def effect(
 
         defaults: dict[str, Any] = {}
         param_order: tuple[str, ...] = ()
+        user_defaults, user_order = op_defaults_and_order(
+            kind="effect",
+            func=f,
+            meta={} if meta_norm is None else meta_norm,
+            n_inputs=n_inputs_i,
+        )
         if meta_norm is not None:
-            user_defaults, user_order = op_defaults_and_order(
-                kind="effect",
-                func=f,
-                meta=meta_norm,
-            )
             defaults = {"activate": True, **user_defaults}
             param_order = ("activate", *user_order)
 
@@ -171,11 +170,16 @@ def effect(
                 n_inputs=n_inputs_i,
             ),
         )
-        effect_registry.register(
-            f.__name__,
-            spec,
-            replace=overwrite,
-        )
+        if is_builtin:
+            builtin_effect_catalog.record(f.__name__, spec)
+            if f.__name__ not in effect_registry:
+                effect_registry.register(f.__name__, spec)
+        else:
+            effect_registry.register(
+                f.__name__,
+                spec,
+                replace=overwrite,
+            )
         return f
 
     if func is None:
@@ -183,4 +187,9 @@ def effect(
     return decorator(func)
 
 
-__all__ = ["EffectFunc", "effect", "effect_registry"]
+__all__ = [
+    "EffectFunc",
+    "builtin_effect_catalog",
+    "effect",
+    "effect_registry",
+]

@@ -11,7 +11,6 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .argument_validation import exact_bool, integer_scalar, known_choice
 from .util import empty_geom
 
 EPS = 1e-6
@@ -127,7 +126,7 @@ def mirror3d(
     center : tuple[float, float, float], default (0,0,0)
         回転/反射の中心。
     axis : tuple[float, float, float], default (0,0,1)
-        "azimuth" の回転軸。内部で単位化する。
+        "azimuth" の非ゼロ回転軸。内部で単位化する。
     phi0 : float, default 0.0
         くさびの開始角 [deg]（"azimuth" のみ）。
     mirror_equator : bool, default False
@@ -140,86 +139,64 @@ def mirror3d(
         "polyhedral" で代表反射（y=0）を追加して倍化する。
     show_planes : bool, default False
         対称面を可視化用の十字線として出力に追加する。
+
+    Raises
+    ------
+    ValueError
+        `mode="azimuth"` で `n_azimuth` が 1 未満、または `axis` がゼロの場合。
     """
-    mode_s = known_choice(
-        mode,
-        choices=_MODE_CHOICES,
-        name="mirror3d: mode",
-    )
-    n_azimuth_i = integer_scalar(
-        n_azimuth,
-        name="mirror3d: n_azimuth",
-    )
-    mirror_equator_b = exact_bool(
-        mirror_equator,
-        name="mirror3d: mirror_equator",
-    )
-    source_side_b = exact_bool(source_side, name="mirror3d: source_side")
-    group_s = known_choice(
-        group,
-        choices=_GROUP_CHOICES,
-        name="mirror3d: group",
-    )
-    use_reflection_b = exact_bool(
-        use_reflection,
-        name="mirror3d: use_reflection",
-    )
-    show_planes_b = exact_bool(show_planes, name="mirror3d: show_planes")
+    ax: np.ndarray | None = None
+    if mode == "azimuth":
+        if n_azimuth < 1:
+            raise ValueError("mirror3d の n_azimuth は 1 以上である必要がある")
+        ax_raw = np.asarray(axis, dtype=np.float64)
+        axis_norm = float(np.linalg.norm(ax_raw))
+        if axis_norm == 0.0:
+            raise ValueError("mirror3d の axis は非ゼロベクトルである必要がある")
+        ax = (ax_raw / axis_norm).astype(np.float32)
 
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    c = np.array(
-        [float(center[0]), float(center[1]), float(center[2])], dtype=np.float32
-    )
-    if not np.all(np.isfinite(c)):
-        return coords, offsets
+    c = np.asarray(center, dtype=np.float32)
 
-    ax_raw = np.array(
-        [float(axis[0]), float(axis[1]), float(axis[2])], dtype=np.float32
-    )
-    ax = _unit(ax_raw)
-    if float(np.linalg.norm(ax)) <= 0.0:
-        return coords, offsets
-
-    if mode_s == "azimuth":
+    if mode == "azimuth":
+        assert ax is not None
         out_lines = _mirror3d_azimuth(
             coords,
             offsets,
-            n_azimuth=n_azimuth_i,
+            n_azimuth=n_azimuth,
             center=c,
             axis=ax,
-            phi0_deg=float(phi0),
-            mirror_equator=mirror_equator_b,
-            source_side=source_side_b,
+            phi0_deg=phi0,
+            mirror_equator=mirror_equator,
+            source_side=source_side,
         )
-        if show_planes_b:
+        if show_planes:
             out_lines.extend(
                 _show_planes_azimuth(
                     out_lines=out_lines,
                     coords=coords,
                     center=c,
                     axis=ax,
-                    n_azimuth=n_azimuth_i,
-                    phi0=float(phi0),
-                    mirror_equator=mirror_equator_b,
+                    n_azimuth=n_azimuth,
+                    phi0=phi0,
+                    mirror_equator=mirror_equator,
                 )
             )
-    elif mode_s == "polyhedral":
+    else:  # mode == "polyhedral"
         out_lines = _mirror3d_polyhedral(
             coords,
             offsets,
             center=c,
-            group=group_s,
-            use_reflection=use_reflection_b,
+            group=group,
+            use_reflection=use_reflection,
         )
-        if show_planes_b:
+        if show_planes:
             out_lines.extend(
                 _show_planes_polyhedral(out_lines=out_lines, coords=coords, center=c)
             )
-    else:
-        raise AssertionError(f"unreachable mirror3d mode: {mode_s!r}")
     uniq = _dedup_lines(out_lines)
     if not uniq:
         return empty_geom()
@@ -244,9 +221,6 @@ def _mirror3d_azimuth(
     mirror_equator: bool,
     source_side: bool,
 ) -> list[np.ndarray]:
-    if n_azimuth < 1:
-        return []
-
     phi0_rad = float(np.deg2rad(float(phi0_deg)))
     n0, n1 = _compute_azimuth_plane_normals(
         n_azimuth=n_azimuth, axis=axis, phi0=phi0_rad
@@ -359,19 +333,11 @@ def _packed_polyhedral_transforms(
         len(shape) != 2
         or shape[0] == 0
         or shape[1] != 3
-        or any(
-            line.shape != shape
-            or line.dtype != np.float32
-            or not line.flags.c_contiguous
-            for line in src_lines
-        )
+        or any(line.shape != shape for line in src_lines)
     ):
         return None
 
     stacked_sources = np.stack(src_lines, axis=0)
-    if not bool(np.all(np.isfinite(stacked_sources))):
-        return None
-
     stacked_mats_t = np.stack([matrix.T for matrix in mats], axis=0)
     transformed = (
         np.matmul(
@@ -521,7 +487,6 @@ def _show_planes_azimuth(
     phi0: float,
     mirror_equator: bool,
 ) -> list[np.ndarray]:
-    n = max(1, n_azimuth)
     if out_lines:
         all_pts = np.vstack(out_lines).astype(np.float32, copy=False)
     else:
@@ -529,7 +494,11 @@ def _show_planes_azimuth(
     r = _fit_radius(all_pts=all_pts, center=center)
 
     phi0_rad = float(np.deg2rad(float(phi0)))
-    n0, n1 = _compute_azimuth_plane_normals(n_azimuth=n, axis=axis, phi0=phi0_rad)
+    n0, n1 = _compute_azimuth_plane_normals(
+        n_azimuth=n_azimuth,
+        axis=axis,
+        phi0=phi0_rad,
+    )
     planes = [n0, n1]
     if mirror_equator:
         planes.append(axis)
@@ -740,7 +709,7 @@ def _clip_polyhedron_octant(
 
 def _dedup_lines(lines: Iterable[np.ndarray]) -> list[np.ndarray]:
     if isinstance(lines, list):
-        packed = _dedup_uniform_finite_lines(lines)
+        packed = _dedup_uniform_lines(lines)
         if packed is not None:
             return packed
 
@@ -759,7 +728,7 @@ def _dedup_lines(lines: Iterable[np.ndarray]) -> list[np.ndarray]:
     return out
 
 
-def _dedup_uniform_finite_lines(lines: list[np.ndarray]) -> list[np.ndarray] | None:
+def _dedup_uniform_lines(lines: list[np.ndarray]) -> list[np.ndarray] | None:
     """uniform な多数 line を一括量子化し、元順の first line を残す。"""
     if len(lines) < _PACKED_DEDUP_MIN_LINES:
         return None
@@ -769,19 +738,11 @@ def _dedup_uniform_finite_lines(lines: list[np.ndarray]) -> list[np.ndarray] | N
         len(shape) != 2
         or shape[0] == 0
         or shape[1] != 3
-        or any(
-            line.shape != shape
-            or line.dtype != np.float32
-            or not line.flags.c_contiguous
-            for line in lines
-        )
+        or any(line.shape != shape for line in lines)
     ):
         return None
 
     stacked = np.stack(lines, axis=0)
-    if not bool(np.all(np.isfinite(stacked))):
-        return None
-
     inv = 1.0 / EPS if EPS > 0 else 1e6
     quantized = np.rint(stacked * inv).astype(np.int64)
     seen: set[tuple[int, bytes]] = set()

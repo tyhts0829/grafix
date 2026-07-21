@@ -12,6 +12,7 @@ from grafix.core.parameters import (
     list_reconcile_orphans,
     manual_migrate_orphan,
 )
+from grafix.core.parameters.collapsed_header import effect_chain_collapsed_header_key
 from grafix.core.parameters.codec import (
     dumps_param_store,
     loads_param_store_result,
@@ -28,6 +29,7 @@ from grafix.core.parameters.layer_style import LAYER_STYLE_OP, layer_style_recor
 from grafix.core.parameters.labels_ops import set_label
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.prune_ops import prune_groups, prune_stale_loaded_groups
+from grafix.core.parameters.reconcile import GroupFingerprint
 from grafix.core.parameters.snapshot_ops import store_snapshot, store_snapshot_for_gui
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.parameters.variations import (
@@ -79,6 +81,21 @@ def _polyhedron_records(site_id: str) -> list[FrameParamRecord]:
             explicit=False,
         ),
     ]
+
+
+def test_group_fingerprint_owns_immutable_kind_mapping() -> None:
+    source = {"center": "vec3"}
+    fingerprint = GroupFingerprint(
+        op="polyhedron",
+        args=frozenset(source),
+        kind_by_arg=source,
+        label=None,
+    )
+
+    source["center"] = "float"
+    assert fingerprint.kind_by_arg == {"center": "vec3"}
+    with pytest.raises(TypeError):
+        fingerprint.kind_by_arg["center"] = "float"  # type: ignore[index]
 
 
 def _sphere_records(site_id: str) -> list[FrameParamRecord]:
@@ -159,14 +176,8 @@ def test_prune_stale_loaded_groups_removes_old_entries_on_save_path():
     prune_stale_loaded_groups(store)
 
     full_snapshot = store_snapshot(store)
-    assert (
-        ParameterKey(op="polyhedron", site_id=old_site_id, arg="center")
-        not in full_snapshot
-    )
-    assert (
-        ParameterKey(op="polyhedron", site_id=new_site_id, arg="center")
-        in full_snapshot
-    )
+    assert ParameterKey(op="polyhedron", site_id=old_site_id, arg="center") not in full_snapshot
+    assert ParameterKey(op="polyhedron", site_id=new_site_id, arg="center") in full_snapshot
     assert is_parameter_locked(store, old_center_key) is False
     assert_invariants(store)
 
@@ -211,6 +222,9 @@ def test_op_change_hides_loaded_group_in_gui_snapshot_and_prunes_on_save_path():
     gui_snapshot = store_snapshot_for_gui(store)
     assert all(k.op != "polyhedron" for k in gui_snapshot.keys())
     assert any(k.op == "sphere" for k in gui_snapshot.keys())
+    visible_key = next(iter(gui_snapshot))
+    with pytest.raises(TypeError):
+        gui_snapshot[visible_key] = gui_snapshot[visible_key]  # type: ignore[index]
 
     prune_stale_loaded_groups(store)
     full_snapshot = store_snapshot(store)
@@ -260,9 +274,7 @@ def test_layer_style_site_id_change_hides_loaded_group_and_prunes_on_save_path()
 
     prune_stale_loaded_groups(store)
     full_snapshot = store_snapshot(store)
-    layer_sites_full = {
-        k.site_id for k in full_snapshot.keys() if k.op == LAYER_STYLE_OP
-    }
+    layer_sites_full = {k.site_id for k in full_snapshot.keys() if k.op == LAYER_STYLE_OP}
     assert old_site_id not in layer_sites_full
     assert_invariants(store)
 
@@ -398,12 +410,8 @@ def test_reconcile_never_reuses_an_old_group_after_automatic_migration():
         ],
     )
 
-    primary_key = ParameterKey(
-        op="polyhedron", site_id="new-primary", arg="kind"
-    )
-    secondary_key = ParameterKey(
-        op="polyhedron", site_id="new-secondary", arg="kind"
-    )
+    primary_key = ParameterKey(op="polyhedron", site_id="new-primary", arg="kind")
+    secondary_key = ParameterKey(op="polyhedron", site_id="new-secondary", arg="kind")
     assert store.get_state(primary_key).ui_value == "hexahedron"  # type: ignore[union-attr]
     assert store.get_state(secondary_key).ui_value == "tetrahedron"  # type: ignore[union-attr]
 
@@ -429,9 +437,7 @@ def test_prune_removes_stale_effect_steps_and_unused_chain_ordinals():
         [
             FrameEffectChainRecord(
                 chain_id=old_chain_id,
-                steps=(
-                    EffectStepTopology("rotate", old_step_site_id, 1, 0),
-                ),
+                steps=(EffectStepTopology("rotate", old_step_site_id, 1, 0),),
             )
         ],
         observation_complete=False,
@@ -458,9 +464,7 @@ def test_prune_removes_stale_effect_steps_and_unused_chain_ordinals():
         [
             FrameEffectChainRecord(
                 chain_id=new_chain_id,
-                steps=(
-                    EffectStepTopology("rotate", new_step_site_id, 1, 0),
-                ),
+                steps=(EffectStepTopology("rotate", new_step_site_id, 1, 0),),
             )
         ],
         observation_complete=False,
@@ -525,7 +529,8 @@ def test_prune_removes_loaded_unobserved_parameterless_effect_chain() -> None:
         "removed-chain",
         (("second_no_params", "second-site"), ("first_no_params", "first-site")),
     )
-    original._collapsed_headers_ref().add("effect_chain:removed-chain")
+    removed_header = effect_chain_collapsed_header_key("removed-chain")
+    original._collapsed_headers_ref().add(removed_header)
     store = _roundtrip_store(original)
 
     assert not store._runtime_ref().loaded_groups
@@ -534,7 +539,7 @@ def test_prune_removes_loaded_unobserved_parameterless_effect_chain() -> None:
     assert store.effect_chain_topologies() == {}
     assert store.effect_order_overrides() == {}
     assert "removed-chain" not in store.chain_ordinals()
-    assert "effect_chain:removed-chain" not in store._collapsed_headers_ref()
+    assert removed_header not in store._collapsed_headers_ref()
 
 
 def test_prune_keeps_loaded_parameterless_effect_chain_observed_this_session() -> None:
@@ -599,9 +604,7 @@ def test_parameter_prune_does_not_remove_observed_code_topology_step() -> None:
         ("second", "second-site"),
         ("first", "first-site"),
     )
-    assert store.get_state(
-        ParameterKey(op="first", site_id="first-site", arg="amount")
-    ) is None
+    assert store.get_state(ParameterKey(op="first", site_id="first-site", arg="amount")) is None
 
 
 def test_effect_chain_ordinals_do_not_duplicate_after_removing_first_chain():
@@ -733,9 +736,7 @@ def draw():
 
     # 何か 1 つ値を変えたことにする（=GUI 調整）。
     snap_v1 = store_snapshot(store_v1)
-    key_v1 = next(
-        k for k in snap_v1.keys() if k.op == "polyhedron" and k.arg == "kind"
-    )
+    key_v1 = next(k for k in snap_v1.keys() if k.op == "polyhedron" and k.arg == "kind")
     meta_v1, _state_v1, _ordinal_v1, _label_v1 = snap_v1[key_v1]
     update_state_from_ui(
         store_v1,
@@ -766,9 +767,7 @@ def draw():
     assert len(poly_sites) == 1
 
     # 値が引き継がれている（曖昧ではないので migrate される）。
-    kind_key = next(
-        k for k in gui_snapshot.keys() if k.op == "polyhedron" and k.arg == "kind"
-    )
+    kind_key = next(k for k in gui_snapshot.keys() if k.op == "polyhedron" and k.arg == "kind")
     st = store.get_state(kind_key)
     assert st is not None
     assert st.ui_value == "dodecahedron"

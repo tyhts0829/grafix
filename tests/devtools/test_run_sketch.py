@@ -65,6 +65,38 @@ def test_main_dispatches_run_subcommand(monkeypatch: pytest.MonkeyPatch) -> None
     assert seen == [["sketch.py", "--watch"]]
 
 
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("none", None),
+        ("off", "off"),
+        ("NONE", "NONE"),
+        (" none ", " none "),
+        ("", ""),
+    ],
+)
+def test_run_cli_uses_only_exact_none_to_disable_midi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    token: str,
+    expected: str | None,
+) -> None:
+    sketch = tmp_path / "art.py"
+    _write_sketch(sketch)
+    seen: list[str | None] = []
+    runner_module = importlib.import_module("grafix.api.runner")
+
+    def fake_run(_draw: object, **kwargs: object) -> None:
+        value = kwargs["midi_port_name"]
+        assert value is None or isinstance(value, str)
+        seen.append(value)
+
+    monkeypatch.setattr(runner_module, "run", fake_run)
+
+    assert run_sketch.main([str(sketch), "--midi-port", token]) == 0
+    assert seen == [expected]
+
+
 def test_run_cli_reports_initial_source_error(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

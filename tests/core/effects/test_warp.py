@@ -15,9 +15,30 @@ from grafix.core.effects.warp import (
     _evaluate_signed_distances_numba,
     warp,
 )
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 
 warp_module = importlib.import_module("grafix.core.effects.warp")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"strength": -0.1}, "strength"),
+        ({"band": -0.1}, "band"),
+        ({"snap_band": -0.1}, "snap_band"),
+        ({"falloff": -0.1}, "falloff"),
+    ],
+)
+def test_warp_rejects_negative_parameters_before_mode_and_empty_inputs(
+    kwargs: dict[str, float],
+    parameter: str,
+) -> None:
+    empty = G.polyline(points=())
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.warp(mode="lens", **kwargs)(empty, empty))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
 
 
 def _regular_ring(n_sides: int, radius: float) -> np.ndarray:

@@ -21,7 +21,7 @@ def _realized_layer(
     coords: list[list[float]],
     offsets: list[int],
 ) -> RealizedLayer:
-    geometry = Geometry.create("line")
+    geometry = Geometry.create("gcode-test-geometry")
     layer = Layer(geometry=geometry, site_id="layer:1")
     realized = RealizedGeometry(
         coords=np.asarray(coords, dtype=np.float32),

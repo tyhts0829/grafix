@@ -60,16 +60,12 @@ def wobble(
     if coords.shape[0] == 0:
         return coords, offsets
 
-    ax = float(amplitude[0])
-    ay = float(amplitude[1])
-    az = float(amplitude[2])
+    ax, ay, az = amplitude
     if ax == 0.0 and ay == 0.0 and az == 0.0:
         return coords, offsets
 
-    fx = float(frequency[0])
-    fy = float(frequency[1])
-    fz = float(frequency[2])
-    phase_rad = float(np.deg2rad(float(phase)))
+    fx, fy, fz = frequency
+    phase_rad = float(np.deg2rad(phase))
 
     v = coords.astype(np.float64, copy=False)
     out = v.copy()

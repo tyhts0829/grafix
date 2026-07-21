@@ -1,18 +1,26 @@
 from __future__ import annotations
 
-from grafix import E
+from contextlib import nullcontext
+
+import numpy as np
+import pytest
+
+from grafix import E, G
 from grafix.api._operation_selector import effect_selector_op
 from grafix.api.effects import EffectBuilder
+from grafix.core.effect_registry import effect, effect_registry
 from grafix.core.geometry import Geometry
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.effect_order_ops import set_effect_order
 from grafix.core.parameters.effects import EffectStepKey
+from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.store import ParamStore
+from grafix.core.realize import realize
+from grafix.core.realized_geometry import GeomTuple
 
 
 def _normal_step_key(step: object) -> EffectStepKey:
-    op, _params, site_id = step  # type: ignore[misc]
-    return str(op), str(site_id)
+    return str(getattr(step, "parameter_op")), str(getattr(step, "site_id"))
 
 
 def _selector_step_key(step: object) -> EffectStepKey:
@@ -204,3 +212,85 @@ def test_selector_target_change_preserves_its_order_identity() -> None:
         "selector-target-change-source",
     ]
     assert dict(recipe[0].args)["scale"] == (2.0, 3.0, 1.0)
+
+
+def test_effect_builder_uses_current_spec_arity_for_topology_and_dag() -> None:
+    original_specs = dict(effect_registry.items())
+    try:
+        @effect
+        def effect_builder_current_arity(first: GeomTuple) -> GeomTuple:
+            return first
+
+        builder = E.effect_builder_current_arity(key="current-arity")
+
+        def replacement(
+            first: GeomTuple,
+            _second: GeomTuple,
+        ) -> GeomTuple:
+            return first
+
+        replacement.__name__ = "effect_builder_current_arity"
+        effect(overwrite=True, n_inputs=2)(replacement)
+
+        first = G.line(length=2.0, key="current-arity-first")
+        second = G.line(length=3.0, key="current-arity-second")
+        store = ParamStore()
+        with parameter_context(store):
+            geometry = builder(first, second)
+
+        assert geometry.inputs == (first, second)
+        topology = store.effect_chain_topologies()[builder.chain_id]
+        assert len(topology) == 1
+        assert topology[0].n_inputs == 2
+        np.testing.assert_array_equal(realize(geometry).coords, realize(first).coords)
+    finally:
+        effect_registry.replace_all(original_specs)
+
+
+@pytest.mark.parametrize("recording", [False, True])
+@pytest.mark.parametrize("selector", [False, True])
+def test_deferred_effect_builder_revalidates_params_against_current_spec(
+    recording: bool,
+    selector: bool,
+) -> None:
+    original_specs = dict(effect_registry.items())
+    try:
+        @effect(meta={"x": ParamMeta(kind="int")})
+        def effect_builder_current_meta(
+            g: GeomTuple,
+            *,
+            x: int = 1,
+        ) -> GeomTuple:
+            _ = x
+            return g
+
+        builder = (
+            E.select(
+                target="effect_builder_current_meta",
+                params_by_target={"effect_builder_current_meta": {"x": 2}},
+                key="current-meta-selector",
+            )
+            if selector
+            else E.effect_builder_current_meta(x=2, key="current-meta-normal")
+        )
+
+        def replacement(
+            g: GeomTuple,
+            *,
+            x: bool = False,
+        ) -> GeomTuple:
+            _ = x
+            return g
+
+
+        replacement.__name__ = "effect_builder_current_meta"
+        effect(
+            overwrite=True,
+            meta={"x": ParamMeta(kind="bool")},
+        )(replacement)
+
+        context = parameter_context(ParamStore()) if recording else nullcontext()
+        with context, pytest.raises(TypeError, match="x"):
+            builder(G.line(key="current-meta-source"))
+    finally:
+        effect_registry.replace_all(original_specs)

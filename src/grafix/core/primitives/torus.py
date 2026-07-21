@@ -18,13 +18,13 @@ from grafix.core.resource_budget import ensure_geometry_output
 torus_meta = {
     "major_radius": ParamMeta(
         kind="float",
-        ui_min=-100.0,
+        ui_min=0.0,
         ui_max=100.0,
         description="トーラス中心から管の中心線までの大半径を指定します。",
     ),
     "minor_radius": ParamMeta(
         kind="float",
-        ui_min=-100.0,
+        ui_min=0.0,
         ui_max=100.0,
         description="管の中心線から表面までの小半径を指定します。",
     ),
@@ -70,13 +70,13 @@ def torus(
     Parameters
     ----------
     major_radius : float, optional
-        大半径。
+        0 以上の大半径。
     minor_radius : float, optional
-        小半径。
+        0 以上の小半径。
     major_segments : int, optional
-        major 方向の分割数。3 未満は 3 にクランプする。
+        major 方向の分割数。3 以上。
     minor_segments : int, optional
-        minor 方向の分割数。3 未満は 3 にクランプする。
+        minor 方向の分割数。3 以上。
     center : tuple[float, float, float], optional
         平行移動ベクトル (cx, cy, cz)。
     scale : float, optional
@@ -86,16 +86,21 @@ def torus(
     -------
     tuple[np.ndarray, np.ndarray]
         子午線 `major_segments` 本と緯線 `minor_segments` 本からなる閉ポリライン列（coords, offsets）。
-    """
-    major_r = float(major_radius)
-    minor_r = float(minor_radius)
 
-    major_n = int(round(float(major_segments)))
-    if major_n < 3:
-        major_n = 3
-    minor_n = int(round(float(minor_segments)))
-    if minor_n < 3:
-        minor_n = 3
+    Raises
+    ------
+    ValueError
+        半径が負、または ``major_segments`` / ``minor_segments`` が 3 未満の場合。
+    """
+    major_r = major_radius
+    minor_r = minor_radius
+
+    if major_r < 0.0 or minor_r < 0.0:
+        raise ValueError("torus の major_radius/minor_radius は 0 以上である必要がある")
+    if major_segments < 3 or minor_segments < 3:
+        raise ValueError("torus の major_segments/minor_segments は 3 以上である必要がある")
+    major_n = major_segments
+    minor_n = minor_segments
 
     output_vertices = major_n * (minor_n + 1) + minor_n * (major_n + 1)
     output_lines = major_n + minor_n
@@ -109,16 +114,8 @@ def torus(
         hint="major_segments と minor_segments を減らしてください",
     )
 
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "torus の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
-    try:
-        s_f = float(scale)
-    except Exception as exc:
-        raise ValueError("torus の scale は float である必要がある") from exc
+    cx, cy, cz = center
+    s_f = scale
 
     theta = np.linspace(
         0.0,
@@ -143,7 +140,7 @@ def torus(
     major_r32 = np.float32(major_r)
     minor_r32 = np.float32(minor_r)
 
-    # 出力順を従来どおり「子午線群、緯線群」とし、最終配列へ直接書き込む。
+    # 公開する出力順を「子午線群、緯線群」とし、最終配列へ直接書き込む。
     # stack/concatenate を重ねないことで、major_n * minor_n に比例する一時配列を減らす。
     coords = np.empty((output_vertices, 3), dtype=np.float32)
 
@@ -181,9 +178,8 @@ def torus(
         1, minor_n + 1, dtype=np.int32
     ) * np.int32(parallel_len)
 
-    cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
-    if (cx_f, cy_f, cz_f) != (0.0, 0.0, 0.0) or s_f != 1.0:
-        center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
+    if (cx, cy, cz) != (0.0, 0.0, 0.0) or s_f != 1.0:
+        center_vec = np.array([cx, cy, cz], dtype=np.float32)
         coords = coords * np.float32(s_f) + center_vec
 
     return coords, offsets

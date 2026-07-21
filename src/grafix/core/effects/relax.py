@@ -299,22 +299,32 @@ def relax(
     g : tuple[np.ndarray, np.ndarray]
         変形対象の実体ジオメトリ（coords, offsets）。
     relaxation_iterations : int, default 15
-        反復回数（0–50 にクランプ）。
+        反復回数。50 を超える値はクランプする。0 は no-op。
     step : float, default 0.125
-        1 ステップの移動係数（0.0–0.5 にクランプ）。
+        1 ステップの移動係数。0.5 を超える値はクランプする。0 は no-op。
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         緩和後の実体ジオメトリ（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        `relaxation_iterations` または `step` が負の場合。
     """
+    if relaxation_iterations < 0:
+        raise ValueError("relax の relaxation_iterations は 0 以上である必要がある")
+    if step < 0.0:
+        raise ValueError("relax の step は 0 以上である必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    requested_iterations = int(relaxation_iterations)
+    requested_iterations = relaxation_iterations
     iterations = requested_iterations
-    iterations = max(0, min(MAX_RELAXATION_ITERATIONS, iterations))
+    iterations = min(MAX_RELAXATION_ITERATIONS, iterations)
     if iterations != requested_iterations:
         emit_operation_diagnostic(
             op="relax.relaxation_iterations",
@@ -323,10 +333,8 @@ def relax(
             reason="relaxation iterations was clamped to the supported range",
         )
 
-    requested_step = float(step)
+    requested_step = step
     step_size = requested_step
-    if step_size < 0.0:
-        step_size = 0.0
     if step_size > MAX_STEP:
         step_size = MAX_STEP
     if step_size != requested_step:

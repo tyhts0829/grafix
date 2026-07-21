@@ -18,10 +18,10 @@ def test_perf_backlog_scenario_preserves_ordered_prefix_semantics() -> None:
     assert result.value["future_remaining"] == 100
     assert result.value["prefix_remaining"] == 90
     assert result.value["all_remaining"] == 0
-    assert result.value["future_bounds"] == (1, 100)
-    assert result.value["prefix_bounds"] == (11, 100)
-    assert result.value["latency_counts"] == (0, 10, 100)
-    assert result.value["latency_drop_counts"] == (0, 0, 0)
+    assert result.value["future_bounds"] == [1, 100]
+    assert result.value["prefix_bounds"] == [11, 100]
+    assert result.value["latency_counts"] == [0, 10, 100]
+    assert result.value["latency_drop_counts"] == [0, 0, 0]
     assert len(str(result.value["semantic_digest"])) == 64
     metrics = {metric.name: metric for metric in result.metrics}
     for name in (

@@ -81,7 +81,7 @@ def _sized_snapshot(byte_size: int) -> CaptureExportSnapshot:
     vertex_count, remainder = divmod(target_bytes - 8, 12)
     if vertex_count < 0 or remainder:
         raise ValueError("byte_size は 12 * vertex_count + 8 で表せる必要があります")
-    geometry = Geometry.create("line")
+    geometry = Geometry.create("export-job-test-geometry")
     realized = RealizedGeometry(
         coords=np.zeros((vertex_count, 3), dtype=np.float32),
         offsets=np.asarray((0, vertex_count), dtype=np.int32),
@@ -558,6 +558,20 @@ def test_export_messages_are_immutable(tmp_path: Path) -> None:
         job.timeout_s = 2.0  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
         result.status = ExportJobStatus.ERROR  # type: ignore[misc]
+
+
+def test_export_job_requires_keyword_arguments(tmp_path: Path) -> None:
+    with pytest.raises(TypeError):
+        ExportJob(  # type: ignore[misc]
+            1,
+            ExportFormat.PNG,
+            _snapshot(),
+            tmp_path / "out.png",
+            1.0,
+            tmp_path / ".out.export-1-test",
+            False,
+            (100, 80),
+        )
 
 
 def test_export_job_rejects_preview_snapshot_at_capture_boundary(

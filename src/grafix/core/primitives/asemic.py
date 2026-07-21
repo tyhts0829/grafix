@@ -11,13 +11,17 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from functools import lru_cache
-from typing import cast
 
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.primitive_registry import primitive
+from grafix.core.primitives._text_layout import (
+    aligned_line_origin_em,
+    bounding_box_polylines_em,
+    measure_line_width_em,
+    wrap_line_by_width_em,
+)
 from grafix.core.realized_geometry import GeomTuple, empty_geom_tuple
 
 _NUMPY_RNG_MAX_NODES = 32
@@ -181,15 +185,11 @@ def _best_candidate_points(
     if n <= 0:
         return np.zeros((0, 2), dtype=np.float64)
 
-    k = candidates
-    if k <= 0:
-        k = 1
-
     pts = np.empty((n, 2), dtype=np.float64)
     pts[0] = rng.uniform(-0.5, 0.5, size=(2,))
 
     for i in range(1, n):
-        cand = rng.uniform(-0.5, 0.5, size=(k, 2))
+        cand = rng.uniform(-0.5, 0.5, size=(candidates, 2))
         diff = cand[:, None, :] - pts[None, :i, :]
         dist2 = (diff * diff).sum(axis=2)
         min_dist2 = dist2.min(axis=1)
@@ -294,25 +294,11 @@ def _random_walk_strokes(
     if n <= 0:
         return []
 
-    s_min = stroke_min
-    s_max = stroke_max
-    if s_min < 0:
-        s_min = 0
-    if s_max < 0:
-        s_max = 0
-    if s_min > s_max:
-        s_min, s_max = s_max, s_min
-
-    w_min = walk_min_steps
-    w_max = walk_max_steps
-    if w_min < 1:
-        w_min = 1
-    if w_max < 1:
-        w_max = 1
-    if w_min > w_max:
-        w_min, w_max = w_max, w_min
-
-    n_strokes = int(rng.integers(s_min, s_max + 1)) if s_max > 0 else int(s_min)
+    n_strokes = (
+        int(rng.integers(stroke_min, stroke_max + 1))
+        if stroke_max > 0
+        else stroke_min
+    )
     if n_strokes <= 0:
         return []
 
@@ -323,7 +309,7 @@ def _random_walk_strokes(
         if not starts:
             break
         current = int(rng.choice(starts))
-        steps = int(rng.integers(w_min, w_max + 1))
+        steps = int(rng.integers(walk_min_steps, walk_max_steps + 1))
 
         path: list[int] = [current]
         for _step in range(steps):
@@ -363,10 +349,9 @@ def _polylines_to_realized(
         offsets[i + 1] = acc
 
     cx, cy, cz = center
-    s_f = float(scale)
-    cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
-    if (cx_f, cy_f, cz_f) != (0.0, 0.0, 0.0) or s_f != 1.0:
-        center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
+    s_f = scale
+    if (cx, cy, cz) != (0.0, 0.0, 0.0) or s_f != 1.0:
+        center_vec = np.asarray(center, dtype=np.float32)
         coords = coords * np.float32(s_f) + center_vec
 
     return coords, offsets
@@ -377,8 +362,7 @@ def _make_bezier_basis(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """cubic Bézier係数を生成する。"""
 
-    samples = max(2, samples_per_segment)
-    ts = np.linspace(0.0, 1.0, num=samples, dtype=np.float64)
+    ts = np.linspace(0.0, 1.0, num=samples_per_segment, dtype=np.float64)
     u = 1.0 - ts
     basis = (
         u**3,
@@ -407,14 +391,7 @@ def _sample_bezier(points: np.ndarray, *, samples_per_segment: int, tension: flo
         return points
 
     samples = samples_per_segment
-    if samples < 2:
-        samples = 2
-
-    t = float(tension)
-    if t < 0.0:
-        t = 0.0
-    if t > 1.0:
-        t = 1.0
+    t = tension
 
     m = np.zeros((n, 2), dtype=np.float64)
     if n == 2:
@@ -458,90 +435,8 @@ def _char_advance_em(
     space_advance_em: float,
 ) -> float:
     if char == " ":
-        return float(space_advance_em)
-    return float(glyph_advance_em)
-
-
-def _wrap_line_by_width_em(
-    line_str: str,
-    *,
-    max_width_em: float,
-    glyph_advance_em: float,
-    space_advance_em: float,
-    letter_spacing_em: float,
-) -> list[str]:
-    """1 行分の文字列を指定幅（em）で折り返して返す（text.py と同等の方針）。"""
-    if max_width_em <= 0.0:
-        return [line_str]
-    if not line_str:
-        return [""]
-
-    s_em = float(letter_spacing_em)
-    n = int(len(line_str))
-
-    out: list[str] = []
-    i = 0
-    segment_start = 0
-    segment_width_em = 0.0
-    segment_len = 0
-    last_space: int | None = None
-
-    while i < n:
-        ch = line_str[i]
-        adv = _char_advance_em(
-            ch,
-            glyph_advance_em=glyph_advance_em,
-            space_advance_em=space_advance_em,
-        )
-        inc = adv + (s_em if segment_len > 0 else 0.0)
-
-        if segment_len > 0 and (segment_width_em + inc) > float(max_width_em):
-            if last_space is not None and last_space > segment_start:
-                out.append(line_str[segment_start:last_space])
-                segment_start = last_space + 1
-                while segment_start < n and line_str[segment_start] == " ":
-                    segment_start += 1
-                i = segment_start
-            else:
-                out.append(line_str[segment_start:i])
-                segment_start = i
-                while segment_start < n and line_str[segment_start] == " ":
-                    segment_start += 1
-                i = segment_start
-
-            segment_width_em = 0.0
-            segment_len = 0
-            last_space = None
-            continue
-
-        if ch == " ":
-            last_space = i
-        segment_width_em += inc
-        segment_len += 1
-        i += 1
-
-    if segment_start < n:
-        out.append(line_str[segment_start:])
-    return out
-
-
-def _measure_line_width_em(
-    line_str: str,
-    *,
-    glyph_advance_em: float,
-    space_advance_em: float,
-    letter_spacing_em: float,
-) -> float:
-    width_em = 0.0
-    for ch in line_str:
-        width_em += _char_advance_em(
-            ch,
-            glyph_advance_em=glyph_advance_em,
-            space_advance_em=space_advance_em,
-        ) + float(letter_spacing_em)
-    if line_str:
-        width_em -= float(letter_spacing_em)
-    return float(width_em)
+        return space_advance_em
+    return glyph_advance_em
 
 
 @lru_cache(maxsize=256)
@@ -590,7 +485,7 @@ def _generate_asemic_glyph(
             poly = _sample_bezier(
                 poly,
                 samples_per_segment=bezier_samples,
-                tension=float(bezier_tension),
+                tension=bezier_tension,
             )
 
         # glyph 座標系は左上起点にしたいので [-0.5,0.5]^2 → [0,1]^2 へシフト。
@@ -663,19 +558,19 @@ def asemic(
     text : str, default "A"
         描画する文字列。`\\n` 区切りで複数行を表す。
     seed : int, default 0
-        全体 seed。同じ文字は `seed` と文字から派生した seed で生成され、決定的に同じ字形になる。
+        0 以上の全体 seed。同じ文字は `seed` と文字から派生した seed で生成され、決定的に同じ字形になる。
     n_nodes : int, default 28
-        ノード数（少なすぎるとストロークが生成できないことがある）。
+        0 以上のノード数。0 または 1 では通常文字のストロークを生成しない。
     candidates : int, default 12
-        best-candidate の候補数（大きいほど均一になりやすい）。
+        1 以上の best-candidate 候補数（大きいほど均一になりやすい）。
     stroke_min : int, default 2
-        ストローク本数の最小値。
+        0 以上かつ `stroke_max` 以下のストローク本数最小値。
     stroke_max : int, default 5
-        ストローク本数の最大値。
+        `stroke_min` 以上のストローク本数最大値。
     walk_min_steps : int, default 2
-        ランダムウォークの最小ステップ数。
+        1 以上かつ `walk_max_steps` 以下のランダムウォーク最小ステップ数。
     walk_max_steps : int, default 4
-        ランダムウォークの最大ステップ数。
+        `walk_min_steps` 以上のランダムウォーク最大ステップ数。
     stroke_style : {"line", "bezier"}, default "bezier"
         ストロークの描画スタイル。
         `"bezier"` は折れ線を合成 Bézier としてサンプル点列化して滑らかにする。
@@ -710,106 +605,80 @@ def asemic(
     -------
     tuple[np.ndarray, np.ndarray]
         文章のポリライン列（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        seed、ノード数、候補数、ストローク数、ウォーク長、Bézier の
+        サンプル数または張りが定義域外の場合。
     """
-    text_s = cast(
-        str,
-        validate_parameter_value(text, kind="str", choices=None),
-    )
-    seed_i = cast(
-        int,
-        validate_parameter_value(seed, kind="int", choices=None),
-    )
-    n_nodes_i = cast(
-        int,
-        validate_parameter_value(n_nodes, kind="int", choices=None),
-    )
-    candidates_i = cast(
-        int,
-        validate_parameter_value(candidates, kind="int", choices=None),
-    )
-    stroke_min_i = cast(
-        int,
-        validate_parameter_value(stroke_min, kind="int", choices=None),
-    )
-    stroke_max_i = cast(
-        int,
-        validate_parameter_value(stroke_max, kind="int", choices=None),
-    )
-    walk_min_steps_i = cast(
-        int,
-        validate_parameter_value(walk_min_steps, kind="int", choices=None),
-    )
-    walk_max_steps_i = cast(
-        int,
-        validate_parameter_value(walk_max_steps, kind="int", choices=None),
-    )
-    stroke_style_s = cast(
-        str,
-        validate_parameter_value(
-            stroke_style,
-            kind="choice",
-            choices=_STROKE_STYLE_CHOICES,
-        ),
-    )
-    bezier_samples_i = cast(
-        int,
-        validate_parameter_value(bezier_samples, kind="int", choices=None),
-    )
-    text_align_s = cast(
-        str,
-        validate_parameter_value(
-            text_align,
-            kind="choice",
-            choices=_TEXT_ALIGN_CHOICES,
-        ),
-    )
-    use_bb = cast(
-        bool,
-        validate_parameter_value(
-            use_bounding_box,
-            kind="bool",
-            choices=None,
-        ),
-    )
-    show_bounding_box_b = cast(
-        bool,
-        validate_parameter_value(
-            show_bounding_box,
-            kind="bool",
-            choices=None,
-        ),
-    )
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
+    if seed < 0:
+        raise ValueError("asemic の seed は 0 以上である必要がある")
+    if n_nodes < 0:
+        raise ValueError("asemic の n_nodes は 0 以上である必要がある")
+    if candidates < 1:
+        raise ValueError("asemic の candidates は 1 以上である必要がある")
+    if stroke_min < 0 or stroke_max < 0:
+        raise ValueError("asemic の stroke_min/stroke_max は 0 以上である必要がある")
+    if stroke_min > stroke_max:
+        raise ValueError("asemic の stroke_min は stroke_max 以下である必要がある")
+    if walk_min_steps < 1 or walk_max_steps < 1:
         raise ValueError(
-            "asemic の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
-    try:
-        s_f = float(scale)
-    except Exception as exc:
-        raise ValueError("asemic の scale は float である必要がある") from exc
+            "asemic の walk_min_steps/walk_max_steps は 1 以上である必要がある"
+        )
+    if walk_min_steps > walk_max_steps:
+        raise ValueError(
+            "asemic の walk_min_steps は walk_max_steps 以下である必要がある"
+        )
+    if bezier_samples < 2:
+        raise ValueError("asemic の bezier_samples は 2 以上である必要がある")
+    if not 0.0 <= bezier_tension <= 1.0:
+        raise ValueError(
+            "asemic の bezier_tension は 0 以上 1 以下である必要がある"
+        )
+
+    text_s = text
+    seed_i = seed
+    n_nodes_i = n_nodes
+    candidates_i = candidates
+    stroke_min_i = stroke_min
+    stroke_max_i = stroke_max
+    walk_min_steps_i = walk_min_steps
+    walk_max_steps_i = walk_max_steps
+    stroke_style_s = stroke_style
+    bezier_samples_i = bezier_samples
+    text_align_s = text_align
+    use_bb = use_bounding_box
+    show_bounding_box_b = show_bounding_box
+    cx, cy, cz = center
+    s_f = scale
 
     base_seed = seed_i
-    glyph_adv = float(glyph_advance_em)
-    space_adv = float(space_advance_em)
+    glyph_adv = glyph_advance_em
+    space_adv = space_advance_em
+
+    def char_advance_em(char: str) -> float:
+        return _char_advance_em(
+            char,
+            glyph_advance_em=glyph_adv,
+            space_advance_em=space_adv,
+        )
 
     lines = text_s.split("\n")
-    s_abs = abs(float(s_f))
-    bw = float(box_width)
-    bh = float(box_height)
+    s_abs = abs(s_f)
+    bw = box_width
+    bh = box_height
 
     if use_bb and bw > 0.0 and s_abs > 0.0:
         bw_em = bw / s_abs
         wrapped: list[str] = []
         for line_str in lines:
             wrapped.extend(
-                _wrap_line_by_width_em(
+                wrap_line_by_width_em(
                     line_str,
                     max_width_em=bw_em,
-                    glyph_advance_em=glyph_adv,
-                    space_advance_em=space_adv,
-                    letter_spacing_em=float(letter_spacing_em),
+                    char_advance_em=char_advance_em,
+                    letter_spacing_em=letter_spacing_em,
                 )
             )
         lines = wrapped
@@ -819,18 +688,12 @@ def asemic(
 
     y_em = 0.0
     for li, line_str in enumerate(lines):
-        width_em = _measure_line_width_em(
+        width_em = measure_line_width_em(
             line_str,
-            glyph_advance_em=glyph_adv,
-            space_advance_em=space_adv,
-            letter_spacing_em=float(letter_spacing_em),
+            char_advance_em=char_advance_em,
+            letter_spacing_em=letter_spacing_em,
         )
-        if text_align_s == "center":
-            x_em = -width_em / 2.0
-        elif text_align_s == "right":
-            x_em = -width_em
-        else:
-            x_em = 0.0
+        x_em = aligned_line_origin_em(width_em, text_align_s)
 
         cur_x_em = float(x_em)
         for ch in line_str:
@@ -851,7 +714,7 @@ def asemic(
                             walk_max_steps=walk_max_steps_i,
                             stroke_style=stroke_style_s,
                             bezier_samples=bezier_samples_i,
-                            bezier_tension=float(bezier_tension),
+                            bezier_tension=bezier_tension,
                         )
                     glyph_cache[ch] = cached
 
@@ -863,12 +726,10 @@ def asemic(
                         for p in cached:
                             polylines.append(p + shift)
 
-            cur_x_em += _char_advance_em(
-                ch, glyph_advance_em=glyph_adv, space_advance_em=space_adv
-            ) + float(letter_spacing_em)
+            cur_x_em += char_advance_em(ch) + letter_spacing_em
 
         if li < len(lines) - 1:
-            y_em += float(line_height)
+            y_em += line_height
 
     if (
         use_bb
@@ -880,31 +741,17 @@ def asemic(
         bw_em = bw / s_abs
         bh_em = bh / s_abs
 
-        if text_align_s == "center":
-            x0 = -bw_em / 2.0
-            x1 = bw_em / 2.0
-        elif text_align_s == "right":
-            x0 = -bw_em
-            x1 = 0.0
-        else:
-            x0 = 0.0
-            x1 = bw_em
-
-        y0 = 0.0
-        y1 = bh_em
-        z0 = 0.0
         polylines.extend(
-            [
-                np.asarray([[x0, y0, z0], [x1, y0, z0]], dtype=np.float32),
-                np.asarray([[x1, y0, z0], [x1, y1, z0]], dtype=np.float32),
-                np.asarray([[x1, y1, z0], [x0, y1, z0]], dtype=np.float32),
-                np.asarray([[x0, y1, z0], [x0, y0, z0]], dtype=np.float32),
-            ]
+            bounding_box_polylines_em(
+                width_em=bw_em,
+                height_em=bh_em,
+                align=text_align_s,
+            )
         )
 
     return _polylines_to_realized(
         polylines,
-        center=(float(cx), float(cy), float(cz)),
+        center=(cx, cy, cz),
         scale=float(s_f),
     )
 

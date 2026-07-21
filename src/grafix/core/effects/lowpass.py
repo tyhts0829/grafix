@@ -9,7 +9,6 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .argument_validation import known_choice
 from .util import (
     RESAMPLE_CLOSED_DISTANCE_EPS,
     ResamplePlan,
@@ -148,9 +147,9 @@ def lowpass(
     g : tuple[np.ndarray, np.ndarray]
         変形対象の実体ジオメトリ（coords, offsets）。
     step : float, default 0.5
-        再サンプル間隔（弧長）。小さいほど頂点が増え、効果が細かく出る。
+        正の再サンプル間隔（弧長）。小さいほど頂点が増え、効果が細かく出る。
     sigma : float, default 1.0
-        ガウス平滑半径。大きいほど強く丸まる（`sigma/step` が実効的な強さ）。
+        正のガウス平滑半径。大きいほど強く丸まる（`sigma/step` が実効的な強さ）。
     closed : str, default "auto"
         境界条件。`"open"` は反射、`"closed"` は周期。
         `"auto"` は端点距離が共通の再サンプルしきい値以下なら `"closed"` 扱い。
@@ -160,24 +159,17 @@ def lowpass(
     tuple[np.ndarray, np.ndarray]
         平滑化後の実体ジオメトリ（coords, offsets）。
     """
-    closed_mode = known_choice(
-        closed,
-        choices=_CLOSED_CHOICES,
-        name="lowpass: closed",
-    )
+    if step <= 0.0:
+        raise ValueError("lowpass: step は正である必要がある")
+    if sigma <= 0.0:
+        raise ValueError("lowpass: sigma は正である必要がある")
+
+    sigma_in_samples = sigma / step
+    if not np.isfinite(sigma_in_samples) or sigma_in_samples <= 0.0:
+        raise ValueError("lowpass: sigma / step は正の有限値である必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
-        return coords, offsets
-
-    step_size = float(step)
-    sigma_size = float(sigma)
-    if not np.isfinite(step_size) or not np.isfinite(sigma_size):
-        return coords, offsets
-    if step_size <= 0.0 or sigma_size <= 0.0:
-        return coords, offsets
-
-    sigma_in_samples = sigma_size / step_size
-    if not np.isfinite(sigma_in_samples) or sigma_in_samples <= 0.0:
         return coords, offsets
 
     n_lines = int(offsets.size) - 1
@@ -187,8 +179,8 @@ def lowpass(
     plan = ResamplePlan.from_geometry(
         coords,
         offsets,
-        step=step_size,
-        closed=closed_mode,
+        step=step,
+        closed=closed,
         max_vertices=MAX_TOTAL_VERTICES,
         closed_distance=RESAMPLE_CLOSED_DISTANCE_EPS,
     )

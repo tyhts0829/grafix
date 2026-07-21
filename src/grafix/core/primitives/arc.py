@@ -57,13 +57,13 @@ def arc(
 ) -> GeomTuple:
     """開始角とsigned sweepから開いた円弧を生成する。"""
 
-    radius_f = float(radius)
+    radius_f = radius
     if radius_f < 0.0:
         raise ValueError("arc の radius は0以上である必要がある")
     count = segment_count(segments, op="arc", minimum=1)
     angles = np.linspace(
-        math.radians(float(start)),
-        math.radians(float(start) + float(sweep)),
+        math.radians(start),
+        math.radians(start + sweep),
         count + 1,
         dtype=np.float64,
     )

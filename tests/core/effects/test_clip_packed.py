@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import math
-import warnings
 
 import numpy as np
-import pyclipper  # type: ignore[import-not-found, import-untyped]
 import pytest
 
 import grafix.core.effects.clip as clip_module
@@ -15,10 +13,8 @@ from grafix.core.effects.clip import (
     _restore_and_pack_int_paths,
     _to_int_path_open,
     _to_int_path_ring,
-    clip,
 )
-from grafix.core.effects.util import PlanarFrame, empty_geom, pack_polylines
-from grafix.core.operation_diagnostics import operation_diagnostic_context
+from grafix.core.effects.util import PlanarFrame, pack_polylines
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -64,73 +60,6 @@ def _tilt(g: GeomTuple) -> GeomTuple:
     return coords, g[1].copy()
 
 
-def _legacy_active_clip(
-    base: GeomTuple,
-    mask: GeomTuple,
-    *,
-    mode: str,
-    draw_outline: bool,
-) -> GeomTuple:
-    """高速化前と同じ per-line 変換・復元で active path の期待値を作る。"""
-
-    scale = 1000
-    base_coords, base_offsets = base
-    mask_coords, mask_offsets = mask
-    frame = PlanarFrame.from_points(mask_coords, mask_offsets)
-    aligned_base = frame.to_local(base_coords)
-    aligned_mask = frame.to_local(mask_coords)
-
-    subject_paths: list[list[tuple[int, int]]] = []
-    for index in range(int(base_offsets.size) - 1):
-        start = int(base_offsets[index])
-        stop = int(base_offsets[index + 1])
-        path = _to_int_path_open(aligned_base[start:stop, 0:2], scale)
-        if path is not None:
-            subject_paths.append(path)
-
-    clip_paths: list[list[tuple[int, int]]] = []
-    for index in range(int(mask_offsets.size) - 1):
-        start = int(mask_offsets[index])
-        stop = int(mask_offsets[index + 1])
-        path = _to_int_path_ring(aligned_mask[start:stop, 0:2], scale)
-        if path is not None:
-            clip_paths.append(path)
-
-    outline_lines: list[np.ndarray] = []
-    if draw_outline:
-        for ring in clip_paths:
-            xy = np.asarray(ring + [ring[0]], dtype=np.float64) / float(scale)
-            local = np.zeros((xy.shape[0], 3), dtype=np.float64)
-            local[:, 0:2] = xy
-            outline_lines.append(frame.to_world(local))
-
-    pc = pyclipper.Pyclipper()  # type: ignore[attr-defined]
-    pc.AddPaths(subject_paths, pyclipper.PT_SUBJECT, False)  # type: ignore[attr-defined]
-    pc.AddPaths(clip_paths, pyclipper.PT_CLIP, True)  # type: ignore[attr-defined]
-    cliptype = (
-        pyclipper.CT_INTERSECTION  # type: ignore[attr-defined]
-        if mode == "inside"
-        else pyclipper.CT_DIFFERENCE  # type: ignore[attr-defined]
-    )
-    tree = pc.Execute2(  # type: ignore[attr-defined]
-        cliptype,
-        pyclipper.PFT_EVENODD,  # type: ignore[attr-defined]
-        pyclipper.PFT_EVENODD,  # type: ignore[attr-defined]
-    )
-    out_paths = pyclipper.OpenPathsFromPolyTree(tree)  # type: ignore[attr-defined]
-
-    out_lines: list[np.ndarray] = []
-    for path in out_paths:
-        if len(path) < 2:  # type: ignore[arg-type]
-            continue
-        xy = np.asarray(path, dtype=np.float64) / float(scale)
-        local = np.zeros((xy.shape[0], 3), dtype=np.float64)
-        local[:, 0:2] = xy
-        out_lines.append(frame.to_world(local))
-    out_lines.extend(outline_lines)
-    return pack_polylines(out_lines) if out_lines else empty_geom()
-
-
 def _tilted_clip_fixture() -> tuple[GeomTuple, GeomTuple]:
     ys = np.linspace(-15.0, 15.0, num=257, dtype=np.float32)
     lines = [
@@ -140,80 +69,6 @@ def _tilted_clip_fixture() -> tuple[GeomTuple, GeomTuple]:
     base = _pack(lines)
     mask = _pack([_ring(sides=128, radius=12.0), _ring(sides=64, radius=4.0)])
     return _tilt(base), _tilt(mask)
-
-
-@pytest.mark.parametrize(
-    ("mode", "draw_outline"),
-    [
-        ("inside", False),
-        ("outside", False),
-        ("inside", True),
-        ("outside", True),
-    ],
-)
-def test_clip_batch_pipeline_matches_legacy_bytes(
-    mode: str,
-    draw_outline: bool,
-) -> None:
-    base, mask = _tilted_clip_fixture()
-    base_before = (base[0].tobytes(), base[1].tobytes())
-    mask_before = (mask[0].tobytes(), mask[1].tobytes())
-
-    expected = _legacy_active_clip(
-        base,
-        mask,
-        mode=mode,
-        draw_outline=draw_outline,
-    )
-    actual = clip(
-        base,
-        mask,
-        mode=mode,
-        draw_outline=draw_outline,
-    )
-
-    assert actual[0].tobytes() == expected[0].tobytes()
-    assert actual[1].tobytes() == expected[1].tobytes()
-    assert actual[0].dtype == expected[0].dtype == np.float32
-    assert actual[1].dtype == expected[1].dtype == np.int32
-    assert actual[0].shape == expected[0].shape
-    assert actual[1].shape == expected[1].shape
-    assert actual[0].strides == expected[0].strides
-    assert actual[1].strides == expected[1].strides
-    assert actual[0].flags.owndata == expected[0].flags.owndata
-    assert (base[0].tobytes(), base[1].tobytes()) == base_before
-    assert (mask[0].tobytes(), mask[1].tobytes()) == mask_before
-
-
-@pytest.mark.parametrize("layout", ["fortran", "strided", "readonly"])
-def test_clip_batch_pipeline_preserves_array_layout_behavior(layout: str) -> None:
-    base, mask = _tilted_clip_fixture()
-    if layout == "fortran":
-        base = np.asfortranarray(base[0]), base[1]
-        mask = np.asfortranarray(mask[0]), mask[1]
-    elif layout == "strided":
-        base_storage = np.empty((base[0].shape[0], 6), dtype=np.float32)
-        mask_storage = np.empty((mask[0].shape[0], 6), dtype=np.float32)
-        base_storage[:, 0::2] = base[0]
-        mask_storage[:, 0::2] = mask[0]
-        base = base_storage[:, 0::2], base[1]
-        mask = mask_storage[:, 0::2], mask[1]
-    else:
-        base[0].flags.writeable = False
-        base[1].flags.writeable = False
-        mask[0].flags.writeable = False
-        mask[1].flags.writeable = False
-
-    expected = _legacy_active_clip(
-        base,
-        mask,
-        mode="inside",
-        draw_outline=False,
-    )
-    actual = clip(base, mask, mode="inside", draw_outline=False)
-
-    assert actual[0].tobytes() == expected[0].tobytes()
-    assert actual[1].tobytes() == expected[1].tobytes()
 
 
 def test_batch_quantization_preserves_duplicate_and_endpoint_rules() -> None:
@@ -336,17 +191,12 @@ def test_clip_batch_resource_limit_boundary_matches_fallback_observably(
         )
 
     monkeypatch.setattr(clip_module, "_int_paths_from_scaled", _spy_convert)
-    with (
-        warnings.catch_warnings(record=True) as fast_warnings,
-        operation_diagnostic_context() as fast_diagnostics,
-    ):
-        warnings.simplefilter("always")
-        fast = clip_module.clip(
-            base,
-            mask,
-            mode="inside",
-            draw_outline=False,
-        )
+    fast = clip_module.clip(
+        base,
+        mask,
+        mode="inside",
+        draw_outline=False,
+    )
     assert convert_calls == 2
 
     if limited_resource == "vertices":
@@ -361,17 +211,12 @@ def test_clip_batch_resource_limit_boundary_matches_fallback_observably(
             "_BATCH_PATH_MAX_TOTAL_LINES",
             total_lines - 1,
         )
-    with (
-        warnings.catch_warnings(record=True) as fallback_warnings,
-        operation_diagnostic_context() as fallback_diagnostics,
-    ):
-        warnings.simplefilter("always")
-        fallback = clip_module.clip(
-            base,
-            mask,
-            mode="inside",
-            draw_outline=False,
-        )
+    fallback = clip_module.clip(
+        base,
+        mask,
+        mode="inside",
+        draw_outline=False,
+    )
 
     assert convert_calls == 2
     assert fast[0].tobytes() == fallback[0].tobytes()
@@ -382,12 +227,5 @@ def test_clip_batch_resource_limit_boundary_matches_fallback_observably(
     assert fast[1].strides == fallback[1].strides
     assert not np.shares_memory(fast[0], base[0])
     assert not np.shares_memory(fallback[0], base[0])
-    assert [str(item.message) for item in fast_warnings] == [
-        str(item.message) for item in fallback_warnings
-    ]
-    assert [item.category for item in fast_warnings] == [
-        item.category for item in fallback_warnings
-    ]
-    assert fast_diagnostics.snapshot() == fallback_diagnostics.snapshot()
     assert tuple(array.tobytes() for array in inputs) == before
     assert all(not array.flags.writeable for array in inputs)

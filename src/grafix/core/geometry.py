@@ -21,13 +21,11 @@ _GeometryRecord = tuple[
 ]
 
 _GEOMETRY_SIGNATURE_SCHEMA_VERSION = 2
-_SIGNATURE_DOMAIN = b"grafix.geometry.v2\x00"
 _UINT64 = Struct(">Q")
 _FLOAT64 = Struct(">d")
 _PACK_UINT64 = _UINT64.pack
 _PACK_FLOAT64 = _FLOAT64.pack
 _REPR_PERSON = b"grafix.geom.v2r"
-_TAG_ENUM = ord("e")
 _TAG_FLOAT = ord("f")
 _TAG_INT = ord("i")
 _TAG_NONE = ord("n")
@@ -43,10 +41,10 @@ def _append_frame(buffer: bytearray, payload: bytes) -> None:
 
 
 def _append_signature_value(buffer: bytearray, value: Any) -> None:
-    """正規化済み値の型付き表現を buffer へ追加する。
+    """正規化済み値の canonical sort 用表現を buffer へ追加する。
 
-    実行関数へ渡す値そのものは変更せず、buffer に追加する表現だけを
-    GeometryId の計算に使用する。
+    実行関数へ渡す値そのものは変更せず、mapping key の型と境界を保つ
+    byte 表現だけを構築する。
     """
 
     if value is None:
@@ -78,17 +76,11 @@ def _append_signature_value(buffer: bytearray, value: Any) -> None:
         for item in value:
             _append_signature_value(buffer, item)
         return
-    if isinstance(value, Enum):
-        buffer.append(_TAG_ENUM)
-        _append_frame(buffer, value_type.__module__.encode("utf-8"))
-        _append_frame(buffer, value_type.__qualname__.encode("utf-8"))
-        _append_frame(buffer, value.name.encode("utf-8"))
-        return
     raise TypeError(f"署名に使用できない値型: {type(value)!r}")
 
 
 def _encode_signature_value(value: Any) -> bytes:
-    """正規化済み値を型付きの署名用 bytes に変換する。"""
+    """正規化済み値を mapping key の canonical sort 用 bytes に変換する。"""
 
     buffer = bytearray()
     _append_signature_value(buffer, value)
@@ -127,9 +119,8 @@ def _normalize_value(value: Any) -> Any:
     if value_type is tuple or value_type is list:
         return tuple(map(_normalize_value, value))
 
-    # IntEnum / str Enum は underlying built-in より先に判定する。
     if isinstance(value, Enum):
-        return value
+        raise TypeError("Enum は Geometry 引数に使用できない")
     if isinstance(value, bool):
         return bool(value)
     if isinstance(value, int):
@@ -150,17 +141,6 @@ def _normalize_value(value: Any) -> Any:
     raise TypeError(f"正規化できない引数型: {type(value)!r}")
 
 
-def _contains_enum(value: Any) -> bool:
-    """正規化済み tuple tree に Enum が含まれるかを調べる。"""
-
-    if type(value) is not tuple:
-        return isinstance(value, Enum)
-    for item in value:
-        if _contains_enum(item):
-            return True
-    return False
-
-
 def normalize_args(params: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
     """パラメータ辞書を evaluator 用の不変な引数タプルに変換する。
 
@@ -174,16 +154,34 @@ def normalize_args(params: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
     tuple[tuple[str, Any], ...]
         キーでソートされた (名前, 正規化値) のタプル列。
     """
+    if not isinstance(params, Mapping):
+        raise TypeError("Geometry 引数は mapping である必要がある")
+
     names = tuple(params.keys())
-    if any(not isinstance(name, str) for name in names):
-        raise TypeError("Geometry 引数名は str である必要がある")
+    if any(type(name) is not str for name in names):
+        raise TypeError("Geometry 引数名は exact str である必要がある")
 
     items: list[tuple[str, Any]] = []
     for name in sorted(names):
         raw_value = params[name]
         normalized = _normalize_value(raw_value)
-        items.append((str(name), normalized))
+        items.append((name, normalized))
     return tuple(items)
+
+
+def _same_canonical_value(left: Any, right: Any) -> bool:
+    """tuple tree の値と型が再帰的に一致するか返す。"""
+
+    if type(left) is not type(right):
+        return False
+    if type(left) is tuple:
+        return len(left) == len(right) and all(
+            _same_canonical_value(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    if type(left) is float:
+        return left.hex() == right.hex()
+    return bool(left == right)
 
 
 def compute_geometry_id(
@@ -212,32 +210,23 @@ def compute_geometry_id(
         tuple(g.id for g in inputs),
         args,
     )
-    if not _contains_enum(args):
-        # 正規化後の閉じた built-in 型集合では repr が型と境界を保持する。
-        # Python 実装の tuple serializer にまとめて任せ、再帰的な bytearray
-        # 追記を典型パスから外す。
-        payload = repr(signature).encode("utf-8")
-        return blake2b(
-            payload,
-            digest_size=16,
-            person=_REPR_PERSON,
-        ).hexdigest()
-
-    # Enum の repr はユーザーが上書きできるため、canonical identity
-    # (module, qualname, member name) を明示する型付き encoder を使う。
-    payload = bytearray(_SIGNATURE_DOMAIN)
-    _append_signature_value(payload, signature)
-    return blake2b(payload, digest_size=16).hexdigest()
+    # 正規化後の閉じた built-in 型集合では repr が型と境界を保持する。
+    # Python 実装の tuple serializer にまとめて任せ、再帰的な bytearray
+    # 追記を典型パスから外す。
+    payload = repr(signature).encode("utf-8")
+    return blake2b(
+        payload,
+        digest_size=16,
+        person=_REPR_PERSON,
+    ).hexdigest()
 
 
-@dataclass(frozen=True, slots=True, eq=False, repr=False)
+@dataclass(frozen=True, slots=True, eq=False, repr=False, init=False)
 class Geometry:
     """幾何レシピを表す不変 Geometry ノード。
 
     Parameters
     ----------
-    id : GeometryId
-        内容署名に基づく GeometryId。
     op : str
         演算子名。primitive/effect/combine を区別せず保存する。
     inputs : tuple[Geometry, ...]
@@ -247,7 +236,9 @@ class Geometry:
 
     Notes
     -----
-    インスタンスは不変とし、内容が同じであれば同じ id になる設計とする。
+    外部入力は :meth:`create` で正規化し、core 内で検証済みの引数だけを
+    :meth:`_from_canonical_args` へ渡す。どちらも ``id`` は ``op``、
+    ``inputs``、``args`` の正規化済み内容から必ず計算する。
     """
 
     id: GeometryId
@@ -326,28 +317,53 @@ class Geometry:
         Geometry
             生成された Geometry ノード。
         """
-        if inputs is None:
-            inputs_seq: Sequence["Geometry"] = ()
-        else:
-            inputs_seq = inputs
-        if params is None:
-            params = {}
-
-        normalized_args = normalize_args(
-            params,
+        inputs_tuple = () if inputs is None else tuple(inputs)
+        normalized_args = normalize_args({} if params is None else params)
+        return cls._from_canonical_args(
+            op=op,
+            inputs=inputs_tuple,
+            args=normalized_args,
         )
-        inputs_tuple = tuple(inputs_seq)
+
+    @classmethod
+    def _from_canonical_args(
+        cls,
+        *,
+        op: str,
+        inputs: tuple["Geometry", ...],
+        args: tuple[tuple[str, Any], ...],
+    ) -> "Geometry":
+        """core が検証・正規化済みの recipe から Geometry を一度で生成する。"""
+
+        if type(op) is not str:
+            raise TypeError("Geometry op は exact str である必要がある")
+        if not op:
+            raise ValueError("Geometry op は空にできない")
+        if type(inputs) is not tuple or any(
+            type(item) is not Geometry for item in inputs
+        ):
+            raise TypeError("Geometry inputs は Geometry の列である必要がある")
+        if type(args) is not tuple or any(
+            type(item) is not tuple
+            or len(item) != 2
+            or type(item[0]) is not str
+            for item in args
+        ):
+            raise TypeError("Geometry args は canonical (name, value) tuple が必要です")
+        names = tuple(name for name, _value in args)
+        if names != tuple(sorted(names)) or len(set(names)) != len(names):
+            raise ValueError("Geometry args は名前順かつ重複なしである必要があります")
         geometry_id = compute_geometry_id(
             op=op,
-            inputs=inputs_tuple,
-            args=normalized_args,
+            inputs=inputs,
+            args=args,
         )
-        return cls(
-            id=geometry_id,
-            op=op,
-            inputs=inputs_tuple,
-            args=normalized_args,
-        )
+        result = object.__new__(cls)
+        object.__setattr__(result, "id", geometry_id)
+        object.__setattr__(result, "op", op)
+        object.__setattr__(result, "inputs", inputs)
+        object.__setattr__(result, "args", args)
+        return result
 
     @staticmethod
     def _concat(*geometries: "Geometry") -> "Geometry":
@@ -472,14 +488,73 @@ def _restore_geometry_dag(
     records: tuple[_GeometryRecord, ...],
     root_id: GeometryId,
 ) -> Geometry:
-    """pickle 用の平坦な node record から DAG を復元する。"""
+    """pickle record を検証し、内容から ID を再計算して DAG を復元する。"""
+
+    if type(records) is not tuple:
+        raise TypeError("Geometry pickle records は tuple である必要がある")
+    if type(root_id) is not str or not root_id:
+        raise ValueError("Geometry pickle root_id が不正です")
 
     geometries: dict[GeometryId, Geometry] = {}
-    for geometry_id, op, input_ids, args in records:
-        geometries[geometry_id] = Geometry(
-            id=geometry_id,
+    for record_index, record in enumerate(records):
+        if type(record) is not tuple or len(record) != 4:
+            raise ValueError(
+                f"Geometry pickle record[{record_index}] は4要素tupleである必要がある"
+            )
+        geometry_id, op, input_ids, args = record
+        if type(geometry_id) is not str or not geometry_id:
+            raise ValueError(f"Geometry pickle record[{record_index}] の id が不正です")
+        if geometry_id in geometries:
+            raise ValueError(f"Geometry pickle に重複 id があります: {geometry_id!r}")
+        if type(op) is not str or not op:
+            raise ValueError(f"Geometry pickle record[{record_index}] の op が不正です")
+        if type(input_ids) is not tuple or any(
+            type(input_id) is not str or not input_id for input_id in input_ids
+        ):
+            raise ValueError(
+                f"Geometry pickle record[{record_index}] の input_ids が不正です"
+            )
+        missing_inputs = tuple(
+            input_id for input_id in input_ids if input_id not in geometries
+        )
+        if missing_inputs:
+            raise ValueError(
+                f"Geometry pickle record[{record_index}] が未知の input id を参照しています: "
+                f"{missing_inputs!r}"
+            )
+        if type(args) is not tuple:
+            raise ValueError(f"Geometry pickle record[{record_index}] の args が不正です")
+
+        params: dict[str, Any] = {}
+        for arg_index, item in enumerate(args):
+            if type(item) is not tuple or len(item) != 2 or type(item[0]) is not str:
+                raise ValueError(
+                    f"Geometry pickle record[{record_index}] の args[{arg_index}] が不正です"
+                )
+            name, value = item
+            if name in params:
+                raise ValueError(
+                    f"Geometry pickle record[{record_index}] に重複 arg があります: {name!r}"
+                )
+            params[name] = value
+
+        rebuilt = Geometry.create(
             op=op,
             inputs=tuple(geometries[input_id] for input_id in input_ids),
-            args=args,
+            params=params,
         )
-    return geometries[root_id]
+        if not _same_canonical_value(rebuilt.args, args):
+            raise ValueError(
+                f"Geometry pickle record[{record_index}] の args は canonical ではありません"
+            )
+        if rebuilt.id != geometry_id:
+            raise ValueError(
+                f"Geometry pickle record[{record_index}] の id が内容と一致しません: "
+                f"expected={rebuilt.id!r}, got={geometry_id!r}"
+            )
+        geometries[geometry_id] = rebuilt
+
+    try:
+        return geometries[root_id]
+    except KeyError:
+        raise ValueError(f"Geometry pickle root id が見つかりません: {root_id!r}") from None

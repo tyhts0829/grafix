@@ -22,7 +22,6 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .argument_validation import exact_bool, known_choice
 from .util import PlanarFrame, empty_geom, pack_polylines, planarity_threshold
 
 # `ndarray.tolist()` は各座標を Python object 化する。1 vertex を 384 bytes、
@@ -87,28 +86,8 @@ def _to_int_path_ring(xy: np.ndarray, scale: int) -> list[tuple[int, int]] | Non
     return path if len(path) >= 3 else None
 
 
-def _has_canonical_packed_layout(
-    coords: np.ndarray,
-    offsets: np.ndarray,
-) -> bool:
-    if (
-        type(coords) is not np.ndarray
-        or type(offsets) is not np.ndarray
-        or coords.dtype != np.float32
-        or offsets.dtype != np.int32
-        or coords.ndim != 2
-        or coords.shape[1] != 3
-        or offsets.ndim != 1
-        or offsets.size < 1
-        or int(offsets[0]) != 0
-        or int(offsets[-1]) != int(coords.shape[0])
-    ):
-        return False
-    return bool(np.all(offsets[1:] >= offsets[:-1]))
-
-
 def _can_batch_quantize(xy: np.ndarray, scale: int) -> bool:
-    # Clipper の通常域だけを高速化し、非有限値・overflow・警告挙動は従来 path へ戻す。
+    # Clipper の整数座標域に収まる値だけを一括量子化する。
     with np.errstate(all="ignore"):
         minimum = float(np.min(xy))
         maximum = float(np.max(xy))
@@ -215,15 +194,6 @@ def clip(
     tuple[np.ndarray, np.ndarray]
         クリップ後の実体ジオメトリ（coords, offsets）。
     """
-    mode_s = known_choice(
-        mode,
-        choices=_MODE_CHOICES,
-        name="clip: mode",
-    )
-    draw_outline_b = exact_bool(
-        draw_outline,
-        name="clip: draw_outline",
-    )
     scale_i = 1000
     base_coords, base_offsets = base
     mask_coords, mask_offsets = mask
@@ -254,21 +224,9 @@ def clip(
         total_input_vertices <= _BATCH_PATH_MAX_TOTAL_VERTICES
         and total_input_lines <= _BATCH_PATH_MAX_TOTAL_LINES
     )
-    standard_layout = (
-        many_paths
-        and bounded_batch_input
-        and _has_canonical_packed_layout(base_coords, base_offsets)
-        and _has_canonical_packed_layout(mask_coords, mask_offsets)
-    )
-    default_errstate = standard_layout and np.geterr() == {
-        "divide": "warn",
-        "over": "warn",
-        "under": "ignore",
-        "invalid": "warn",
-    }
-    batch_paths = (
-        default_errstate
-        and _can_batch_quantize(aligned_base[:, 0:2], scale_i)
+    batch_candidate = many_paths and bounded_batch_input
+    batch_paths = batch_candidate and (
+        _can_batch_quantize(aligned_base[:, 0:2], scale_i)
         and _can_batch_quantize(aligned_mask[:, 0:2], scale_i)
     )
     if batch_paths:
@@ -308,7 +266,7 @@ def clip(
     if not clip_paths:
         return base_coords, base_offsets
     outline_lines: list[np.ndarray] = []
-    if draw_outline_b:
+    if draw_outline:
         for ring in clip_paths:
             if len(ring) < 3:
                 continue
@@ -328,7 +286,7 @@ def clip(
     pc.AddPaths(clip_paths, pyclipper.PT_CLIP, True)  # type: ignore[attr-defined]
 
     cliptype = (
-        pyclipper.CT_INTERSECTION if mode_s == "inside" else pyclipper.CT_DIFFERENCE  # type: ignore[attr-defined]
+        pyclipper.CT_INTERSECTION if mode == "inside" else pyclipper.CT_DIFFERENCE  # type: ignore[attr-defined]
     )
     polytree = pc.Execute2(cliptype, pyclipper.PFT_EVENODD, pyclipper.PFT_EVENODD)  # type: ignore[attr-defined]
     out_paths = pyclipper.OpenPathsFromPolyTree(polytree)  # type: ignore[attr-defined]
@@ -338,7 +296,7 @@ def clip(
             return pack_polylines(outline_lines)
         return empty_geom()
 
-    if batch_paths and not draw_outline_b:
+    if batch_paths and not draw_outline:
         return _restore_and_pack_int_paths(
             out_paths,
             frame=frame,

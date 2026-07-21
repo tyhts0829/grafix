@@ -4,24 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 
+from grafix.core.geometry import normalize_args
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 from grafix.devtools.benchmarks.schema import (
     BenchmarkOutput,
     Metric,
     evaluate_contract,
+    freeze_json_object,
+    materialize_json_object,
 )
 
 _FONT_SHA256 = "d930d5d52d15231c283089760f84584272ad5e37e14607ba0d19c798e7a9caec"
-_POLYHEDRON_SHA256 = (
-    "416bb767cb68fe1e66ca16a1b8476ae9141922dc1720f314cf28f10392556d52"
-)
+_POLYHEDRON_SHA256 = "416bb767cb68fe1e66ca16a1b8476ae9141922dc1720f314cf28f10392556d52"
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,29 +33,40 @@ class PrimitiveBenchmarkCase:
     label: str
     primitive: str
     fixture: str
-    arguments: dict[str, Any]
+    arguments: Mapping[str, object]
     tags: tuple[str, ...] = ()
     selectable_suites: tuple[str, ...] = ("primitives",)
     input_fixture: str | None = None
     run_seed_argument: str | None = None
-    asset: dict[str, str] | None = None
-    work: dict[str, int | float | str | bool] | None = None
+    asset: Mapping[str, object] | None = None
+    work: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "arguments",
+            freeze_json_object(self.arguments),
+        )
+        if self.asset is not None:
+            object.__setattr__(self, "asset", freeze_json_object(self.asset))
+        if self.work is not None:
+            object.__setattr__(self, "work", freeze_json_object(self.work))
 
     def parameters(self) -> dict[str, Any]:
         """process 間で再構築できる JSON-compatible parameters を返す。"""
 
         parameters: dict[str, Any] = {
             "primitive": self.primitive,
-            "arguments": self.arguments,
+            "arguments": materialize_json_object(freeze_json_object(self.arguments)),
         }
         if self.input_fixture is not None:
             parameters["input_fixture"] = self.input_fixture
         if self.run_seed_argument is not None:
             parameters["run_seed_argument"] = self.run_seed_argument
         if self.asset is not None:
-            parameters["asset"] = self.asset
+            parameters["asset"] = materialize_json_object(freeze_json_object(self.asset))
         if self.work is not None:
-            parameters["work"] = self.work
+            parameters["work"] = materialize_json_object(freeze_json_object(self.work))
         return parameters
 
 
@@ -311,12 +323,12 @@ def primitive_benchmark_cases() -> tuple[PrimitiveBenchmarkCase, ...]:
             asset={"kind": "polyhedron", "sha256": _POLYHEDRON_SHA256},
         ),
         PrimitiveBenchmarkCase(
-            "primitive.polyline.ndarray_50k_closed",
-            "polyline / ndarray / 50k points / closed",
+            "primitive.polyline.tuple_50k_closed",
+            "polyline / immutable tuple / 50k points / closed",
             "polyline",
-            "ndarray_50k_closed",
+            "tuple_50k_closed",
             {"closed": True},
-            input_fixture="wave_3d_float64_50k",
+            input_fixture="wave_3d_tuple_50k",
         ),
         PrimitiveBenchmarkCase(
             "primitive.rect.rotated",
@@ -406,7 +418,7 @@ def primitive_benchmark_cases() -> tuple[PrimitiveBenchmarkCase, ...]:
                 "tension": 0.15,
                 "segments_per_span": 64,
             },
-            input_fixture="spline_3d_float64_256",
+            input_fixture="spline_3d_tuple_256",
         ),
         PrimitiveBenchmarkCase(
             "primitive.text.warm_wrapped_mixed",
@@ -415,8 +427,7 @@ def primitive_benchmark_cases() -> tuple[PrimitiveBenchmarkCase, ...]:
             "warm_wrapped_mixed",
             {
                 "text": (
-                    "GRAFIX BENCHMARK 高速化 VECTOR PLOT\n"
-                    "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    "GRAFIX BENCHMARK 高速化 VECTOR PLOT\n0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                 ),
                 "font": "NotoSansJP-Regular.ttf",
                 "font_index": 0,
@@ -542,15 +553,17 @@ def setup_primitive_benchmark(
     input_sha256: str | None = None
     input_fixture = parameters.get("input_fixture")
     if input_fixture is not None:
-        if input_fixture == "wave_3d_float64_50k":
-            points = _wave_points_3d(n_points=50_000)
-        elif input_fixture == "spline_3d_float64_256":
-            points = _spline_points_3d(n_points=256)
+        points_array: np.ndarray
+        if input_fixture == "wave_3d_tuple_50k":
+            points_array = _wave_points_3d(n_points=50_000)
+        elif input_fixture == "spline_3d_tuple_256":
+            points_array = _spline_points_3d(n_points=256)
         else:
             raise ValueError(f"unknown primitive input fixture: {input_fixture!r}")
+        points = tuple(tuple(float(component) for component in point) for point in points_array)
         arguments["points"] = points
-        input_points = int(points.shape[0])
-        input_sha256 = _array_sha256(points)
+        input_points = len(points)
+        input_sha256 = _array_sha256(points_array)
 
     run_seed_argument = parameters.get("run_seed_argument")
     if run_seed_argument is not None:
@@ -584,10 +597,10 @@ def setup_primitive_benchmark(
         asset_bytes = len(blob)
         if asset_sha256 != expected_sha256:
             raise RuntimeError(
-                f"{primitive} benchmark asset checksum differs: "
-                f"{asset_sha256} != {expected_sha256}"
+                f"{primitive} benchmark asset checksum differs: {asset_sha256} != {expected_sha256}"
             )
 
+    arguments = dict(normalize_args(arguments))
     return PrimitiveBenchmarkState(
         primitive=primitive,
         raw_function=cast(Callable[..., GeomTuple], raw_function),
@@ -640,9 +653,7 @@ def observe_primitive_output(
         repeated_output,
         primitive=primitive_state.primitive,
     )
-    repeated_writable = bool(
-        repeated_coords.flags.writeable and repeated_offsets.flags.writeable
-    )
+    repeated_writable = bool(repeated_coords.flags.writeable and repeated_offsets.flags.writeable)
     independent = bool(
         not np.shares_memory(coords, repeated_coords)
         and not np.shares_memory(offsets, repeated_offsets)
@@ -659,9 +670,7 @@ def observe_primitive_output(
     closed_lines = _closed_line_count(geometry)
     input_unchanged = bool(
         primitive_state.input_sha256 is None
-        or _array_sha256(
-            cast(np.ndarray, primitive_state.arguments["points"])
-        )
+        or _array_sha256(cast(np.ndarray, primitive_state.arguments["points"]))
         == primitive_state.input_sha256
     )
 
@@ -949,8 +958,7 @@ def _specific_metrics(
         samples = int(args["samples"])
         boundary = (
             int(args.get("boundary_samples", 720))
-            if args["preset"] == "cylinder_uniform"
-            and bool(args.get("draw_boundary", True))
+            if args["preset"] == "cylinder_uniform" and bool(args.get("draw_boundary", True))
             else 0
         )
         gauge("work.preset", str(args["preset"]), unit="text")

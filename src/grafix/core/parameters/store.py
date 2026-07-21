@@ -6,8 +6,10 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, MutableSet
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
+from .collapsed_header import CollapsedHeaderKey
 from .effects import EffectChainIndex, EffectOrder, EffectStepTopology
 from .key import ParameterKey
 from .labels import ParamLabels
@@ -71,7 +73,7 @@ class ParamStore:
         self._labels = ParamLabels()
         self._ordinals = GroupOrdinals()
         self._effects = EffectChainIndex()
-        self._collapsed_headers: set[str] = set()
+        self._collapsed_headers: set[CollapsedHeaderKey] = set()
         self._locked_keys: set[ParameterKey] = set()
         self._favorite_keys_data: set[ParameterKey] = set()
         self._variations: dict[str, Variation] = {}
@@ -91,7 +93,7 @@ class ParamStore:
         )
         self._history_key_observer: Callable[[ParameterKey], None] | None = None
         self._history_headers_observer: (
-            Callable[[frozenset[str] | None], None] | None
+            Callable[[frozenset[CollapsedHeaderKey] | None], None] | None
         ) = None
         self._snapshot_cache_revision = -1
         self._snapshot_cache_value_revision = -1
@@ -128,16 +130,6 @@ class ParamStore:
 
         return self._favorite_revision
 
-    @property
-    def _favorite_keys(self) -> set[ParameterKey]:
-        """既存の recovery 境界向けに raw favorite set を返す。"""
-
-        return self._favorite_keys_data
-
-    @_favorite_keys.setter
-    def _favorite_keys(self, keys: Iterable[ParameterKey]) -> None:
-        self._replace_favorite_keys(keys)
-
     def _replace_favorite_keys(self, keys: Iterable[ParameterKey]) -> bool:
         """favorite 集合を置換し、変更時だけ revision を一度進める。"""
 
@@ -147,6 +139,103 @@ class ParamStore:
         self._favorite_keys_data = normalized
         self._touch_favorites()
         return True
+
+    def replace_contents_from(self, source: ParamStore) -> None:
+        """object identity を保ち、別 store の全内容へ一度に置換する。
+
+        Parameters
+        ----------
+        source : ParamStore
+            置換後の内容を所有する別の store。
+
+        Raises
+        ------
+        TypeError
+            ``source`` が exact ``ParamStore`` でない場合。
+        ValueError
+            自分自身を ``source`` に指定した場合。
+        RuntimeError
+            history transaction の途中で置換しようとした場合。
+        """
+
+        if type(source) is not ParamStore:
+            raise TypeError("source must be a ParamStore")
+        if source is self:
+            raise ValueError("source must be a different ParamStore")
+        if (
+            self._history_key_observer is not None
+            or self._history_headers_observer is not None
+        ):
+            raise RuntimeError("cannot replace ParamStore during a history transaction")
+
+        next_revision = self._revision + 1
+        next_table_revision = self._table_revision + 1
+        next_value_revision = self._value_revision + 1
+        next_style_revision = self._style_revision + 1
+        next_favorite_revision = self._favorite_revision + 1
+        old_runtime = self._runtime
+        next_effective_revision = old_runtime.effective_revision + 1
+        next_visibility_revision = old_runtime.visibility_revision + 1
+
+        (
+            states,
+            meta,
+            explicit_by_key,
+            labels,
+            ordinals,
+            effects,
+            collapsed_headers,
+            locked_keys,
+            favorite_keys,
+            variations,
+            runtime,
+        ) = deepcopy(
+            (
+                source._states,
+                source._meta,
+                source._explicit_by_key,
+                source._labels,
+                source._ordinals,
+                source._effects,
+                source._collapsed_headers,
+                source._locked_keys,
+                set(source._favorite_keys_snapshot()),
+                source._variations,
+                source._runtime,
+            )
+        )
+
+        self._states = states
+        self._meta = meta
+        self._explicit_by_key = explicit_by_key
+        self._labels = labels
+        self._ordinals = ordinals
+        self._effects = effects
+        self._collapsed_headers = collapsed_headers
+        self._locked_keys = locked_keys
+        self._favorite_keys_data = favorite_keys
+        self._variations = variations
+        self._runtime = runtime
+
+        self._revision = next_revision
+        self._table_revision = next_table_revision
+        self._value_revision = next_value_revision
+        self._style_revision = next_style_revision
+        self._favorite_revision = next_favorite_revision
+        self._favorite_snapshot_revision = -1
+        self._favorite_snapshot = frozenset()
+        self._favorite_tuple = ()
+        self._value_change_log.clear()
+        self._snapshot_cache_revision = -1
+        self._snapshot_cache_value_revision = -1
+        self._snapshot_cache_rebuilt_entries = 0
+        self._snapshot_cache = None
+
+        runtime = self._runtime
+        runtime.effective_revision = next_effective_revision
+        runtime._effective_change_revision = -1
+        runtime._effective_changed_keys = ()
+        runtime._visibility_tracker.revision = next_visibility_revision
 
     @property
     def load_provenance(self) -> LoadProvenance:
@@ -268,7 +357,7 @@ class ParamStore:
     def _effects_ref(self) -> EffectChainIndex:
         return self._effects
 
-    def _collapsed_headers_ref(self) -> set[str]:
+    def _collapsed_headers_ref(self) -> set[CollapsedHeaderKey]:
         return self._collapsed_headers
 
     def _locked_keys_ref(self) -> set[ParameterKey]:
@@ -389,7 +478,7 @@ class ParamStore:
         self,
         *,
         observe_key: Callable[[ParameterKey], None],
-        observe_headers: Callable[[frozenset[str] | None], None],
+        observe_headers: Callable[[frozenset[CollapsedHeaderKey] | None], None],
     ) -> None:
         """単一 GUI transaction の変更前値 observer を登録する。"""
 
@@ -411,7 +500,7 @@ class ParamStore:
 
     def _observe_history_headers_before(
         self,
-        headers: frozenset[str] | None = None,
+        headers: frozenset[CollapsedHeaderKey] | None = None,
     ) -> None:
         observer = self._history_headers_observer
         if observer is not None:

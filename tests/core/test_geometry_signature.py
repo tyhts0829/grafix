@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from grafix.core.geometry import Geometry
+from grafix.core.geometry import Geometry, _restore_geometry_dag
 
 
 class _Color(Enum):
@@ -25,18 +25,8 @@ class _Label(str, Enum):
     ONE = "one"
 
 
-class _MaskedColor(Enum):
-    RED = "red"
-
-    def __repr__(self) -> str:
-        return "<masked>"
-
-
-class _OtherMaskedColor(Enum):
-    RED = "red"
-
-    def __repr__(self) -> str:
-        return "<masked>"
+class _MutableValue(Enum):
+    ITEMS = []
 
 
 def _geometry(value: Any) -> Geometry:
@@ -67,7 +57,7 @@ def test_large_integer_is_preserved_without_float_round_trip() -> None:
 
 
 def test_numeric_types_have_distinct_signatures() -> None:
-    values = (True, 1, 1.0, _Code.ONE)
+    values = (True, 1, 1.0)
     geometries = tuple(_geometry(value) for value in values)
 
     assert len({geometry.id for geometry in geometries}) == len(values)
@@ -77,22 +67,17 @@ def test_numeric_types_have_distinct_signatures() -> None:
 
 
 @pytest.mark.parametrize(
-    ("enum_value", "underlying_value"),
-    ((_Color.RED, "red"), (_Code.ONE, 1), (_Label.ONE, "one")),
+    "enum_value",
+    (_Color.RED, _Code.ONE, _Label.ONE, _MutableValue.ITEMS),
 )
-def test_enum_type_is_preserved_and_part_of_signature(
-    enum_value: Enum,
-    underlying_value: object,
-) -> None:
-    geometry = _geometry(enum_value)
-
-    assert geometry.args[0][1] is enum_value
-    assert geometry.id != _geometry(underlying_value).id
+def test_enum_is_rejected_from_geometry_arguments(enum_value: Enum) -> None:
+    with pytest.raises(TypeError, match="Enum"):
+        _geometry(enum_value)
 
 
-def test_enum_signature_does_not_depend_on_custom_repr() -> None:
-    assert repr(_MaskedColor.RED) == repr(_OtherMaskedColor.RED)
-    assert _geometry(_MaskedColor.RED).id != _geometry(_OtherMaskedColor.RED).id
+def test_nested_enum_is_rejected_from_geometry_arguments() -> None:
+    with pytest.raises(TypeError, match="Enum"):
+        _geometry(("prefix", _Color.RED))
 
 
 def test_string_delimiters_cannot_merge_tuple_elements() -> None:
@@ -158,9 +143,6 @@ def test_equal_id_implies_identical_typed_runtime_arguments() -> None:
         "",
         "1",
         "a,b",
-        _Color.RED,
-        _Code.ONE,
-        _Label.ONE,
         (),
         (1,),
         [1],
@@ -174,3 +156,49 @@ def test_equal_id_implies_identical_typed_runtime_arguments() -> None:
     for left, right in combinations(geometries, 2):
         if left.id == right.id:
             assert _typed_equal(left.args, right.args)
+
+
+def _pickle_records(
+    geometry: Geometry,
+) -> tuple[tuple[tuple[object, ...], ...], str]:
+    _restore, payload = geometry.__reduce__()
+    records, root_id = payload
+    return records, root_id  # type: ignore[return-value]
+
+
+def test_pickle_restore_recomputes_and_verifies_geometry_id() -> None:
+    geometry = Geometry.create("pickle-source", params={"value": 1})
+    records, root_id = _pickle_records(geometry)
+    geometry_id, _op, input_ids, args = records[0]
+    forged = ((geometry_id, "different-op", input_ids, args),)
+
+    with pytest.raises(ValueError, match="id が内容と一致"):
+        _restore_geometry_dag(forged, root_id)  # type: ignore[arg-type]
+
+
+def test_pickle_restore_rejects_duplicate_record_and_argument_ids() -> None:
+    geometry = Geometry.create("pickle-source", params={"value": 1})
+    records, root_id = _pickle_records(geometry)
+
+    with pytest.raises(ValueError, match="重複 id"):
+        _restore_geometry_dag((*records, records[0]), root_id)  # type: ignore[arg-type]
+
+    geometry_id, op, input_ids, args = records[0]
+    duplicated_arg = ((geometry_id, op, input_ids, (*args, args[0])),)
+    with pytest.raises(ValueError, match="重複 arg"):
+        _restore_geometry_dag(duplicated_arg, root_id)  # type: ignore[arg-type]
+
+
+def test_pickle_restore_rejects_unknown_input_and_root_ids() -> None:
+    geometry = Geometry.create("pickle-source")
+    records, root_id = _pickle_records(geometry)
+    geometry_id, op, _input_ids, args = records[0]
+
+    with pytest.raises(ValueError, match="未知の input id"):
+        _restore_geometry_dag(
+            ((geometry_id, op, ("missing-input",), args),),
+            root_id,
+        )  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="root id"):
+        _restore_geometry_dag(records, "missing-root")  # type: ignore[arg-type]

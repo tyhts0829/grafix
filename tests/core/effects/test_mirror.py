@@ -10,7 +10,7 @@ import pytest
 from grafix.api import E, G
 from grafix.core.operation_diagnostics import operation_diagnostic_context
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 
@@ -181,28 +181,24 @@ def test_mirror_include_boundary_uses_exact_eps_threshold() -> None:
     np.testing.assert_array_equal(clipped_offsets, np.asarray([0, 1], np.int32))
 
 
+def test_mirror_rejects_invalid_count_before_empty_input() -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.mirror(n_mirror=0)(G.polyline(points=())))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "n_mirror" in str(exc_info.value.__cause__)
+
+
 @pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"n_mirror": 0},
-        {"n_mirror": 8, "cx": np.nan},
-        {"n_mirror": 8, "cy": np.inf},
-    ],
+    ("name", "value"),
+    [("cx", np.nan), ("cy", np.inf)],
 )
-def test_mirror_invalid_parameters_preserve_input_identity(
-    kwargs: dict[str, object],
+def test_mirror_public_api_rejects_nonfinite_parameters(
+    name: str,
+    value: float,
 ) -> None:
-    import grafix.core.effects.mirror as module
-
-    coords, offsets = _mirror_contract_geometry()
-    before = (coords.tobytes(), offsets.tobytes())
-    with operation_diagnostic_context() as diagnostics:
-        actual = module.mirror((coords, offsets), **kwargs)
-
-    assert actual[0] is coords
-    assert actual[1] is offsets
-    assert diagnostics.snapshot() == ()
-    assert (coords.tobytes(), offsets.tobytes()) == before
+    with pytest.raises(ValueError, match=name):
+        E.mirror(**{name: value})
 
 
 def test_mirror_n1_clips_and_reflects_across_x_plane() -> None:

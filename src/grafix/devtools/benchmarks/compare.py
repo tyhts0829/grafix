@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from grafix.devtools.benchmarks.schema import (
     BenchmarkRun,
     ContractResult,
     Metric,
+    freeze_json_object,
     read_benchmark_run,
 )
 
@@ -25,8 +27,15 @@ class BenchmarkComparison:
     base_run_id: str
     head_run_id: str
     environment_compatible: bool
-    rows: tuple[dict[str, Any], ...]
+    rows: tuple[Mapping[str, object], ...]
     warnings: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "rows",
+            tuple(freeze_json_object(row) for row in self.rows),
+        )
 
 
 def compare_run_files(
@@ -63,19 +72,15 @@ def compare_runs(
 
     warnings: list[str] = []
     environment_compatible = (
-        base.environment.compatibility_key
-        == head.environment.compatibility_key
+        base.environment.compatibility_key == head.environment.compatibility_key
     )
     if not environment_compatible:
         warnings.append("environment compatibility key differs")
     if base.meta.mode != head.meta.mode:
-        warnings.append(
-            f"measurement mode differs: {base.meta.mode} != {head.meta.mode}"
-        )
+        warnings.append(f"measurement mode differs: {base.meta.mode} != {head.meta.mode}")
         environment_compatible = False
     all_cases_self_sampling = bool(base.cases and head.cases) and all(
-        result.spec.self_sampling
-        for result in (*base.cases, *head.cases)
+        result.spec.self_sampling for result in (*base.cases, *head.cases)
     )
     measurement_fields = (
         (
@@ -92,15 +97,10 @@ def compare_runs(
         )
     )
     differing_measurements = [
-        name
-        for name in measurement_fields
-        if getattr(base.meta, name) != getattr(head.meta, name)
+        name for name in measurement_fields if getattr(base.meta, name) != getattr(head.meta, name)
     ]
     if differing_measurements:
-        warnings.append(
-            "measurement settings differ: "
-            + ", ".join(differing_measurements)
-        )
+        warnings.append("measurement settings differ: " + ", ".join(differing_measurements))
         environment_compatible = False
     if not environment_compatible and not allow_incompatible:
         raise IncompatibleBenchmarkError("; ".join(warnings))
@@ -121,33 +121,26 @@ def compare_runs(
     for case_id in sorted(set(base_cases) & set(head_cases)):
         base_result = base_cases[case_id]
         head_result = head_cases[case_id]
-        case_compatible = (
-            base_result.spec.compatibility_key
-            == head_result.spec.compatibility_key
-        )
+        case_compatible = base_result.spec.compatibility_key == head_result.spec.compatibility_key
         if not case_compatible:
             incompatibilities.append(f"{case_id}: case compatibility key differs")
 
-        both_measured = (
-            base_result.status in {"ok", "contract-failure"}
-            and head_result.status in {"ok", "contract-failure"}
-        )
+        both_measured = base_result.status in {"ok", "contract-failure"} and head_result.status in {
+            "ok",
+            "contract-failure",
+        }
         if both_measured:
             metric_warnings, metric_rows = _compare_metrics(
                 base_result.metrics,
                 head_result.metrics,
                 requested=requested_metrics,
             )
-            incompatibilities.extend(
-                f"{case_id}: {warning}" for warning in metric_warnings
-            )
+            incompatibilities.extend(f"{case_id}: {warning}" for warning in metric_warnings)
             contract_warnings, contract_rows = _compare_contracts(
                 base_result.contracts,
                 head_result.contracts,
             )
-            incompatibilities.extend(
-                f"{case_id}: {warning}" for warning in contract_warnings
-            )
+            incompatibilities.extend(f"{case_id}: {warning}" for warning in contract_warnings)
         else:
             # error/timeout 等は metric/contract を持たないのが正常である。
             # 定義欠落として比較を拒否せず、status の変化を row に残す。
@@ -166,11 +159,7 @@ def compare_runs(
             {
                 "case_id": case_id,
                 "label": head_result.spec.label,
-                "compatible": (
-                    case_compatible
-                    and not metric_warnings
-                    and not contract_warnings
-                ),
+                "compatible": (case_compatible and not metric_warnings and not contract_warnings),
                 "base_status": base_result.status,
                 "head_status": head_result.status,
                 "base_median_ns": base_ns,
@@ -242,12 +231,10 @@ def _compare_metrics(
     requested: tuple[str, ...],
 ) -> tuple[list[str], list[dict[str, Any]]]:
     base_by_identity = {
-        (metric.name, metric.phase, metric.scope): metric
-        for metric in base_metrics
+        (metric.name, metric.phase, metric.scope): metric for metric in base_metrics
     }
     head_by_identity = {
-        (metric.name, metric.phase, metric.scope): metric
-        for metric in head_metrics
+        (metric.name, metric.phase, metric.scope): metric for metric in head_metrics
     }
     warnings: list[str] = []
     missing_head = sorted(set(base_by_identity) - set(head_by_identity))
@@ -278,9 +265,7 @@ def _compare_metrics(
         rows.append(_metric_comparison(base, head))
     missing_requested = sorted(set(requested) - found_names)
     if missing_requested:
-        warnings.append(
-            "requested metrics are missing: " + ", ".join(missing_requested)
-        )
+        warnings.append("requested metrics are missing: " + ", ".join(missing_requested))
     return warnings, rows
 
 
@@ -335,12 +320,8 @@ def _metric_comparison(base: Metric, head: Metric) -> dict[str, Any]:
         "base_value": base.value,
         "head_value": head.value,
         "ratio": _ratio(base.value, head.value),
-        "base_distribution": (
-            None if base.distribution is None else asdict(base.distribution)
-        ),
-        "head_distribution": (
-            None if head.distribution is None else asdict(head.distribution)
-        ),
+        "base_distribution": (None if base.distribution is None else asdict(base.distribution)),
+        "head_distribution": (None if head.distribution is None else asdict(head.distribution)),
     }
     if base.distribution is not None and head.distribution is not None:
         row["median_ratio"] = _ratio(
@@ -375,11 +356,7 @@ def _contracts_passed(
     *,
     severity: str,
 ) -> bool:
-    return all(
-        contract.passed
-        for contract in contracts
-        if contract.severity == severity
-    )
+    return all(contract.passed for contract in contracts if contract.severity == severity)
 
 
 def _metric_label(identity: tuple[str, str, str]) -> str:

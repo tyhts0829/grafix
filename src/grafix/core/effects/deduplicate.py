@@ -288,8 +288,7 @@ def deduplicate(
     tolerance : float, default 1e-4
         端点を同一視する XYZ 格子の間隔。0 は有限な float32 座標の完全一致。
         正値では各成分を half away from zero で格子 index へ量子化するため、
-        ユークリッド距離がこの値以下であることを意味しない。負値または非有限値は
-        no-op。
+        ユークリッド距離がこの値以下であることを意味しない。0 以上が必要。
     merge_chains : bool, default True
         True なら degree 2 の node だけを通って連続する unique segment を
         maximal polyline へ結合する。False なら各 segment を 2 点の線として返す。
@@ -299,28 +298,29 @@ def deduplicate(
     tuple[np.ndarray, np.ndarray]
         重複除去後の実体ジオメトリ（coords, offsets）。
 
+    Raises
+    ------
+    ValueError
+        `tolerance` が負の場合。
+
     Notes
     -----
     - XYZ すべてを比較し、同向・逆向きの重複を同一視する。
     - node の座標と edge の向きは入力中で最初に現れたものを採用する。
     - 0 / 1 点 line と zero-length segment は出力しない。
     - 部分 overlap、交点分割、分割数が異なる線分列の同一視は行わない。
-    - 非有限座標を含む入力は部分処理せず ``ValueError`` とする。
     """
 
     coords, offsets = g
-    tol = float(tolerance)
-    if not math.isfinite(tol) or tol < 0.0:
-        return coords, offsets
-    if not np.all(np.isfinite(coords)):
-        raise ValueError("deduplicate: geometry に非有限座標が含まれています")
-
+    tol = tolerance
+    if tol < 0.0:
+        raise ValueError("deduplicate の tolerance は 0 以上である必要がある")
     node_coords, edges = _collect_unique_edges(
         coords,
         offsets,
         tolerance=tol,
     )
-    if bool(merge_chains):
+    if merge_chains:
         chains = _merge_edges_into_chains(len(node_coords), edges)
     else:
         chains = [[edge.start, edge.end] for edge in edges]

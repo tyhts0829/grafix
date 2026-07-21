@@ -1038,18 +1038,18 @@ def growth(
     mask : tuple[np.ndarray, np.ndarray]
         閉曲線マスク（リング列）を想定する入力（coords, offsets）。
     seed_count : int, default 12
-        マスク内へ配置する seed（初期ループ）数。
+        0 以上の、マスク内へ配置する seed（初期ループ）数。
     target_spacing : float, default 2.0
-        目標点間隔 [mm]。再分割と力のスケールに用いる。
+        正の目標点間隔 [mm]。再分割と力のスケールに用いる。
     boundary_avoid : float, default 1.0
         境界近傍で内側へ押し戻す強さ（0 で無効）。
     boundary_mode : str, default "slide"
         `"slide"` は境界で外向き成分を除去し、沿って流れる。
         `"bounce"` は境界で外向き成分を反射し、跳ね返る。
     iters : int, default 250
-        反復回数。0 の場合は（seed_count>0 でも）生成せず empty を返す。
+        0 以上の反復回数。0 の場合は（seed_count>0 でも）生成せず empty を返す。
     seed : int, default 0
-        乱数 seed（seed 配置の再現性のため）。
+        0 以上の乱数 seed（seed 配置の再現性のため）。
     show_mask : bool, default False
         True のとき、出力に入力 mask を追加で含める。
 
@@ -1059,7 +1059,23 @@ def growth(
         生成された閉曲線群（coords, offsets）。
         `show_mask=True` の場合は mask も含む。
         入力が不正（リング抽出できない/非平面など）の場合は empty。
+
+    Raises
+    ------
+    ValueError
+        seed、seed 数、反復回数、境界回避強度が負、または目標点間隔が 0 以下の場合。
     """
+    if seed < 0:
+        raise ValueError("growth の seed は 0 以上である必要がある")
+    if target_spacing <= 0.0:
+        raise ValueError("growth の target_spacing は 0 より大きい必要がある")
+    if seed_count < 0:
+        raise ValueError("growth の seed_count は 0 以上である必要がある")
+    if iters < 0:
+        raise ValueError("growth の iters は 0 以上である必要がある")
+    if boundary_avoid < 0.0:
+        raise ValueError("growth の boundary_avoid は 0 以上である必要がある")
+
     mask_coords, mask_offsets = mask
     if mask_coords.shape[0] == 0:
         emit_operation_diagnostic(
@@ -1104,15 +1120,7 @@ def growth(
         )
         return empty_geom()
 
-    spacing = float(target_spacing)
-    if not np.isfinite(spacing) or spacing <= 0.0:
-        emit_operation_diagnostic(
-            op="growth.target_spacing",
-            original_value=spacing,
-            effective_value="empty_output",
-            reason="target spacing must be finite and positive",
-        )
-        return empty_geom()
+    spacing = target_spacing
 
     step_sdf = max(spacing, 0.5)
     rings = _simplify_rings_for_sdf(rings, step_sdf=step_sdf)
@@ -1133,22 +1141,10 @@ def growth(
     bbox_min = np.min(ring_mins, axis=0)
     bbox_max = np.max(ring_maxs, axis=0)
 
-    requested_seed_count = int(seed_count)
-    seed_count_i = requested_seed_count
-    if seed_count_i < 0:
-        seed_count_i = 0
-    if seed_count_i != requested_seed_count:
-        emit_operation_diagnostic(
-            op="growth.seed_count",
-            original_value=requested_seed_count,
-            effective_value=seed_count_i,
-            reason="seed count was clamped to zero",
-        )
+    seed_count_i = seed_count
 
-    requested_iters = int(iters)
+    requested_iters = iters
     iters_i = requested_iters
-    if iters_i < 0:
-        iters_i = 0
     if iters_i > _MAX_ITERS:
         iters_i = _MAX_ITERS
     if iters_i != requested_iters:
@@ -1173,33 +1169,15 @@ def growth(
             severity="info",
         )
 
-    requested_boundary_avoid = float(boundary_avoid)
-    effective_boundary_avoid = requested_boundary_avoid
-    if not np.isfinite(effective_boundary_avoid) or effective_boundary_avoid < 0.0:
-        effective_boundary_avoid = 0.0
-    if effective_boundary_avoid != requested_boundary_avoid:
-        emit_operation_diagnostic(
-            op="growth.boundary_avoid",
-            original_value=requested_boundary_avoid,
-            effective_value=effective_boundary_avoid,
-            reason="boundary avoidance was clamped to a finite non-negative value",
-        )
+    effective_boundary_avoid = boundary_avoid
 
-    boundary_mode_s = str(boundary_mode)
-    if boundary_mode_s not in {"slide", "bounce"}:
-        emit_operation_diagnostic(
-            op="growth.boundary_mode",
-            original_value=boundary_mode_s,
-            effective_value="empty_output",
-            reason="unsupported boundary mode rejected the growth simulation",
-        )
-        return empty_geom()
+    boundary_mode_s = boundary_mode
 
     if seed_count_i == 0 or iters_i == 0:
         out = empty_geom()
-        return concat_geom_tuples(out, mask) if bool(show_mask) else out
+        return concat_geom_tuples(out, mask) if show_mask else out
 
-    rng = np.random.default_rng(int(seed))
+    rng = np.random.default_rng(seed)
     centers = _sample_seed_centers_xy(
         rng,
         seed_count=seed_count_i,
@@ -1299,7 +1277,7 @@ def growth(
         )
 
     out = pack_polylines(lines_out)
-    if bool(show_mask):
+    if show_mask:
         out = concat_geom_tuples(out, mask)
     return out
 

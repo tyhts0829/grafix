@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import G
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 
 
 def test_lissajous_realize_returns_single_polyline() -> None:
@@ -56,8 +57,23 @@ def test_lissajous_is_not_forced_closed() -> None:
     assert not np.allclose(realized.coords[0], realized.coords[-1], atol=1e-6)
 
 
-def test_lissajous_clamps_too_small_samples() -> None:
-    realized = realize(G.lissajous(samples=1))
+def test_lissajous_rejects_too_small_samples() -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.lissajous(samples=1))
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "samples は 2 以上" in str(exc_info.value.__cause__)
 
-    assert realized.coords.shape == (2, 3)
-    assert realized.offsets.tolist() == [0, 2]
+
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [({"a": -1}, "a/b"), ({"b": -1}, "a/b"), ({"turns": -0.1}, "turns")],
+)
+def test_lissajous_rejects_negative_frequency_or_turns(
+    kwargs: dict[str, int | float],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.lissajous(**kwargs))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)

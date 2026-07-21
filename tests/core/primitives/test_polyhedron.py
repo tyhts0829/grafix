@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from grafix.api import G
-from grafix.core.geometry import Geometry
 from grafix.core.primitives.polyhedron import _POLYHEDRON_CACHE, polyhedron
 from grafix.core.realize import realize
-from grafix.core.primitives import polyhedron as _polyhedron_module  # noqa: F401
+
+polyhedron_module = importlib.import_module("grafix.core.primitives.polyhedron")
 
 
 @pytest.mark.parametrize(
@@ -27,7 +30,7 @@ def test_polyhedron_face_count_and_closed_polylines(
     expected_faces: int,
 ) -> None:
     """面数が一致し、各面が閉ポリライン（先頭==末尾）になっている。"""
-    g = Geometry.create("polyhedron", params={"kind": kind})
+    g = G.polyhedron(kind=kind)
     realized = realize(g)
 
     assert realized.offsets.shape[0] == expected_faces + 1
@@ -47,18 +50,15 @@ def test_polyhedron_kind_rejects_unknown_name() -> None:
 
 def test_polyhedron_center_and_scale_affect_coords() -> None:
     """center/scale が座標に反映される。"""
-    base = realize(Geometry.create("polyhedron", params={"kind": "tetrahedron"}))
+    base = realize(G.polyhedron(kind="tetrahedron"))
 
     center = np.array([10.0, 20.0, 30.0], dtype=np.float32)
     scale = 2.0
     moved = realize(
-        Geometry.create(
-            "polyhedron",
-            params={
-                "kind": "tetrahedron",
-                "center": (float(center[0]), float(center[1]), float(center[2])),
-                "scale": float(scale),
-            },
+        G.polyhedron(
+            kind="tetrahedron",
+            center=(float(center[0]), float(center[1]), float(center[2])),
+            scale=float(scale),
         )
     )
 
@@ -92,3 +92,35 @@ def test_polyhedron_raw_arrays_are_fresh_writable_and_do_not_share_cache() -> No
     offsets_a[0] = np.int32(1)
     np.testing.assert_array_equal(coords_b, expected_coords)
     np.testing.assert_array_equal(offsets_b, expected_offsets)
+
+
+def test_polyhedron_loader_rejects_legacy_arrays_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kind = "legacy_fixture"
+    np.savez(
+        tmp_path / f"{kind}_vertices_list.npz",
+        arrays=np.zeros((1, 2, 3), dtype=np.float32),
+    )
+    monkeypatch.setattr(polyhedron_module, "_DATA_DIR", tmp_path)
+    _POLYHEDRON_CACHE.pop(kind, None)
+
+    with pytest.raises(ValueError, match="arr_0"):
+        polyhedron_module._load_packed_polyhedron(kind)
+
+
+def test_polyhedron_loader_rejects_two_dimensional_points(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kind = "two_dimensional_fixture"
+    np.savez(
+        tmp_path / f"{kind}_vertices_list.npz",
+        arr_0=np.zeros((2, 2), dtype=np.float32),
+    )
+    monkeypatch.setattr(polyhedron_module, "_DATA_DIR", tmp_path)
+    _POLYHEDRON_CACHE.pop(kind, None)
+
+    with pytest.raises(ValueError, match=r"shape \(N,3\)"):
+        polyhedron_module._load_packed_polyhedron(kind)

@@ -74,6 +74,12 @@ def _new_mesh_buffer_capacity(required: int) -> int:
     )
 
 
+def _same_offsets(left: np.ndarray, right: np.ndarray) -> bool:
+    """immutable offsets が同じ topology を表すか返す。"""
+
+    return left is right or (left.shape == right.shape and np.array_equal(left, right))
+
+
 def _aspect_fit_viewport(
     framebuffer_size: tuple[int, int],
     canvas_size: tuple[int, int],
@@ -131,14 +137,12 @@ class DrawRenderer:
         self._mesh_cache: OrderedDict[GeometryCacheKey, _MeshCacheEntry] = OrderedDict()
         # 初見を即キャッシュすると「毎フレーム別 id」ケースで逆効果になりうるため、
         # 2 回目以降にキャッシュへ昇格させる。
-        self._mesh_candidates: OrderedDict[
-            GeometryCacheKey, _MeshAdmission
-        ] = OrderedDict()
+        self._mesh_candidates: OrderedDict[GeometryCacheKey, _MeshAdmission] = OrderedDict()
         # animated layer ごとに VBO は更新しつつ、安定した IBO/topology を
         # 再利用する bounded pool。static full mesh cache とは責務を分ける。
         self._dynamic_meshes: OrderedDict[int, _DynamicMeshEntry] = OrderedDict()
-        # scratch IBO に現在入っている topology。offsets を strong reference で
-        # 保持し、object identity が一致する場合に限って再利用する。
+        # scratch IBO に現在入っている topology。RealizedGeometry は外部配列を
+        # immutable snapshot へコピーするため、identity だけでなく内容一致でも再利用する。
         self._scratch_topology: _ScratchTopology | None = None
         self._mesh_cache_bytes = 0
         self._dynamic_mesh_bytes = 0
@@ -170,9 +174,7 @@ class DrawRenderer:
         # viewport 変更時だけ線幅の換算値が変わり得るため invalidation する。
         self._line_width_uniform = self.program["line_width_px"]
         self._color_uniform = self.program["color"]
-        self._last_draw_style: (
-            tuple[float, tuple[float, float, float]] | None
-        ) = None
+        self._last_draw_style: tuple[float, tuple[float, float, float]] | None = None
         self.program["viewport_size"].value = (1.0, 1.0)
         # 射影行列はキャンバス寸法にのみ依存するため初期化時に一度設定する。
         projection = render_utils.build_projection(
@@ -253,13 +255,8 @@ class DrawRenderer:
                 category="resource",
                 severity="warning",
                 summary=f"GPU cache limit reached: {reason}",
-                details=(
-                    f"{requested_label}={int(requested)}\n"
-                    f"{limit_label}={int(limit)}"
-                ),
-                dedupe_key=(
-                    f"gpu-cache:{reason}:{unit}:{int(requested)}:{int(limit)}"
-                ),
+                details=(f"{requested_label}={int(requested)}\n{limit_label}={int(limit)}"),
+                dedupe_key=(f"gpu-cache:{reason}:{unit}:{int(requested)}:{int(limit)}"),
             )
         )
 
@@ -346,8 +343,7 @@ class DrawRenderer:
         should_promote = (
             previous_admission is not None
             and admission.scene_serial > previous_admission.scene_serial
-            and admission.snapshot_revision
-            == previous_admission.snapshot_revision
+            and admission.snapshot_revision == previous_admission.snapshot_revision
         )
         if should_promote:
             del self._mesh_candidates[cache_key]
@@ -358,19 +354,13 @@ class DrawRenderer:
                 self._mesh_candidates[cache_key] = admission
                 self._mesh_candidates.move_to_end(cache_key)
 
-        dynamic_entry = (
-            None if slot is None else self._dynamic_meshes.get(slot)
-        )
+        dynamic_entry = None if slot is None else self._dynamic_meshes.get(slot)
         scratch_topology = self._scratch_topology
-        if (
-            dynamic_entry is not None
-            and dynamic_entry.offsets is realized.offsets
-        ):
+        if dynamic_entry is not None and _same_offsets(dynamic_entry.offsets, realized.offsets):
             indices = dynamic_entry.indices
             stats = dynamic_entry.stats
-        elif (
-            scratch_topology is not None
-            and scratch_topology.offsets is realized.offsets
+        elif scratch_topology is not None and _same_offsets(
+            scratch_topology.offsets, realized.offsets
         ):
             indices = scratch_topology.indices
             stats = scratch_topology.stats
@@ -380,9 +370,8 @@ class DrawRenderer:
         if indices.size == 0:
             if slot is not None:
                 self._release_dynamic_mesh(slot)
-            if (
-                scratch_topology is None
-                or scratch_topology.offsets is not realized.offsets
+            if scratch_topology is None or not _same_offsets(
+                scratch_topology.offsets, realized.offsets
             ):
                 self._scratch_topology = _ScratchTopology(
                     offsets=realized.offsets,
@@ -421,9 +410,8 @@ class DrawRenderer:
                 return mesh, stats
 
         scratch_topology = self._scratch_topology
-        scratch_topology_hit = (
-            scratch_topology is not None
-            and scratch_topology.offsets is realized.offsets
+        scratch_topology_hit = scratch_topology is not None and _same_offsets(
+            scratch_topology.offsets, realized.offsets
         )
         if scratch_topology_hit:
             self._scratch_mesh.upload_vertices(realized.coords)
@@ -559,10 +547,7 @@ class DrawRenderer:
     ) -> LineMesh | None:
         """layer slot の VBO を更新し、安定 topology の IBO を再利用する。"""
 
-        if (
-            self._dynamic_mesh_max_entries <= 0
-            or self._dynamic_mesh_max_bytes <= 0
-        ):
+        if self._dynamic_mesh_max_entries <= 0 or self._dynamic_mesh_max_bytes <= 0:
             return None
 
         entry = self._dynamic_meshes.get(slot)
@@ -583,10 +568,7 @@ class DrawRenderer:
             self._record_mesh_upload()
         else:
             mesh = entry.mesh
-            if (
-                entry.coords is realized.coords
-                and entry.offsets is realized.offsets
-            ):
+            if entry.coords is realized.coords and entry.offsets is realized.offsets:
                 if entry.cache_key != cache_key:
                     self._dynamic_meshes[slot] = _DynamicMeshEntry(
                         mesh=entry.mesh,
@@ -599,7 +581,7 @@ class DrawRenderer:
                     )
                 self._dynamic_meshes.move_to_end(slot)
                 return mesh
-            if entry.offsets is realized.offsets:
+            if _same_offsets(entry.offsets, realized.offsets):
                 mesh.upload_vertices(realized.coords)
             else:
                 mesh.upload(vertices=realized.coords, indices=indices)
@@ -647,9 +629,7 @@ class DrawRenderer:
         """static 昇格した geometry と重複する全 transient mesh を解放する。"""
 
         slots = tuple(
-            slot
-            for slot, entry in self._dynamic_meshes.items()
-            if entry.cache_key == cache_key
+            slot for slot, entry in self._dynamic_meshes.items() if entry.cache_key == cache_key
         )
         for slot in slots:
             self._release_dynamic_mesh(slot)
@@ -685,8 +665,7 @@ class DrawRenderer:
 
     def _evict_candidates_to_budget(self) -> None:
         while (
-            len(self._mesh_candidates) > self._mesh_candidates_max_entries
-            and self._mesh_candidates
+            len(self._mesh_candidates) > self._mesh_candidates_max_entries and self._mesh_candidates
         ):
             self._mesh_candidates.popitem(last=False)
 
@@ -710,11 +689,7 @@ class DrawRenderer:
     ) -> None:
         """LineMesh を draw call で描画する。"""
         previous_style = self._last_draw_style
-        if (
-            previous_style is None
-            or thickness != previous_style[0]
-            or color != previous_style[1]
-        ):
+        if previous_style is None or thickness != previous_style[0] or color != previous_style[1]:
             normalized_thickness = float(thickness)
             self._line_width_uniform.value = line_width_for_short_side(
                 normalized_thickness,

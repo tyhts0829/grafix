@@ -54,7 +54,6 @@ def test_repeat_count_zero_is_noop() -> None:
         ({"radius": -1.0}, "radius"),
         ({"n_theta": 0}, "n_theta"),
         ({"n_radius": 0}, "n_radius"),
-        ({"curve": float("nan")}, "curve"),
         ({"curve": 0.0}, "curve"),
     ],
 )
@@ -66,18 +65,6 @@ def test_repeat_rejects_invalid_scalar_parameters(
 
     with pytest.raises(ValueError, match=match):
         repeat_impl((base.coords, base.offsets), **kwargs)  # type: ignore[arg-type]
-
-
-def test_repeat_rejects_invalid_layout_and_vec3_parameters() -> None:
-    base = realize(G.repeat_test_line_0_1())
-    geometry = (base.coords, base.offsets)
-
-    with pytest.raises(ValueError, match="layout"):
-        repeat_impl(geometry, layout="spiral")
-    with pytest.raises(TypeError, match="offset"):
-        repeat_impl(geometry, offset=[0.0, 0.0, 0.0])  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="scale"):
-        repeat_impl(geometry, scale=(1.0, float("nan"), 1.0))
 
 
 def test_repeat_offset_interpolates_over_count() -> None:

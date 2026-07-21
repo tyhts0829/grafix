@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import RealizeSession, realize
+from grafix.core.realize import RealizeError, RealizeSession, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -85,8 +86,27 @@ def test_weave_generates_more_than_boundary() -> None:
 
 def test_weave_clamps_parameters_without_crashing() -> None:
     g = G.weave_test_square()
-    out = realize(E.weave(num_candidate_lines=9999, relaxation_iterations=-999, step=999.0)(g))
+    out = realize(E.weave(num_candidate_lines=9999, relaxation_iterations=999, step=999.0)(g))
 
     assert np.isfinite(out.coords).all()
     assert out.offsets[0] == 0
     assert out.offsets[-1] == out.coords.shape[0]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"num_candidate_lines": -1}, "num_candidate_lines"),
+        ({"relaxation_iterations": -1}, "relaxation_iterations"),
+        ({"step": -0.1}, "step"),
+    ],
+)
+def test_weave_rejects_negative_parameters_before_empty_input(
+    kwargs: dict[str, int | float],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.weave(**kwargs)(G.weave_test_empty()))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)

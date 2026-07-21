@@ -6,18 +6,14 @@ import numpy as np
 import pytest
 
 from grafix.api import G
-from grafix.core.geometry import Geometry
 from grafix.core.primitives.sphere import _sphere_base_geometry, sphere
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.primitives import sphere as _sphere_module  # noqa: F401
 
 
 def test_sphere_realize_returns_valid_realized_geometry() -> None:
     """coords/offsets の基本不変条件を満たす。"""
-    g = Geometry.create(
-        "sphere",
-        params={"subdivisions": 0, "style": "latlon", "line_mode": "both"},
-    )
+    g = G.sphere(subdivisions=0, style="latlon", line_mode="both")
     realized = realize(g)
 
     assert realized.coords.dtype == np.float32
@@ -32,37 +28,24 @@ def test_sphere_realize_returns_valid_realized_geometry() -> None:
     assert int(realized.offsets[-1]) == realized.coords.shape[0]
 
 
-def test_sphere_subdivisions_is_clamped() -> None:
-    """subdivisions は 0..5 にクランプされ、範囲外は端値と同一結果になる。"""
-    g0 = Geometry.create(
-        "sphere",
-        params={"subdivisions": 0, "style": "latlon", "line_mode": "both"},
-    )
-    r0 = realize(g0)
-
-    g_neg = Geometry.create(
-        "sphere",
-        params={"subdivisions": -999, "style": "latlon", "line_mode": "both"},
-    )
-    r_neg = realize(g_neg)
-
-    np.testing.assert_array_equal(r_neg.coords, r0.coords)
-    np.testing.assert_array_equal(r_neg.offsets, r0.offsets)
-
-    g5 = Geometry.create(
-        "sphere",
-        params={"subdivisions": 5, "style": "latlon", "line_mode": "both"},
-    )
+def test_sphere_subdivisions_upper_bound_is_clamped() -> None:
+    """subdivisions の上限超過は、生成量を抑えるため 5 にクランプする。"""
+    g5 = G.sphere(subdivisions=5, style="latlon", line_mode="both")
     r5 = realize(g5)
 
-    g_hi = Geometry.create(
-        "sphere",
-        params={"subdivisions": 999, "style": "latlon", "line_mode": "both"},
-    )
+    g_hi = G.sphere(subdivisions=999, style="latlon", line_mode="both")
     r_hi = realize(g_hi)
 
     np.testing.assert_array_equal(r_hi.coords, r5.coords)
     np.testing.assert_array_equal(r_hi.offsets, r5.offsets)
+
+
+def test_sphere_rejects_negative_subdivisions() -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.sphere(subdivisions=-1))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "subdivisions" in str(exc_info.value.__cause__)
 
 
 @pytest.mark.parametrize(
@@ -78,14 +61,11 @@ def test_sphere_semantic_choices_reject_unknown_values(parameter: str, value: st
 
 def test_sphere_center_and_scale_affect_coords() -> None:
     """center/scale が座標に反映される。"""
-    g = Geometry.create(
-        "sphere",
-        params={
-            "style": "zigzag",
-            "subdivisions": 0,
-            "center": (10.0, 20.0, 30.0),
-            "scale": 3.0,
-        },
+    g = G.sphere(
+        style="zigzag",
+        subdivisions=0,
+        center=(10.0, 20.0, 30.0),
+        scale=3.0,
     )
     realized = realize(g)
 

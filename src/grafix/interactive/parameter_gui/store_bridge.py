@@ -1019,8 +1019,8 @@ def parameter_table_view_for_store(
             last_effective_by_key=runtime.last_effective_by_key,
         )
 
-    # 通常時（検索/filter 無し）は静的 search label/source record を組み立てない。
-    # 大規模 scene の既定フレームコストを、従来の visibility 判定と同程度に保つ。
+    # 通常時（検索/filter 無し）は静的 search label/source record を組み立てず、
+    # 大規模 scene の既定フレームコストを visibility 判定だけに抑える。
     if state == ParameterFilterState():
         view = _parameter_table_view_from_mask(
             model,

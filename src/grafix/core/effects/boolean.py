@@ -36,9 +36,6 @@ def _closed_world_lines(g: GeomTuple, *, label: str) -> list[np.ndarray]:
     """入力から厳密に検証した明示閉鎖 ring を抽出する。"""
 
     coords, offsets = g
-    if not bool(np.all(np.isfinite(coords))):
-        raise ValueError(f"boolean: {label} に非有限座標が含まれている")
-
     lines: list[np.ndarray] = []
     for line_index in range(int(offsets.size) - 1):
         start = int(offsets[line_index])
@@ -272,7 +269,7 @@ def boolean(
     - 二入力 effect のため、lazy API では effect chain の先頭で使用する。
     """
 
-    mode_s = str(mode)
+    mode_s = mode
     clip_types = {
         "union": pyclipper.CT_UNION,  # type: ignore[attr-defined]
         "intersection": pyclipper.CT_INTERSECTION,  # type: ignore[attr-defined]

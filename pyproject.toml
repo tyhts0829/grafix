@@ -21,7 +21,7 @@ classifiers = [
 dependencies = [
   "numpy",
   "numba",
-  "shapely",
+  "shapely>=2,<3",
   "pyclipper",
   "moderngl",
   "pyglet>=2.1,<3",

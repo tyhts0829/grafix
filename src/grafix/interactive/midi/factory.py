@@ -1,5 +1,5 @@
 # どこで: `src/grafix/interactive/midi/factory.py`。
-# 何を: port_name/mode に従って MidiController を生成する（auto 接続 / mido 有無を含む）。
+# 何を: port_name/mode に従って MidiController を生成する。
 # なぜ: `src/grafix/api/runner.py` を配線に寄せ、MIDI 依存ロジックを interactive 側に閉じ込めるため。
 
 """MIDI 設定を `MidiController` の生成に落とす factory。
@@ -9,8 +9,7 @@
 
 設計意図
 --------
-- `mido` は optional dependency なので、`port_name="auto"` のときは未導入でも静かに無効化する。
-- 一方で、ユーザーが明示的にポート名を指定したときは意図が強いので、未導入ならエラーにする。
+- `mido` は required dependency であり、import/backend error は接続不能へ読み替えず伝播する。
 
 主な入口
 --------
@@ -72,8 +71,14 @@ def create_midi_controller(
 
     Raises
     ------
-    RuntimeError
-        `port_name` が明示指定かつ `mido` が導入されていない場合。
+    TypeError
+        設定値が canonical な型でない場合。
+    ValueError
+        空名や未対応 mode を指定した場合。
+    ImportError
+        required dependency の `mido` を import できない場合。
+    InvalidPortError
+        明示指定した入力ポートが存在しない場合。
 
     Notes
     -----
@@ -119,12 +124,12 @@ def create_midi_controller(
         # ユーザーが明示的に MIDI を無効化したケース。
         return None
 
-    if port_name == _AUTO_MIDI_PORT:
-        # optional dependency: 自動接続は mido が無ければ黙って無効化する。
-        try:
-            import mido  # type: ignore
-        except Exception:
-            return None
+    port = exact_string(port_name, name="port_name")
+    if not port:
+        raise ValueError("port_name は空にできません")
+
+    if port == _AUTO_MIDI_PORT:
+        import mido  # type: ignore
 
         # 以降で何度も参照するので一度 list 化して固定する。
         names = list(mido.get_input_names())  # type: ignore
@@ -156,19 +161,8 @@ def create_midi_controller(
             save_dir=save_dir,
         )
 
-    explicit_port = exact_string(port_name, name="port_name")
-    if not explicit_port:
-        raise ValueError("port_name は空にできません")
-    # 明示指定のときは mido が必要。
-    # （未導入なら `MidiController` 側で ImportError になるが、ここで意図の分かるエラーメッセージにする）
-    try:
-        import mido  # type: ignore  # noqa: F401
-    except Exception as exc:
-        raise RuntimeError(
-            "midi_port_name を指定するには mido が必要です（pip で導入してください）。"
-        ) from exc
     return MidiController(
-        explicit_port,
+        port,
         mode=mode_value,
         profile_name=profile,
         save_dir=save_dir,

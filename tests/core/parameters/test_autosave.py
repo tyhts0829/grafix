@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from grafix.core.parameters.collapsed_header import primitive_collapsed_header_key
 from grafix.core.parameters.autosave import ParamStoreAutosave
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.key import ParameterKey
@@ -52,7 +53,8 @@ def test_autosave_waits_until_changes_settle(tmp_path: Path) -> None:
     assert autosave.tick() is False
     now[0] = 0.9
     assert autosave.tick() is False
-    store._collapsed_headers_ref().add("primitive:line:site-1")
+    header = primitive_collapsed_header_key(("line", "site-1"))
+    store._collapsed_headers_ref().add(header)
     store._touch()
     assert autosave.tick() is False
     now[0] = 1.89
@@ -88,12 +90,16 @@ def test_autosave_flushes_at_max_interval_during_continuous_revisions(
     # 観測から max_interval で recovery を確定する。
     for index, current_time in enumerate((0.5, 1.0, 1.5), start=1):
         now[0] = current_time
-        store._collapsed_headers_ref().add(f"continuous:{index}")
+        store._collapsed_headers_ref().add(
+            primitive_collapsed_header_key(("continuous", str(index)))
+        )
         store._touch()
         assert autosave.tick() is False
 
     now[0] = 2.0
-    store._collapsed_headers_ref().add("continuous:final")
+    store._collapsed_headers_ref().add(
+        primitive_collapsed_header_key(("continuous", "final"))
+    )
     store._touch()
     assert autosave.tick() is True
     assert calls == [store.revision]
@@ -142,13 +148,14 @@ def test_autosave_flush_uses_existing_atomic_persistence(tmp_path: Path) -> None
     autosave = ParamStoreAutosave(store, path)
 
     # 生成時点の revision は clean。その後の変更だけを保存する。
-    store._collapsed_headers_ref().add("primitive:line:site-1")
+    header = primitive_collapsed_header_key(("line", "site-1"))
+    store._collapsed_headers_ref().add(header)
     store._touch()
     assert autosave.flush() is True
     assert path.exists()
     loaded = load_param_store(path)
     assert loaded.get_state(key) is not None
-    assert loaded._collapsed_headers_ref() == {"primitive:line:site-1"}
+    assert loaded._collapsed_headers_ref() == {header}
     assert autosave.flush() is False
 
 

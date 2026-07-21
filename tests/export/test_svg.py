@@ -23,7 +23,7 @@ def _realized_layer(
     color: tuple[float, float, float] = (0.0, 0.0, 0.0),
     thickness: float = 0.001,
 ) -> RealizedLayer:
-    geometry = Geometry.create("line")
+    geometry = Geometry.create("svg-test-geometry")
     layer = Layer(geometry=geometry, site_id="layer:1")
     realized = RealizedGeometry(
         coords=np.asarray(coords, dtype=np.float32),

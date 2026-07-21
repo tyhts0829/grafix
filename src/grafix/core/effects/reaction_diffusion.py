@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 from numba import get_num_threads, njit, prange  # type: ignore[attr-defined, import-untyped]
 
@@ -13,7 +11,6 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.preview_quality import current_preview_quality
 from grafix.core.realized_geometry import GeomTuple
 
-from .argument_validation import integer_scalar, known_choice
 from .util import (
     DEFAULT_MAX_GRID_CELLS,
     GridSpec,
@@ -470,27 +467,32 @@ def reaction_diffusion(
     tuple[np.ndarray, np.ndarray]
         生成されたポリライン列（coords, offsets）。
     """
-    requested_steps = integer_scalar(
-        steps,
-        name="reaction_diffusion: steps",
-    )
-    seed_i = integer_scalar(seed, name="reaction_diffusion: seed")
-    min_points_i = integer_scalar(
-        min_points,
-        name="reaction_diffusion: min_points",
-    )
-    boundary_s = known_choice(
-        boundary,
-        choices=_BOUNDARY_CHOICES,
-        name="reaction_diffusion: boundary",
-    )
+    if grid_pitch <= 0.0:
+        raise ValueError("reaction_diffusion: grid_pitch は正である必要がある")
+    if steps < 0:
+        raise ValueError("reaction_diffusion: steps は 0 以上である必要がある")
+    if du < 0.0 or dv < 0.0:
+        raise ValueError("reaction_diffusion: du/dv は 0 以上である必要がある")
+    if feed < 0.0 or kill < 0.0:
+        raise ValueError("reaction_diffusion: feed/kill は 0 以上である必要がある")
+    if dt <= 0.0:
+        raise ValueError("reaction_diffusion: dt は正である必要がある")
+    if seed < 0:
+        raise ValueError("reaction_diffusion: seed は 0 以上である必要がある")
+    if seed_radius < 0.0:
+        raise ValueError("reaction_diffusion: seed_radius は 0 以上である必要がある")
+    if noise < 0.0:
+        raise ValueError("reaction_diffusion: noise は 0 以上である必要がある")
+    if not 0.0 <= level <= 1.0:
+        raise ValueError("reaction_diffusion: level は 0.0 以上 1.0 以下である必要がある")
+    if min_points < 1:
+        raise ValueError("reaction_diffusion: min_points は 1 以上である必要がある")
+
     mask_coords, mask_offsets = mask
     if mask_coords.shape[0] == 0:
         return empty_geom()
 
-    pitch = float(grid_pitch)
-    if pitch <= 0.0 or not math.isfinite(pitch):
-        return empty_geom()
+    pitch = grid_pitch
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
     if not frame.is_planar(planarity_threshold(mask_coords)):
@@ -509,7 +511,7 @@ def reaction_diffusion(
     margin = 2.0 * pitch
     quality = current_preview_quality()
     if quality == "draft":
-        draft_step_target = max(0, min(requested_steps, DRAFT_MAX_STEPS))
+        draft_step_target = max(0, min(steps, DRAFT_MAX_STEPS))
         draft_cell_limit = (
             DRAFT_MAX_GRID_POINTS
             if draft_step_target == 0
@@ -559,18 +561,18 @@ def reaction_diffusion(
     if int(np.sum(domain_mask)) == 0:
         return empty_geom()
 
-    rng = np.random.default_rng(seed_i)
+    rng = np.random.default_rng(seed)
     u0 = np.ones((ny, nx), dtype=np.float32)
     v0 = np.zeros((ny, nx), dtype=np.float32)
 
     mask_bool = domain_mask.astype(bool, copy=False)
-    if float(noise) > 0.0:
+    if noise > 0.0:
         v0[mask_bool] = (rng.random(int(np.sum(mask_bool))) - 0.5).astype(np.float32) * (
-            2.0 * float(noise)
+            2.0 * noise
         )
 
-    r = float(seed_radius)
-    if r > 0.0 and math.isfinite(r):
+    r = seed_radius
+    if r > 0.0:
         jj, ii = np.nonzero(domain_mask)
         cy = int(np.rint(np.mean(jj)))
         cx = int(np.rint(np.mean(ii)))
@@ -599,20 +601,20 @@ def reaction_diffusion(
                     u0[y, x] = 0.0
                     v0[y, x] = 1.0
 
-    boundary_i = 0 if boundary_s == "noflux" else 1
+    boundary_i = 0 if boundary == "noflux" else 1
     if quality == "draft":
         work_budget_steps = DRAFT_MAX_CELL_STEPS // max(1, grid.cell_count)
         effective_steps = min(
-            requested_steps,
+            steps,
             DRAFT_MAX_STEPS,
             work_budget_steps,
         )
     else:
-        effective_steps = requested_steps
-    if effective_steps != requested_steps:
+        effective_steps = steps
+    if effective_steps != steps:
         emit_operation_diagnostic(
             op="reaction_diffusion.steps",
-            original_value=requested_steps,
+            original_value=steps,
             effective_value=effective_steps,
             reason=(
                 "draft preview capped cells × steps work; final capture keeps the "
@@ -625,11 +627,11 @@ def reaction_diffusion(
         v0,
         domain_mask,
         steps=effective_steps,
-        du=float(du),
-        dv=float(dv),
-        feed=float(feed),
-        kill=float(kill),
-        dt=float(dt),
+        du=du,
+        dv=dv,
+        feed=feed,
+        kill=kill,
+        dt=dt,
         boundary=boundary_i,
     )
 
@@ -641,12 +643,12 @@ def reaction_diffusion(
         origin_x=grid.origin_x,
         origin_y=grid.origin_y,
         pitch=pitch,
-        level=float(level),
+        level=level,
         mask=domain_mask,
     )
 
     for pts_xy in loops:
-        if pts_xy.shape[0] < min_points_i:
+        if pts_xy.shape[0] < min_points:
             continue
         if pts_xy.shape[0] >= 2 and not np.all(pts_xy[0] == pts_xy[-1]):
             pts_xy = np.concatenate([pts_xy, pts_xy[:1]], axis=0)

@@ -10,7 +10,9 @@ from typing import Any, Generic, Literal, TypeVar, cast
 
 from grafix.core.parameters.identity import identity_string
 from grafix.core.parameters.meta import ParamMeta
+from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.value_validation import (
+    canonical_immutable_value,
     exact_bool,
     exact_integer,
     exact_string,
@@ -21,11 +23,84 @@ OpKind = Literal["primitive", "effect"]
 CachePolicy = Literal["content", "none"]
 UiVisiblePred = Callable[[Mapping[str, Any]], bool]
 EvaluatorT = TypeVar("EvaluatorT", bound=Callable[..., Any])
+_WRAPPER_OWNED_ARGUMENTS = frozenset(
+    {"activate", "instance_key", "key", "shared"}
+)
+
+
+def _operation_parameters(
+    *,
+    kind: OpKind,
+    func: Callable[..., object],
+    n_inputs: int,
+) -> tuple[inspect.Parameter, ...]:
+    """wrapper が呼び出せる callable signature を検証して引数列を返す。"""
+
+    parameters = tuple(inspect.signature(func).parameters.values())
+    if kind == "effect":
+        if len(parameters) < n_inputs:
+            raise TypeError(
+                f"effect '{func.__name__}' は Geometry 入力を {n_inputs} 個"
+                "位置引数として宣言する必要があります"
+            )
+        geometry_parameters = parameters[:n_inputs]
+        for parameter in geometry_parameters:
+            if parameter.kind not in {
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            }:
+                raise TypeError(
+                    f"effect '{func.__name__}' の Geometry 入力 {parameter.name!r} は"
+                    "位置引数である必要があります"
+                )
+            if parameter.default is not inspect.Parameter.empty:
+                raise TypeError(
+                    f"effect '{func.__name__}' の Geometry 入力 {parameter.name!r} に"
+                    "default は指定できません"
+                )
+        operation_parameters = parameters[n_inputs:]
+    else:
+        operation_parameters = parameters
+
+    for parameter in operation_parameters:
+        if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+            raise TypeError(
+                f"{kind} '{func.__name__}' の operation 引数 {parameter.name!r} は"
+                "keyword で受け取れる必要があります"
+            )
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            raise TypeError(
+                f"{kind} '{func.__name__}' に可変位置引数は使用できません"
+            )
+
+    reserved = sorted(
+        parameter.name
+        for parameter in parameters
+        if parameter.name in _WRAPPER_OWNED_ARGUMENTS
+    )
+    if reserved:
+        raise ValueError(
+            f"{kind} '{func.__name__}' の wrapper 予約引数は使用できません: "
+            f"{reserved!r}"
+        )
+    return operation_parameters
+
+
+def _validate_code_default(value: object, *, name: str) -> None:
+    """code-owned default が Geometry の canonical immutable 値か検証する。"""
+
+    canonical_immutable_value(value, name=name)
 
 
 @dataclass(frozen=True, slots=True)
 class OpSpec(Generic[EvaluatorT]):
-    """1 operation の evaluator と静的メタデータをまとめた仕様。"""
+    """1 operation の evaluator と静的メタデータをまとめた仕様。
+
+    Notes
+    -----
+    ``ui_visible`` mapping はコピーして固定するが、predicate 自体は実行時 policy
+    であるため同一 callable を保持する。closure 内部状態の所有は登録側が担う。
+    """
 
     evaluator: EvaluatorT
     meta: Mapping[str, ParamMeta]
@@ -58,8 +133,37 @@ class OpSpec(Generic[EvaluatorT]):
         else:
             n_inputs = exact_integer(self.n_inputs, name="n_inputs", minimum=1)
 
-        object.__setattr__(self, "meta", MappingProxyType(dict(self.meta)))
-        object.__setattr__(self, "defaults", MappingProxyType(dict(self.defaults)))
+        meta: dict[str, ParamMeta] = {}
+        for raw_name, raw_meta in self.meta.items():
+            name = identity_string(raw_name, name="meta argument")
+            if type(raw_meta) is not ParamMeta:
+                raise TypeError(f"meta[{name!r}] は ParamMeta である必要があります")
+            meta[name] = raw_meta
+
+        raw_defaults: dict[str, Any] = {}
+        for raw_name, raw_default in self.defaults.items():
+            name = identity_string(raw_name, name="default argument")
+            raw_defaults[name] = raw_default
+        if set(raw_defaults) != set(meta):
+            missing = sorted(set(meta) - set(raw_defaults))
+            extra = sorted(set(raw_defaults) - set(meta))
+            details: list[str] = []
+            if missing:
+                details.append(f"default が無い meta: {missing!r}")
+            if extra:
+                details.append(f"meta が無い default: {extra!r}")
+            raise ValueError("meta/default の引数集合が一致しません: " + "; ".join(details))
+        defaults = {
+            name: validate_parameter_value(
+                raw_defaults[name],
+                kind=arg_meta.kind,
+                choices=arg_meta.choices,
+            )
+            for name, arg_meta in meta.items()
+        }
+
+        object.__setattr__(self, "meta", MappingProxyType(meta))
+        object.__setattr__(self, "defaults", MappingProxyType(defaults))
         object.__setattr__(
             self,
             "param_order",
@@ -68,7 +172,15 @@ class OpSpec(Generic[EvaluatorT]):
                 for name in self.param_order
             ),
         )
-        object.__setattr__(self, "ui_visible", MappingProxyType(dict(self.ui_visible)))
+        ui_visible: dict[str, UiVisiblePred] = {}
+        for raw_name, predicate in self.ui_visible.items():
+            name = identity_string(raw_name, name="ui_visible argument")
+            if not callable(predicate):
+                raise TypeError(
+                    f"ui_visible[{name!r}] は callable である必要があります"
+                )
+            ui_visible[name] = predicate
+        object.__setattr__(self, "ui_visible", MappingProxyType(ui_visible))
         object.__setattr__(self, "n_inputs", n_inputs)
         object.__setattr__(self, "kind", kind)
         object.__setattr__(
@@ -126,6 +238,15 @@ class OpSpec(Generic[EvaluatorT]):
         if unknown_required:
             names = ", ".join(sorted(unknown_required))
             raise ValueError(f"required_args は accepted_args に含める必要がある: {names}")
+
+        if len(self.param_order) != len(self.meta) or set(self.param_order) != set(
+            self.meta
+        ):
+            raise ValueError("param_order は meta の引数を過不足なく含める必要がある")
+        unknown_visible = set(self.ui_visible) - set(self.meta)
+        if unknown_visible:
+            names = ", ".join(sorted(unknown_visible))
+            raise ValueError(f"ui_visible の引数は meta に含める必要がある: {names}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,31 +428,91 @@ class OpRegistry(Generic[EvaluatorT]):
         )
 
 
+class BuiltinOpCatalog(Generic[EvaluatorT]):
+    """module import 時に確定した builtin spec を保持する append-only catalog。"""
+
+    __slots__ = ("_kind", "_specs")
+
+    def __init__(self, *, kind: OpKind) -> None:
+        self._kind: OpKind = cast(
+            OpKind,
+            exact_string_choice(
+                kind,
+                name="builtin catalog kind",
+                choices=("primitive", "effect"),
+            ),
+        )
+        self._specs: dict[str, OpSpec[EvaluatorT]] = {}
+
+    def record(self, name: str, spec: OpSpec[EvaluatorT]) -> None:
+        """builtin spec を一度だけ記録する。既存 entry の置換は許可しない。"""
+
+        name_s = identity_string(name, name=f"builtin {self._kind} name")
+        if type(spec) is not OpSpec:
+            raise TypeError("builtin spec は exact OpSpec である必要があります")
+        if spec.kind != self._kind:
+            raise ValueError(
+                f"{self._kind} builtin catalog に {spec.kind} spec は記録できない"
+            )
+        if name_s in self._specs:
+            raise RuntimeError(
+                f"builtin {self._kind} spec は既に確定しています: {name_s!r}"
+            )
+        self._specs[name_s] = spec
+
+    def get(self, name: str) -> OpSpec[EvaluatorT] | None:
+        """記録済み spec を返す。未 import の builtin なら None。"""
+
+        name_s = identity_string(name, name=f"builtin {self._kind} name")
+        return self._specs.get(name_s)
+
+
 def op_defaults_and_order(
     *,
     kind: OpKind,
     func: Callable[..., object],
     meta: Mapping[str, ParamMeta],
+    n_inputs: int,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
-    """関数 signature と meta を検証し、default と引数順を返す。"""
+    """関数 signature の default を検証し、meta default と表示順を返す。"""
 
-    signature = inspect.signature(func)
+    parameters = _operation_parameters(
+        kind=kind,
+        func=func,
+        n_inputs=n_inputs,
+    )
     defaults: dict[str, Any] = {}
     for arg in meta:
-        parameter = signature.parameters.get(arg)
+        parameter = next(
+            (parameter for parameter in parameters if parameter.name == arg),
+            None,
+        )
         if parameter is None:
             raise ValueError(
                 f"{kind} '{func.__name__}' の meta 引数がシグネチャに存在しない: {arg!r}"
             )
         if parameter.default is inspect.Parameter.empty:
             raise ValueError(f"{kind} '{func.__name__}' の meta 引数は default 必須: {arg!r}")
-        if parameter.default is None:
-            raise ValueError(
-                f"{kind} '{func.__name__}' の meta 引数 default に None は使えない: {arg!r}"
-            )
-        defaults[arg] = parameter.default
+        defaults[arg] = validate_parameter_value(
+            parameter.default,
+            kind=meta[arg].kind,
+            choices=meta[arg].choices,
+        )
 
-    order = tuple(name for name in signature.parameters if name in meta)
+    for parameter in parameters:
+        if (
+            parameter.name in meta
+            or parameter.default is inspect.Parameter.empty
+            or parameter.kind
+            in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
+        ):
+            continue
+        _validate_code_default(
+            parameter.default,
+            name=f"{kind} '{func.__name__}' の {parameter.name!r} default",
+        )
+
+    order = tuple(parameter.name for parameter in parameters if parameter.name in meta)
     return defaults, order
 
 
@@ -343,10 +524,11 @@ def op_callable_catalog_fields(
 ) -> dict[str, Any]:
     """元 callable から catalog 用の説明と signature 情報を抽出する。"""
 
-    signature = inspect.signature(func)
-    parameters = tuple(signature.parameters.values())
-    if kind == "effect":
-        parameters = parameters[n_inputs:]
+    parameters = _operation_parameters(
+        kind=kind,
+        func=func,
+        n_inputs=n_inputs,
+    )
 
     accepted_args = tuple(
         parameter.name
@@ -385,6 +567,7 @@ def op_callable_catalog_fields(
 
 
 __all__ = [
+    "BuiltinOpCatalog",
     "CachePolicy",
     "OpKind",
     "OpCatalogEntry",

@@ -57,8 +57,8 @@ def ellipse(
 ) -> GeomTuple:
     """楕円を閉じたpolylineとして生成する。"""
 
-    rx = float(radius_x)
-    ry = float(radius_y)
+    rx = radius_x
+    ry = radius_y
     if rx < 0.0 or ry < 0.0:
         raise ValueError("ellipse の radius_x/radius_y は0以上である必要がある")
     count = segment_count(segments, op="ellipse", minimum=3)

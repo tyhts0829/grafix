@@ -12,14 +12,74 @@ import numpy as np
 GeomTuple = tuple[np.ndarray, np.ndarray]
 """`(coords, offsets)` で表すポリライン集合の最小表現。
 
-- `coords`: shape `(N,3)` の座標配列（dtype は float32 を推奨）
-- `offsets`: shape `(M+1,)` の境界配列（dtype は int32 を推奨）
+- `coords`: exact ndarray、C-contiguous、shape `(N,3)`、dtype float32 の有限座標
+- `offsets`: exact ndarray、C-contiguous、shape `(M+1,)`、dtype int32 の境界
 
 Notes
 -----
 このタプル表現は、`@primitive` / `@effect` のユーザー定義 I/O として利用する。
 core 内部では最終的に `RealizedGeometry` に統一する。
 """
+
+
+def _validate_coords(coords: object) -> np.ndarray:
+    """canonical coords 配列を検証して返す。"""
+
+    if type(coords) is not np.ndarray:
+        raise TypeError("coords は exact np.ndarray である必要がある")
+    if coords.ndim != 2 or coords.shape[1] != 3:
+        raise ValueError("coords は shape (N,3) の 2 次元配列である必要がある")
+    if coords.dtype != np.float32:
+        raise TypeError("coords は dtype float32 である必要がある")
+    if not coords.flags.c_contiguous:
+        raise ValueError("coords は C-contiguous である必要がある")
+    if not np.isfinite(coords).all():
+        raise ValueError("coords は有限値だけを含む必要がある")
+    return coords
+
+
+def _validate_offsets(offsets: object, *, vertex_count: int) -> np.ndarray:
+    """canonical offsets 配列と packed geometry 整合性を検証して返す。"""
+
+    if type(offsets) is not np.ndarray:
+        raise TypeError("offsets は exact np.ndarray である必要がある")
+    if offsets.ndim != 1:
+        raise ValueError("offsets は 1 次元配列である必要がある")
+    if offsets.dtype != np.int32:
+        raise TypeError("offsets は dtype int32 である必要がある")
+    if not offsets.flags.c_contiguous:
+        raise ValueError("offsets は C-contiguous である必要がある")
+    if offsets.size == 0:
+        raise ValueError("offsets は少なくとも 1 要素を含む必要がある")
+    if offsets[0] != 0:
+        raise ValueError("offsets[0] は 0 である必要がある")
+    if offsets[-1] != vertex_count:
+        raise ValueError("offsets[-1] は coords 行数と一致する必要がある")
+    if np.any(offsets[1:] < offsets[:-1]):
+        raise ValueError("offsets は単調非減少である必要がある")
+    return offsets
+
+
+def _immutable_snapshot(array: np.ndarray) -> np.ndarray:
+    """immutable bytes を backing に持つ C-order snapshot を返す。"""
+
+    current: object = array
+    while type(current) is np.ndarray:
+        if current.flags.writeable:
+            current = None
+            break
+        current = current.base
+    if type(current) is bytes:
+        # RealizedGeometry が既に所有する immutable snapshot は安全に共有する。
+        # static topology の offsets identity もこの経路で維持される。
+        return array
+
+    snapshot = np.frombuffer(array.tobytes(order="C"), dtype=array.dtype).reshape(
+        array.shape
+    )
+    assert snapshot.flags.c_contiguous
+    assert not snapshot.flags.writeable
+    return snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,53 +95,21 @@ class RealizedGeometry:
 
     Notes
     -----
-    不変性を契約とし、配列は writeable=False で返す。
-    offsets と coords の整合性はコンストラクタ内で検証する。
+    入力を暗黙変換せず canonical shape/dtype/layout を要求する。mutable な
+    caller 配列はコピーし、保持する snapshot の writeable flag は後から
+    有効化できない。既存の bytes-backed snapshot だけは安全に再利用する。
     """
 
     coords: np.ndarray
     offsets: np.ndarray
 
     def __post_init__(self) -> None:
-        """配列形状と整合性を検証し、不変条件を満たす形に固定する。"""
-        coords = np.asarray(self.coords)
-        offsets = np.asarray(self.offsets)
+        """canonical 配列を検証し、外部 alias の無い snapshot に固定する。"""
 
-        if coords.ndim == 2 and coords.shape[1] == 2:
-            # 2D 入力は z=0 を補完して (N,3) に揃える。
-            z = np.zeros((coords.shape[0], 1), dtype=coords.dtype)
-            coords = np.concatenate([coords, z], axis=1)
-
-        if coords.ndim != 2 or coords.shape[1] != 3:
-            raise ValueError("coords は shape (N,3) の 2 次元配列である必要がある")
-
-        if coords.dtype != np.float32:
-            coords = coords.astype(np.float32, copy=False)
-
-        if offsets.ndim != 1:
-            raise ValueError("offsets は 1 次元配列である必要がある")
-
-        if offsets.dtype != np.int32:
-            offsets = offsets.astype(np.int32, copy=False)
-
-        if offsets.size == 0:
-            raise ValueError("offsets は少なくとも 1 要素を含む必要がある")
-
-        if offsets[0] != 0:
-            raise ValueError("offsets[0] は 0 である必要がある")
-
-        if offsets[-1] != coords.shape[0]:
-            raise ValueError("offsets[-1] は coords 行数と一致する必要がある")
-
-        if np.any(np.diff(offsets) < 0):
-            raise ValueError("offsets は単調非減少である必要がある")
-
-        # 不変性確保のため writeable=False に設定する。
-        coords.setflags(write=False)
-        offsets.setflags(write=False)
-
-        object.__setattr__(self, "coords", coords)
-        object.__setattr__(self, "offsets", offsets)
+        coords = _validate_coords(self.coords)
+        offsets = _validate_offsets(self.offsets, vertex_count=int(coords.shape[0]))
+        object.__setattr__(self, "coords", _immutable_snapshot(coords))
+        object.__setattr__(self, "offsets", _immutable_snapshot(offsets))
 
     @property
     def byte_size(self) -> int:
@@ -92,22 +120,19 @@ class RealizedGeometry:
     def _with_coords(self, coords: object) -> RealizedGeometry | None:
         """検証済み offsets を共有できる場合だけ新しい内部 geometry を返す。
 
-        trusted 条件を満たさない入力は拒否せず、呼び出し側が通常の変換・検証へ
-        fallback できるよう ``None`` を返す。
+        canonical 条件を満たさない入力は、呼び出し側の通常の戻り値検証へ渡すため
+        ``None`` を返す。
         """
 
-        coords_array = np.asarray(coords)
-        if (
-            coords_array.ndim != 2
-            or coords_array.shape[1] != 3
-            or coords_array.dtype != np.float32
-            or self.offsets[-1] != coords_array.shape[0]
-        ):
+        try:
+            coords_array = _validate_coords(coords)
+        except (TypeError, ValueError):
+            return None
+        if self.offsets[-1] != coords_array.shape[0]:
             return None
 
-        coords_array.setflags(write=False)
         result = object.__new__(RealizedGeometry)
-        object.__setattr__(result, "coords", coords_array)
+        object.__setattr__(result, "coords", _immutable_snapshot(coords_array))
         object.__setattr__(result, "offsets", self.offsets)
         return result
 
@@ -133,27 +158,16 @@ def realized_geometry_from_tuple(value: object, *, context: str) -> RealizedGeom
     - offsets の整合性（先頭 0 / 末尾 N / 単調性）は `RealizedGeometry` が検証する。
     """
 
-    if not isinstance(value, tuple) or len(value) != 2:
+    if type(value) is not tuple or len(value) != 2:
         raise TypeError(
             f"{context}: 期待する戻り値は (coords, offsets) タプルです: {type(value)!r}"
         )
 
-    coords_raw, offsets_raw = value
-    coords = np.asarray(coords_raw)
-    offsets = np.asarray(offsets_raw)
-
-    if coords.ndim != 2 or int(coords.shape[1]) != 3:
-        raise ValueError(
-            f"{context}: coords は shape (N,3) の配列である必要があります: shape={coords.shape}"
-        )
-    if offsets.ndim != 1:
-        raise ValueError(
-            f"{context}: offsets は 1 次元配列である必要があります: shape={offsets.shape}"
-        )
+    coords, offsets = value
 
     try:
         return RealizedGeometry(coords=coords, offsets=offsets)
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         raise ValueError(f"{context}: (coords, offsets) が不正です") from exc
 
 
@@ -172,13 +186,10 @@ def concat_geom_tuples(*geometries: GeomTuple) -> GeomTuple:
     """
     if not geometries:
         return empty_geom_tuple()
+    arrays = tuple(_validate_geom_tuple(value) for value in geometries)
     if len(geometries) == 1:
-        coords, offsets = geometries[0]
-        return (
-            np.asarray(coords, dtype=np.float32),
-            np.asarray(offsets, dtype=np.int32),
-        )
-    return _concat_arrays(geometries)
+        return arrays[0]
+    return _concat_arrays(arrays)
 
 
 def concat_realized_geometries(*geometries: RealizedGeometry) -> RealizedGeometry:
@@ -228,18 +239,27 @@ def lines_to_geom_tuple(lines: list[np.ndarray]) -> GeomTuple:
     return coords, offsets
 
 
+def _validate_geom_tuple(value: object) -> GeomTuple:
+    """canonical な raw ``GeomTuple`` を検証して返す。"""
+
+    if type(value) is not tuple or len(value) != 2:
+        raise TypeError("geometry は exact (coords, offsets) tuple である必要がある")
+    coords, offsets = value
+    coords_array = _validate_coords(coords)
+    offsets_array = _validate_offsets(
+        offsets,
+        vertex_count=int(coords_array.shape[0]),
+    )
+    return coords_array, offsets_array
+
+
 def _concat_arrays(geometries: Sequence[GeomTuple]) -> GeomTuple:
     """最終サイズを一度数え、連結配列へ直接書き込む。"""
 
-    arrays = [
-        (
-            np.asarray(coords, dtype=np.float32),
-            np.asarray(offsets, dtype=np.int32),
-        )
-        for coords, offsets in geometries
-    ]
-    total_vertices = sum(int(coords.shape[0]) for coords, _ in arrays)
-    total_offsets = 1 + sum(max(0, int(offsets.size) - 1) for _, offsets in arrays)
+    total_vertices = sum(int(coords.shape[0]) for coords, _ in geometries)
+    total_offsets = 1 + sum(
+        max(0, int(offsets.size) - 1) for _, offsets in geometries
+    )
     int32_max = int(np.iinfo(np.int32).max)
     if total_vertices > int32_max or total_offsets > int32_max:
         raise OverflowError("連結結果が int32 の表現範囲を超える")
@@ -250,7 +270,7 @@ def _concat_arrays(geometries: Sequence[GeomTuple]) -> GeomTuple:
 
     vertex_at = 0
     offset_at = 1
-    for coords, offsets in arrays:
+    for coords, offsets in geometries:
         n_vertices = int(coords.shape[0])
         next_vertex = vertex_at + n_vertices
         coords_out[vertex_at:next_vertex] = coords

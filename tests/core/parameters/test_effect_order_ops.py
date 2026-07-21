@@ -6,6 +6,7 @@ from grafix import E
 from grafix.api.effects import EffectBuilder
 from grafix.core.effect_registry import effect
 from grafix.core.geometry import Geometry
+from grafix.core.parameters.collapsed_header import effect_chain_collapsed_header_key
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.effect_order_ops import (
     begin_effect_chain_generation,
@@ -273,9 +274,9 @@ def test_reload_generation_prunes_only_once_from_canonical_success_topology() ->
     collapsed = store._collapsed_headers_ref()
     collapsed.update(
         {
-            "effect_chain:keep-chain",
-            "effect_chain:stale-chain",
-            "effect_chain:orphan-chain",
+            effect_chain_collapsed_header_key("keep-chain"),
+            effect_chain_collapsed_header_key("stale-chain"),
+            effect_chain_collapsed_header_key("orphan-chain"),
         }
     )
 
@@ -293,9 +294,9 @@ def test_reload_generation_prunes_only_once_from_canonical_success_topology() ->
     assert set(store.effect_chain_topologies()) == {"keep-chain", "added-chain"}
     assert set(store.chain_ordinals()) == {"keep-chain", "added-chain"}
     assert "stale-chain" not in store.effect_order_overrides()
-    assert "effect_chain:keep-chain" in collapsed
-    assert "effect_chain:stale-chain" not in collapsed
-    assert "effect_chain:orphan-chain" not in collapsed
+    assert effect_chain_collapsed_header_key("keep-chain") in collapsed
+    assert effect_chain_collapsed_header_key("stale-chain") not in collapsed
+    assert effect_chain_collapsed_header_key("orphan-chain") not in collapsed
 
     # generation確定後の通常frameは条件分岐の不在をprune根拠にしない。
     revision = store.revision

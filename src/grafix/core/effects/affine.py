@@ -43,7 +43,7 @@ affine_meta = {
 }
 
 affine_ui_visible = {
-    "pivot": lambda v: not bool(v.get("auto_center", True)),
+    "pivot": lambda v: not v.get("auto_center", True),
 }
 
 @effect(meta=affine_meta, ui_visible=affine_ui_visible)
@@ -80,15 +80,15 @@ def affine(
 
     Notes
     -----
-    回転は旧仕様（Rz・Ry・Rx の合成）を踏襲する。
+    回転行列は `Rz @ Ry @ Rx` の順に合成する。
     """
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
-    rx_deg, ry_deg, rz_deg = float(rotation[0]), float(rotation[1]), float(rotation[2])
-    dx, dy, dz = float(delta[0]), float(delta[1]), float(delta[2])
+    sx, sy, sz = scale
+    rx_deg, ry_deg, rz_deg = rotation
+    dx, dy, dz = delta
 
     if (
         sx == 1.0
@@ -107,10 +107,7 @@ def affine(
     if auto_center:
         center = coords64.mean(axis=0)
     else:
-        center = np.array(
-            [float(pivot[0]), float(pivot[1]), float(pivot[2])],
-            dtype=np.float64,
-        )
+        center = np.asarray(pivot, dtype=np.float64)
 
     centered = coords64 - center
     scaled = centered * np.array([sx, sy, sz], dtype=np.float64)

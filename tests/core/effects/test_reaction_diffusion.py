@@ -11,7 +11,7 @@ import pytest
 from grafix.api import E, G
 from grafix.core.operation_diagnostics import operation_diagnostic_context
 from grafix.core.preview_quality import preview_quality_context
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 
 
 def _circle_ring(radius: float, sides: int) -> np.ndarray:
@@ -47,6 +47,36 @@ def _kernel_fixture() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         dtype=np.uint8,
     )
     return u0, v0, mask
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"grid_pitch": 0.0}, "grid_pitch"),
+        ({"steps": -1}, "steps"),
+        ({"du": -0.1}, "du/dv"),
+        ({"dv": -0.1}, "du/dv"),
+        ({"feed": -0.1}, "feed/kill"),
+        ({"kill": -0.1}, "feed/kill"),
+        ({"dt": 0.0}, "dt"),
+        ({"seed": -1}, "seed"),
+        ({"seed_radius": -1.0}, "seed_radius"),
+        ({"noise": -0.1}, "noise"),
+        ({"level": -0.1}, "level"),
+        ({"level": 1.1}, "level"),
+        ({"min_points": 0}, "min_points"),
+    ],
+)
+def test_reaction_diffusion_rejects_invalid_ranges_through_public_effect(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    empty_mask = G.polygon(activate=False)
+
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.reaction_diffusion(**kwargs)(empty_mask))  # type: ignore[arg-type]
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert match in str(exc_info.value.__cause__)
 
 
 @pytest.mark.parametrize(

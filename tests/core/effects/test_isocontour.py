@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
 from grafix.core.effects.isocontour import isocontour
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 
 
 def test_isocontour_returns_closed_loops() -> None:
@@ -71,6 +72,29 @@ def test_isocontour_empty_mask_returns_empty() -> None:
     out = realize(E.isocontour(grid_pitch=1.0, spacing=2.0, max_dist=10.0)(empty_mask))
     assert out.coords.shape == (0, 3)
     assert out.offsets.tolist() == [0]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"grid_pitch": 0.0}, "grid_pitch"),
+        ({"spacing": 0.0}, "spacing"),
+        ({"max_dist": -1.0}, "max_dist"),
+        ({"auto_close_threshold": -1.0}, "auto_close_threshold"),
+        ({"gamma": 0.0}, "gamma"),
+        ({"level_step": 0}, "level_step"),
+    ],
+)
+def test_isocontour_rejects_invalid_ranges_through_public_effect(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    empty_mask = G.polygon(activate=False)
+
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.isocontour(**kwargs)(empty_mask))  # type: ignore[arg-type]
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert match in str(exc_info.value.__cause__)
 
 
 def test_isocontour_outer_hole_on_tilted_plane() -> None:

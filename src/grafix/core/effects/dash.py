@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
 from grafix.core.effect_registry import effect
-from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
-from .util import float_cycle
+from grafix.core.realized_geometry import GeomTuple
 
 dash_meta = {
     "dash_length": ParamMeta(
@@ -39,13 +36,14 @@ dash_meta = {
     ),
 }
 
+
 @effect(meta=dash_meta)
 def dash(
     g: GeomTuple,
     *,
-    dash_length: float | Sequence[float] = 6.0,
-    gap_length: float | Sequence[float] = 3.0,
-    offset: float | Sequence[float] = 0.0,
+    dash_length: float = 6.0,
+    gap_length: float = 3.0,
+    offset: float = 0.0,
     offset_jitter: float = 0.0,
 ) -> GeomTuple:
     """連続線を破線に変換する。
@@ -54,18 +52,15 @@ def dash(
     ----------
     g : tuple[np.ndarray, np.ndarray]
         入力実体ジオメトリ（coords, offsets）。
-    dash_length : float | Sequence[float], default 6.0
+    dash_length : float, default 6.0
         ダッシュ（描画区間）の長さ [mm]。
-        シーケンス指定時は 1 本のポリライン内でダッシュごとにサイクル適用する。
-    gap_length : float | Sequence[float], default 3.0
+    gap_length : float, default 3.0
         ギャップ（非描画区間）の長さ [mm]。
-        シーケンス指定時は 1 本のポリライン内でダッシュごとにサイクル適用する。
-    offset : float | Sequence[float], default 0.0
-        パターン位相オフセット [mm]。正の値で開始位相が前方へシフトする。
-        シーケンス指定時は入力ポリラインごとにサイクル適用する。
+    offset : float, default 0.0
+        パターン位相オフセット [mm]。パターン長の剰余へ正規化する。
     offset_jitter : float, default 0.0
         ポリラインごとに offset に加えるジッター量 [mm]。
-        `[-offset_jitter, +offset_jitter]` の一様乱数で、0 以下は無効。
+        `[-offset_jitter, +offset_jitter]` の一様乱数。0 で無効になる。
 
     Returns
     -------
@@ -74,38 +69,31 @@ def dash(
 
     Notes
     -----
-    旧仕様踏襲:
-    - `dash_length + gap_length <= 0` は no-op。
+    - 長さ、offset、offset_jitter の負値は ValueError。
+    - `dash_length + gap_length == 0` は no-op。
     - 全長が 0 または頂点数 < 2 の線は原線を保持する。
     - offset は「位相」として扱い、開始が部分ダッシュになり得る。
     - offset_jitter は決定的な RNG（seed=0）で生成し、再現性を優先する。
-    - シーケンス指定はコードからの指定を想定する（parameter_gui の編集対象にはしない）。
     """
+    values = (dash_length, gap_length, offset, offset_jitter)
+    if any(value < 0.0 for value in values):
+        raise ValueError(
+            "dash_length、gap_length、offset、offset_jitter は 0 以上である必要があります"
+        )
+    pattern = dash_length + gap_length
+    if not np.isfinite(pattern):
+        raise ValueError("dash_length + gap_length は有限値である必要があります")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    dash_seq = float_cycle(dash_length)
-    gap_seq = float_cycle(gap_length)
-    dash_arr = np.asarray(dash_seq, dtype=np.float64)
-    gap_arr = np.asarray(gap_seq, dtype=np.float64)
-    if not np.all(np.isfinite(dash_arr)) or not np.all(np.isfinite(gap_arr)):
-        return coords, offsets
-    if np.any(dash_arr < 0.0) or np.any(gap_arr < 0.0):
+    # dash_len が 0 でも pattern が正なら「ダッシュ無し → 原線維持」に落ちる。
+    if pattern == 0.0:
         return coords, offsets
 
-    # 単一値指定は旧仕様の no-op 判定を維持する。
-    if dash_arr.size == 1 and gap_arr.size == 1:
-        # dash_len が 0 でも pattern が正なら「ダッシュ無し → 原線維持」に落ちる（旧仕様）。
-        pattern = float(dash_arr[0] + gap_arr[0])
-        if not np.isfinite(pattern) or pattern <= 0.0:
-            return coords, offsets
-
-    # 線ごとの offset にランダム量を加える（決定的な RNG を使用、旧仕様）。
-    offset_seq = float_cycle(offset)
-    jitter_scale = float(offset_jitter)
-    if not np.isfinite(jitter_scale) or jitter_scale <= 0.0:
-        jitter_scale = 0.0
+    # 線ごとの offset にランダム量を加える（決定的な RNG を使用）。
+    jitter_scale = offset_jitter
 
     n_lines = int(offsets.size) - 1
     if n_lines <= 0:
@@ -114,14 +102,10 @@ def dash(
     line_offset_arr = np.empty(n_lines, dtype=np.float64)
     rng = np.random.default_rng(0) if jitter_scale > 0.0 else None
     for li in range(n_lines):
-        base_off = float(offset_seq[li % len(offset_seq)])
-        if not np.isfinite(base_off) or base_off < 0.0:
-            base_off = 0.0
+        jitter = 0.0
         if rng is not None:
-            base_off += float(rng.uniform(-jitter_scale, jitter_scale))
-            if base_off < 0.0:
-                base_off = 0.0
-        line_offset_arr[li] = base_off
+            jitter = float(rng.uniform(-jitter_scale, jitter_scale))
+        line_offset_arr[li] = (offset + jitter) % pattern
 
     # ---- 2 パス実装（count → fill） ---------------------------------------
     total_out_vertices = 0
@@ -129,16 +113,13 @@ def dash(
     for li in range(n_lines):
         v = coords[offsets[li] : offsets[li + 1]]
         tv, tl = _count_line(
-            v.astype(np.float32, copy=False),
-            dash_arr,
-            gap_arr,
+            v,
+            dash_length,
+            pattern,
             float(line_offset_arr[li]),
         )
         total_out_vertices += int(tv)
         total_out_lines += int(tl)
-
-    if total_out_lines == 0:
-        return coords, offsets
 
     out_coords = np.empty((total_out_vertices, 3), dtype=np.float32)
     out_offsets = np.empty((total_out_lines + 1,), dtype=np.int32)
@@ -149,22 +130,19 @@ def dash(
     for li in range(n_lines):
         v = coords[offsets[li] : offsets[li + 1]]
         vc, oc = _fill_line(
-            v.astype(np.float32, copy=False),
-            dash_arr,
-            gap_arr,
+            v,
+            dash_length,
+            pattern,
             float(line_offset_arr[li]),
             out_coords,
             out_offsets,
             int(vc),
             int(oc),
         )
-
-    if oc < out_offsets.shape[0]:
-        out_offsets[oc:] = vc
     return out_coords, out_offsets
 
 
-# ── Kernels（旧実装を踏襲）──────────────────────────────────────────────
+# ── Kernels ────────────────────────────────────────────────────────────
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
 def _build_arc_length(v: np.ndarray) -> tuple[np.ndarray, float]:
     """各頂点の弧長と全長を計算する。"""
@@ -236,17 +214,12 @@ def _copy_original_line(
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
 def _count_line(
     v: np.ndarray,
-    dash_lengths: np.ndarray,
-    gap_lengths: np.ndarray,
+    dash_length: float,
+    pattern: float,
     offset: float,
 ) -> tuple[int, int]:
     n = v.shape[0]
     if n < 2:
-        return n, 1
-
-    n_dash = dash_lengths.shape[0]
-    n_gap = gap_lengths.shape[0]
-    if n_dash == 0 or n_gap == 0:
         return n, 1
 
     s, length = _build_arc_length(v)
@@ -256,19 +229,11 @@ def _count_line(
     total_vertices = 0
     m = 0
     u_pos = 0.0
-    di = 0
-    gi = 0
     upper = length + offset
 
     while u_pos < upper:
-        dash_len = dash_lengths[di]
-        gap_len = gap_lengths[gi]
-        pattern = dash_len + gap_len
-        if pattern <= 0.0 or not np.isfinite(pattern):
-            return n, 1
-
         has_seg, t_start, t_end = _project_segment_to_line(
-            u_pos, dash_len, offset, length, upper
+            u_pos, dash_length, offset, length, upper
         )
         if has_seg:
             s_idx = int(np.searchsorted(s, t_start))
@@ -280,12 +245,6 @@ def _count_line(
             m += 1
 
         u_pos += pattern
-        di += 1
-        if di >= n_dash:
-            di = 0
-        gi += 1
-        if gi >= n_gap:
-            gi = 0
 
     if m == 0:
         return n, 1
@@ -296,8 +255,8 @@ def _count_line(
 @njit(cache=True, fastmath=True)  # type: ignore[misc]
 def _fill_line(
     v: np.ndarray,
-    dash_lengths: np.ndarray,
-    gap_lengths: np.ndarray,
+    dash_length: float,
+    pattern: float,
     offset: float,
     out_c: np.ndarray,
     out_o: np.ndarray,
@@ -310,30 +269,17 @@ def _fill_line(
     if n < 2:
         return _copy_original_line(v, out_c, out_o, vc, oc)
 
-    n_dash = dash_lengths.shape[0]
-    n_gap = gap_lengths.shape[0]
-    if n_dash == 0 or n_gap == 0:
-        return _copy_original_line(v, out_c, out_o, vc, oc)
-
     s, length = _build_arc_length(v)
     if length <= 0.0 or not np.isfinite(length):
         return _copy_original_line(v, out_c, out_o, vc, oc)
 
     u_pos = 0.0
-    di = 0
-    gi = 0
     upper = length + offset
     written = 0
 
     while u_pos < upper:
-        dash_len = dash_lengths[di]
-        gap_len = gap_lengths[gi]
-        pattern = dash_len + gap_len
-        if pattern <= 0.0 or not np.isfinite(pattern):
-            return _copy_original_line(v, out_c, out_o, vc, oc)
-
         has_seg, t_start, t_end = _project_segment_to_line(
-            u_pos, dash_len, offset, length, upper
+            u_pos, dash_length, offset, length, upper
         )
         if has_seg:
             s_idx = int(np.searchsorted(s, t_start))
@@ -391,12 +337,6 @@ def _fill_line(
             oc += 1
 
         u_pos += pattern
-        di += 1
-        if di >= n_dash:
-            di = 0
-        gi += 1
-        if gi >= n_gap:
-            gi = 0
 
     if written == 0:
         return _copy_original_line(v, out_c, out_o, vc, oc)

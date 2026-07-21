@@ -53,6 +53,7 @@ from grafix.interactive.midi.factory import create_midi_controller
 from grafix.interactive.midi import MidiSession
 from grafix.interactive.midi.midi_controller import (
     MidiController,
+    _shutdown_midi_controller,
     maybe_load_frozen_cc_snapshot,
     save_cc_snapshot,
 )
@@ -172,11 +173,21 @@ def _persist_param_store_on_shutdown(
 def _close_midi_controller(controller: MidiController) -> None:
     """MIDI snapshot 保存に失敗しても入力 port の close まで試す。"""
 
-    _run_cleanup_steps(
-        [
-            ("save MIDI CC snapshot", controller.save),
-            ("close MIDI controller", controller.close),
-        ]
+    def report_save_skipped(blocked_controller: MidiController) -> None:
+        result = blocked_controller.snapshot_load_result
+        _logger.warning(
+            "MIDI CC snapshot auto-save skipped: status=%s, source=%s",
+            result.status,
+            result.source,
+        )
+
+    _shutdown_midi_controller(
+        controller,
+        on_snapshot_save_skipped=report_save_skipped,
+        report_secondary=lambda label: _logger.exception(
+            "MIDI shutdown cleanup failed after an earlier error: %s",
+            label,
+        ),
     )
 
 
@@ -776,7 +787,7 @@ def run(
         MIDI 入力ポート名。
         - `"auto"`: 利用可能な入力ポートがあれば 1 つ目へ自動接続する（既定）。
           config.yaml に `midi.inputs`（接続優先リスト）があれば、その順に接続を試す。
-          どれも見つからなければ、利用可能な入力ポートの 1 つ目へフォールバックする。
+          優先リストがある場合、どの候補も見つからなければ接続しない。
           接続できない場合でも、前回保存した CC スナップショットを凍結して使う（描画が変わらない）。
         - `"TX-6 Bluetooth"` のような文字列: 指定ポートへ接続する。
         - None: MIDI を無効化する。
@@ -968,7 +979,7 @@ def run(
 
         # DrawWindowSystem が完成するまでは runner が MIDI を所有する。
         closers.append(close_unowned_midi)
-        frozen_cc_snapshot = maybe_load_frozen_cc_snapshot(
+        frozen_cc_result = maybe_load_frozen_cc_snapshot(
             port_name=midi_port_name,
             controller=midi_controller,
             profile_name=midi_profile_name,
@@ -989,14 +1000,19 @@ def run(
                 priority_inputs=cfg.midi_inputs,
             )
 
+        snapshot_result = (
+            midi_controller.snapshot_load_result
+            if midi_controller is not None
+            else frozen_cc_result
+        )
         midi_session = MidiSession(
             controller=midi_controller,
-            frozen_values=frozen_cc_snapshot,
+            snapshot_load_result=snapshot_result,
             reconnect=None if midi_port_name is None else reconnect_midi,
             diagnostics=(
                 None if monitor is None else monitor.diagnostic_center
             ),
-            clear_frozen=lambda: save_cc_snapshot({}, midi_path),
+            discard_persisted_snapshot=lambda: save_cc_snapshot({}, midi_path),
         )
         unowned_midi_controller = None
         unowned_midi_session = midi_session
@@ -1027,12 +1043,10 @@ def run(
                 _publish_runtime_config_fallback(monitor, config_fallback)
 
             def retry_midi(event: DiagnosticEvent) -> None:
-                if midi_session.reconnect():
-                    center.dismiss(event)
+                midi_session.retry_for_diagnostic(event)
 
             def clear_frozen_midi(event: DiagnosticEvent) -> None:
-                midi_session.clear_frozen_snapshot()
-                center.dismiss(event)
+                midi_session.discard_for_diagnostic(event)
 
             center.register_action("retry", retry_midi, category="midi")
             center.register_action("discard", clear_frozen_midi, category="midi")
@@ -1141,7 +1155,7 @@ def run(
                 # session config の Inspector 位置を明示的に適用する。
                 gui.window.set_location(*cfg.window_pos_parameter_gui)
             # Inspector を preview より先に描く。pyglet が配送済みの slider edit を
-            # 同じ tick の preview evaluation へ渡し、従来の固定 1-frame 遅延を除く。
+            # 同じ tick の preview evaluation へ渡し、固定 1-frame 遅延を生じさせない。
             # GUI hot path は値変更時も全 table rebuild を行わないため、先行描画が
             # preview の critical path を不必要に伸ばさない。
             tasks.insert(

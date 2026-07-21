@@ -38,7 +38,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--midi-port",
         default="auto",
-        help="MIDI port名。'none'で無効化する",
+        help="MIDI port名。exact 'none' だけが無効化token",
     )
     parser.add_argument("--midi-mode", choices=("7bit", "14bit"), default="7bit")
     parser.add_argument("--workers", type=int, default=1, help="draw worker数。0は同期")
@@ -71,8 +71,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         with SourceReloadController(args.sketch) as controller:
             midi_port_name = (
                 None
-                if str(args.midi_port).strip().casefold() in {"", "none", "off"}
-                else str(args.midi_port)
+                if args.midi_port == "none"
+                else args.midi_port
             )
             watch_context = (
                 source_reload_context(controller)

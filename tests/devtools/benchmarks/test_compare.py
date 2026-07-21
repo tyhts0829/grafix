@@ -89,6 +89,8 @@ def test_compare_allows_different_source_and_reports_ratio() -> None:
     assert comparison.rows[0]["ratio"] == 0.5
     assert comparison.rows[0]["checksum_equal"] is True
     assert comparison.rows[0]["checksum_kind_equal"] is True
+    with pytest.raises(TypeError):
+        comparison.rows[0]["ratio"] = 2.0  # type: ignore[index]
 
 
 def test_compare_treats_checksum_kind_change_as_semantic_mismatch() -> None:
@@ -279,8 +281,8 @@ def test_compare_keeps_status_regression_when_head_is_unmeasured(
     assert row["base_status"] == "ok"
     assert row["head_status"] == head_status
     assert row["ratio"] is None
-    assert row["metrics"] == []
-    assert row["contracts"] == []
+    assert row["metrics"] == ()
+    assert row["contracts"] == ()
 
 
 @pytest.mark.parametrize(

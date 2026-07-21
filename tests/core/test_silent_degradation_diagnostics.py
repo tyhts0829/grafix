@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 
 from grafix.core.effects.extrude import extrude
-from grafix.core.effects.fill import fill
 from grafix.core.effects.growth import growth
 from grafix.core.effects.relax import relax
 from grafix.core.effects.trim import trim
@@ -61,12 +60,6 @@ def test_extrude_clamp_reports_requested_and_effective_scale() -> None:
     ) == ("extrude.scale", 4.0, 3.0)
 
 
-def test_fill_clamp_reports_requested_and_effective_angle_sets() -> None:
-    assert _single_diagnostic(
-        lambda: fill(_square(), angle_sets=0, density=5.0)
-    ) == ("fill.angle_sets", 0, 1)
-
-
 def test_weave_clamp_reports_requested_and_effective_step() -> None:
     assert _single_diagnostic(
         lambda: weave(
@@ -85,17 +78,11 @@ def test_relax_clamp_reports_requested_and_effective_step() -> None:
 
 
 def test_sphere_clamp_reports_requested_and_effective_subdivisions() -> None:
-    assert _single_diagnostic(lambda: sphere(subdivisions=-1)) == (
+    assert _single_diagnostic(lambda: sphere(subdivisions=6)) == (
         "sphere.subdivisions",
-        -1.0,
-        0,
+        6,
+        5,
     )
-
-
-def test_trim_clamp_reports_requested_and_effective_start() -> None:
-    assert _single_diagnostic(
-        lambda: trim(_line(), start_param=-1.0, end_param=0.5)
-    ) == ("trim.start_param", -1.0, 0.0)
 
 
 def test_growth_invalid_mask_reports_empty_fallback() -> None:

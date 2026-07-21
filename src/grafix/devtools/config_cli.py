@@ -9,9 +9,8 @@ from pathlib import Path
 from grafix.core.runtime_config import RuntimeConfigReport, runtime_config_report, set_config_path
 
 
-def _add_config_path_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_config_path_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("path", nargs="?", help="検証する config.yaml（省略時は通常探索）")
-    parser.add_argument("--config", dest="config_path", help="path と同義の明示 config")
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -19,21 +18,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     validate_parser = subparsers.add_parser("validate", help="config を strict validation する")
     show_parser = subparsers.add_parser("show", help="effective config と出典を表示する")
-    _add_config_path_arguments(validate_parser)
-    _add_config_path_arguments(show_parser)
+    _add_config_path_argument(validate_parser)
+    _add_config_path_argument(show_parser)
     return parser.parse_args(argv)
-
-
-def _selected_path(args: argparse.Namespace) -> str | None:
-    positional = args.path
-    option = args.config_path
-    if positional is not None and option is not None:
-        raise ValueError("config path は positional と --config のどちらか一方だけ指定してください")
-    if option is not None:
-        return str(option)
-    if positional is not None:
-        return str(positional)
-    return None
 
 
 def _format_resolved_path(value: Path | tuple[Path, ...] | None) -> str:
@@ -61,13 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     args = _parse_args(argv)
 
-    try:
-        selected_path = _selected_path(args)
-    except ValueError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        return 2
-
-    set_config_path(selected_path)
+    set_config_path(args.path)
     try:
         report = runtime_config_report()
     except (OSError, RuntimeError, ValueError) as exc:

@@ -5,8 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import isfinite
+from types import MappingProxyType
 from typing import Generic, TypeVar
 
+from .collapsed_header import (
+    CollapsedHeaderKey,
+    decode_collapsed_header_key,
+)
 from .effects import (
     EffectOrder,
     EffectStepKey,
@@ -18,11 +23,11 @@ from .labels import MAX_LABEL_LENGTH
 from .memento import ParamStoreMemento
 from .meta import ParamMeta
 from .meta_spec import PARAM_META_SPEC_KEYS, meta_from_record
-from .state import ParamState
+from .state import ParamState, ParamStateSnapshot
 from .validation import CcKey, validate_cc_key
 from .variations import Variation
 
-PARAM_STORE_SCHEMA_VERSION = 3
+PARAM_STORE_SCHEMA_VERSION = 4
 _PARAM_STORE_TOP_LEVEL_KEYS = frozenset(
     {
         "schema_version",
@@ -57,9 +62,7 @@ _META_OPTIONAL_FIELDS = PARAM_META_SPEC_KEYS - {
 }
 _EXPLICIT_FIELDS = _PARAMETER_KEY_FIELDS | {"explicit"}
 _LABEL_FIELDS = frozenset({"op", "site_id", "label"})
-_EFFECT_STEP_FIELDS = frozenset(
-    {"op", "site_id", "chain_id", "step_index", "n_inputs"}
-)
+_EFFECT_STEP_FIELDS = frozenset({"op", "site_id", "chain_id", "step_index", "n_inputs"})
 _UI_FIELDS = frozenset(
     {
         "collapsed_headers",
@@ -85,16 +88,12 @@ _VARIATION_SNAPSHOT_FIELDS = frozenset(
     {
         "states",
         "meta",
-        "collapsed_by_header",
+        "collapsed_headers",
         "effect_order_state",
     }
 )
-_VARIATION_EFFECT_ORDER_FIELDS = frozenset(
-    {"chain_id", "topology", "steps"}
-)
-_VARIATION_TOPOLOGY_STEP_FIELDS = frozenset(
-    {"op", "site_id", "n_inputs"}
-)
+_VARIATION_EFFECT_ORDER_FIELDS = frozenset({"chain_id", "topology", "steps"})
+_VARIATION_TOPOLOGY_STEP_FIELDS = frozenset({"op", "site_id", "n_inputs"})
 
 
 class ParamStoreSchemaError(ValueError):
@@ -105,14 +104,11 @@ class UnsupportedParamStoreSchemaError(ParamStoreSchemaError):
     """現行以外の ParamStore schema を読もうとした場合の例外。"""
 
     def __init__(self, found_version: int | None) -> None:
-        self.found_version = (
-            None if found_version is None else int(found_version)
-        )
+        self.found_version = None if found_version is None else int(found_version)
         self.supported_version = PARAM_STORE_SCHEMA_VERSION
         found = "missing" if found_version is None else str(found_version)
         super().__init__(
-            "unsupported ParamStore schema_version "
-            f"{found}; expected {self.supported_version}"
+            f"unsupported ParamStore schema_version {found}; expected {self.supported_version}"
         )
 
 
@@ -127,11 +123,7 @@ class ParamStoreDecodeIssue:
     def describe(self) -> str:
         """log/診断表示用の安定文字列を返す。"""
 
-        location = (
-            self.section
-            if self.index is None
-            else f"{self.section}[{self.index}]"
-        )
+        location = self.section if self.index is None else f"{self.section}[{self.index}]"
         return f"{location}: {self.reason}"
 
 
@@ -139,26 +131,52 @@ class ParamStoreDecodeIssue:
 class ParsedState:
     """検証・正規化済みの state entry。"""
 
-    value: ParamState
+    value: ParamStateSnapshot
 
 
 @dataclass(frozen=True, slots=True)
 class ParsedParamStore:
     """一回の parse で得た canonical 値と全 issue。"""
 
-    states: dict[ParameterKey, ParsedState]
-    meta: dict[ParameterKey, ParamMeta]
-    explicit_by_key: dict[ParameterKey, bool]
-    labels: dict[tuple[str, str], str]
-    ordinals: dict[str, dict[str, int]]
-    topologies: dict[str, tuple[EffectStepTopology, ...]]
-    chain_ordinals: dict[str, int]
-    effect_order_overrides: dict[str, EffectOrder]
-    collapsed_headers: frozenset[str]
+    states: Mapping[ParameterKey, ParsedState]
+    meta: Mapping[ParameterKey, ParamMeta]
+    explicit_by_key: Mapping[ParameterKey, bool]
+    labels: Mapping[tuple[str, str], str]
+    ordinals: Mapping[str, Mapping[str, int]]
+    topologies: Mapping[str, tuple[EffectStepTopology, ...]]
+    chain_ordinals: Mapping[str, int]
+    effect_order_overrides: Mapping[str, EffectOrder]
+    collapsed_headers: frozenset[CollapsedHeaderKey]
     locked_parameters: frozenset[ParameterKey]
     favorite_parameters: frozenset[ParameterKey]
     variations: tuple[Variation, ...]
     issues: tuple[ParamStoreDecodeIssue, ...]
+
+    def __post_init__(self) -> None:
+        """parse 結果が所有する mapping を読み取り専用に固定する。"""
+
+        for field_name in (
+            "states",
+            "meta",
+            "explicit_by_key",
+            "labels",
+            "topologies",
+            "chain_ordinals",
+            "effect_order_overrides",
+        ):
+            value = getattr(self, field_name)
+            object.__setattr__(
+                self,
+                field_name,
+                MappingProxyType(dict(value)),
+            )
+        object.__setattr__(
+            self,
+            "ordinals",
+            MappingProxyType(
+                {op: MappingProxyType(dict(by_site)) for op, by_site in self.ordinals.items()}
+            ),
+        )
 
 
 T = TypeVar("T")
@@ -174,7 +192,7 @@ class _ParsedSection(Generic[T]):
 
 @dataclass(frozen=True, slots=True)
 class _ParsedUi:
-    collapsed_headers: frozenset[str]
+    collapsed_headers: frozenset[CollapsedHeaderKey]
     effect_order_overrides: dict[str, EffectOrder]
     locked_parameters: frozenset[ParameterKey]
     favorite_parameters: frozenset[ParameterKey]
@@ -205,9 +223,7 @@ def parse_param_store_payload(obj: object) -> ParsedParamStore:
     meta = _parse_meta(obj["meta"])
     states = _parse_states(obj["states"], meta.value)
     state_keys = frozenset(states.value)
-    canonical_meta = {
-        key: value for key, value in meta.value.items() if key in state_keys
-    }
+    canonical_meta = {key: value for key, value in meta.value.items() if key in state_keys}
     meta_orphan_issues = tuple(
         ParamStoreDecodeIssue("meta", index, "matching state is missing")
         for index, key in enumerate(meta.value)
@@ -277,9 +293,7 @@ def _validate_top_level_keys(obj: dict[object, object]) -> None:
         details.append(f"missing={missing!r}")
     if unknown:
         details.append(f"unknown={unknown!r}")
-    raise ParamStoreSchemaError(
-        "invalid ParamStore top-level fields: " + ", ".join(details)
-    )
+    raise ParamStoreSchemaError("invalid ParamStore top-level fields: " + ", ".join(details))
 
 
 def _require_record_fields(
@@ -353,8 +367,7 @@ def _validate_meta_record(item: Mapping[object, object]) -> None:
         raise TypeError("kind must be a non-empty string")
     choices = item["choices"]
     if choices is not None and (
-        not isinstance(choices, list)
-        or any(not isinstance(choice, str) for choice in choices)
+        not isinstance(choices, list) or any(not isinstance(choice, str) for choice in choices)
     ):
         raise TypeError("choices must be a list of strings or null")
 
@@ -376,9 +389,7 @@ def _parse_meta(
     issues = list(entries.issues)
     for index, item in enumerate(entries.value):
         if not isinstance(item, dict):
-            issues.append(
-                ParamStoreDecodeIssue(section, index, "expected an object")
-            )
+            issues.append(ParamStoreDecodeIssue(section, index, "expected an object"))
             continue
         try:
             _validate_meta_record(item)
@@ -407,9 +418,7 @@ def _parse_cc_key(value: object) -> tuple[CcKey, str | None]:
         if component is None:
             components.append(None)
         elif (
-            isinstance(component, int)
-            and not isinstance(component, bool)
-            and 0 <= component <= 127
+            isinstance(component, int) and not isinstance(component, bool) and 0 <= component <= 127
         ):
             components.append(int(component))
         else:
@@ -458,13 +467,10 @@ def _parse_state_value(value: object, meta: ParamMeta) -> object:
         return value
     if kind in {"vec3", "rgb"}:
         if not isinstance(value, list) or len(value) != 3:
-            raise TypeError(
-                f"ui_value must be a three-item list for {kind} parameters"
-            )
+            raise TypeError(f"ui_value must be a three-item list for {kind} parameters")
         if kind == "vec3":
             return tuple(
-                _finite_number(component, field="ui_value component")
-                for component in value
+                _finite_number(component, field="ui_value component") for component in value
             )
         if any(
             isinstance(component, bool)
@@ -473,9 +479,7 @@ def _parse_state_value(value: object, meta: ParamMeta) -> object:
             or component > 255
             for component in value
         ):
-            raise TypeError(
-                "ui_value components must be ints in 0..255 for rgb parameters"
-            )
+            raise TypeError("ui_value components must be ints in 0..255 for rgb parameters")
         return tuple(int(component) for component in value)
 
     raise AssertionError(f"unreachable parameter kind: {kind!r}")
@@ -492,9 +496,7 @@ def _parse_states(
     issues = list(entries.issues)
     for index, item in enumerate(entries.value):
         if not isinstance(item, dict):
-            issues.append(
-                ParamStoreDecodeIssue(section, index, "expected an object")
-            )
+            issues.append(ParamStoreDecodeIssue(section, index, "expected an object"))
             continue
         try:
             _require_record_fields(item, required=_STATE_FIELDS)
@@ -523,7 +525,7 @@ def _parse_states(
         except (KeyError, TypeError, ValueError) as exc:
             issues.append(_entry_issue(section, index, exc))
             continue
-        out[key] = ParsedState(value=state)
+        out[key] = ParsedState(value=ParamStateSnapshot.from_state(state))
     return _ParsedSection(out, tuple(issues))
 
 
@@ -536,9 +538,7 @@ def _parse_explicit(
     issues = list(entries.issues)
     for index, item in enumerate(entries.value):
         if not isinstance(item, dict):
-            issues.append(
-                ParamStoreDecodeIssue("explicit", index, "expected an object")
-            )
+            issues.append(ParamStoreDecodeIssue("explicit", index, "expected an object"))
             continue
         try:
             _require_record_fields(item, required=_EXPLICIT_FIELDS)
@@ -576,9 +576,7 @@ def _parse_labels(
     issues = list(entries.issues)
     for index, item in enumerate(entries.value):
         if not isinstance(item, dict):
-            issues.append(
-                ParamStoreDecodeIssue("labels", index, "expected an object")
-            )
+            issues.append(ParamStoreDecodeIssue("labels", index, "expected an object"))
             continue
         try:
             _require_record_fields(item, required=_LABEL_FIELDS)
@@ -600,9 +598,7 @@ def _parse_labels(
             issues.append(_entry_issue("labels", index, exc))
             continue
         if len(label) > MAX_LABEL_LENGTH:
-            issues.append(
-                ParamStoreDecodeIssue("labels", index, "label was truncated")
-            )
+            issues.append(ParamStoreDecodeIssue("labels", index, "label was truncated"))
             label = label[:MAX_LABEL_LENGTH]
         out[group] = label
     return _ParsedSection(out, tuple(issues))
@@ -622,9 +618,7 @@ def _parse_ordinals(
     provided_groups: set[tuple[str, str]] = set()
     entry_index = 0
     for op, raw_mapping in value.items():
-        if not isinstance(op, str) or not op.strip() or not isinstance(
-            raw_mapping, dict
-        ):
+        if not isinstance(op, str) or not op.strip() or not isinstance(raw_mapping, dict):
             issues.append(
                 ParamStoreDecodeIssue(
                     "ordinals",
@@ -666,10 +660,7 @@ def _parse_ordinals(
                     )
                 )
             ordered = sorted(requested, key=lambda item: (item[1], item[0]))
-            out[op] = {
-                site_id: index
-                for index, (site_id, _ordinal) in enumerate(ordered, start=1)
-            }
+            out[op] = {site_id: index for index, (site_id, _ordinal) in enumerate(ordered, start=1)}
 
     for op, site_id in sorted(required_groups):
         mapping = out.setdefault(op, {})
@@ -695,9 +686,7 @@ def _parse_effect_topologies(
     invalid_chains: set[str] = set()
     for index, item in enumerate(entries.value):
         if not isinstance(item, dict):
-            issues.append(
-                ParamStoreDecodeIssue("effect_steps", index, "expected an object")
-            )
+            issues.append(ParamStoreDecodeIssue("effect_steps", index, "expected an object"))
             continue
         raw_chain_id = item.get("chain_id")
         chain_hint = raw_chain_id if isinstance(raw_chain_id, str) else None
@@ -716,20 +705,10 @@ def _parse_effect_topologies(
                 or not isinstance(chain_id, str)
                 or not chain_id.strip()
             ):
-                raise ValueError(
-                    "op, site_id, and chain_id must be non-empty strings"
-                )
-            if (
-                isinstance(step_index, bool)
-                or not isinstance(step_index, int)
-                or step_index < 0
-            ):
+                raise ValueError("op, site_id, and chain_id must be non-empty strings")
+            if isinstance(step_index, bool) or not isinstance(step_index, int) or step_index < 0:
                 raise ValueError("step_index must be an int >= 0")
-            if (
-                isinstance(n_inputs, bool)
-                or not isinstance(n_inputs, int)
-                or n_inputs < 1
-            ):
+            if isinstance(n_inputs, bool) or not isinstance(n_inputs, int) or n_inputs < 1:
                 raise ValueError("n_inputs must be an int >= 1")
             step = EffectStepTopology(op, site_id, n_inputs, step_index)
         except (KeyError, TypeError, ValueError) as exc:
@@ -776,9 +755,7 @@ def _parse_chain_ordinals(
 ) -> _ParsedSection[dict[str, int]]:
     if not isinstance(value, dict):
         raw: dict[object, object] = {}
-        issues = [
-            ParamStoreDecodeIssue("chain_ordinals", None, "expected an object")
-        ]
+        issues = [ParamStoreDecodeIssue("chain_ordinals", None, "expected an object")]
     else:
         raw = value
         issues = []
@@ -887,32 +864,22 @@ def _parse_effect_order_overrides(
                     or not isinstance(site_id, str)
                     or not site_id.strip()
                 ):
-                    raise ValueError(
-                        "step op and site_id must be non-empty strings"
-                    )
+                    raise ValueError("step op and site_id must be non-empty strings")
                 order.append((op, site_id))
             if len(set(order)) != len(order):
                 raise ValueError("duplicate step")
             code_order = tuple(step.key for step in topology)
             normalized = tuple(order)
-            if len(normalized) != len(code_order) or set(normalized) != set(
-                code_order
-            ):
-                raise ValueError(
-                    "steps must be an exact permutation of the effect topology"
-                )
+            if len(normalized) != len(code_order) or set(normalized) != set(code_order):
+                raise ValueError("steps must be an exact permutation of the effect topology")
             n_inputs_by_key = {step.key: step.n_inputs for step in topology}
             if any(
                 n_inputs_by_key[key] > 1 and order_index != 0
                 for order_index, key in enumerate(normalized)
             ):
-                raise ValueError(
-                    "multi-input effect must remain at the start of its chain"
-                )
+                raise ValueError("multi-input effect must remain at the start of its chain")
         except (TypeError, ValueError) as exc:
-            issues.append(
-                _entry_issue("ui.effect_order_overrides", index, exc)
-            )
+            issues.append(_entry_issue("ui.effect_order_overrides", index, exc))
             continue
         seen_chains.add(chain_id)
         if normalized != code_order:
@@ -968,25 +935,25 @@ def _parse_ui(
             issues.append(ParamStoreDecodeIssue("ui", None, str(exc)))
 
     raw_collapsed = value.get("collapsed_headers", [])
-    collapsed: set[str] = set()
+    collapsed: set[CollapsedHeaderKey] = set()
     if not isinstance(raw_collapsed, list):
-        issues.append(
-            ParamStoreDecodeIssue(
-                "ui.collapsed_headers", None, "expected a list"
-            )
-        )
+        issues.append(ParamStoreDecodeIssue("ui.collapsed_headers", None, "expected a list"))
     else:
         for index, item in enumerate(raw_collapsed):
-            if not isinstance(item, str):
+            try:
+                key = decode_collapsed_header_key(item)
+                if key in collapsed:
+                    raise ValueError("duplicate collapsed header key")
+            except (TypeError, ValueError) as exc:
                 issues.append(
                     ParamStoreDecodeIssue(
                         "ui.collapsed_headers",
                         index,
-                        "expected a string",
+                        str(exc),
                     )
                 )
                 continue
-            collapsed.add(item)
+            collapsed.add(key)
 
     overrides = _parse_effect_order_overrides(
         value.get("effect_order_overrides", []),
@@ -1038,30 +1005,37 @@ def _parse_variation_collapsed_headers(
     value: object,
     *,
     section: str,
-) -> _ParsedSection[dict[str, bool]]:
-    if not isinstance(value, dict):
+) -> _ParsedSection[dict[CollapsedHeaderKey, bool]]:
+    if not isinstance(value, list):
         return _ParsedSection(
             {},
-            (ParamStoreDecodeIssue(section, None, "expected an object"),),
+            (ParamStoreDecodeIssue(section, None, "expected a list"),),
         )
 
-    out: dict[str, bool] = {}
+    out: dict[CollapsedHeaderKey, bool] = {}
     issues: list[ParamStoreDecodeIssue] = []
-    for index, (header, collapsed) in enumerate(value.items()):
-        if (
-            not isinstance(header, str)
-            or not header
-            or not isinstance(collapsed, bool)
-        ):
+    for index, item in enumerate(value):
+        try:
+            if type(item) is not dict:
+                raise TypeError("collapsed header state must be an object")
+            collapsed = item.get("collapsed")
+            if type(collapsed) is not bool:
+                raise TypeError("collapsed must be an exact bool")
+            key = decode_collapsed_header_key(
+                {field: field_value for field, field_value in item.items() if field != "collapsed"}
+            )
+            if key in out:
+                raise ValueError("duplicate collapsed header key")
+        except (TypeError, ValueError) as exc:
             issues.append(
                 ParamStoreDecodeIssue(
                     section,
                     index,
-                    "header must be a non-empty string and value a bool",
+                    str(exc),
                 )
             )
             continue
-        out[header] = collapsed
+        out[key] = collapsed
     return _ParsedSection(out, tuple(issues))
 
 
@@ -1100,11 +1074,7 @@ def _parse_variation_topology_step(
         or not site_id.strip()
     ):
         raise TypeError("topology op and site_id must be non-empty strings")
-    if (
-        isinstance(n_inputs, bool)
-        or not isinstance(n_inputs, int)
-        or n_inputs < 1
-    ):
+    if isinstance(n_inputs, bool) or not isinstance(n_inputs, int) or n_inputs < 1:
         raise TypeError("topology n_inputs must be an int >= 1")
     return op, site_id, int(n_inputs)
 
@@ -1125,9 +1095,7 @@ def _parse_variation_effect_order_state(
     issues = list(entries.issues)
     for index, item in enumerate(entries.value):
         if not isinstance(item, dict):
-            issues.append(
-                ParamStoreDecodeIssue(section, index, "expected an object")
-            )
+            issues.append(ParamStoreDecodeIssue(section, index, "expected an object"))
             continue
         try:
             _require_record_fields(
@@ -1135,22 +1103,13 @@ def _parse_variation_effect_order_state(
                 required=_VARIATION_EFFECT_ORDER_FIELDS,
             )
             chain_id = item["chain_id"]
-            if (
-                not isinstance(chain_id, str)
-                or not chain_id.strip()
-                or chain_id in order_state
-            ):
-                raise ValueError(
-                    "chain_id must be a unique non-empty string"
-                )
+            if not isinstance(chain_id, str) or not chain_id.strip() or chain_id in order_state:
+                raise ValueError("chain_id must be a unique non-empty string")
 
             topology_obj = item["topology"]
             if not isinstance(topology_obj, list):
                 raise TypeError("topology must be a list")
-            topology = tuple(
-                _parse_variation_topology_step(step)
-                for step in topology_obj
-            )
+            topology = tuple(_parse_variation_topology_step(step) for step in topology_obj)
             topology_keys = tuple((op, site_id) for op, site_id, _ in topology)
             if len(set(topology_keys)) != len(topology_keys):
                 raise ValueError("topology contains duplicate step identities")
@@ -1161,29 +1120,19 @@ def _parse_variation_effect_order_state(
             else:
                 if not isinstance(steps_obj, list) or not steps_obj:
                     raise TypeError("steps must be a non-empty list or null")
-                order = tuple(
-                    _parse_variation_order_step(step)
-                    for step in steps_obj
-                )
+                order = tuple(_parse_variation_order_step(step) for step in steps_obj)
                 if (
                     len(order) != len(topology_keys)
                     or len(set(order)) != len(order)
                     or set(order) != set(topology_keys)
                 ):
-                    raise ValueError(
-                        "steps must be an exact permutation of topology"
-                    )
-                n_inputs_by_key = {
-                    (op, site_id): n_inputs
-                    for op, site_id, n_inputs in topology
-                }
+                    raise ValueError("steps must be an exact permutation of topology")
+                n_inputs_by_key = {(op, site_id): n_inputs for op, site_id, n_inputs in topology}
                 if any(
                     n_inputs_by_key[key] > 1 and order_index != 0
                     for order_index, key in enumerate(order)
                 ):
-                    raise ValueError(
-                        "multi-input effect must remain at the start"
-                    )
+                    raise ValueError("multi-input effect must remain at the start")
         except (KeyError, TypeError, ValueError) as exc:
             issues.append(_entry_issue(section, index, exc))
             continue
@@ -1254,9 +1203,7 @@ def _parse_variation(
         section=f"{snapshot_section}.states",
     )
     state_keys = frozenset(states.value)
-    canonical_meta = {
-        key: value for key, value in meta.value.items() if key in state_keys
-    }
+    canonical_meta = {key: value for key, value in meta.value.items() if key in state_keys}
     meta_orphan_issues = tuple(
         ParamStoreDecodeIssue(
             f"{snapshot_section}.meta",
@@ -1267,8 +1214,8 @@ def _parse_variation(
         if key not in state_keys
     )
     collapsed = _parse_variation_collapsed_headers(
-        snapshot_obj["collapsed_by_header"],
-        section=f"{snapshot_section}.collapsed_by_header",
+        snapshot_obj["collapsed_headers"],
+        section=f"{snapshot_section}.collapsed_headers",
     )
     order = _parse_variation_effect_order_state(
         snapshot_obj["effect_order_state"],
@@ -1285,7 +1232,12 @@ def _parse_variation(
             t=t,
             parameter_snapshot=ParamStoreMemento(
                 states={
-                    key: parsed.value for key, parsed in states.value.items()
+                    key: ParamState(
+                        override=parsed.value.override,
+                        ui_value=parsed.value.ui_value,
+                        cc_key=parsed.value.cc_key,
+                    )
+                    for key, parsed in states.value.items()
                 },
                 meta=canonical_meta,
                 collapsed_by_header=collapsed.value,
@@ -1333,11 +1285,7 @@ def _parse_variations(
         if variation is None:
             continue
         if variation.name in names:
-            issues.append(
-                ParamStoreDecodeIssue(
-                    "variations", index, "duplicate variation name"
-                )
-            )
+            issues.append(ParamStoreDecodeIssue("variations", index, "duplicate variation name"))
             continue
         names.add(variation.name)
         out.append(variation)

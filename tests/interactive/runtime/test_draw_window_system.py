@@ -33,6 +33,7 @@ from grafix.core.pipeline import RealizedLayer
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.runtime_config import runtime_config
 from grafix.interactive.midi import MidiSession
+from grafix.interactive.midi.midi_controller import CcSnapshotLoadResult
 from grafix.interactive.runtime.draw_window_system import DrawWindowSystem
 import grafix.interactive.runtime.draw_window_system as draw_window_module
 from grafix.interactive.runtime.export_job_system import (
@@ -58,7 +59,7 @@ _DEFAULTS = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
 
 
 def _realized_layer(*, site_id: str) -> RealizedLayer:
-    geometry = Geometry.create("line")
+    geometry = Geometry.create("draw-window-test-geometry")
     return RealizedLayer(
         layer=Layer(geometry=geometry, site_id=site_id),
         realized=RealizedGeometry(
@@ -529,6 +530,11 @@ def test_midi_frame_snapshot_distinguishes_live_frozen_and_disabled() -> None:
     class Midi:
         def __init__(self) -> None:
             self.poll_calls = 0
+            self.snapshot_load_result = CcSnapshotLoadResult(
+                values=(),
+                status="missing",
+                source=Path("snapshot.json"),
+            )
 
         def poll_pending(self) -> int:
             self.poll_calls += 1
@@ -541,7 +547,7 @@ def test_midi_frame_snapshot_distinguishes_live_frozen_and_disabled() -> None:
     midi = Midi()
     system._midi_session = MidiSession(
         controller=cast(Any, midi),
-        frozen_values={7: 0.25},
+        snapshot_load_result=midi.snapshot_load_result,
     )
 
     live = system._midi_frame_snapshot()
@@ -552,7 +558,12 @@ def test_midi_frame_snapshot_distinguishes_live_frozen_and_disabled() -> None:
 
     system._midi_session = MidiSession(
         controller=None,
-        frozen_values={7: 0.25},
+        snapshot_load_result=CcSnapshotLoadResult(
+            values=((7, 0.25),),
+            status="loaded",
+            source=Path("snapshot.json"),
+        ),
+        discard_persisted_snapshot=lambda: None,
     )
     frozen = system._midi_frame_snapshot()
     assert frozen is not None
@@ -1772,6 +1783,13 @@ def test_close_releases_remaining_resources_and_raises_first_cleanup_error(
             raise first_error
 
     class Midi:
+        def __init__(self) -> None:
+            self.snapshot_load_result = CcSnapshotLoadResult(
+                values=(),
+                status="missing",
+                source=Path("snapshot.json"),
+            )
+
         def save(self) -> None:
             calls.append("save midi")
 
@@ -1792,9 +1810,10 @@ def test_close_releases_remaining_resources_and_raises_first_cleanup_error(
     system._export_jobs = cast(Any, FaultyExportJobs())
     system._recording = cast(Any, SimpleNamespace(is_recording=True))
     system.stop_video_recording = stop_recording
+    midi = Midi()
     system._midi_session = MidiSession(
-        controller=cast(Any, Midi()),
-        frozen_values=None,
+        controller=cast(Any, midi),
+        snapshot_load_result=midi.snapshot_load_result,
     )
     system._scene_runner = cast(Any, SimpleNamespace(close=close_scene))
     system._renderer = cast(

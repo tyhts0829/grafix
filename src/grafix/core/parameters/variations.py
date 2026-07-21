@@ -22,6 +22,7 @@ from grafix.core.value_validation import (
     finite_real,
 )
 
+from .collapsed_header import encode_collapsed_header_key
 from .key import ParameterKey
 from .memento import (
     ParamStoreMemento,
@@ -717,7 +718,16 @@ def _encode_variation(variation: Variation) -> dict[str, Any]:
                 }
                 for key, meta in snapshot._meta.items()
             ],
-            "collapsed_by_header": dict(snapshot._collapsed_by_header),
+            "collapsed_headers": [
+                {
+                    **encode_collapsed_header_key(key),
+                    "collapsed": collapsed,
+                }
+                for key, collapsed in sorted(
+                    snapshot._collapsed_by_header.items(),
+                    key=lambda item: item[0].sort_key(),
+                )
+            ],
             "effect_order_state": [
                 {
                     "chain_id": chain_id,

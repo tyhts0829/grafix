@@ -5,13 +5,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from grafix.core.geometry import Geometry
+from grafix import G
 from grafix.core.primitives.lsystem import (
     _expand_preset,
     _turtle_to_geom_tuple,
     lsystem as raw_lsystem,
 )
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.primitives import lsystem as _lsystem_module  # noqa: F401
 
 
@@ -27,8 +27,8 @@ def test_lsystem_is_deterministic() -> None:
         "jitter": 0.05,
         "seed": 123,
     }
-    r1 = realize(Geometry.create("lsystem", params=params))
-    r2 = realize(Geometry.create("lsystem", params=params))
+    r1 = realize(G.lsystem(**params))
+    r2 = realize(G.lsystem(**params))
     np.testing.assert_array_equal(r1.coords, r2.coords)
     np.testing.assert_array_equal(r1.offsets, r2.offsets)
 
@@ -36,20 +36,17 @@ def test_lsystem_is_deterministic() -> None:
 def test_lsystem_iters_zero_uses_axiom() -> None:
     """iters==0 のとき axiom をそのまま解釈する。"""
     realized = realize(
-        Geometry.create(
-            "lsystem",
-            params={
-                "kind": "custom",
-                "axiom": "F",
-                "rules": "",
-                "iters": 0,
-                "center": (0.0, 0.0, 1.0),
-                "heading": 0.0,
-                "angle": 90.0,
-                "step": 1.0,
-                "jitter": 0.0,
-                "seed": 0,
-            },
+        G.lsystem(
+            kind="custom",
+            axiom="F",
+            rules="",
+            iters=0,
+            center=(0.0, 0.0, 1.0),
+            heading=0.0,
+            angle=90.0,
+            step=1.0,
+            jitter=0.0,
+            seed=0,
         )
     )
     assert realized.coords.shape == (2, 3)
@@ -62,20 +59,17 @@ def test_lsystem_custom_rules_invalid_line_warns_and_is_ignored() -> None:
     """custom rules の不正行は warning を出して無視し、処理は継続する。"""
     with pytest.warns(UserWarning, match=r"rules の 1 行目"):
         realized = realize(
-            Geometry.create(
-                "lsystem",
-                params={
-                    "kind": "custom",
-                    "axiom": "F",
-                    "rules": "F",
-                    "iters": 1,
-                    "center": (0.0, 0.0, 0.0),
-                    "heading": 0.0,
-                    "angle": 90.0,
-                    "step": 1.0,
-                    "jitter": 0.0,
-                    "seed": 0,
-                },
+            G.lsystem(
+                kind="custom",
+                axiom="F",
+                rules="F",
+                iters=1,
+                center=(0.0, 0.0, 0.0),
+                heading=0.0,
+                angle=90.0,
+                step=1.0,
+                jitter=0.0,
+                seed=0,
             )
         )
     assert realized.coords.shape == (2, 3)
@@ -88,20 +82,17 @@ def test_lsystem_extra_close_bracket_warns_and_is_ignored() -> None:
     """余分な ']' は warning を出して無視する。"""
     with pytest.warns(UserWarning, match=r"余分"):
         realized = realize(
-            Geometry.create(
-                "lsystem",
-                params={
-                    "kind": "custom",
-                    "axiom": "F]",
-                    "rules": "",
-                    "iters": 0,
-                    "center": (0.0, 0.0, 0.0),
-                    "heading": 0.0,
-                    "angle": 90.0,
-                    "step": 1.0,
-                    "jitter": 0.0,
-                    "seed": 0,
-                },
+            G.lsystem(
+                kind="custom",
+                axiom="F]",
+                rules="",
+                iters=0,
+                center=(0.0, 0.0, 0.0),
+                heading=0.0,
+                angle=90.0,
+                step=1.0,
+                jitter=0.0,
+                seed=0,
             )
         )
     assert realized.coords.shape == (2, 3)
@@ -112,20 +103,17 @@ def test_lsystem_unclosed_open_bracket_warns_and_keeps_lines() -> None:
     """閉じていない '[' は warning を出し、得られた線は可能な範囲で返す。"""
     with pytest.warns(UserWarning, match=r"閉じていない"):
         realized = realize(
-            Geometry.create(
-                "lsystem",
-                params={
-                    "kind": "custom",
-                    "axiom": "F[+F",
-                    "rules": "",
-                    "iters": 0,
-                    "center": (0.0, 0.0, 0.0),
-                    "heading": 0.0,
-                    "angle": 90.0,
-                    "step": 1.0,
-                    "jitter": 0.0,
-                    "seed": 0,
-                },
+            G.lsystem(
+                kind="custom",
+                axiom="F[+F",
+                rules="",
+                iters=0,
+                center=(0.0, 0.0, 0.0),
+                heading=0.0,
+                angle=90.0,
+                step=1.0,
+                jitter=0.0,
+                seed=0,
             )
         )
 
@@ -152,18 +140,25 @@ def test_lsystem_cached_preset_returns_fresh_writable_arrays() -> None:
     assert not np.shares_memory(first_offsets, second_offsets)
 
 
-def test_lsystem_zero_jitter_still_validates_negative_seed() -> None:
-    """jitter=0でも既存のGenerator seed検証を省略しない。"""
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"iters": -1}, "iters"),
+        ({"step": 0.0}, "step"),
+        ({"step": -0.01}, "step"),
+        ({"jitter": -0.01}, "jitter"),
+        ({"seed": -1}, "seed"),
+    ],
+)
+def test_lsystem_rejects_invalid_domain_before_empty_program(
+    kwargs: dict[str, int | float],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.lsystem(kind="custom", axiom="", rules="", **kwargs))
 
-    with pytest.raises(ValueError, match="expected non-negative integer"):
-        raw_lsystem(
-            kind="custom",
-            axiom="F",
-            rules="",
-            iters=0,
-            jitter=0.0,
-            seed=-1,
-        )
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
 
 
 @pytest.mark.parametrize(("kind", "iters"), [("plant", 4), ("circuit", 6)])

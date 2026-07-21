@@ -8,12 +8,12 @@ import numpy as np
 from grafix.api import E, G
 from grafix.core.effects.mirror3d import (
     _dedup_lines,
-    _dedup_uniform_finite_lines,
+    _dedup_uniform_lines,
     _packed_polyhedral_transforms,
     _polyhedral_rotation_mats,
 )
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 
@@ -75,6 +75,37 @@ def test_mirror3d_azimuth_n1_produces_two_polylines() -> None:
     out = realize(E.mirror3d(mode="azimuth", n_azimuth=1, show_planes=False)(g))
     polylines = list(_iter_polylines(out))
     assert len(polylines) == 2
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"n_azimuth": 0}, "n_azimuth"),
+        ({"axis": (0.0, 0.0, 0.0)}, "axis"),
+    ],
+)
+def test_mirror3d_azimuth_rejects_invalid_domain_before_empty_input(
+    kwargs: dict[str, object],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.mirror3d(mode="azimuth", **kwargs)(G.polyline(points=())))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
+
+
+def test_mirror3d_polyhedral_ignores_azimuth_parameters() -> None:
+    geometry = realize(
+        E.mirror3d(
+            mode="polyhedral",
+            n_azimuth=0,
+            axis=(0.0, 0.0, 0.0),
+            group="T",
+        )(G.mirror3d_test_line_pos_octant())
+    )
+
+    assert len(list(_iter_polylines(geometry))) == 12
 
 
 def test_mirror3d_equator_source_side_selects_halfspace() -> None:
@@ -190,7 +221,7 @@ def test_mirror3d_dedup_keeps_first_line_with_same_quantized_bytes() -> None:
         [[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]],
         dtype=np.float32,
     )
-    same_bucket = np.asfortranarray(first + np.float32(1e-8))
+    same_bucket = first + np.float32(1e-8)
     distinct = first + np.float32(2e-6)
 
     result = _dedup_lines([first, same_bucket, distinct])
@@ -230,7 +261,7 @@ def test_mirror3d_packed_polyhedral_transform_matches_generic_bits() -> None:
         )
 
 
-def test_mirror3d_packed_polyhedral_transform_falls_back_safely() -> None:
+def test_mirror3d_packed_polyhedral_transform_uses_shape_and_size_boundaries() -> None:
     center = np.zeros((3,), dtype=np.float32)
     mats = _polyhedral_rotation_mats("T")
     line = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
@@ -240,15 +271,10 @@ def test_mirror3d_packed_polyhedral_transform_falls_back_safely() -> None:
         is None
     )
 
-    nonfinite = [line.copy() for _ in range(40)]
-    nonfinite[7][0, 0] = np.nan
+    nonuniform = [line.copy() for _ in range(39)]
+    nonuniform.append(line[:1].copy())
     assert (
-        _packed_polyhedral_transforms(nonfinite, mats=mats, center=center) is None
-    )
-
-    nonstandard = [np.asfortranarray(line) for _ in range(40)]
-    assert (
-        _packed_polyhedral_transforms(nonstandard, mats=mats, center=center) is None
+        _packed_polyhedral_transforms(nonuniform, mats=mats, center=center) is None
     )
 
 
@@ -279,13 +305,10 @@ def test_mirror3d_packed_dedup_matches_generic_and_keeps_first_identity(
     assert actual[0] is lines[0]
 
 
-def test_mirror3d_packed_dedup_falls_back_for_nonfinite_and_nonstandard() -> None:
+def test_mirror3d_packed_dedup_uses_shape_and_size_boundaries() -> None:
     line = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
-    assert _dedup_uniform_finite_lines([line] * 63) is None
+    assert _dedup_uniform_lines([line] * 63) is None
 
-    nonfinite = [line.copy() for _ in range(64)]
-    nonfinite[5][0, 1] = np.inf
-    assert _dedup_uniform_finite_lines(nonfinite) is None
-
-    nonstandard = [np.asfortranarray(line) for _ in range(64)]
-    assert _dedup_uniform_finite_lines(nonstandard) is None
+    nonuniform = [line.copy() for _ in range(63)]
+    nonuniform.append(line[:1].copy())
+    assert _dedup_uniform_lines(nonuniform) is None

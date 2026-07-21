@@ -5,7 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from grafix import G
 from grafix.core.primitives import wave as wave_module
+from grafix.core.realize import RealizeError, realize
 from grafix.core.resource_budget import (
     ResourceBudget,
     ResourceLimitError,
@@ -121,7 +123,7 @@ def test_wave_rejects_invalid_kind(kind: str) -> None:
     """未定義kindを既定値へ読み替えない。"""
 
     with pytest.raises(ValueError, match="kind"):
-        raw_wave(kind=kind)
+        G.wave(kind=kind)
 
 
 @pytest.mark.parametrize(
@@ -139,7 +141,7 @@ def test_wave_rejects_nonfinite_scalar(name: str, value: float) -> None:
     """公開float引数のNaNとInfを拒否する。"""
 
     with pytest.raises(ValueError, match=name):
-        raw_wave(**{name: value})
+        G.wave(**{name: value})
 
 
 @pytest.mark.parametrize(
@@ -156,22 +158,36 @@ def test_wave_rejects_nonfinite_center(
     """centerの各成分も有限値に限定する。"""
 
     with pytest.raises(ValueError, match="center"):
-        raw_wave(center=center)
+        G.wave(center=center)
 
 
-@pytest.mark.parametrize("samples", [0, 1, -3, np.nan, np.inf])
-def test_wave_rejects_invalid_samples(samples: object) -> None:
-    """2頂点未満または整数化できないsamplesを拒否する。"""
+@pytest.mark.parametrize("samples", [0, 1, -3])
+def test_wave_rejects_samples_below_two(samples: int) -> None:
+    """2頂点未満のsamplesを遅延評価時に拒否する。"""
 
-    with pytest.raises(ValueError, match="samples"):
-        raw_wave(samples=samples)  # type: ignore[arg-type]
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.wave(samples=samples))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "samples は 2 以上" in str(exc_info.value.__cause__)
+
+
+@pytest.mark.parametrize("samples", [np.nan, np.inf])
+def test_wave_rejects_non_integer_samples(samples: float) -> None:
+    """非整数のsamplesを公開API境界で拒否する。"""
+
+    with pytest.raises(TypeError, match="samples"):
+        G.wave(samples=samples)  # type: ignore[arg-type]
 
 
 def test_wave_rejects_negative_length() -> None:
     """頂点順を曖昧にする負lengthを拒否する。"""
 
-    with pytest.raises(ValueError, match="length"):
-        raw_wave(length=-1.0)
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.wave(length=-1.0))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "length" in str(exc_info.value.__cause__)
 
 
 def test_wave_rejects_finite_inputs_that_overflow_output_coordinates() -> None:

@@ -22,7 +22,7 @@ from grafix.core.effects.util import (
     resample_polylines,
 )
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -165,6 +165,28 @@ def highpass_test_almost_closed_square() -> GeomTuple:
     )
     offsets = np.array([0, coords.shape[0]], dtype=np.int32)
     return coords, offsets
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"step": 0.0}, "step"),
+        ({"step": -1.0}, "step"),
+        ({"sigma": 0.0}, "sigma"),
+        ({"sigma": -1.0}, "sigma"),
+        ({"step": 1e-308, "sigma": 1e308}, "sigma / step"),
+    ],
+)
+def test_highpass_rejects_invalid_filter_scale_before_empty_input(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    empty = G.polygon(activate=False)
+
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.highpass(**kwargs)(empty))  # type: ignore[arg-type]
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert match in str(exc_info.value.__cause__)
 
 
 def test_highpass_noop_when_gain_is_zero() -> None:

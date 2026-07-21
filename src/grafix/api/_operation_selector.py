@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, TypeAlias
 
-from grafix.core.geometry import normalize_args
 from grafix.core.op_registry import OpRegistry, OpSpec
 from grafix.core.parameters.identity import identity_string
 from grafix.core.operation_selector import (
@@ -41,7 +41,12 @@ class ResolvedSelection:
 
     selector_op: str
     target: str
-    params: dict[str, Any]
+    params: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        """解決結果が所有する読み取り専用の引数 mapping を保持する。"""
+
+        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
 
 
 def freeze_params_by_target(
@@ -76,14 +81,16 @@ def freeze_params_by_target(
             n_inputs=n_inputs,
         )
         if not isinstance(raw_params, Mapping):
-            raise TypeError(
-                f"params_by_target[{target!r}] は mapping である必要があります"
-            )
+            raise TypeError(f"params_by_target[{target!r}] は mapping である必要があります")
         params = dict(raw_params)
         if any(not isinstance(name, str) for name in params):
             raise TypeError("target parameter 名は str である必要があります")
-        validate_operation_kwargs(op=target, spec=registry[target], params=params)
-        frozen.append((target, normalize_args(params)))
+        canonical = validate_operation_kwargs(
+            op=target,
+            spec=registry[target],
+            params=params,
+        )
+        frozen.append((target, tuple(sorted(canonical.items()))))
     frozen.sort(key=lambda item: item[0])
     return tuple(frozen)
 
@@ -135,8 +142,11 @@ def _resolve_selection(
         n_inputs=n_inputs,
     )
     target_spec = registry[target]
-    code_params = _params_for_target(frozen_params, target)
-    validate_operation_kwargs(op=target, spec=target_spec, params=code_params)
+    code_params = validate_operation_kwargs(
+        op=target,
+        spec=target_spec,
+        params=_params_for_target(frozen_params, target),
+    )
 
     visible_user_params = {
         selector_param_key(target, arg): value
@@ -149,9 +159,7 @@ def _resolve_selection(
         if arg in target_spec.meta
     }
     visible_meta = {
-        selector_param_key(target, arg): selector_spec.meta[
-            selector_param_key(target, arg)
-        ]
+        selector_param_key(target, arg): selector_spec.meta[selector_param_key(target, arg)]
         for arg in target_spec.meta
     }
     resolved_visible = resolve_api_params(
@@ -162,11 +170,7 @@ def _resolve_selection(
         meta=visible_meta,
     )
 
-    params = {
-        arg: value
-        for arg, value in code_params.items()
-        if arg not in target_spec.meta
-    }
+    params = {arg: value for arg, value in code_params.items() if arg not in target_spec.meta}
     params.update(
         {
             arg: resolved_visible[selector_param_key(target, arg)]
@@ -178,7 +182,6 @@ def _resolve_selection(
     if missing:
         names = ", ".join(repr(name) for name in missing)
         raise TypeError(f"{kind} {target!r} に必要な引数がありません: {names}")
-    validate_operation_kwargs(op=target, spec=target_spec, params=params)
     return ResolvedSelection(
         selector_op=selector_op,
         target=target,

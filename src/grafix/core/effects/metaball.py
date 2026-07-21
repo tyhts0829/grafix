@@ -249,7 +249,7 @@ def _evaluate_field_grid_baseline_numba(
     inside_mask: np.ndarray,
     inv_r2: float,
 ) -> np.ndarray:
-    """追加 scratch を持たない従来順の exact fallback。"""
+    """格子点・リング・線分の固定順で評価する scratch-free exact path。"""
 
     ny = int(ys.shape[0])
     nx = int(xs.shape[0])
@@ -745,26 +745,22 @@ def metaball(
     tuple[np.ndarray, np.ndarray]
         生成した輪郭（外周＋穴）を含む実体ジオメトリ（coords, offsets）。
     """
-    r = float(radius)
-    if not np.isfinite(r) or r <= 0.0:
+    r = radius
+    if r <= 0.0:
         raise ValueError("metaball: radius は正の有限値である必要がある")
 
-    level = float(threshold)
-    if not np.isfinite(level) or level <= 0.0:
+    level = threshold
+    if level <= 0.0:
         raise ValueError("metaball: threshold は正の有限値である必要がある")
 
-    pitch = float(grid_pitch)
-    if not np.isfinite(pitch) or pitch <= 0.0:
+    pitch = grid_pitch
+    if pitch <= 0.0:
         raise ValueError("metaball: grid_pitch は正の有限値である必要がある")
 
-    if not isinstance(output, str):
-        raise TypeError("metaball: output は str である必要がある")
-    if output not in {"exterior", "both"}:
-        raise ValueError(f"metaball: 未知の output です: {output!r}")
     output_s = output
 
-    auto_close = float(auto_close_threshold)
-    if not np.isfinite(auto_close) or auto_close < 0.0:
+    auto_close = auto_close_threshold
+    if auto_close < 0.0:
         raise ValueError(
             "metaball: auto_close_threshold は 0 以上の有限値である必要がある"
         )
@@ -921,7 +917,7 @@ def metaball(
         out = frame.to_world(v3).astype(np.float32, copy=False)
         out_lines.append(out)
 
-    if bool(keep_original):
+    if keep_original:
         for i in range(int(offsets.size) - 1):
             s = int(offsets[i])
             e = int(offsets[i + 1])

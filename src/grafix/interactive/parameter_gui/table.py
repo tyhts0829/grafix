@@ -10,6 +10,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, assert_never
 
+from grafix.core.parameters.collapsed_header import (
+    CollapsedHeaderKey,
+    STYLE_COLLAPSED_HEADER_KEY,
+    effect_chain_collapsed_header_key,
+    preset_collapsed_header_key,
+    primitive_collapsed_header_key,
+)
 from grafix.core.parameters.effects import EffectStepKey
 from grafix.core.parameters.identity import group_key, identity_string
 from grafix.core.parameters.key import ParameterKey
@@ -254,23 +261,23 @@ def _header_kind_for_group_id(group_id: GroupId) -> str:
 def _collapse_key_for_group(
     group_id: GroupId,
     first_row: ParameterRow | None,
-) -> str | None:
+) -> CollapsedHeaderKey | None:
     """group id と先頭行から折りたたみ永続キーを返す。"""
 
     group_type = group_id[0]
     if group_type is GroupType.STYLE:
-        return "style:global"
+        return STYLE_COLLAPSED_HEADER_KEY
     if group_type is GroupType.EFFECT_CHAIN:
         chain_id = identity_string(group_id[1], name="effect chain group id")
-        return f"effect_chain:{chain_id}"
+        return effect_chain_collapsed_header_key(chain_id)
     if group_type is GroupType.PRESET:
         if first_row is None:
             return None
-        return f"preset:{first_row.op}:{first_row.site_id}"
+        return preset_collapsed_header_key((first_row.op, first_row.site_id))
     if group_type is GroupType.PRIMITIVE:
         if first_row is None:
             return None
-        return f"primitive:{first_row.op}:{first_row.site_id}"
+        return primitive_collapsed_header_key((first_row.op, first_row.site_id))
     assert_never(group_type)
 
 
@@ -278,11 +285,11 @@ def parameter_group_collapse_keys(
     rows: list[ParameterRow],
     *,
     group_layout: Sequence[GroupBlockLayout],
-) -> tuple[str, ...]:
+) -> tuple[CollapsedHeaderKey, ...]:
     """現在の行モデルから Expand/Collapse all 対象の header key を返す。"""
 
-    keys: list[str] = []
-    seen: set[str] = set()
+    keys: list[CollapsedHeaderKey] = []
+    seen: set[CollapsedHeaderKey] = set()
     for block in group_layout:
         if not block.header:
             continue
@@ -1448,7 +1455,7 @@ def render_parameter_table(
     raw_label_by_site: Mapping[tuple[str, str], str] | None = None,
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
-    collapsed_headers: set[str] | None = None,
+    collapsed_headers: set[CollapsedHeaderKey] | None = None,
     on_help_row: Callable[[ParameterRow, bool], None] | None = None,
     on_effect_order_command: Callable[[EffectOrderCommand], None] | None = None,
 ) -> tuple[bool, list[ParameterRow]]:

@@ -103,7 +103,7 @@ def logo(center=(0, 0, 0), scale=1.0, fill_density_coef=1.0):
         )
         .dash(
             activate=True,
-            dash_length=(20, 4),
+            dash_length=20.0,
             gap_length=9.322000000000001,
             offset=36.271,
             offset_jitter=0.0,
@@ -127,9 +127,7 @@ def logo(center=(0, 0, 0), scale=1.0, fill_density_coef=1.0):
 
     line = line_eff(line)
 
-    total_affine = E(name="total_affine").affine(
-        delta=center, scale=(scale, scale, scale)
-    )
+    total_affine = E(name="total_affine").affine(delta=center, scale=(scale, scale, scale))
     ret = total_affine(square + text + line)
 
     return ret

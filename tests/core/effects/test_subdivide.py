@@ -10,7 +10,7 @@ from grafix.core.effects import subdivide as subdivide_module
 from grafix.core.effects.subdivide import subdivide as subdivide_impl
 from grafix.core.operation_diagnostics import operation_diagnostic_context
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 
@@ -333,6 +333,14 @@ def test_subdivide_empty_geometry_is_noop() -> None:
     assert realized.offsets.tolist() == [0]
 
 
+def test_subdivide_rejects_negative_subdivisions_before_empty_input() -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.subdivide(subdivisions=-1)(G.subdivide_test_empty()))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "subdivisions" in str(exc_info.value.__cause__)
+
+
 def test_subdivide_vertex_cap_never_drops_trailing_polylines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -532,110 +540,3 @@ def test_subdivide_fixed_randomized_inputs_match_level_reference(
         np.testing.assert_array_equal(offsets, offsets_before)
         assert (out_coords is coords) == (expected_coords is coords)
         assert (out_offsets is offsets) == (expected_offsets is offsets)
-
-
-@pytest.mark.parametrize(
-    ("coords", "subdivisions"),
-    [
-        (
-            np.array([[0, 0, 0], [1, 0, 0]], dtype=np.int32),
-            1,
-        ),
-        (
-            np.array(
-                [
-                    [-0.3763370959790291, 0.0, 0.0],
-                    [-0.32766104202046986, 0.0, 0.0],
-                ],
-                dtype=np.float64,
-            ),
-            1,
-        ),
-        (
-            np.array([[0.0, 0.0, 0.0], [0.02, 0.0, 0.0]], dtype=np.float64),
-            6,
-        ),
-    ],
-)
-def test_subdivide_noncanonical_dtype_uses_previous_input_precision(
-    coords: np.ndarray,
-    subdivisions: int,
-) -> None:
-    offsets = np.array([0, 2], dtype=np.int32)
-    expected_coords, expected_offsets = _reference_subdivide(
-        coords,
-        offsets,
-        subdivisions=subdivisions,
-        max_total_vertices=subdivide_module.MAX_TOTAL_VERTICES,
-    )
-
-    actual_coords, actual_offsets = subdivide_impl(
-        (coords, offsets),
-        subdivisions=subdivisions,
-    )
-
-    np.testing.assert_array_equal(
-        actual_coords.view(np.uint32),
-        expected_coords.view(np.uint32),
-    )
-    np.testing.assert_array_equal(actual_offsets, expected_offsets)
-
-
-@pytest.mark.parametrize(
-    ("coords", "subdivisions"),
-    [
-        (
-            np.array(
-                [[-np.inf, 0.0, 0.0], [np.inf, 0.0, 0.0]],
-                dtype=np.float32,
-            ),
-            3,
-        ),
-        (
-            np.array(
-                [[0.0, -np.inf, 0.0], [1.0, 0.0, np.inf]],
-                dtype=np.float32,
-            ),
-            9,
-        ),
-    ],
-)
-def test_subdivide_nonfinite_values_preserve_previous_fastmath_stop(
-    coords: np.ndarray,
-    subdivisions: int,
-) -> None:
-    offsets = np.array([0, 2], dtype=np.int32)
-
-    with np.errstate(all="ignore"), operation_diagnostic_context() as buffer:
-        actual_coords, actual_offsets = subdivide_impl(
-            (coords, offsets),
-            subdivisions=subdivisions,
-        )
-
-    assert actual_coords.shape == (3, 3)
-    assert actual_offsets.tolist() == [0, 3]
-    diagnostic = buffer.snapshot()
-    assert len(diagnostic) == 1
-    assert diagnostic[0].effective_value == 1
-    assert (
-        diagnostic[0].reason
-        == "minimum segment length stopped one or more polylines early"
-    )
-
-
-def test_subdivide_finite_float32_overflow_preserves_numpy_exception() -> None:
-    max_float = np.finfo(np.float32).max
-    coords = np.array(
-        [[-max_float, 0.0, 0.0], [max_float, 0.0, 0.0]],
-        dtype=np.float32,
-    )
-    offsets = np.array([0, 2], dtype=np.int32)
-
-    with np.errstate(over="raise"), pytest.raises(
-        FloatingPointError,
-        match="overflow encountered in subtract",
-    ):
-        subdivide_impl(
-            (coords, offsets),
-            subdivisions=2,
-        )

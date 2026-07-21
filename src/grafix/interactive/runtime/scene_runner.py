@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from grafix.core.layer import Layer, LayerStyleDefaults, resolve_layer_style
 from grafix.core.operation_diagnostics import (
@@ -474,7 +474,7 @@ class SceneRunner:
 
     def _restyle_retained_output(
         self,
-        layers: list[Layer],
+        layers: Sequence[Layer],
         *,
         defaults: LayerStyleDefaults,
         style_revision: int,

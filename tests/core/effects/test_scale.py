@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
-import pytest
 
 from grafix.api import E, G
 from grafix.core.effects.scale import scale as scale_effect
@@ -222,7 +219,7 @@ def test_scale_by_face_scales_each_closed_polyline_and_keeps_open_ones() -> None
     assert realized.offsets.tolist() == [0, 2, 7]
 
 
-def test_scale_all_matches_previous_operations_bitwise_for_fixed_random_input() -> None:
+def test_scale_all_matches_numpy_reference_bitwise_for_fixed_random_input() -> None:
     rng = np.random.default_rng(20260719)
     exponents = rng.integers(-60, 61, size=(1024, 3))
     coords = (rng.standard_normal((1024, 3)) * np.exp2(exponents)).astype(np.float32)
@@ -253,7 +250,7 @@ def test_scale_all_matches_previous_operations_bitwise_for_fixed_random_input() 
     np.testing.assert_array_equal(offsets, offsets_before)
 
 
-def test_scale_many_lines_matches_previous_operations_bitwise_for_fixed_random_input() -> None:
+def test_scale_many_lines_matches_numpy_reference_bitwise_for_fixed_random_input() -> None:
     rng = np.random.default_rng(20260719)
     line_count = 128
     vertices_per_line = 7
@@ -312,7 +309,7 @@ def test_scale_many_variable_lines_preserves_empty_and_one_point_line_semantics(
         assert actual_offsets is offsets
 
 
-def test_scale_bulk_closure_uses_xyz_absolute_tolerance_and_nan_is_open() -> None:
+def test_scale_bulk_closure_uses_xyz_absolute_tolerance() -> None:
     below = np.nextafter(np.float32(1e-6), np.float32(0.0))
     at_float32 = np.float32(1e-6)
     above = np.nextafter(np.float32(1e-6), np.float32(np.inf))
@@ -321,22 +318,17 @@ def test_scale_bulk_closure_uses_xyz_absolute_tolerance_and_nan_is_open() -> Non
             [below, 0.0, 0.0],
             [0.0, at_float32, 0.0],
             [0.0, 0.0, above],
-            [0.0, 0.0, 0.0],
-            [np.nan, 0.0, 0.0],
-            [np.inf, 0.0, 0.0],
-            [-np.inf, 0.0, 0.0],
             [-above, 0.0, 0.0],
         ],
         dtype=np.float32,
     )
     first_vertices = np.zeros_like(endpoints)
-    first_vertices[4:, 0] = endpoints[4:, 0]
-    lines = np.empty((8, 3, 3), dtype=np.float32)
+    lines = np.empty((4, 3, 3), dtype=np.float32)
     lines[:, 0] = first_vertices
     lines[:, 1] = np.array([2.0, 3.0, 4.0], dtype=np.float32)
     lines[:, 2] = endpoints
     coords = lines.reshape(-1, 3)
-    offsets = np.arange(9, dtype=np.int32) * 3
+    offsets = np.arange(5, dtype=np.int32) * 3
 
     expected_coords, _ = _reference_scale(
         (coords, offsets),
@@ -350,56 +342,9 @@ def test_scale_bulk_closure_uses_xyz_absolute_tolerance_and_nan_is_open() -> Non
     )
 
     _assert_float32_bitwise_equal(actual_coords, expected_coords)
-    closed_lines = (0, 1, 3, 5, 6)
+    closed_lines = (0, 1)
     for line_index in closed_lines:
         _assert_float32_bitwise_equal(actual_coords[3 * line_index : 3 * line_index + 3], lines[line_index])
-
-
-def test_scale_raw_direct_call_layouts_and_noncanonical_offsets_match_reference() -> None:
-    class ArraySubclass(np.ndarray):
-        pass
-
-    rng = np.random.default_rng(20260719)
-    base = rng.standard_normal((24, 3)).astype(np.float32)
-    base.reshape(8, 3, 3)[::2, -1] = base.reshape(8, 3, 3)[::2, 0]
-    canonical_offsets = np.arange(9, dtype=np.int32) * 3
-
-    wide = np.zeros((48, 3), dtype=np.float32)
-    wide[::2] = base
-    readonly = base.copy()
-    readonly.setflags(write=False)
-    layouts_and_offsets: list[tuple[np.ndarray, np.ndarray]] = [
-        (np.asfortranarray(base), canonical_offsets),
-        (wide[::2], canonical_offsets),
-        (readonly, canonical_offsets),
-        (base.view(ArraySubclass), canonical_offsets),
-        (base.astype(np.float64), canonical_offsets.astype(np.int64)),
-        (
-            base[:9],
-            np.array([0, 2, 4, 3, 5, 5, 6, 8, 9], dtype=np.int32),
-        ),
-    ]
-
-    for coords, offsets in layouts_and_offsets:
-        coords_before = coords.copy()
-        offsets_before = offsets.copy()
-        for mode in ("by_line", "by_face"):
-            expected_coords, _ = _reference_scale(
-                (coords, offsets),
-                mode=mode,
-                scale=(-0.5, 2.0, 0.0),
-            )
-            actual_coords, actual_offsets = scale_effect(
-                (coords, offsets),
-                mode=mode,
-                scale=(-0.5, 2.0, 0.0),
-            )
-
-            _assert_float32_bitwise_equal(actual_coords, expected_coords)
-            assert actual_offsets is offsets
-
-        np.testing.assert_array_equal(coords, coords_before)
-        np.testing.assert_array_equal(offsets, offsets_before)
 
 
 def test_scale_bulk_processes_line_metadata_in_bounded_chunks() -> None:
@@ -423,7 +368,7 @@ def test_scale_bulk_processes_line_metadata_in_bounded_chunks() -> None:
     assert actual_offsets is offsets
 
 
-def test_scale_empty_geometry_is_identity_after_argument_validation() -> None:
+def test_scale_empty_canonical_geometry_is_identity() -> None:
     empty_coords = np.zeros((0, 3), dtype=np.float32)
     empty_offsets = np.zeros((1,), dtype=np.int32)
 
@@ -436,79 +381,3 @@ def test_scale_empty_geometry_is_identity_after_argument_validation() -> None:
 
     assert empty_result[0] is empty_coords
     assert empty_result[1] is empty_offsets
-
-
-def test_scale_rejects_invalid_mode_and_vec3_parameters() -> None:
-    coords = np.ones((1, 3), dtype=np.float32)
-    offsets = np.array([0, 1], dtype=np.int32)
-    geometry = (coords, offsets)
-
-    with pytest.raises(ValueError, match="mode"):
-        scale_effect(geometry, mode="invalid")
-    with pytest.raises(TypeError, match="scale"):
-        scale_effect(geometry, scale=[1.0, 1.0, 1.0])  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="pivot"):
-        scale_effect(geometry, pivot=(0.0, 0.0))  # type: ignore[arg-type]
-
-
-def test_scale_all_large_noncanonical_shape_keeps_broadcast_error() -> None:
-    coords = np.ones((512, 4), dtype=np.float32)
-    offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-
-    with pytest.raises(ValueError):
-        scale_effect(
-            (coords, offsets),
-            mode="all",
-            auto_center=True,
-            scale=(2.0, 3.0, 4.0),
-        )
-
-
-def test_scale_all_ndarray_subclass_uses_previous_ufunc_dispatch() -> None:
-    with np.testing.suppress_warnings() as suppressor:
-        suppressor.filter(PendingDeprecationWarning)
-        coords = np.matrix(
-            np.arange(1536, dtype=np.float32).reshape(512, 3),
-        )
-        offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-
-        with pytest.raises(ValueError):
-            scale_effect(
-                (coords, offsets),
-                mode="all",
-                auto_center=False,
-                pivot=(0.0, 0.0, 0.0),
-                scale=(2.0, 3.0, 4.0),
-            )
-
-
-def test_scale_all_preserves_overflow_warning_count() -> None:
-    coords = np.full((512, 3), np.finfo(np.float32).max, dtype=np.float32)
-    offsets = np.array([0, coords.shape[0]], dtype=np.int32)
-    scale_factors = (1.0e308, 1.0e308, 1.0e308)
-
-    with warnings.catch_warnings(record=True) as expected_warnings:
-        warnings.simplefilter("always")
-        _reference_scale(
-            (coords, offsets),
-            mode="all",
-            auto_center=False,
-            pivot=(0.0, 0.0, 0.0),
-            scale=scale_factors,
-        )
-    with warnings.catch_warnings(record=True) as actual_warnings:
-        warnings.simplefilter("always")
-        scale_effect(
-            (coords, offsets),
-            mode="all",
-            auto_center=False,
-            pivot=(0.0, 0.0, 0.0),
-            scale=scale_factors,
-        )
-
-    assert [warning.category for warning in actual_warnings] == [
-        warning.category for warning in expected_warnings
-    ]
-    assert [str(warning.message) for warning in actual_warnings] == [
-        str(warning.message) for warning in expected_warnings
-    ]

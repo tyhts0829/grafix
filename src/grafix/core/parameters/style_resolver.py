@@ -11,10 +11,10 @@ from grafix.core.value_validation import finite_real, rgb01_tuple
 from .store import ParamStore
 from .style_ops import ensure_style_entries
 from .style import (
-    coerce_rgb255,
     rgb01_to_rgb255,
     rgb255_to_rgb01,
     style_key,
+    validate_rgb255,
 )
 
 
@@ -102,14 +102,14 @@ class StyleResolver:
         bg255 = (
             self._base_background_rgb255
             if bg_state is None or not bg_state.override
-            else coerce_rgb255(bg_state.ui_value)
+            else validate_rgb255(bg_state.ui_value)
         )
 
         line_state = self._store.get_state(self._key_line_color)
         line255 = (
             self._base_line_color_rgb255
             if line_state is None or not line_state.override
-            else coerce_rgb255(line_state.ui_value)
+            else validate_rgb255(line_state.ui_value)
         )
 
         thickness_state = self._store.get_state(self._key_thickness)

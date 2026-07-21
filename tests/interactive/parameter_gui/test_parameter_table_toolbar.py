@@ -8,6 +8,8 @@ from grafix.core.parameters.history import ParamStoreHistory
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.interactive.parameter_gui.gui import ParameterGUI
+from grafix.interactive.midi import MidiSession
+from grafix.interactive.runtime.diagnostics import DiagnosticCenter
 
 
 class _Popup:
@@ -42,6 +44,7 @@ class _Imgui:
         self.clicked_button_ids = set(clicked_button_ids or set())
         self.checkbox_labels: list[str] = []
         self.menu_enabled: list[bool] = []
+        self.menu_enabled_by_id: dict[str, bool] = {}
         self.opened_popups: list[str] = []
         self.disabled_text: list[str] = []
         self.button_labels: list[str] = []
@@ -98,6 +101,7 @@ class _Imgui:
         enabled: bool = True,
     ) -> tuple[bool, bool]:
         widget_id = label.rpartition("##")[2]
+        self.menu_enabled_by_id[widget_id] = bool(enabled)
         if widget_id == "clear_midi_assigns":
             self.menu_enabled.append(bool(enabled))
             return self.click_clear and bool(enabled), bool(selected)
@@ -229,6 +233,29 @@ def test_clear_all_menu_item_is_disabled_without_mappings(
     assert gui._render_parameter_table_toolbar() is False
     assert imgui.menu_enabled == [False]
     assert gui._midi_clear_notice is None
+
+
+def test_midi_disabled_session_does_not_enable_or_run_reconnect(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    gui, _store, _key = _setup_with_mapping(initialized_parameter_gui)
+    center = DiagnosticCenter()
+    session = MidiSession(
+        controller=None,
+        snapshot_load_result=None,
+        diagnostics=center,
+    )
+    gui._midi_session = session
+    imgui = _Imgui(
+        click_clear=False,
+        clicked_filter_ids={"midi_reconnect"},
+    )
+    gui._imgui = imgui
+
+    assert gui._render_midi_mapping_menu() is False
+    assert imgui.menu_enabled_by_id["midi_reconnect"] is False
+    assert session.can_reconnect is False
+    assert center.snapshot() == ()
 
 
 def test_clear_notice_exposes_one_click_undo(

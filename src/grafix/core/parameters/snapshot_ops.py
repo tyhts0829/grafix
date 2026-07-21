@@ -188,20 +188,16 @@ def store_snapshot_for_gui(
         (op, site_id) for op, site_id in runtime.loaded_groups if op not in {STYLE_OP}
     }
     observed_targets = {
-        (op, site_id)
-        for op, site_id in runtime.observed_groups
-        if op not in {STYLE_OP}
+        (op, site_id) for op, site_id in runtime.observed_groups if op not in {STYLE_OP}
     }
 
     hide_groups = loaded_targets - observed_targets
     if not hide_groups:
         return snapshot
 
-    return {
-        key: value
-        for key, value in snapshot.items()
-        if (key.op, key.site_id) not in hide_groups
-    }
+    return MappingProxyType(
+        {key: value for key, value in snapshot.items() if (key.op, key.site_id) not in hide_groups}
+    )
 
 
 def materialize_snapshot(snapshot: ParamSnapshot) -> dict[ParameterKey, ParamSnapshotEntry]:

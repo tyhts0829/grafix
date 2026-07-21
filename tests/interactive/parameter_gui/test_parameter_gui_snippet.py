@@ -10,7 +10,7 @@ from grafix.interactive.parameter_gui.group_blocks import (
     GroupBlockLayoutItem,
 )
 from grafix.interactive.parameter_gui.grouping import GroupType
-from grafix.interactive.parameter_gui.snippet import snippet_for_block
+from grafix.interactive.parameter_gui.snippet import _py_literal, snippet_for_block
 
 
 def _row(
@@ -55,6 +55,19 @@ def _block(
             for index, _row_value in enumerate(rows)
         ),
     )
+
+
+def test_py_literal_accepts_only_canonical_literal_values() -> None:
+    assert _py_literal({"target": (None, True, 2, 0.5, "x")}) == (
+        "{'target': (None, True, 2, 0.5, 'x')}"
+    )
+
+    for value in ([1], object()):
+        with pytest.raises(TypeError, match="snippet の値"):
+            _py_literal(value)
+
+    with pytest.raises(ValueError, match="有限値"):
+        _py_literal(float("nan"))
 
 
 def test_snippet_style_converts_rgb255_to_rgb01_and_maps_keys() -> None:

@@ -34,7 +34,7 @@ twist_meta = {
 }
 
 twist_ui_visible = {
-    "pivot": lambda v: not bool(v.get("auto_center", True)),
+    "pivot": lambda v: not v.get("auto_center", True),
 }
 
 @effect(meta=twist_meta, ui_visible=twist_ui_visible)
@@ -59,37 +59,36 @@ def twist(
     angle : float, default 60.0
         最大ねじれ角 [deg]。
     axis_dir : tuple[float, float, float], default (0.0, 1.0, 0.0)
-        ねじり軸方向（ベクトル）。長さは正規化される。
+        非ゼロのねじり軸方向（ベクトル）。長さは正規化される。
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         ねじり適用後の実体ジオメトリ（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        `axis_dir` がゼロベクトルの場合。
     """
+    axis_dir64 = np.asarray(axis_dir, dtype=np.float64)
+    axis_norm = float(np.linalg.norm(axis_dir64))
+    if axis_norm == 0.0:
+        raise ValueError(f"axis_dir は非ゼロのベクトルである必要がある: {axis_dir!r}")
+    k = axis_dir64 / axis_norm
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    max_rad = float(np.deg2rad(float(angle)))
+    max_rad = float(np.deg2rad(angle))
     if max_rad == 0.0:
         return coords, offsets
-
-    axis_dir64 = np.array(
-        [float(axis_dir[0]), float(axis_dir[1]), float(axis_dir[2])],
-        dtype=np.float64,
-    )
-    axis_norm = float(np.linalg.norm(axis_dir64))
-    if axis_norm <= 1e-9:
-        raise ValueError(f"axis_dir は非ゼロのベクトルである必要がある: {axis_dir!r}")
-    k = axis_dir64 / axis_norm
 
     if auto_center:
         center = coords.astype(np.float64, copy=False).mean(axis=0)
     else:
-        center = np.array(
-            [float(pivot[0]), float(pivot[1]), float(pivot[2])],
-            dtype=np.float64,
-        )
+        center = np.asarray(pivot, dtype=np.float64)
 
     coords64 = coords.astype(np.float64, copy=False)
     s = coords64 @ k

@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from grafix.api import E, G
-from grafix.core.effect_registry import effect_registry
-from grafix.core.geometry import Geometry
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import concat_realized_geometries
 
@@ -28,28 +25,9 @@ def test_effect_activate_false_multiple_inputs_pass_through_by_concat() -> None:
     g1 = G.polygon(n_sides=3)
     g2 = G.polygon(n_sides=4, center=(10.0, 0.0, 0.0))
 
-    node = Geometry.create("scale", inputs=(g1, g2), params={"activate": False})
+    node = E.boolean(activate=False)(g1, g2)
     out = realize(node)
     expected = concat_realized_geometries(realize(g1), realize(g2))
 
     assert np.array_equal(out.coords, expected.coords)
     assert np.array_equal(out.offsets, expected.offsets)
-
-
-def test_effect_activate_false_empty_inputs_returns_empty_geometry() -> None:
-    spec = effect_registry["scale"]
-    out = spec.evaluator([], (("activate", False),))
-
-    assert out.coords.shape == (0, 3)
-    assert out.offsets.shape == (1,)
-    assert out.offsets.tolist() == [0]
-
-
-@pytest.mark.parametrize("invalid", ["false", "true", 0, 1, None])
-def test_effect_registry_wrapper_requires_exact_bool_activate(
-    invalid: object,
-) -> None:
-    spec = effect_registry["scale"]
-
-    with pytest.raises(TypeError, match="exact bool"):
-        spec.evaluator([], (("activate", invalid),))

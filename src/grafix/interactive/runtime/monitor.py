@@ -8,6 +8,8 @@ from dataclasses import dataclass
 import os
 import time
 
+import psutil  # type: ignore[import-untyped]
+
 from grafix.core.value_validation import (
     exact_bool,
     exact_integer,
@@ -198,11 +200,6 @@ class RuntimeMonitor:
         self._autosave_error: str | None = None
         self._recovered_session = False
         self._profiler: PerfSnapshot | None = None
-
-        try:
-            import psutil  # type: ignore[import-untyped]
-        except Exception as exc:
-            raise RuntimeError("RuntimeMonitor には psutil が必要です") from exc
 
         self._process = psutil.Process(os.getpid())
 
@@ -444,26 +441,34 @@ class RuntimeMonitor:
             profiler=self._profiler,
         )
 
-    def _cpu_times_s(self, proc) -> float:
+    def _cpu_times_s(self, proc: psutil.Process) -> float:
         t = proc.cpu_times()
-        user = float(getattr(t, "user", 0.0))
-        system = float(getattr(t, "system", 0.0))
+        user = float(t.user)
+        system = float(t.system)
         return float(user + system)
 
     def _cpu_total_s(self) -> float:
         total = float(self._cpu_times_s(self._process))
-        for child in self._process.children(recursive=True):
+        try:
+            children = self._process.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            children = ()
+        for child in children:
             try:
                 total += float(self._cpu_times_s(child))
-            except Exception:
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
         return float(total)
 
     def _rss_bytes(self) -> int:
         total = int(self._process.memory_info().rss)
-        for child in self._process.children(recursive=True):
+        try:
+            children = self._process.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            children = ()
+        for child in children:
             try:
                 total += int(child.memory_info().rss)
-            except Exception:
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
         return int(total)

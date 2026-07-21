@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from grafix.core.geometry import Geometry
+from grafix import G
 from grafix.core.primitives.grid import grid as raw_grid
 from grafix.core.realize import realize
 from grafix.core.primitives import grid as _grid_module  # noqa: F401
@@ -13,7 +13,7 @@ from grafix.core.primitives import grid as _grid_module  # noqa: F401
 def test_grid_line_count_and_offsets() -> None:
     """縦線 nx 本 + 横線 ny 本の 2 点線分列になる。"""
     nx, ny = 3, 2
-    g = Geometry.create("grid", params={"nx": nx, "ny": ny})
+    g = G.grid(nx=nx, ny=ny)
     realized = realize(g)
 
     line_count = nx + ny
@@ -43,14 +43,11 @@ def test_grid_line_count_and_offsets() -> None:
 
 def test_grid_applies_center_and_scale() -> None:
     """center/scale が座標に適用される。"""
-    g = Geometry.create(
-        "grid",
-        params={
-            "nx": 1,
-            "ny": 1,
-            "center": (1.0, 2.0, 3.0),
-            "scale": 2.0,
-        },
+    g = G.grid(
+        nx=1,
+        ny=1,
+        center=(1.0, 2.0, 3.0),
+        scale=2.0,
     )
     realized = realize(g)
 
@@ -63,7 +60,7 @@ def test_grid_applies_center_and_scale() -> None:
 
 def test_grid_is_empty_when_both_zero() -> None:
     """nx=0 かつ ny=0 のとき空ジオメトリを返す。"""
-    g = Geometry.create("grid", params={"nx": 0, "ny": 0})
+    g = G.grid(nx=0, ny=0)
     realized = realize(g)
 
     assert realized.coords.shape == (0, 3)
@@ -71,7 +68,7 @@ def test_grid_is_empty_when_both_zero() -> None:
 
 
 def test_grid_transformed_raw_coords_keep_independent_owner() -> None:
-    """非identity変換後のraw coordsは従来どおり自身のbufferを所有する。"""
+    """非identity変換後の raw coords は自身の buffer を所有する。"""
 
     coords, offsets = raw_grid(
         nx=3,

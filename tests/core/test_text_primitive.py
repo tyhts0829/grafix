@@ -4,13 +4,14 @@ import hashlib
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from grafix.api import G
 from grafix.core.font_resolver import resolve_font_path
 from grafix.core.primitives import text as text_module
 from grafix.core.primitives._text_flatten import flatten_recording
 from grafix.core.primitives.text import text as text_impl
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 
 
 def _geometry_checksum(value: tuple[np.ndarray, np.ndarray]) -> str:
@@ -196,6 +197,27 @@ def test_text_quality_increases_point_count() -> None:
     )
 
     assert high.coords.shape[0] > low.coords.shape[0]
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("font_index", -1), ("quality", -0.1), ("quality", 1.1)],
+)
+def test_text_rejects_out_of_domain_parameters(
+    name: str,
+    value: int | float,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(
+            G.text(
+                text="",
+                font="GoogleSans-Regular.ttf",
+                **{name: value},
+            )
+        )
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert name in str(exc_info.value.__cause__)
 
 
 def _polyline_count(realized) -> int:

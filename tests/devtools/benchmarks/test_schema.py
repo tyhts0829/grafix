@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import operator
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from grafix.devtools.benchmarks.environment import make_case_spec
 from grafix.devtools.benchmarks.schema import (
     BenchmarkRun,
     BenchmarkSchemaError,
@@ -13,6 +15,7 @@ from grafix.devtools.benchmarks.schema import (
     CaseSpec,
     Distribution,
     EnvironmentFingerprint,
+    FrozenJsonObject,
     Metric,
     RunMeta,
     Sample,
@@ -22,6 +25,7 @@ from grafix.devtools.benchmarks.schema import (
     case_compatibility_key,
     environment_compatibility_key,
     evaluate_contract,
+    freeze_json_object,
     read_benchmark_run,
     summarize_distribution,
     summarize_samples,
@@ -31,6 +35,7 @@ from grafix.devtools.benchmarks.schema import (
 
 def _run() -> BenchmarkRun:
     samples = tuple(Sample(elapsed_ns=index * 100, iterations=2) for index in range(1, 21))
+    parameters = freeze_json_object({"size": 1})
     spec = CaseSpec(
         case_id="case",
         version=1,
@@ -38,14 +43,14 @@ def _run() -> BenchmarkRun:
         category="micro",
         suite="smoke",
         fixture="fixture",
-        parameters={"size": 1},
+        parameters=parameters,
         seed=0,
         source_sha256="case-source",
         compatibility_key=case_compatibility_key(
             case_id="case",
             version=1,
             fixture="fixture",
-            parameters={"size": 1},
+            parameters=parameters,
             seed=0,
             source_sha256="case-source",
         ),
@@ -66,13 +71,7 @@ def _run() -> BenchmarkRun:
             argv=("run",),
         ),
         source=SourceIdentity(commit="abc", dirty=True, diff_sha256="diff"),
-        environment=EnvironmentFingerprint(
-            compatibility_key=environment_compatibility_key(
-                {"python": "3.12"},
-                {},
-            ),
-            values={"python": "3.12"},
-        ),
+        environment=_environment(),
         cases=(
             CaseResult(
                 spec=spec,
@@ -107,6 +106,19 @@ def _run() -> BenchmarkRun:
                 ),
             ),
         ),
+    )
+
+
+def _environment() -> EnvironmentFingerprint:
+    values = freeze_json_object({"python": "3.12"})
+    unavailable = freeze_json_object({})
+    return EnvironmentFingerprint(
+        compatibility_key=environment_compatibility_key(
+            values,
+            unavailable,
+        ),
+        values=values,
+        unavailable=unavailable,
     )
 
 
@@ -215,6 +227,104 @@ def test_json_contains_raw_samples_and_separate_identities() -> None:
     assert len(payload["cases"][0]["samples"]) == 20
     assert payload["cases"][0]["metrics"][0]["kind"] == "gauge"
     assert payload["cases"][0]["contracts"][0]["severity"] == "soft"
+
+
+def test_identity_trees_detach_nested_aliases_and_serialize_as_json() -> None:
+    def implementation() -> None:
+        return None
+
+    parameter_source = {
+        "nested": {
+            "items": [1, {"state": "initial"}],
+        }
+    }
+    spec = make_case_spec(
+        case_id="immutable.case",
+        version=1,
+        label="immutable case",
+        category="test",
+        suite="test",
+        fixture="fixture",
+        parameters=parameter_source,
+        seed=0,
+        implementation=implementation,
+    )
+    case_key = spec.compatibility_key
+
+    values_source = {
+        "runtime": {
+            "flags": ["one", {"enabled": True}],
+        }
+    }
+    unavailable_source = {"gpu": "unavailable"}
+    frozen_values = freeze_json_object(values_source)
+    frozen_unavailable = freeze_json_object(unavailable_source)
+    environment = EnvironmentFingerprint(
+        compatibility_key=environment_compatibility_key(
+            frozen_values,
+            frozen_unavailable,
+        ),
+        values=frozen_values,
+        unavailable=frozen_unavailable,
+    )
+    environment_key = environment.compatibility_key
+
+    parameter_source["nested"]["items"][1]["state"] = "mutated"
+    parameter_source["nested"]["items"].append(2)
+    values_source["runtime"]["flags"][1]["enabled"] = False
+    values_source["runtime"]["flags"].append("two")
+    unavailable_source["gpu"] = "mutated"
+
+    nested = spec.parameters["nested"]
+    assert isinstance(nested, FrozenJsonObject)
+    items = nested["items"]
+    assert isinstance(items, tuple)
+    leaf = items[1]
+    assert isinstance(leaf, FrozenJsonObject)
+    assert leaf["state"] == "initial"
+    assert len(items) == 2
+    assert spec.compatibility_key == case_key
+    assert spec.compatibility_key == case_compatibility_key(
+        case_id=spec.case_id,
+        version=spec.version,
+        fixture=spec.fixture,
+        parameters=spec.parameters,
+        seed=spec.seed,
+        source_sha256=spec.source_sha256,
+        checksum_policy=spec.checksum_policy,
+        self_sampling=spec.self_sampling,
+    )
+    assert environment.compatibility_key == environment_key
+    assert environment.compatibility_key == environment_compatibility_key(
+        environment.values,
+        environment.unavailable,
+    )
+    assert environment.unavailable["gpu"] == "unavailable"
+
+    with pytest.raises(TypeError):
+        operator.setitem(spec.parameters, "extra", True)
+    with pytest.raises(TypeError):
+        operator.setitem(leaf, "state", "mutated")
+
+    run = _run()
+    run = replace(
+        run,
+        environment=environment,
+        cases=(replace(run.cases[0], spec=spec),),
+    )
+    payload = benchmark_run_to_dict(run)
+    assert payload["cases"][0]["spec"]["parameters"]["nested"]["items"] == [
+        1,
+        {"state": "initial"},
+    ]
+    assert payload["environment"]["values"]["runtime"]["flags"] == [
+        "one",
+        {"enabled": True},
+    ]
+    payload["cases"][0]["spec"]["parameters"]["nested"]["items"][1][
+        "state"
+    ] = "serialized mutation"
+    assert leaf["state"] == "initial"
 
 
 @pytest.mark.parametrize(

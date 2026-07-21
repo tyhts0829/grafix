@@ -7,7 +7,9 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from .collapsed_header import group_collapsed_header_keys
 from .key import ParameterKey
+from .identity import GroupKey, group_key
 from .reconcile import (
     ReconcileOrphan,
     build_group_fingerprints,
@@ -18,9 +20,6 @@ from .store import ParamStore
 
 if TYPE_CHECKING:
     from .history import ParamStoreHistory
-
-GroupKey = tuple[str, str]  # (op, site_id)
-
 
 def reconcile_loaded_groups_for_runtime(store: ParamStore) -> None:
     """ロード済みグループと観測済みグループの差分を再リンクする（削除はしない）。"""
@@ -120,8 +119,8 @@ def manual_migrate_orphan(
     if history is not None and history._store is not store:
         raise ValueError("history must belong to the same ParamStore")
 
-    normalized_old = _normalize_group(old_group, name="old_group")
-    normalized_new = _normalize_group(new_group, name="new_group")
+    normalized_old = group_key(old_group, name="old_group")
+    normalized_new = group_key(new_group, name="new_group")
     runtime = store._runtime_ref()
     orphan = runtime.reconcile_orphans.get(normalized_new)
     if orphan is None:
@@ -171,8 +170,8 @@ def manual_migrate_orphan(
 def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -> None:
     """old_group の GUI 状態/メタを new_group へ可能な範囲で移す。"""
 
-    old_op, old_site_id = _normalize_group(old_group, name="old_group")
-    new_op, new_site_id = _normalize_group(new_group, name="new_group")
+    old_op, old_site_id = group_key(old_group, name="old_group")
+    new_op, new_site_id = group_key(new_group, name="new_group")
     if old_op != new_op:
         raise ValueError(f"op mismatch: {old_group!r} -> {new_group!r}")
     op = old_op
@@ -187,10 +186,16 @@ def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -
     ordinals.migrate(op, old_site_id, new_site_id)
 
     collapsed = store._collapsed_headers_ref()
-    old_collapse_key = f"primitive:{op}:{old_site_id}"
-    if old_collapse_key in collapsed:
-        collapsed.discard(old_collapse_key)
-        collapsed.add(f"primitive:{op}:{new_site_id}")
+    old_collapse_keys = group_collapsed_header_keys((op, old_site_id))
+    new_collapse_keys = group_collapsed_header_keys((op, new_site_id))
+    for old_collapse_key, new_collapse_key in zip(
+        old_collapse_keys,
+        new_collapse_keys,
+        strict=True,
+    ):
+        if old_collapse_key in collapsed:
+            collapsed.discard(old_collapse_key)
+            collapsed.add(new_collapse_key)
 
     locked = store._locked_keys_ref()
     favorites = set(store._favorite_keys_snapshot())
@@ -208,7 +213,7 @@ def migrate_group(store: ParamStore, old_group: GroupKey, new_group: GroupKey) -
         if old_state is not None and new_state is not None:
             old_explicit = store._explicit_by_key[old_key]
             new_explicit = store._explicit_by_key[new_key]
-            old_override = bool(old_state.override)
+            old_override = old_state.override
             new_state.override = (
                 not new_explicit
                 if old_override == (not old_explicit)
@@ -255,18 +260,7 @@ def _group_keys(store: ParamStore, *, op: str, site_id: str) -> list[ParameterKe
     return sorted(keys, key=lambda key: key.arg)
 
 
-def _normalize_group(group: GroupKey, *, name: str) -> GroupKey:
-    if (
-        not isinstance(group, tuple)
-        or len(group) != 2
-        or not all(isinstance(part, str) and part for part in group)
-    ):
-        raise TypeError(f"{name} must be a non-empty (op, site_id) tuple[str, str]")
-    return group
-
-
 __all__ = [
-    "GroupKey",
     "list_reconcile_orphans",
     "manual_migrate_orphan",
     "migrate_group",

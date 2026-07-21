@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
@@ -25,10 +23,10 @@ bezier_meta = {
 @primitive(meta=bezier_meta)
 def bezier(
     *,
-    p0: Sequence[float] = (-0.5, 0.0, 0.0),
-    p1: Sequence[float] = (-0.2, 0.5, 0.0),
-    p2: Sequence[float] = (0.2, -0.5, 0.0),
-    p3: Sequence[float] = (0.5, 0.0, 0.0),
+    p0: tuple[float, ...] = (-0.5, 0.0, 0.0),
+    p1: tuple[float, ...] = (-0.2, 0.5, 0.0),
+    p2: tuple[float, ...] = (0.2, -0.5, 0.0),
+    p3: tuple[float, ...] = (0.5, 0.0, 0.0),
     segments: int = 64,
 ) -> GeomTuple:
     """4制御点からcubic Bezier curveを生成する。
@@ -37,13 +35,13 @@ def bezier(
 
     Parameters
     ----------
-    p0 : Sequence[float], optional
+    p0 : tuple[float, ...], optional
         曲線の始点となる 2 次元または 3 次元座標。
-    p1 : Sequence[float], optional
+    p1 : tuple[float, ...], optional
         始点側の接線方向と曲がり方を定める第 1 制御点。
-    p2 : Sequence[float], optional
+    p2 : tuple[float, ...], optional
         終点側の接線方向と曲がり方を定める第 2 制御点。
-    p3 : Sequence[float], optional
+    p3 : tuple[float, ...], optional
         曲線の終点となる 2 次元または 3 次元座標。
     segments : int, optional
         4 制御点で定まる曲線を近似する直線セグメントの数。

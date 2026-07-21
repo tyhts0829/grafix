@@ -15,6 +15,7 @@ from grafix.core.parameters.codec import (
     loads_param_store_result,
 )
 from grafix.core.parameters.context import current_frame_params, parameter_context
+from grafix.core.parameters.codec_parser import parse_param_store_payload
 from grafix.core.parameters.effects import EffectStepTopology
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.invariants import assert_invariants
@@ -114,6 +115,18 @@ def _store_with_float_value(
     return store, key
 
 
+def test_parsed_param_store_is_deeply_read_only() -> None:
+    store, key = _store_with_float_value(0.6)
+    parsed = parse_param_store_payload(json.loads(dumps_param_store(store)))
+
+    with pytest.raises(TypeError):
+        parsed.states[key] = parsed.states[key]  # type: ignore[index]
+    with pytest.raises(TypeError):
+        parsed.labels[("line", "site")] = "Line"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        parsed.ordinals[key.op][key.site_id] = 99  # type: ignore[index]
+
+
 def _store_with_effect_order() -> ParamStore:
     store = ParamStore()
     assert store._effects_ref().record_chain(
@@ -162,7 +175,9 @@ def test_default_param_store_path_uses_data_dir_and_script_stem(
     assert path.suffix == ".json"
 
 
-def test_default_param_store_path_mirrors_sketch_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_default_param_store_path_mirrors_sketch_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     _isolate_config_discovery(tmp_path, monkeypatch)
 
     discovered = tmp_path / ".grafix" / "config.yaml"
@@ -381,9 +396,7 @@ def test_current_state_rejects_noncanonical_cc_numbers(
 
     assert result.store.get_state(key) is None
     assert any(
-        issue.section == "states"
-        and issue.index == 0
-        and reason_fragment in issue.reason
+        issue.section == "states" and issue.index == 0 and reason_fragment in issue.reason
         for issue in result.issues
     )
 
@@ -454,9 +467,7 @@ def test_current_state_rejects_cc_incompatible_with_kind_or_op(
 
     assert result.store.get_state(key) is None
     assert any(
-        issue.section == "states"
-        and issue.index == 0
-        and reason_fragment in issue.reason
+        issue.section == "states" and issue.index == 0 and reason_fragment in issue.reason
         for issue in result.issues
     )
 
@@ -471,8 +482,7 @@ def test_current_schema_reports_and_repairs_missing_parameter_ordinal() -> None:
     assert result.store.get_state(key) is not None
     assert result.store.get_ordinal(key.op, key.site_id) == 1
     assert any(
-        issue.section == "ordinals"
-        and f"{key.op}/{key.site_id}" in issue.reason
+        issue.section == "ordinals" and f"{key.op}/{key.site_id}" in issue.reason
         for issue in result.issues
     )
 
@@ -489,8 +499,7 @@ def test_current_schema_reports_and_repairs_missing_chain_ordinal() -> None:
         ("rotate", "rotate-site"),
     )
     assert any(
-        issue.section == "chain_ordinals"
-        and "chain-order" in issue.reason
+        issue.section == "chain_ordinals" and "chain-order" in issue.reason
         for issue in result.issues
     )
 
@@ -558,7 +567,7 @@ def test_current_schema_roundtrip_preserves_effect_topology_and_gui_order(
         )
 
 
-@pytest.mark.parametrize("schema_version", [None, 1, 2])
+@pytest.mark.parametrize("schema_version", [None, 1, 2, 3])
 def test_non_current_schema_is_rejected_without_mutating_or_quarantining_file(
     tmp_path: Path,
     schema_version: int | None,
@@ -598,9 +607,7 @@ def test_malformed_effect_order_entry_is_diagnosed_and_dropped() -> None:
 
     result = loads_param_store_result(json.dumps(payload))
 
-    assert [issue.section for issue in result.issues] == [
-        "ui.effect_order_overrides"
-    ]
+    assert [issue.section for issue in result.issues] == ["ui.effect_order_overrides"]
     assert result.store._effects_ref().order_overrides() == {
         "chain-order": (
             ("rotate", "rotate-site"),
@@ -661,9 +668,7 @@ def test_effect_order_incompatible_with_saved_topology_is_diagnosed_and_dropped(
         payload["ui"]["effect_order_overrides"][0]["steps"].pop()
     elif corruption == "duplicate_topology":
         payload["effect_steps"][1]["op"] = payload["effect_steps"][0]["op"]
-        payload["effect_steps"][1]["site_id"] = payload["effect_steps"][0][
-            "site_id"
-        ]
+        payload["effect_steps"][1]["site_id"] = payload["effect_steps"][0]["site_id"]
     elif corruption == "noncontiguous_topology":
         payload["effect_steps"][1]["step_index"] = 2
     elif corruption == "missing_n_inputs":
@@ -857,9 +862,7 @@ def test_param_store_file_roundtrip_includes_named_variations(tmp_path: Path) ->
     save_param_store(store, path)
     loaded = load_param_store(path)
 
-    assert [variation.name for variation in list_variations(loaded)] == [
-        "print candidate"
-    ]
+    assert [variation.name for variation in list_variations(loaded)] == ["print candidate"]
     assert restore_variation(loaded, "print candidate") is True
     restored = loaded.get_state(key)
     assert restored is not None
@@ -956,9 +959,7 @@ def test_session_recovery_includes_named_variations(tmp_path: Path) -> None:
 
     loaded = load_param_store_with_recovery(primary)
 
-    assert [variation.name for variation in list_variations(loaded)] == [
-        "live candidate"
-    ]
+    assert [variation.name for variation in list_variations(loaded)] == ["live candidate"]
     assert restore_variation(loaded, "live candidate") is True
     state = loaded.get_state(key)
     assert state is not None

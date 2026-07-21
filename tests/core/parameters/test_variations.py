@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from grafix.core.parameters.autosave import ParamStoreAutosave
+from grafix.core.parameters.collapsed_header import primitive_collapsed_header_key
 from grafix.core.parameters.codec import (
     decode_param_store_result,
     dumps_param_store,
@@ -401,6 +402,24 @@ def test_codec_roundtrip_keeps_variation_metadata_and_snapshot() -> None:
     assert _value(loaded, key) == pytest.approx(0.25)
 
 
+def test_variation_snapshot_uses_v4_tagged_collapsed_header_records() -> None:
+    store = ParamStore()
+    _add_parameter(store)
+    header = primitive_collapsed_header_key(("wave", "site-1"))
+    store._collapsed_headers_ref().add(header)
+    create_variation(store, "saved", created_at=123.5)
+
+    payload = encode_param_store(store)
+    collapsed = payload["variations"][0]["parameter_snapshot"][
+        "collapsed_headers"
+    ]
+    assert {entry["kind"] for entry in collapsed} == {"primitive", "preset"}
+    assert all(type(entry["collapsed"]) is bool for entry in collapsed)
+
+    variation = list_variations(decode_param_store_result(payload).store)[0]
+    assert variation.parameter_snapshot._collapsed_by_header[header] is True
+
+
 def test_variation_snapshot_uses_json_arrays_in_direct_codec_roundtrip() -> None:
     store = ParamStore()
     key = _add_typed_parameter(
@@ -463,7 +482,7 @@ def test_variation_entry_with_noncanonical_fields_is_dropped(
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     [
-        ("missing", "missing fields: collapsed_by_header"),
+        ("missing", "missing fields: collapsed_headers"),
         ("unknown", "unknown fields: legacy_collapsed"),
     ],
 )
@@ -477,7 +496,7 @@ def test_variation_snapshot_with_noncanonical_fields_is_dropped(
     payload = json.loads(dumps_param_store(store))
     snapshot = payload["variations"][0]["parameter_snapshot"]
     if mutation == "missing":
-        snapshot.pop("collapsed_by_header")
+        snapshot.pop("collapsed_headers")
     else:
         snapshot["legacy_collapsed"] = {}
 

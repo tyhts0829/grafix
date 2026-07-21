@@ -7,7 +7,9 @@ import importlib
 import numpy as np
 import pytest
 
+from grafix import E, G
 from grafix.core.effects.deduplicate import deduplicate
+from grafix.core.realize import RealizeError, realize
 from grafix.core.resource_budget import (
     ResourceBudget,
     ResourceLimitError,
@@ -191,42 +193,26 @@ def test_deduplicate_removes_empty_point_and_zero_length_lines() -> None:
     assert empty[1].dtype == np.int32
 
 
-@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
-def test_deduplicate_rejects_non_finite_geometry(value: float) -> None:
-    geometry = _geometry(
-        [(0.0, 0.0, 0.0), (value, 0.0, 0.0)],
-        [(2.0, 0.0, 0.0), (3.0, 0.0, 0.0)],
-    )
+@pytest.mark.parametrize(
+    "points",
+    [(), ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))],
+)
+def test_deduplicate_rejects_negative_tolerance_before_empty_input(
+    points: tuple[tuple[float, float, float], ...],
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.deduplicate(tolerance=-1.0)(G.polyline(points=points)))
 
-    with pytest.raises(ValueError, match="非有限"):
-        deduplicate(geometry, tolerance=0.0)
-
-
-@pytest.mark.parametrize("tolerance", [-1.0, np.nan, np.inf])
-def test_deduplicate_invalid_tolerance_is_identity(tolerance: float) -> None:
-    geometry = _geometry(
-        [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
-        [(1.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
-    )
-
-    output = deduplicate(geometry, tolerance=tolerance)
-
-    assert output[0] is geometry[0]
-    assert output[1] is geometry[1]
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "tolerance" in str(exc_info.value.__cause__)
 
 
-@pytest.mark.parametrize("tolerance", [-1.0, np.nan, np.inf])
-def test_deduplicate_invalid_tolerance_precedes_nonfinite_geometry(
+@pytest.mark.parametrize("tolerance", [np.nan, np.inf, -np.inf])
+def test_deduplicate_public_api_rejects_nonfinite_tolerance(
     tolerance: float,
 ) -> None:
-    geometry = _geometry(
-        [(np.nan, 0.0, 0.0), (1.0, 0.0, 0.0)],
-    )
-
-    output = deduplicate(geometry, tolerance=tolerance)
-
-    assert output[0] is geometry[0]
-    assert output[1] is geometry[1]
+    with pytest.raises(ValueError, match="tolerance"):
+        E.deduplicate(tolerance=tolerance)
 
 
 def test_deduplicate_does_not_mutate_input_and_returns_packed_dtypes() -> None:

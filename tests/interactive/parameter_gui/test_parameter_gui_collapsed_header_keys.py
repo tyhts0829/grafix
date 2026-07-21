@@ -1,6 +1,15 @@
+from dataclasses import replace
+
 from grafix.core.parameters.style import STYLE_OP
+from grafix.core.parameters.collapsed_header import (
+    STYLE_COLLAPSED_HEADER_KEY,
+    effect_chain_collapsed_header_key,
+    preset_collapsed_header_key,
+    primitive_collapsed_header_key,
+)
 from grafix.core.parameters.view import ParameterRow
 from grafix.interactive.parameter_gui.group_blocks import group_layout_from_rows
+from grafix.interactive.parameter_gui.grouping import GroupType
 from grafix.interactive.parameter_gui.table import parameter_group_collapse_keys
 
 
@@ -34,7 +43,7 @@ def test_collapse_key_for_block_style():
     assert parameter_group_collapse_keys(
         rows,
         group_layout=layout,
-    ) == ("style:global",)
+    ) == (STYLE_COLLAPSED_HEADER_KEY,)
 
 
 def test_collapse_key_for_block_primitive_uses_site_id():
@@ -46,7 +55,26 @@ def test_collapse_key_for_block_primitive_uses_site_id():
     assert parameter_group_collapse_keys(
         rows,
         group_layout=layout,
-    ) == ("primitive:circle:c:1",)
+    ) == (primitive_collapsed_header_key(("circle", "c:1")),)
+
+
+def test_collapse_key_for_block_preset_uses_site_id():
+    rows = [_row(op="preset.logo", site_id="p:1", ordinal=1, arg="size")]
+    layout = group_layout_from_rows(
+        rows,
+        primitive_header_by_group={("preset.logo", 1): "Logo"},
+    )
+    preset_layout = tuple(
+        replace(
+            block,
+            group_id=(GroupType.PRESET, block.group_id[1]),
+        )
+        for block in layout
+    )
+    assert parameter_group_collapse_keys(
+        rows,
+        group_layout=preset_layout,
+    ) == (preset_collapsed_header_key(("preset.logo", "p:1")),)
 
 
 def test_collapse_key_for_block_effect_chain_uses_chain_id():
@@ -61,4 +89,4 @@ def test_collapse_key_for_block_effect_chain_uses_chain_id():
     assert parameter_group_collapse_keys(
         rows,
         group_layout=layout,
-    ) == ("effect_chain:chain:1",)
+    ) == (effect_chain_collapsed_header_key("chain:1"),)

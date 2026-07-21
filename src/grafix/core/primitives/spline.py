@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
@@ -36,36 +34,23 @@ spline_meta = {
 }
 
 
-def _segment_count(value: int | float) -> int:
+def _segment_count(value: int) -> int:
     """spanごとのsegment数を検証する。"""
 
-    try:
-        count = int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(
-            "spline の segments_per_span は整数である必要がある"
-        ) from exc
-    if count < 1:
+    if value < 1:
         raise ValueError(
             "spline の segments_per_span は 1 以上である必要がある"
         )
-    return count
+    return value
 
 
 def _normalize_anchors(
-    points: Sequence[Sequence[float]],
+    points: tuple[tuple[float, ...], ...],
 ) -> list[tuple[float, float, float]]:
     """入力順を保ったまま、連続する同一点を1点へまとめる。"""
 
-    try:
-        iterator = iter(points)
-    except TypeError as exc:
-        raise ValueError(
-            "spline の points は座標を並べたシーケンスである必要がある"
-        ) from exc
-
     anchors: list[tuple[float, float, float]] = []
-    for value in iterator:
+    for value in points:
         point = point3(value, op="spline", name="points")
         if not all(
             math.isfinite(component) and abs(component) <= _FLOAT32_MAX
@@ -241,7 +226,7 @@ def _sample_spline(
 @primitive(meta=spline_meta)
 def spline(
     *,
-    points: Sequence[Sequence[float]] = (
+    points: tuple[tuple[float, ...], ...] = (
         (-0.5, 0.0),
         (-0.2, 0.3),
         (0.2, -0.3),
@@ -266,7 +251,7 @@ def spline(
 
     Parameters
     ----------
-    points : Sequence[Sequence[float]], optional
+    points : tuple[tuple[float, ...], ...], optional
         入力順に並べたfloat32範囲内の有限な2次元または3次元anchor座標。
     closed : bool, optional
         最後のanchorから最初のanchorまでを補間して曲線を閉じるか。
@@ -282,22 +267,19 @@ def spline(
 
     Raises
     ------
+    TypeError
+        points または各 point の型・成分数が不正な場合。
     ValueError
-        point形式、有限性、float32範囲、tension、segments_per_span、または
-        補間結果の数値範囲が不正な場合。
+        point の有限性・float32範囲、tension、segments_per_span、または補間結果の
+        数値範囲が不正な場合。
     """
 
     count = _segment_count(segments_per_span)
-    try:
-        tension_f = float(tension)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("spline の tension は数値である必要がある") from exc
-    if not math.isfinite(tension_f) or not 0.0 <= tension_f <= 1.0:
+    if not 0.0 <= tension <= 1.0:
         raise ValueError("spline の tension は有限な 0 以上 1 以下である必要がある")
 
     anchors = _normalize_anchors(points)
-    closed_b = bool(closed)
-    if closed_b and len(anchors) > 1 and anchors[-1] == anchors[0]:
+    if closed and len(anchors) > 1 and anchors[-1] == anchors[0]:
         anchors.pop()
 
     anchor_count = len(anchors)
@@ -311,7 +293,7 @@ def spline(
             coords = np.asarray(anchors, dtype=np.float32)
         return coords, np.array([0, 1], dtype=np.int32)
 
-    span_count = anchor_count if closed_b else anchor_count - 1
+    span_count = anchor_count if closed else anchor_count - 1
     vertex_count = span_count * count + 1
     ensure_geometry_output(
         "spline",
@@ -329,15 +311,15 @@ def spline(
             _sample_two_anchors(
                 coords,
                 anchor_array,
-                closed=closed_b,
+                closed=closed,
                 segments_per_span=count,
             )
         else:
             _sample_spline(
                 coords,
                 anchor_array,
-                closed=closed_b,
-                tension_scale=1.0 - tension_f,
+                closed=closed,
+                tension_scale=1.0 - tension,
                 segments_per_span=count,
             )
     offsets = np.array([0, vertex_count], dtype=np.int32)

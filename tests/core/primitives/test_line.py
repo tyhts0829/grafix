@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from grafix.core.geometry import Geometry
-from grafix.core.realize import realize
+from grafix import G
+from grafix.core.realize import RealizeError, realize
 from grafix.core.primitives import line as _line_module  # noqa: F401
 
 
 def test_line_default_is_centered_unit_segment() -> None:
     """デフォルトは長さ 1・原点中心・+X 方向の線分になる。"""
-    realized = realize(Geometry.create("line"))
+    realized = realize(G.line())
     assert realized.coords.shape == (2, 3)
     assert realized.offsets.tolist() == [0, 2]
     np.testing.assert_allclose(realized.coords[0], [-0.5, 0.0, 0.0], rtol=0.0, atol=1e-6)
@@ -20,7 +21,7 @@ def test_line_default_is_centered_unit_segment() -> None:
 
 def test_line_angle_rotates_segment_on_xy_plane() -> None:
     """angle[deg] により XY 平面上で回転する。"""
-    realized = realize(Geometry.create("line", params={"length": 1.0, "angle": 90.0}))
+    realized = realize(G.line(length=1.0, angle=90.0))
     np.testing.assert_allclose(realized.coords[0], [0.0, -0.5, 0.0], rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(realized.coords[1], [0.0, 0.5, 0.0], rtol=0.0, atol=1e-6)
 
@@ -28,10 +29,7 @@ def test_line_angle_rotates_segment_on_xy_plane() -> None:
 def test_line_center_moves_segment_and_preserves_z() -> None:
     """center が平行移動として作用し、z は center[2] に固定される。"""
     realized = realize(
-        Geometry.create(
-            "line",
-            params={"length": 1.0, "angle": 0.0, "center": (10.0, 20.0, 30.0)},
-        )
+        G.line(length=1.0, angle=0.0, center=(10.0, 20.0, 30.0))
     )
     np.testing.assert_allclose(realized.coords[0], [9.5, 20.0, 30.0], rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(realized.coords[1], [10.5, 20.0, 30.0], rtol=0.0, atol=1e-6)
@@ -40,14 +38,11 @@ def test_line_center_moves_segment_and_preserves_z() -> None:
 def test_line_anchor_left_uses_center_as_left_endpoint() -> None:
     """anchor="left" では center が左端になり、+angle 方向へ伸びる。"""
     realized = realize(
-        Geometry.create(
-            "line",
-            params={
-                "center": (10.0, 20.0, 30.0),
-                "anchor": "left",
-                "length": 2.0,
-                "angle": 0.0,
-            },
+        G.line(
+            center=(10.0, 20.0, 30.0),
+            anchor="left",
+            length=2.0,
+            angle=0.0,
         )
     )
     np.testing.assert_allclose(realized.coords[0], [10.0, 20.0, 30.0], rtol=0.0, atol=1e-6)
@@ -57,14 +52,11 @@ def test_line_anchor_left_uses_center_as_left_endpoint() -> None:
 def test_line_anchor_right_uses_center_as_right_endpoint() -> None:
     """anchor="right" では center が右端になり、-angle 方向へ伸びる。"""
     realized = realize(
-        Geometry.create(
-            "line",
-            params={
-                "center": (10.0, 20.0, 30.0),
-                "anchor": "right",
-                "length": 2.0,
-                "angle": 0.0,
-            },
+        G.line(
+            center=(10.0, 20.0, 30.0),
+            anchor="right",
+            length=2.0,
+            angle=0.0,
         )
     )
     np.testing.assert_allclose(realized.coords[0], [8.0, 20.0, 30.0], rtol=0.0, atol=1e-6)
@@ -73,6 +65,14 @@ def test_line_anchor_right_uses_center_as_right_endpoint() -> None:
 
 def test_line_zero_length_returns_two_identical_points() -> None:
     """length==0 のとき 2 点（同一点）として返す。"""
-    realized = realize(Geometry.create("line", params={"length": 0.0, "center": (1.0, 2.0, 3.0)}))
+    realized = realize(G.line(length=0.0, center=(1.0, 2.0, 3.0)))
     np.testing.assert_array_equal(realized.coords[0], realized.coords[1])
     np.testing.assert_allclose(realized.coords[0], [1.0, 2.0, 3.0], rtol=0.0, atol=1e-6)
+
+
+def test_line_rejects_negative_length() -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.line(length=-1.0))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "length" in str(exc_info.value.__cause__)

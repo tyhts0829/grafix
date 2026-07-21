@@ -371,10 +371,7 @@ def test_renderer_applies_gpu_cache_runtime_limit() -> None:
 
     assert renderer.mesh_cache_max_bytes == 9_000
     assert renderer._dynamic_mesh_max_bytes == 3_000
-    assert (
-        renderer.mesh_cache_max_bytes + renderer._dynamic_mesh_max_bytes
-        == 12_000
-    )
+    assert renderer.mesh_cache_max_bytes + renderer._dynamic_mesh_max_bytes == 12_000
     assert renderer.mesh_candidate_cache_max_entries == 11
 
 
@@ -423,14 +420,15 @@ def test_renderer_reuses_scratch_topology_for_animated_coordinates(
         assert mesh is renderer._scratch_mesh
 
     assert renderer._scratch_topology is not None
-    assert renderer._scratch_topology.offsets is offsets
+    assert renderer._scratch_topology.offsets is not offsets
+    np.testing.assert_array_equal(renderer._scratch_topology.offsets, offsets)
     assert build_count == 1
     assert renderer._scratch_mesh.vertex_upload_count == 3
     assert renderer._scratch_mesh.index_upload_count == 1
     assert renderer._scratch_mesh.vertices_only_upload_count == 2
 
 
-def test_renderer_rebuilds_scratch_topology_for_new_offsets_object(
+def test_renderer_rebuilds_scratch_topology_for_new_offsets_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _FakeMesh.instances.clear()
@@ -446,9 +444,14 @@ def test_renderer_rebuilds_scratch_topology_for_new_offsets_object(
     monkeypatch.setattr(renderer_module, "build_line_indices_and_stats", counted_build)
     renderer = _renderer()
 
-    for frame in range(2):
+    for frame, offsets in enumerate(
+        (
+            np.asarray([0, 3], dtype=np.int32),
+            np.asarray([0, 1, 3], dtype=np.int32),
+        )
+    ):
         renderer.prepare_layer_mesh(
-            _geometry(offsets=np.asarray([0, 3], dtype=np.int32)),
+            _geometry(offsets=offsets),
             cache_key=_cache_key(f"topology-{frame}"),
             scene_serial=frame + 1,
             snapshot_revision=frame,
@@ -474,10 +477,7 @@ def test_renderer_reuses_topology_for_multiple_animated_layer_slots(
 
     monkeypatch.setattr(renderer_module, "build_line_indices_and_stats", counted_build)
     renderer = _renderer()
-    offsets_by_layer = [
-        np.asarray([0, 3], dtype=np.int32)
-        for _ in range(8)
-    ]
+    offsets_by_layer = [np.asarray([0, 3], dtype=np.int32) for _ in range(8)]
 
     for frame in range(120):
         for layer_index, offsets in enumerate(offsets_by_layer):
@@ -492,14 +492,11 @@ def test_renderer_reuses_topology_for_multiple_animated_layer_slots(
 
     assert build_count == 8
     assert len(renderer._dynamic_meshes) == 8
-    assert sum(
-        entry.mesh.index_upload_count
-        for entry in renderer._dynamic_meshes.values()
-    ) == 8
-    assert sum(
-        entry.mesh.vertices_only_upload_count
-        for entry in renderer._dynamic_meshes.values()
-    ) == 8 * 119
+    assert sum(entry.mesh.index_upload_count for entry in renderer._dynamic_meshes.values()) == 8
+    assert (
+        sum(entry.mesh.vertices_only_upload_count for entry in renderer._dynamic_meshes.values())
+        == 8 * 119
+    )
 
 
 def test_renderer_dynamic_mesh_pool_is_entry_bounded(
@@ -600,10 +597,7 @@ def test_renderer_candidate_cache_is_key_only_and_count_bounded(
         )
 
     assert list(renderer._mesh_candidates) == keys[-2:]
-    assert [
-        admission.scene_serial
-        for admission in renderer._mesh_candidates.values()
-    ] == [3, 4]
+    assert [admission.scene_serial for admission in renderer._mesh_candidates.values()] == [3, 4]
 
 
 def test_renderer_stale_result_redisplay_does_not_promote_mesh(

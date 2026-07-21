@@ -39,7 +39,7 @@ _WAIT_TIMEOUT_S = 8.0
 
 
 def _realized_layer(name: str, index: int) -> RealizedLayer:
-    geometry = Geometry.create("line")
+    geometry = Geometry.create("capture-export-test-geometry")
     return RealizedLayer(
         layer=Layer(geometry=geometry, site_id=f"layer:{index}", name=name),
         realized=RealizedGeometry(

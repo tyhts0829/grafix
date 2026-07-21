@@ -55,24 +55,12 @@ sphere_meta = {
 }
 
 SPHERE_UI_VISIBLE = {
-    "line_mode": lambda v: str(v.get("style", "latlon")) in {"latlon", "rings"},
+    "line_mode": lambda v: v.get("style", "latlon") in {"latlon", "rings"},
 }
-
-
-def _clamp_int(value: int | float, lo: int, hi: int) -> int:
-    v = int(round(float(value)))
-    if v < lo:
-        return lo
-    if v > hi:
-        return hi
-    return v
 
 
 def _polylines_to_realized(
     polylines: list[np.ndarray],
-    *,
-    center: tuple[float, float, float],
-    scale: float,
 ) -> GeomTuple:
     """ポリライン列を (coords, offsets) に変換する。"""
     filtered: list[np.ndarray] = []
@@ -98,13 +86,6 @@ def _polylines_to_realized(
     offsets = np.zeros(len(filtered) + 1, dtype=np.int32)
     offsets[1:] = np.cumsum(np.asarray(lengths, dtype=np.int32), dtype=np.int32)
 
-    cx, cy, cz = float(center[0]), float(center[1]), float(center[2])
-    s_f = float(scale)
-    if s_f != 1.0:
-        coords *= np.float32(s_f)
-    if (cx, cy, cz) != (0.0, 0.0, 0.0):
-        coords += np.array([cx, cy, cz], dtype=np.float32)
-
     return coords, offsets
 
 
@@ -113,12 +94,8 @@ def _sphere_latlon(subdivisions: int, mode: int) -> list[np.ndarray]:
     pi = math.pi
     two_pi = 2.0 * math.pi
 
-    s = int(subdivisions)
-    m = int(mode)
-    if m < 0:
-        m = 0
-    elif m > 2:
-        m = 2
+    s = subdivisions
+    m = mode
 
     eq_segments = max(16, 64 * (s + 1))
     if s <= 0:
@@ -176,7 +153,7 @@ def _sphere_latlon(subdivisions: int, mode: int) -> list[np.ndarray]:
 
 def _sphere_zigzag(subdivisions: int) -> list[np.ndarray]:
     """螺旋（ジグザグ）スタイルのポリライン列を生成する。"""
-    s = int(subdivisions)
+    s = subdivisions
     total_rotations = 8 + 4 * s
 
     if s <= 0:
@@ -213,7 +190,7 @@ def _sphere_zigzag(subdivisions: int) -> list[np.ndarray]:
 
 
 def _sphere_icosphere(subdivisions: int) -> GeomTuple:
-    """アイコスフィアを従来の DFS/辺順のまま packed geometry へ直接生成する。"""
+    """固定した DFS と辺順でアイコスフィアを packed geometry へ直接生成する。"""
 
     phi = (1.0 + math.sqrt(5.0)) / 2.0
     base_vertices = np.array(
@@ -264,8 +241,8 @@ def _sphere_icosphere(subdivisions: int) -> GeomTuple:
     def edge_key(v1: int, v2: int) -> EdgeKey:
         return (v1, v2) if v1 <= v2 else (v2, v1)
 
-    # 共有辺は同じ頂点 id の組で表す。座標演算は初回だけ従来どおり行い、
-    # 以後は同じ float32 midpoint を再利用する。
+    # 共有辺は同じ頂点 id の組で表す。座標演算は最初の生成時だけ行い、
+    # 以後は同じ float32 midpoint を再利用して決定的な順序を保つ。
     vertices = [base_vertices[i] for i in range(int(base_vertices.shape[0]))]
     midpoint_cache: dict[EdgeKey, int] = {}
 
@@ -288,9 +265,7 @@ def _sphere_icosphere(subdivisions: int) -> GeomTuple:
         midpoint_cache[key] = result_id
         return result_id
 
-    level = int(subdivisions)
-    if level < 0:
-        level = 0
+    level = subdivisions
     expected_edges = 30 * (4**level)
     coords = np.empty((expected_edges * 2, 3), dtype=np.float32)
     seen: set[EdgeKey] = set()
@@ -338,12 +313,8 @@ def _sphere_icosphere(subdivisions: int) -> GeomTuple:
 
 def _sphere_rings(subdivisions: int, mode: int) -> list[np.ndarray]:
     """3 軸リング（水平+縦リング）スタイルのポリライン列を生成する。"""
-    s = int(subdivisions)
-    m = int(mode)
-    if m < 0:
-        m = 0
-    elif m > 2:
-        m = 2
+    s = subdivisions
+    m = mode
 
     ring_count = 5 + 12 * s
 
@@ -420,11 +391,7 @@ def _sphere_base_geometry(style: str, subdivisions: int, mode: int) -> GeomTuple
             polylines = _sphere_zigzag(subdivisions)
         else:
             polylines = _sphere_rings(subdivisions, mode)
-        coords, offsets = _polylines_to_realized(
-            polylines,
-            center=(0.0, 0.0, 0.0),
-            scale=1.0,
-        )
+        coords, offsets = _polylines_to_realized(polylines)
 
     coords.setflags(write=False)
     offsets.setflags(write=False)
@@ -437,16 +404,16 @@ def _place_cached_sphere(
     center: tuple[float, float, float],
     scale: float,
 ) -> GeomTuple:
-    """cache を共有せず、従来と同じ float32 順序で scale/center を適用する。"""
+    """cache を共有せず、scale、center の順に float32 演算を適用する。"""
 
     base_coords, base_offsets = packed
     coords = base_coords.copy()
     offsets = base_offsets.copy()
 
-    s_f = float(scale)
+    s_f = scale
     if s_f != 1.0:
         coords *= np.float32(s_f)
-    cx, cy, cz = float(center[0]), float(center[1]), float(center[2])
+    cx, cy, cz = center
     if (cx, cy, cz) != (0.0, 0.0, 0.0):
         coords += np.array([cx, cy, cz], dtype=np.float32)
     return coords, offsets
@@ -455,7 +422,7 @@ def _place_cached_sphere(
 @primitive(meta=sphere_meta, ui_visible=SPHERE_UI_VISIBLE)
 def sphere(
     *,
-    subdivisions: int | float = 1,
+    subdivisions: int = 1,
     style: str = "latlon",
     line_mode: str = "both",
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -465,8 +432,8 @@ def sphere(
 
     Parameters
     ----------
-    subdivisions : int | float, optional
-        細分化レベル（0..5 にクランプ）。
+    subdivisions : int, optional
+        細分化レベル。5 を超える値はクランプする。
     style : str, optional
         生成方式。``latlon``, ``zigzag``, ``icosphere``, ``rings`` から選ぶ。
     line_mode : str, optional
@@ -485,16 +452,19 @@ def sphere(
     Raises
     ------
     ValueError
-        ``style`` または ``line_mode`` が未登録の場合。
+        `subdivisions` が負、または ``style`` / ``line_mode`` が未登録の場合。
     """
-    requested_subdivisions = float(subdivisions)
-    s = _clamp_int(requested_subdivisions, _MIN_SUBDIVISIONS, _MAX_SUBDIVISIONS)
-    if float(s) != requested_subdivisions:
+    if subdivisions < 0:
+        raise ValueError("sphere の subdivisions は 0 以上である必要がある")
+
+    requested_subdivisions = subdivisions
+    s = min(requested_subdivisions, _MAX_SUBDIVISIONS)
+    if s != requested_subdivisions:
         emit_operation_diagnostic(
             op="sphere.subdivisions",
             original_value=requested_subdivisions,
             effective_value=s,
-            reason="subdivisions was rounded and clamped to the supported range",
+            reason="subdivisions was clamped to the supported range",
         )
     if style not in _STYLE_ORDER:
         raise ValueError(f"sphere.style must be one of {_STYLE_ORDER}; got {style!r}")
@@ -505,16 +475,8 @@ def sphere(
         )
     m = _LINE_MODE_ORDER.index(line_mode)
 
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "sphere の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
-    try:
-        s_f = float(scale)
-    except Exception as exc:
-        raise ValueError("sphere の scale は float である必要がある") from exc
+    cx, cy, cz = center
+    s_f = scale
 
     base_mode = m if style in {"latlon", "rings"} else 0
     packed = _sphere_base_geometry(style, s, base_mode)

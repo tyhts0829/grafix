@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import hashlib
 import math
-from dataclasses import asdict, dataclass, field
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from statistics import median
-from typing import Any
+from typing import Any, TypeAlias, cast
 
 from grafix.core.atomic_write import atomic_write_text_no_clobber
 from grafix.devtools.benchmarks import BENCHMARK_SCHEMA_VERSION
@@ -34,6 +35,85 @@ class BenchmarkSchemaError(ValueError):
     """未対応または不正な benchmark JSON を表す。"""
 
 
+JsonScalar: TypeAlias = str | bool | int | float | None
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FrozenJsonObject(Mapping[str, "FrozenJsonValue"]):
+    """JSON object の canonical かつ immutable な表現。"""
+
+    _items: tuple[tuple[str, "FrozenJsonValue"], ...] = ()
+
+    def __post_init__(self) -> None:
+        keys = tuple(key for key, _value in self._items)
+        if any(type(key) is not str for key in keys):
+            raise BenchmarkSchemaError("JSON object keys must be exact strings")
+        if len(set(keys)) != len(keys):
+            raise BenchmarkSchemaError("JSON object keys must be unique")
+        object.__setattr__(
+            self,
+            "_items",
+            tuple(
+                sorted(
+                    ((key, _freeze_json_value(value)) for key, value in self._items),
+                    key=lambda item: item[0],
+                )
+            ),
+        )
+
+    def __getitem__(self, key: str) -> FrozenJsonValue:
+        for candidate, value in self._items:
+            if candidate == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return (key for key, _value in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Mapping):
+            return False
+        return dict(self.items()) == dict(other.items())
+
+    def __hash__(self) -> int:
+        return hash(self._items)
+
+
+FrozenJsonValue: TypeAlias = JsonScalar | tuple["FrozenJsonValue", ...] | FrozenJsonObject
+
+
+def freeze_json_object(value: Mapping[str, object]) -> FrozenJsonObject:
+    """JSON object tree を canonical immutable representation に固定する。"""
+
+    if isinstance(value, FrozenJsonObject):
+        return value
+    return FrozenJsonObject(tuple((key, _freeze_json_value(item)) for key, item in value.items()))
+
+
+def materialize_json_object(value: FrozenJsonObject) -> dict[str, Any]:
+    """immutable JSON object を独立した plain ``dict`` / ``list`` tree に戻す。"""
+
+    return cast(dict[str, Any], _json_data(value))
+
+
+def _freeze_json_value(value: object) -> FrozenJsonValue:
+    if value is None or type(value) in {str, bool, int}:
+        return cast(JsonScalar, value)
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise BenchmarkSchemaError("non-finite JSON number is not allowed")
+        return value
+    if isinstance(value, Mapping):
+        return freeze_json_object(value)
+    if type(value) in {list, tuple}:
+        sequence = cast(list[object] | tuple[object, ...], value)
+        return tuple(_freeze_json_value(item) for item in sequence)
+    raise BenchmarkSchemaError(f"unsupported JSON value {type(value).__name__}")
+
+
 @dataclass(frozen=True, slots=True)
 class SourceIdentity:
     """計測対象 source の識別情報。比較互換性とは分離する。"""
@@ -49,8 +129,16 @@ class EnvironmentFingerprint:
     """比較に必要な実行環境と、その canonical key。"""
 
     compatibility_key: str
-    values: dict[str, Any]
-    unavailable: dict[str, str] = field(default_factory=dict)
+    values: FrozenJsonObject
+    unavailable: FrozenJsonObject = field(default_factory=FrozenJsonObject)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", freeze_json_object(self.values))
+        object.__setattr__(
+            self,
+            "unavailable",
+            freeze_json_object(self.unavailable),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,13 +169,20 @@ class CaseSpec:
     category: str
     suite: str
     fixture: str
-    parameters: dict[str, Any]
+    parameters: FrozenJsonObject
     seed: int
     source_sha256: str
     compatibility_key: str
     checksum_policy: str = "exact"
     tags: tuple[str, ...] = ()
     self_sampling: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "parameters",
+            freeze_json_object(self.parameters),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,9 +267,7 @@ class BenchmarkOutput:
         if not isinstance(self.contracts, tuple) or not all(
             isinstance(contract, ContractResult) for contract in self.contracts
         ):
-            raise TypeError(
-                "contracts は ContractResult の tuple である必要があります"
-            )
+            raise TypeError("contracts は ContractResult の tuple である必要があります")
         names = tuple(metric.name for metric in self.metrics)
         if len(set(names)) != len(names):
             raise ValueError("benchmark metric name は一意である必要があります")
@@ -292,13 +385,13 @@ def evaluate_contract(
 def benchmark_run_to_dict(run: BenchmarkRun) -> dict[str, Any]:
     """BenchmarkRun を JSON 化可能な mapping に変換する。"""
 
-    return asdict(run)
+    return cast(dict[str, Any], _json_data(run))
 
 
 def case_result_to_dict(result: CaseResult) -> dict[str, Any]:
     """CaseResult を child protocol 用 mapping に変換する。"""
 
-    return asdict(result)
+    return cast(dict[str, Any], _json_data(result))
 
 
 def case_result_from_dict(payload: object) -> CaseResult:
@@ -326,8 +419,7 @@ def _decode_benchmark_run(payload: object) -> BenchmarkRun:
     version = _integer(root["schema_version"], "schema_version")
     if version != BENCHMARK_SCHEMA_VERSION:
         raise BenchmarkSchemaError(
-            f"unsupported schema_version: {version} "
-            f"(expected {BENCHMARK_SCHEMA_VERSION})"
+            f"unsupported schema_version: {version} (expected {BENCHMARK_SCHEMA_VERSION})"
         )
     _keys(
         root,
@@ -339,7 +431,9 @@ def _decode_benchmark_run(payload: object) -> BenchmarkRun:
     environment = _decode_environment(root["environment"])
     cases_raw = _sequence(root["cases"], "cases")
     warnings_raw = _sequence(root["warnings"], "warnings")
-    warnings = tuple(_string(value, f"warnings[{index}]") for index, value in enumerate(warnings_raw))
+    warnings = tuple(
+        _string(value, f"warnings[{index}]") for index, value in enumerate(warnings_raw)
+    )
     cases = tuple(_decode_case(value, index=index) for index, value in enumerate(cases_raw))
     return BenchmarkRun(
         meta=meta,
@@ -352,12 +446,12 @@ def _decode_benchmark_run(payload: object) -> BenchmarkRun:
 
 
 def environment_compatibility_key(
-    values: dict[str, Any],
-    unavailable: dict[str, str],
+    values: FrozenJsonObject,
+    unavailable: FrozenJsonObject,
 ) -> str:
     """environment identity の canonical SHA-256 を返す。"""
 
-    return _sha256_json({"values": values, "unavailable": unavailable})
+    return _sha256_json(freeze_json_object({"values": values, "unavailable": unavailable}))
 
 
 def case_compatibility_key(
@@ -365,7 +459,7 @@ def case_compatibility_key(
     case_id: str,
     version: int,
     fixture: str,
-    parameters: dict[str, Any],
+    parameters: FrozenJsonObject,
     seed: int,
     source_sha256: str,
     checksum_policy: str = "exact",
@@ -374,16 +468,18 @@ def case_compatibility_key(
     """case identity の canonical SHA-256 を返す。"""
 
     return _sha256_json(
-        {
-            "case_id": str(case_id),
-            "version": int(version),
-            "fixture": str(fixture),
-            "parameters": parameters,
-            "seed": int(seed),
-            "source_sha256": str(source_sha256),
-            "checksum_policy": str(checksum_policy),
-            "self_sampling": bool(self_sampling),
-        }
+        freeze_json_object(
+            {
+                "case_id": case_id,
+                "version": version,
+                "fixture": fixture,
+                "parameters": parameters,
+                "seed": seed,
+                "source_sha256": source_sha256,
+                "checksum_policy": checksum_policy,
+                "self_sampling": self_sampling,
+            }
+        )
     )
 
 
@@ -404,15 +500,11 @@ def write_benchmark_run(path: str | Path, run: BenchmarkRun) -> None:
             + "\n"
         )
     except (TypeError, ValueError) as exc:
-        raise BenchmarkSchemaError(
-            f"run contains a non-JSON value: {exc}"
-        ) from exc
+        raise BenchmarkSchemaError(f"run contains a non-JSON value: {exc}") from exc
     try:
         atomic_write_text_no_clobber(destination, text)
     except FileExistsError as exc:
-        raise FileExistsError(
-            f"benchmark run already exists: {destination}"
-        ) from exc
+        raise FileExistsError(f"benchmark run already exists: {destination}") from exc
 
 
 def read_benchmark_run(path: str | Path) -> BenchmarkRun:
@@ -464,9 +556,7 @@ def _decode_meta(value: object) -> RunMeta:
         warmup=_integer(obj["warmup"], "meta.warmup"),
         target_ns=_integer(obj["target_ns"], "meta.target_ns"),
         disable_gc=_boolean(obj["disable_gc"], "meta.disable_gc"),
-        timeout_seconds=_number(
-            obj["timeout_seconds"], "meta.timeout_seconds"
-        ),
+        timeout_seconds=_number(obj["timeout_seconds"], "meta.timeout_seconds"),
         argv=tuple(_string(item, f"meta.argv[{index}]") for index, item in enumerate(argv)),
     )
 
@@ -482,9 +572,7 @@ def _decode_source(value: object) -> SourceIdentity:
         commit=_optional_string(obj["commit"], "source.commit"),
         dirty=_optional_bool(obj["dirty"], "source.dirty"),
         diff_sha256=_optional_string(obj["diff_sha256"], "source.diff_sha256"),
-        unavailable_reason=_optional_string(
-            obj["unavailable_reason"], "source.unavailable_reason"
-        ),
+        unavailable_reason=_optional_string(obj["unavailable_reason"], "source.unavailable_reason"),
     )
 
 
@@ -495,19 +583,19 @@ def _decode_environment(value: object) -> EnvironmentFingerprint:
         required={"compatibility_key", "values", "unavailable"},
         where="environment",
     )
-    values = _mapping(obj["values"], "environment.values")
+    values = freeze_json_object(_mapping(obj["values"], "environment.values"))
     unavailable = _mapping(obj["unavailable"], "environment.unavailable")
     return EnvironmentFingerprint(
-        compatibility_key=_string(
-            obj["compatibility_key"], "environment.compatibility_key"
+        compatibility_key=_string(obj["compatibility_key"], "environment.compatibility_key"),
+        values=values,
+        unavailable=freeze_json_object(
+            {
+                _string(key, "environment.unavailable key"): _string(
+                    item, f"environment.unavailable.{key}"
+                )
+                for key, item in unavailable.items()
+            }
         ),
-        values=dict(values),
-        unavailable={
-            _string(key, "environment.unavailable key"): _string(
-                item, f"environment.unavailable.{key}"
-            )
-            for key, item in unavailable.items()
-        },
     )
 
 
@@ -548,9 +636,7 @@ def _decode_case(value: object, *, index: int) -> CaseResult:
         stats=stats,
         checksum=_optional_string(obj["checksum"], f"{where}.checksum"),
         checksum_kind=_optional_string(obj["checksum_kind"], f"{where}.checksum_kind"),
-        setup_rss_bytes=_optional_integer(
-            obj["setup_rss_bytes"], f"{where}.setup_rss_bytes"
-        ),
+        setup_rss_bytes=_optional_integer(obj["setup_rss_bytes"], f"{where}.setup_rss_bytes"),
         baseline_rss_bytes=_optional_integer(
             obj["baseline_rss_bytes"], f"{where}.baseline_rss_bytes"
         ),
@@ -602,18 +688,13 @@ def _decode_spec(value: object, *, where: str) -> CaseSpec:
         category=_string(obj["category"], f"{where}.category"),
         suite=_string(obj["suite"], f"{where}.suite"),
         fixture=_string(obj["fixture"], f"{where}.fixture"),
-        parameters=dict(_mapping(obj["parameters"], f"{where}.parameters")),
+        parameters=freeze_json_object(_mapping(obj["parameters"], f"{where}.parameters")),
         seed=_integer(obj["seed"], f"{where}.seed"),
         source_sha256=_string(obj["source_sha256"], f"{where}.source_sha256"),
-        compatibility_key=_string(
-            obj["compatibility_key"], f"{where}.compatibility_key"
-        ),
-        checksum_policy=_string(
-            obj["checksum_policy"], f"{where}.checksum_policy"
-        ),
+        compatibility_key=_string(obj["compatibility_key"], f"{where}.compatibility_key"),
+        checksum_policy=_string(obj["checksum_policy"], f"{where}.checksum_policy"),
         tags=tuple(
-            _string(item, f"{where}.tags[{tag_index}]")
-            for tag_index, item in enumerate(tags)
+            _string(item, f"{where}.tags[{tag_index}]") for tag_index, item in enumerate(tags)
         ),
         self_sampling=_boolean(
             obj["self_sampling"],
@@ -712,8 +793,7 @@ def _decode_distribution(value: object, *, where: str) -> Distribution:
         p99=_optional_number(obj["p99"], f"{where}.p99"),
         mean=_optional_number(obj["mean"], f"{where}.mean"),
         samples=tuple(
-            _number(item, f"{where}.samples[{index}]")
-            for index, item in enumerate(samples_raw)
+            _number(item, f"{where}.samples[{index}]") for index, item in enumerate(samples_raw)
         ),
     )
 
@@ -758,11 +838,7 @@ def _validate_run(run: BenchmarkRun) -> None:
     payload = benchmark_run_to_dict(run)
     _validate_json_value(payload, where="root")
     # writer 側も decoder と同じ型規則を通し、「書けたが読めない」JSON を防ぐ。
-    _decode_benchmark_run(
-        json.loads(
-            json.dumps(payload, ensure_ascii=False, allow_nan=False)
-        )
-    )
+    _decode_benchmark_run(json.loads(json.dumps(payload, ensure_ascii=False, allow_nan=False)))
     if run.schema_version != BENCHMARK_SCHEMA_VERSION:
         raise BenchmarkSchemaError(
             f"unsupported schema_version: {run.schema_version} "
@@ -790,9 +866,7 @@ def _validate_run(run: BenchmarkRun) -> None:
     ):
         raise BenchmarkSchemaError("meta: invalid measurement settings")
     if meta.mode != "warm" and (meta.warmup != 0 or meta.target_ns != 0):
-        raise BenchmarkSchemaError(
-            "meta: cold mode requires warmup=0 and target_ns=0"
-        )
+        raise BenchmarkSchemaError("meta: cold mode requires warmup=0 and target_ns=0")
 
     expected_environment_key = environment_compatibility_key(
         run.environment.values,
@@ -807,18 +881,13 @@ def _validate_run(run: BenchmarkRun) -> None:
     for index, result in enumerate(run.cases):
         where = f"cases[{index}]"
         if result.spec.case_id in seen_case_ids:
-            raise BenchmarkSchemaError(
-                f"{where}.spec.case_id: duplicate {result.spec.case_id!r}"
-            )
+            raise BenchmarkSchemaError(f"{where}.spec.case_id: duplicate {result.spec.case_id!r}")
         seen_case_ids.add(result.spec.case_id)
         if result.spec.seed != meta.seed:
             raise BenchmarkSchemaError(f"{where}.spec.seed differs from meta.seed")
         _validate_case_result(result, where=where)
         expected_samples = 1 if result.spec.self_sampling else meta.samples
-        if (
-            result.status in _MEASURED_STATUSES
-            and len(result.samples) != expected_samples
-        ):
+        if result.status in _MEASURED_STATUSES and len(result.samples) != expected_samples:
             raise BenchmarkSchemaError(
                 f"{where}.samples: count differs from effective sample policy"
             )
@@ -853,21 +922,16 @@ def _validate_case_result(result: CaseResult, *, where: str) -> None:
         )
     if spec.checksum_policy not in _CHECKSUM_POLICIES:
         raise BenchmarkSchemaError(
-            f"{where}.spec.checksum_policy: unsupported value "
-            f"{spec.checksum_policy!r}"
+            f"{where}.spec.checksum_policy: unsupported value {spec.checksum_policy!r}"
         )
     if result.status not in _CASE_STATUSES:
-        raise BenchmarkSchemaError(
-            f"{where}.status: unsupported value {result.status!r}"
-        )
+        raise BenchmarkSchemaError(f"{where}.status: unsupported value {result.status!r}")
     seen_metrics: set[str] = set()
     for metric_index, metric in enumerate(result.metrics):
         metric_where = f"{where}.metrics[{metric_index}]"
         _validate_metric(metric, where=metric_where)
         if metric.name in seen_metrics:
-            raise BenchmarkSchemaError(
-                f"{metric_where}: duplicate metric name {metric.name!r}"
-            )
+            raise BenchmarkSchemaError(f"{metric_where}: duplicate metric name {metric.name!r}")
         seen_metrics.add(metric.name)
     seen_contracts: set[str] = set()
     for contract_index, contract in enumerate(result.contracts):
@@ -875,8 +939,7 @@ def _validate_case_result(result: CaseResult, *, where: str) -> None:
         _validate_contract(contract, where=contract_where)
         if contract.contract_id in seen_contracts:
             raise BenchmarkSchemaError(
-                f"{contract_where}: duplicate contract ID "
-                f"{contract.contract_id!r}"
+                f"{contract_where}: duplicate contract ID {contract.contract_id!r}"
             )
         seen_contracts.add(contract.contract_id)
 
@@ -891,9 +954,7 @@ def _validate_case_result(result: CaseResult, *, where: str) -> None:
 
     if result.status not in _MEASURED_STATUSES:
         if not result.error:
-            raise BenchmarkSchemaError(
-                f"{where}.error: non-ok result requires an error"
-            )
+            raise BenchmarkSchemaError(f"{where}.error: non-ok result requires an error")
         if (
             result.samples
             or result.stats is not None
@@ -902,9 +963,7 @@ def _validate_case_result(result: CaseResult, *, where: str) -> None:
             or result.metrics
             or result.contracts
         ):
-            raise BenchmarkSchemaError(
-                f"{where}: unmeasured result must not contain result data"
-            )
+            raise BenchmarkSchemaError(f"{where}: unmeasured result must not contain result data")
         return
 
     failed_hard = tuple(
@@ -921,13 +980,9 @@ def _validate_case_result(result: CaseResult, *, where: str) -> None:
             )
     else:
         if not failed_hard:
-            raise BenchmarkSchemaError(
-                f"{where}: contract-failure requires a failed hard contract"
-            )
+            raise BenchmarkSchemaError(f"{where}: contract-failure requires a failed hard contract")
         if not result.error:
-            raise BenchmarkSchemaError(
-                f"{where}.error: contract-failure requires an error"
-            )
+            raise BenchmarkSchemaError(f"{where}.error: contract-failure requires an error")
     if not result.samples or result.stats is None:
         raise BenchmarkSchemaError(f"{where}: measured result requires samples and stats")
     if not result.checksum or not result.checksum_kind:
@@ -936,41 +991,23 @@ def _validate_case_result(result: CaseResult, *, where: str) -> None:
     if result.stats != expected_stats:
         raise BenchmarkSchemaError(f"{where}.stats does not match raw samples")
     if any(value is None for value in rss_values):
-        raise BenchmarkSchemaError(
-            f"{where}: measured result requires all RSS fields"
-        )
+        raise BenchmarkSchemaError(f"{where}: measured result requires all RSS fields")
     baseline = result.baseline_rss_bytes
     peak = result.peak_rss_bytes
     delta = result.peak_rss_delta_bytes
     setup = result.setup_rss_bytes
-    assert (
-        setup is not None
-        and baseline is not None
-        and peak is not None
-        and delta is not None
-    )
+    assert setup is not None and baseline is not None and peak is not None and delta is not None
     if setup > baseline or peak < baseline or delta != peak - baseline:
-        raise BenchmarkSchemaError(
-            f"{where}: setup/baseline/peak RSS fields are inconsistent"
-        )
+        raise BenchmarkSchemaError(f"{where}: setup/baseline/peak RSS fields are inconsistent")
 
 
 def _validate_metric(metric: Metric, *, where: str) -> None:
-    if (
-        not metric.name
-        or not metric.unit
-        or not metric.phase
-        or not metric.scope
-    ):
+    if not metric.name or not metric.unit or not metric.phase or not metric.scope:
         raise BenchmarkSchemaError(f"{where}: metric identity fields must not be empty")
     if metric.kind not in _METRIC_KINDS:
-        raise BenchmarkSchemaError(
-            f"{where}.kind: unsupported value {metric.kind!r}"
-        )
+        raise BenchmarkSchemaError(f"{where}.kind: unsupported value {metric.kind!r}")
     if metric.phase not in _METRIC_PHASES:
-        raise BenchmarkSchemaError(
-            f"{where}.phase: unsupported value {metric.phase!r}"
-        )
+        raise BenchmarkSchemaError(f"{where}.phase: unsupported value {metric.phase!r}")
     _validate_json_value(metric.value, where=f"{where}.value")
     if metric.kind == "distribution":
         if metric.value is not None or metric.distribution is None:
@@ -980,9 +1017,7 @@ def _validate_metric(metric: Metric, *, where: str) -> None:
         _validate_distribution(metric.distribution, where=f"{where}.distribution")
         return
     if metric.distribution is not None:
-        raise BenchmarkSchemaError(
-            f"{where}: {metric.kind} must not contain distribution data"
-        )
+        raise BenchmarkSchemaError(f"{where}: {metric.kind} must not contain distribution data")
     if metric.kind == "counter":
         if (
             not isinstance(metric.value, (int, float))
@@ -993,16 +1028,10 @@ def _validate_metric(metric: Metric, *, where: str) -> None:
             raise BenchmarkSchemaError(
                 f"{where}.value: counter requires a finite non-negative number"
             )
-    elif (
-        not isinstance(metric.value, (str, bool, int, float))
-        or (
-            isinstance(metric.value, float)
-            and not math.isfinite(metric.value)
-        )
+    elif not isinstance(metric.value, (str, bool, int, float)) or (
+        isinstance(metric.value, float) and not math.isfinite(metric.value)
     ):
-        raise BenchmarkSchemaError(
-            f"{where}.value: gauge requires a finite scalar"
-        )
+        raise BenchmarkSchemaError(f"{where}.value: gauge requires a finite scalar")
 
 
 def _validate_distribution(distribution: Distribution, *, where: str) -> None:
@@ -1028,9 +1057,7 @@ def _validate_distribution(distribution: Distribution, *, where: str) -> None:
             )
         return
     if any(value is None for value in values):
-        raise BenchmarkSchemaError(
-            f"{where}: non-empty distribution requires all statistics"
-        )
+        raise BenchmarkSchemaError(f"{where}: non-empty distribution requires all statistics")
     minimum = distribution.min
     maximum = distribution.max
     median_value = distribution.median
@@ -1048,32 +1075,22 @@ def _validate_distribution(distribution: Distribution, *, where: str) -> None:
     if distribution.samples:
         expected = summarize_distribution(distribution.samples)
         if distribution != expected:
-            raise BenchmarkSchemaError(
-                f"{where}: statistics do not match raw samples"
-            )
+            raise BenchmarkSchemaError(f"{where}: statistics do not match raw samples")
     if not minimum <= median_value <= p95 <= p99 <= maximum:
         raise BenchmarkSchemaError(
             f"{where}: statistics must satisfy min <= median <= p95 <= p99 <= max"
         )
     if not minimum <= mean <= maximum:
-        raise BenchmarkSchemaError(
-            f"{where}: mean must be between min and max"
-        )
+        raise BenchmarkSchemaError(f"{where}: mean must be between min and max")
 
 
 def _validate_contract(contract: ContractResult, *, where: str) -> None:
     if not contract.contract_id or not contract.reason:
-        raise BenchmarkSchemaError(
-            f"{where}: contract_id and reason must not be empty"
-        )
+        raise BenchmarkSchemaError(f"{where}: contract_id and reason must not be empty")
     if contract.severity not in _CONTRACT_SEVERITIES:
-        raise BenchmarkSchemaError(
-            f"{where}.severity: unsupported value {contract.severity!r}"
-        )
+        raise BenchmarkSchemaError(f"{where}.severity: unsupported value {contract.severity!r}")
     if contract.comparator not in _CONTRACT_COMPARATORS:
-        raise BenchmarkSchemaError(
-            f"{where}.comparator: unsupported value {contract.comparator!r}"
-        )
+        raise BenchmarkSchemaError(f"{where}.comparator: unsupported value {contract.comparator!r}")
     _contract_operand(contract.actual, f"{where}.actual")
     _contract_operand(contract.limit, f"{where}.limit")
     try:
@@ -1085,19 +1102,31 @@ def _validate_contract(contract: ContractResult, *, where: str) -> None:
     except (TypeError, ValueError) as exc:
         raise BenchmarkSchemaError(f"{where}: invalid comparison: {exc}") from exc
     if contract.passed != expected:
-        raise BenchmarkSchemaError(
-            f"{where}.passed does not match actual/comparator/limit"
-        )
+        raise BenchmarkSchemaError(f"{where}.passed does not match actual/comparator/limit")
 
 
-def _sha256_json(value: object) -> str:
+def _sha256_json(value: FrozenJsonValue) -> str:
     encoded = json.dumps(
-        value,
+        _json_data(value),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _json_data(value: object) -> object:
+    """dataclass と frozen JSON tree を plain JSON data に変換する。"""
+
+    if isinstance(value, FrozenJsonObject):
+        return {key: _json_data(item) for key, item in value.items()}
+    if is_dataclass(value) and not isinstance(value, type):
+        return {item.name: _json_data(getattr(value, item.name)) for item in fields(value)}
+    if isinstance(value, Mapping):
+        return {key: _json_data(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_data(item) for item in value]
+    return value
 
 
 def _validate_json_value(value: object, *, where: str) -> None:
@@ -1119,9 +1148,7 @@ def _validate_json_value(value: object, *, where: str) -> None:
                 raise BenchmarkSchemaError(f"{where}: object keys must be strings")
             _validate_json_value(item, where=f"{where}.{key}")
         return
-    raise BenchmarkSchemaError(
-        f"{where}: unsupported JSON value {type(value).__name__}"
-    )
+    raise BenchmarkSchemaError(f"{where}: unsupported JSON value {type(value).__name__}")
 
 
 def _keys(obj: dict[str, Any], *, required: set[str], where: str) -> None:
@@ -1191,9 +1218,7 @@ def _contract_operand(value: object, where: str) -> str | bool | int | float:
         return value
     if isinstance(value, float) and math.isfinite(value):
         return value
-    raise BenchmarkSchemaError(
-        f"{where}: contract operand must be a finite scalar"
-    )
+    raise BenchmarkSchemaError(f"{where}: contract operand must be a finite scalar")
 
 
 def _evaluate_comparison(
@@ -1254,6 +1279,7 @@ __all__ = [
     "ContractResult",
     "Distribution",
     "EnvironmentFingerprint",
+    "FrozenJsonObject",
     "Metric",
     "RunMeta",
     "Sample",
@@ -1266,6 +1292,8 @@ __all__ = [
     "case_compatibility_key",
     "environment_compatibility_key",
     "evaluate_contract",
+    "freeze_json_object",
+    "materialize_json_object",
     "read_benchmark_run",
     "summarize_distribution",
     "summarize_samples",

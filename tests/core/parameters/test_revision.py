@@ -277,12 +277,38 @@ def test_failed_merge_restores_effective_snapshot_and_revision(
     with pytest.raises(RuntimeError, match="follow failed"):
         merge_frame_params(
             store,
-            [replace(first, effective=9.0, source="ui")],
+            [
+                replace(
+                    first,
+                    effective=9.0,
+                    source="ui",
+                    explicit=True,
+                )
+            ],
         )
 
     assert runtime.last_effective_by_key == before_effective
     assert runtime.last_source_by_key == before_source
     assert runtime.effective_revision == before_revision
+
+
+def test_stable_merge_does_not_call_explicit_follow_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ParamStore()
+    record = _record(1)
+    merge_frame_params(store, [record])
+
+    def fail_follow(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("empty explicit diff must not reach follow policy")
+
+    monkeypatch.setattr(
+        merge_ops,
+        "_apply_explicit_override_follow_policy",
+        fail_follow,
+    )
+
+    merge_frame_params(store, [record])
 
 
 def test_cached_snapshot_outer_mapping_cannot_be_mutated() -> None:

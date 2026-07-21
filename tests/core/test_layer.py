@@ -16,7 +16,7 @@ from grafix.core.layer import (
 
 
 def _geometry() -> Geometry:
-    return Geometry.create("circle", params={"r": 1.0})
+    return Geometry.create("layer-test-geometry", params={"radius": 1.0})
 
 
 def test_resolve_layer_style_fills_missing_values() -> None:

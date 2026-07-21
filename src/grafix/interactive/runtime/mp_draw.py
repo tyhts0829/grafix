@@ -106,18 +106,16 @@ def _require_plain_dict(value: object, *, name: str) -> None:
         raise TypeError(f"{name} は plain dict である必要があります")
 
 
-def _require_list_of(
+def _require_tuple_of(
     value: object,
     *,
     name: str,
     item_type: type[object],
 ) -> None:
-    """process message の list container と要素型を検証する。"""
+    """process message の immutable tuple と要素型を検証する。"""
 
-    if type(value) is not list or not all(
-        isinstance(item, item_type) for item in value
-    ):
-        raise TypeError(f"{name} は {item_type.__name__} の list である必要があります")
+    if type(value) is not tuple or not all(isinstance(item, item_type) for item in value):
+        raise TypeError(f"{name} は {item_type.__name__} の tuple である必要があります")
 
 
 class _PerfEventCallback(Protocol):
@@ -144,19 +142,9 @@ class MpDrawWorkerError(RuntimeError):
         detail: str | None = None,
     ) -> None:
         self.worker = _non_empty_string(worker, name="worker")
-        self.pid = (
-            None
-            if pid is None
-            else exact_integer(pid, name="pid", minimum=1)
-        )
-        self.exitcode = (
-            None
-            if exitcode is None
-            else exact_integer(exitcode, name="exitcode")
-        )
-        self.detail = (
-            None if detail is None else exact_string(detail, name="detail")
-        )
+        self.pid = None if pid is None else exact_integer(pid, name="pid", minimum=1)
+        self.exitcode = None if exitcode is None else exact_integer(exitcode, name="exitcode")
+        self.detail = None if detail is None else exact_string(detail, name="detail")
         message = (
             "mp-draw worker が予期せず終了しました: "
             f"worker={self.worker!r}, pid={self.pid}, exitcode={self.exitcode}"
@@ -220,14 +208,10 @@ class _DrawTask:
             self.cc_snapshot,
             MidiFrameSnapshot,
         ):
-            raise TypeError(
-                "cc_snapshot は MidiFrameSnapshot または None である必要があります"
-            )
+            raise TypeError("cc_snapshot は MidiFrameSnapshot または None である必要があります")
 
         if (self.snapshot is None) != (self.effect_order_snapshot is None):
-            raise ValueError(
-                "snapshot と effect_order_snapshot は同時に指定してください"
-            )
+            raise ValueError("snapshot と effect_order_snapshot は同時に指定してください")
         if self.snapshot is not None:
             _require_plain_dict(self.snapshot, name="snapshot")
             _require_plain_dict(
@@ -437,10 +421,10 @@ class DrawResult:
     epoch: int
     generation: int
     snapshot_revision: int
-    layers: list[Layer]
-    records: list[FrameParamRecord]
-    labels: list[FrameLabelRecord]
-    effect_chains: list[FrameEffectChainRecord]
+    layers: tuple[Layer, ...]
+    records: tuple[FrameParamRecord, ...]
+    labels: tuple[FrameLabelRecord, ...]
+    effect_chains: tuple[FrameEffectChainRecord, ...]
     error: str | None = None
     worker_pid: int | None = None
     diagnostics: tuple[OperationDiagnostic, ...] = ()
@@ -474,18 +458,18 @@ class DrawResult:
                 minimum=0,
             ),
         )
-        _require_list_of(self.layers, name="layers", item_type=Layer)
-        _require_list_of(
+        _require_tuple_of(self.layers, name="layers", item_type=Layer)
+        _require_tuple_of(
             self.records,
             name="records",
             item_type=FrameParamRecord,
         )
-        _require_list_of(
+        _require_tuple_of(
             self.labels,
             name="labels",
             item_type=FrameLabelRecord,
         )
-        _require_list_of(
+        _require_tuple_of(
             self.effect_chains,
             name="effect_chains",
             item_type=FrameEffectChainRecord,
@@ -508,12 +492,9 @@ class DrawResult:
                 exact_integer(self.worker_pid, name="worker_pid", minimum=1),
             )
         if type(self.diagnostics) is not tuple or not all(
-            isinstance(diagnostic, OperationDiagnostic)
-            for diagnostic in self.diagnostics
+            isinstance(diagnostic, OperationDiagnostic) for diagnostic in self.diagnostics
         ):
-            raise TypeError(
-                "diagnostics は OperationDiagnostic の tuple である必要があります"
-            )
+            raise TypeError("diagnostics は OperationDiagnostic の tuple である必要があります")
         if self.worker_lag_ms is not None:
             object.__setattr__(
                 self,
@@ -552,9 +533,7 @@ class _WorkerReady:
         )
 
 
-_WorkerMessage = (
-    DrawResult | _WorkerReady | _SnapshotAck | _TaskRejected | _TaskStarted
-)
+_WorkerMessage = DrawResult | _WorkerReady | _SnapshotAck | _TaskRejected | _TaskStarted
 
 
 def _draw_worker_main(
@@ -583,9 +562,7 @@ def _draw_worker_main(
         name="generation",
         minimum=0,
     )
-    result_q.put(
-        _WorkerReady(worker=worker, pid=pid, generation=worker_generation)
-    )
+    result_q.put(_WorkerReady(worker=worker, pid=pid, generation=worker_generation))
 
     snapshot: ParamSnapshot | None = None
     effect_order_snapshot: EffectOrderSnapshot | None = None
@@ -697,17 +674,15 @@ def _draw_worker_main(
                             scene = draw(task.t)
                             layers = normalize_scene(scene)
                         finally:
-                            frame_operation_diagnostics = (
-                                current_operation_diagnostics()
-                            )
+                            frame_operation_diagnostics = current_operation_diagnostics()
                 result_q.put(
                     DrawResult(
                         frame_id=task.frame_id,
-                        layers=layers,
+                        layers=tuple(layers),
                         # frame_params は worker 内で作ったバッファなので、値だけをコピーして返す。
-                        records=list(frame_params.records),
-                        labels=list(frame_params.labels),
-                        effect_chains=list(frame_params.effect_chains),
+                        records=tuple(frame_params.records),
+                        labels=tuple(frame_params.labels),
+                        effect_chains=tuple(frame_params.effect_chains),
                         error=None,
                         t=task.t,
                         epoch=task.epoch,
@@ -723,10 +698,10 @@ def _draw_worker_main(
                 result_q.put(
                     DrawResult(
                         frame_id=task.frame_id,
-                        layers=[],
-                        records=[],
-                        labels=[],
-                        effect_chains=[],
+                        layers=(),
+                        records=(),
+                        labels=(),
+                        effect_chains=(),
                         error=traceback.format_exc(),
                         t=task.t,
                         epoch=task.epoch,
@@ -994,9 +969,7 @@ class MpDraw:
             raise RuntimeError("MpDraw は close 済みです")
         normalized_reason = exact_string(reason, name="restart reason")
         if not normalized_reason or normalized_reason != normalized_reason.strip():
-            raise ValueError(
-                "restart reason は空または前後空白を含む文字列にできません"
-            )
+            raise ValueError("restart reason は空または前後空白を含む文字列にできません")
 
         self._stop_current_generation()
         self._generation += 1
@@ -1029,9 +1002,7 @@ class MpDraw:
             if elapsed < timeout:
                 continue
             self.restart(
-                "evaluation timeout: "
-                f"frame_id={frame_id}, pid={pid}, "
-                f"limit={timeout:.3f}s"
+                f"evaluation timeout: frame_id={frame_id}, pid={pid}, limit={timeout:.3f}s"
             )
             return True
         return False
@@ -1164,9 +1135,7 @@ class MpDraw:
                 self._record_event(
                     "mp_task_started",
                     frame_id=message.frame_id,
-                    revision=self._submitted_revision_by_frame.get(
-                        message.frame_id
-                    ),
+                    revision=self._submitted_revision_by_frame.get(message.frame_id),
                 )
             else:
                 worker_pid = message.worker_pid
@@ -1220,10 +1189,7 @@ class MpDraw:
             minimum=0,
         )
         cached = self._snapshot_payload
-        if (
-            cached is not None
-            and self._snapshot_payload_revision == normalized_revision
-        ):
+        if cached is not None and self._snapshot_payload_revision == normalized_revision:
             cached_order = self._effect_order_snapshot_payload
             assert cached_order is not None
             return cached, cached_order
@@ -1301,8 +1267,7 @@ class MpDraw:
     def _workers_have_revision(self, revision: int) -> bool:
         expected = self._ready_worker_pids
         return bool(expected) and all(
-            self._worker_snapshot_revisions.get(pid) == revision
-            for pid in expected
+            self._worker_snapshot_revisions.get(pid) == revision for pid in expected
         )
 
     def _enqueue_latest(self, task: _DrawTask) -> bool:
@@ -1359,11 +1324,7 @@ class MpDraw:
 
         self._check_health()
         current = self._current_epoch
-        requested = (
-            current + 1
-            if epoch is None
-            else exact_integer(epoch, name="epoch", minimum=0)
-        )
+        requested = current + 1 if epoch is None else exact_integer(epoch, name="epoch", minimum=0)
         if requested < current:
             raise ValueError(
                 f"epoch は現在値以上である必要があります: current={current}, got={requested}"
@@ -1439,9 +1400,7 @@ class MpDraw:
                 cc_snapshot,
                 MidiFrameSnapshot,
             ):
-                raise TypeError(
-                    "cc_snapshot は MidiFrameSnapshot または None である必要があります"
-                )
+                raise TypeError("cc_snapshot は MidiFrameSnapshot または None である必要があります")
             if requested_epoch < self._current_epoch:
                 raise ValueError(
                     "古い epoch の draw task は投入できません: "
@@ -1457,8 +1416,7 @@ class MpDraw:
             self._next_frame_id += 1
             worker_snapshot_confirmed = self._workers_have_revision(revision)
             needs_control_broadcast = (
-                self._n_worker > 1
-                and self._snapshot_broadcast_revision != revision
+                self._n_worker > 1 and self._snapshot_broadcast_revision != revision
             )
             payload = (
                 None
@@ -1476,12 +1434,8 @@ class MpDraw:
                 t=render_t,
                 snapshot_revision=revision,
                 cc_snapshot=cc_snapshot,
-                snapshot=(
-                    None if worker_snapshot_confirmed else parameter_payload
-                ),
-                effect_order_snapshot=(
-                    None if worker_snapshot_confirmed else order_payload
-                ),
+                snapshot=(None if worker_snapshot_confirmed else parameter_payload),
+                effect_order_snapshot=(None if worker_snapshot_confirmed else order_payload),
                 quality=preview_quality,
                 epoch=requested_epoch,
                 generation=self._generation,
@@ -1705,7 +1659,7 @@ class MpDraw:
             rejection.reason,
         )
 
-    def latest_layers(self) -> list[Layer] | None:
+    def latest_layers(self) -> tuple[Layer, ...] | None:
         """直近の成功結果の layers を返す（成功結果が未到着なら None）。
 
         error result は `poll_latest()` で通知するが、ここでは直前の成功結果を保持する。

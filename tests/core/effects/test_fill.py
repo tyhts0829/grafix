@@ -16,7 +16,7 @@ from grafix.core.effects.fill import (
 )
 from grafix.core.effects.util import PlanarFrame
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 
@@ -88,40 +88,6 @@ def fill_test_empty() -> GeomTuple:
     """空のジオメトリを返す。"""
     coords = np.zeros((0, 3), dtype=np.float32)
     offsets = np.zeros((1,), dtype=np.int32)
-    return coords, offsets
-
-
-def _square_loop(x0: float, y0: float, size: float) -> np.ndarray:
-    return np.array(
-        [
-            [x0, y0, 0.0],
-            [x0 + size, y0, 0.0],
-            [x0 + size, y0 + size, 0.0],
-            [x0, y0 + size, 0.0],
-            [x0, y0, 0.0],
-        ],
-        dtype=np.float32,
-    )
-
-
-@primitive
-def fill_test_three_disjoint_squares() -> GeomTuple:
-    """離れた 3 つの正方形（閉ポリライン×3）を返す。"""
-    a = _square_loop(0.0, 0.0, 10.0)
-    b = _square_loop(20.0, 0.0, 10.0)
-    c = _square_loop(40.0, 0.0, 10.0)
-    coords = np.concatenate([a, b, c], axis=0)
-    offsets = np.array([0, a.shape[0], a.shape[0] + b.shape[0], a.shape[0] + b.shape[0] + c.shape[0]], dtype=np.int32)
-    return coords, offsets
-
-
-@primitive
-def fill_test_two_disjoint_squares() -> GeomTuple:
-    """離れた 2 つの正方形（閉ポリライン×2）を返す。"""
-    a = _square_loop(0.0, 0.0, 10.0)
-    b = _square_loop(20.0, 0.0, 10.0)
-    coords = np.concatenate([a, b], axis=0)
-    offsets = np.array([0, a.shape[0], a.shape[0] + b.shape[0]], dtype=np.int32)
     return coords, offsets
 
 
@@ -515,72 +481,6 @@ def test_fill_text_o_respects_hole() -> None:
         assert not _point_inside(mid[:2].astype(np.float32, copy=False), hole_poly)
 
 
-def _mean_dir_from_segments(segments: list[np.ndarray]) -> np.ndarray:
-    dirs: list[np.ndarray] = []
-    for seg in segments:
-        if seg.shape[0] < 2:
-            continue
-        d = seg[-1] - seg[0]
-        n = float(np.linalg.norm(d))
-        if n <= 1e-9:
-            continue
-        d = d / n
-        idx = int(np.argmax(np.abs(d)))
-        if float(d[idx]) < 0.0:
-            d = -d
-        dirs.append(d.astype(np.float64, copy=False))
-    if not dirs:
-        raise AssertionError("線分が無い")
-    mean = np.mean(np.stack(dirs, axis=0), axis=0)
-    mean_n = float(np.linalg.norm(mean))
-    if mean_n <= 0.0:
-        raise AssertionError("方向平均が 0")
-    return (mean / mean_n).astype(np.float64, copy=False)
-
-
-def test_fill_groupwise_angle_cycles_across_disjoint_rings() -> None:
-    g = G.fill_test_three_disjoint_squares()
-    filled = E.fill(angle_sets=1, angle=[0.0, 90.0], density=10.0, remove_boundary=True)(g)
-    realized = realize(filled)
-
-    buckets: list[list[np.ndarray]] = [[], [], []]
-    for seg in _iter_polylines(realized):
-        if seg.shape != (2, 3):
-            continue
-        mid = seg.mean(axis=0)
-        x = float(mid[0])
-        if x < 15.0:
-            buckets[0].append(seg)
-        elif x < 35.0:
-            buckets[1].append(seg)
-        else:
-            buckets[2].append(seg)
-
-    assert all(buckets)
-    d0 = _mean_dir_from_segments(buckets[0])
-    d1 = _mean_dir_from_segments(buckets[1])
-    d2 = _mean_dir_from_segments(buckets[2])
-
-    # angle=0° -> 水平（+X）
-    assert float(d0[0]) > 0.99 and abs(float(d0[1])) < 0.05
-    # angle=90° -> 垂直（+Y）
-    assert float(d1[1]) > 0.99 and abs(float(d1[0])) < 0.05
-    # cycle で再び angle=0°
-    assert float(d2[0]) > 0.99 and abs(float(d2[1])) < 0.05
-
-
-def test_fill_groupwise_remove_boundary_cycles() -> None:
-    g = G.fill_test_two_disjoint_squares()
-    filled = E.fill(density=0.0, remove_boundary=[True, False])(g)
-    realized = realize(filled)
-
-    # 1つ目は remove_boundary=True なので境界が出ない。2つ目だけ境界が残る。
-    assert len(realized.offsets) - 1 == 1
-    poly = next(_iter_polylines(realized))
-    assert poly.shape[0] == 5
-    assert float(np.mean(poly[:, 0])) > 15.0
-
-
 def test_fill_empty_geometry_is_noop() -> None:
     g = G.fill_test_empty()
     filled = E.fill(angle_sets=2, angle=0.0, density=10.0, remove_boundary=True)(g)
@@ -588,6 +488,26 @@ def test_fill_empty_geometry_is_noop() -> None:
 
     assert realized.coords.shape == (0, 3)
     assert realized.offsets.tolist() == [0]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"angle_sets": 0}, "angle_sets"),
+        ({"density": -0.1}, "density"),
+        ({"spacing_gradient": -4.1}, "spacing_gradient"),
+        ({"spacing_gradient": 4.1}, "spacing_gradient"),
+    ],
+)
+def test_fill_rejects_invalid_parameters_before_empty_input(
+    kwargs: dict[str, int | float],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.fill(**kwargs)(G.fill_test_empty()))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
 
 
 def test_fill_degenerate_input_is_noop() -> None:

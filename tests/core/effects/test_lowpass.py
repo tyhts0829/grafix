@@ -22,7 +22,7 @@ from grafix.core.effects.util import (
     resample_polylines,
 )
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -160,13 +160,26 @@ def test_lowpass_reduces_zigzag_energy() -> None:
     assert float(np.std(out_y)) < float(np.std(base_y)) * 0.3
 
 
-def test_lowpass_noop_when_sigma_is_zero() -> None:
-    g = G.lowpass_test_zigzag()
-    base = realize(g)
-    out = realize(E.lowpass(step=1.0, sigma=0.0)(g))
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"step": 0.0}, "step"),
+        ({"step": -1.0}, "step"),
+        ({"sigma": 0.0}, "sigma"),
+        ({"sigma": -1.0}, "sigma"),
+        ({"step": 1e-308, "sigma": 1e308}, "sigma / step"),
+    ],
+)
+def test_lowpass_rejects_invalid_filter_scale_before_empty_input(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    empty = G.polygon(activate=False)
 
-    np.testing.assert_allclose(out.coords, base.coords, rtol=0.0, atol=0.0)
-    assert out.offsets.tolist() == base.offsets.tolist()
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.lowpass(**kwargs)(empty))  # type: ignore[arg-type]
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert match in str(exc_info.value.__cause__)
 
 
 def test_lowpass_auto_closed_outputs_closed_polyline() -> None:

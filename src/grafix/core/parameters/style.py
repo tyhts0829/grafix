@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 
 from .key import ParameterKey
+from .validation import validate_parameter_value
 
 STYLE_OP = "__style__"
 STYLE_SITE_ID = "__global__"
@@ -36,38 +37,29 @@ def style_key(arg: str) -> ParameterKey:
     return ParameterKey(op=STYLE_OP, site_id=STYLE_SITE_ID, arg=arg)
 
 
-def coerce_rgb255(value: object) -> tuple[int, int, int]:
-    """値を RGB255 タプル `(r, g, b)`（0..255）に正規化して返す。
+def validate_rgb255(value: object) -> tuple[int, int, int]:
+    """canonical RGB255 タプル `(r, g, b)` を strict に検証する。
 
     Parameters
     ----------
     value : object
-        `(r, g, b)` の 3 要素シーケンス。
+        exact int だけからなる `(r, g, b)` タプル。
 
     Returns
     -------
     tuple[int, int, int]
-        `int()` 化 + 0..255 clamp 済みの RGB。
+        検証済みの RGB。
 
     Raises
     ------
-    ValueError
-        長さ 3 のシーケンスでない場合。
+    TypeError, ValueError
+        型、長さ、値域が canonical RGB255 契約に合わない場合。
     """
 
-    r: object
-    g: object
-    b: object
-    try:
-        r, g, b = value  # type: ignore[misc]
-    except Exception as exc:
-        raise ValueError(f"rgb value must be a length-3 sequence: {value!r}") from exc
-
-    def _clamp(v: object) -> int:
-        iv = int(cast(Any, v))
-        return 0 if iv < 0 else 255 if iv > 255 else iv
-
-    return _clamp(r), _clamp(g), _clamp(b)
+    return cast(
+        tuple[int, int, int],
+        validate_parameter_value(value, kind="rgb", choices=None),
+    )
 
 
 def rgb01_to_rgb255(rgb: tuple[float, float, float]) -> tuple[int, int, int]:

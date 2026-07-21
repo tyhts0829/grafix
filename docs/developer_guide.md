@@ -91,8 +91,9 @@ last-good workerを閉じたりしない。
 
 - `python -m grafix list`（組み込み effect/primitive の一覧）
 - `python -m grafix describe primitive|effect NAME`（catalog詳細）
-- `python -m grafix run sketch.py --watch`（transactional live reload）
-- `python -m grafix config validate|show [PATH]`（strict config検証）
+- `python -m grafix run sketch.py --watch`（transactional live reload。MIDI無効化は
+  exact `--midi-port none`）
+- `python -m grafix config validate|show [PATH]`（strict config検証。pathはpositionalのみ）
 - `python -m grafix init` / `doctor` / `examples`（onboarding）
 - `python -m grafix stub`（`grafix.api` のスタブ再生成）
 - `python -m grafix export --callable module:attr --t ...`（headless export。詳細は `python -m grafix export -- --help`）

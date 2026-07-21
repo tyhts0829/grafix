@@ -123,10 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "export":
         from grafix.devtools import export_frame
 
-        export_argv = list(rest)
-        if export_argv and export_argv[0] == "--":
-            export_argv = export_argv[1:]
-        return int(export_frame.main(export_argv))
+        return int(export_frame.main(_delegated_args(rest)))
 
     if args.cmd == "variations":
         from grafix.devtools import variation_batch
@@ -141,26 +138,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "list":
         from grafix.devtools import list_builtins
 
-        list_argv = list(rest)
-        if list_argv and list_argv[0] == "--":
-            list_argv = list_argv[1:]
-        return int(list_builtins.main(list_argv))
+        return int(list_builtins.main(_delegated_args(rest)))
 
     if args.cmd == "describe":
         from grafix.devtools import describe_op
 
-        describe_argv = list(rest)
-        if describe_argv and describe_argv[0] == "--":
-            describe_argv = describe_argv[1:]
-        return int(describe_op.main(describe_argv))
+        return int(describe_op.main(_delegated_args(rest)))
 
     if args.cmd == "config":
         from grafix.devtools import config_cli
 
-        config_argv = list(rest)
-        if config_argv and config_argv[0] == "--":
-            config_argv = config_argv[1:]
-        return int(config_cli.main(config_argv))
+        return int(config_cli.main(_delegated_args(rest)))
 
     raise AssertionError(f"unknown cmd: {args.cmd!r}")
 

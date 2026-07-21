@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from grafix.core.parameters.collapsed_header import primitive_collapsed_header_key
 from grafix.core.parameters.favorites import favorite_parameter_keys
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.key import ParameterKey
@@ -49,8 +50,8 @@ def test_collapse_all_and_expand_all_update_all_current_groups() -> None:
 
     assert set_all_parameter_groups_collapsed(store, view, collapsed=True) is True
     assert store._collapsed_headers_ref() == {
-        "primitive:circle:site-a",
-        "primitive:circle:site-b",
+        primitive_collapsed_header_key(("circle", "site-a")),
+        primitive_collapsed_header_key(("circle", "site-b")),
     }
     assert set_all_parameter_groups_collapsed(store, view, collapsed=True) is False
 

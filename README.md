@@ -57,6 +57,7 @@ To run a sketch file with transactional live reload:
 
 ```bash
 python -m grafix run sketch.py --watch
+python -m grafix run sketch.py --midi-port none  # exact token to disable MIDI
 ```
 
 Grafix polls the source mtime without an extra watcher dependency. It loads changed
@@ -263,8 +264,8 @@ eff_meta = {
 
 @primitive(meta=prim_meta)
 def user_prim(*, r=10.0) -> tuple[np.ndarray, np.ndarray]:
-    coords = ...  # shape (N, 3)
-    offsets = ...  # shape (M+1,)
+    coords = ...  # exact ndarray, C-order, float32, finite, shape (N, 3)
+    offsets = ...  # exact ndarray, C-order, int32, shape (M+1,)
     return coords, offsets
 
 
@@ -278,7 +279,9 @@ def user_eff(g: tuple[np.ndarray, np.ndarray], *, amount=1.0) -> tuple[np.ndarra
 Notes:
 
 - Built-in primitives/effects must provide `meta=...` (enforced).
-- User-defined primitives/effects use `(coords, offsets)` tuples (`coords` must be shape `(N,3)`).
+- User-defined primitives/effects use one exact `(coords, offsets)` contract: C-contiguous
+  `float32 (N,3)` finite coordinates and C-contiguous `int32 (M+1,)` offsets. Grafix rejects
+  other dtypes/layouts instead of converting them.
 - For user-defined ops, `meta` is optional. If omitted, parameters are not shown in the Parameter GUI.
 - For user-defined ops, each `description` is also optional, but adding one makes the
   argument's purpose available to Parameter GUI Help and generated stubs.
@@ -367,6 +370,9 @@ Validate or inspect effective values and their source before launching:
 python -m grafix config validate .grafix/config.yaml
 python -m grafix config show .grafix/config.yaml
 ```
+
+The config path is positional; `config validate/show` does not provide a `--config`
+alias.
 
 Unknown keys and invalid values are rejected with a nearest-key hint. Interactive runs
 remain recoverable: an invalid user config falls back to the packaged defaults and emits

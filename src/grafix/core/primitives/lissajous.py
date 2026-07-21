@@ -77,15 +77,15 @@ def lissajous(
     Parameters
     ----------
     a : int, optional
-        X 方向の角周波数係数。
+        0 以上の X 方向角周波数係数。
     b : int, optional
-        Y 方向の角周波数係数。
+        0 以上の Y 方向角周波数係数。
     phase : float, optional
         X 方向の位相 [deg]。
     samples : int, optional
-        サンプリング点数。2 未満が指定された場合は 2 に丸める。
+        サンプリング点数。2 以上。
     turns : float, optional
-        `t` 範囲の周回数。`t ∈ [0, 2π * turns]`。
+        0 以上の `t` 範囲の周回数。`t ∈ [0, 2π * turns]`。
     center : tuple[float, float, float], optional
         平行移動ベクトル (cx, cy, cz)。
     scale : float, optional
@@ -95,8 +95,19 @@ def lissajous(
     -------
     tuple[np.ndarray, np.ndarray]
         リサージュ曲線を表す 1 本の開ポリライン（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        `a`、`b`、`turns` が負、または ``samples`` が 2 未満の場合。
     """
-    samples_i = max(2, int(samples))
+    if a < 0 or b < 0:
+        raise ValueError("lissajous の a/b は 0 以上である必要がある")
+    if turns < 0.0:
+        raise ValueError("lissajous の turns は 0 以上である必要がある")
+    if samples < 2:
+        raise ValueError("lissajous の samples は 2 以上である必要がある")
+    samples_i = samples
     ensure_geometry_output(
         "lissajous",
         vertices=samples_i,
@@ -106,19 +117,13 @@ def lissajous(
         hint="samples を減らしてください",
     )
 
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "lissajous の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
+    cx, cy, cz = center
 
-    a_i = int(a)
-    b_i = int(b)
-    phase_rad = math.radians(float(phase))
-    turns_f = float(turns)
-    s_f = float(scale)
-    cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
+    a_i = a
+    b_i = b
+    phase_rad = math.radians(phase)
+    turns_f = turns
+    s_f = scale
 
     t = np.linspace(
         0.0,
@@ -136,8 +141,8 @@ def lissajous(
     coords[:, 2] = 0.0
     if s_f != 1.0:
         coords *= np.float32(s_f)
-    if (cx_f, cy_f, cz_f) != (0.0, 0.0, 0.0):
-        coords += np.array([cx_f, cy_f, cz_f], dtype=np.float32)
+    if (cx, cy, cz) != (0.0, 0.0, 0.0):
+        coords += np.array([cx, cy, cz], dtype=np.float32)
 
     offsets = np.array([0, int(coords.shape[0])], dtype=np.int32)
     return coords, offsets

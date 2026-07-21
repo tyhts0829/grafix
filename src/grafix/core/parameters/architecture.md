@@ -41,6 +41,8 @@
   - `_labels/_ordinals/_effects`（group 単位）
   - `_runtime`（永続化しない実行時情報）
 - `get_state()` は **コピーを返す**（外部へミュータブル参照を渡さない）。
+- session recovery が既存 object identity を維持する場合だけ、
+  `replace_contents_from()` で別 `ParamStore` の全内容を transactional に置換する。
 
 ---
 
@@ -51,6 +53,7 @@
 - `key.py`: `ParameterKey` と site_id 生成。
 - `meta.py`: `ParamMeta`。
 - `state.py`: `ParamState`。
+- `collapsed_header.py`: `CollapsedHeaderKey` と ParamStore v4 の tagged record codec。
 - `labels.py`: `ParamLabels`（(op, site_id) -> label）。
 - `ordinals.py`: `GroupOrdinals`（group の安定順 ordinal）。
 - `effects.py`: `EffectChainIndex`（effect chain の step 情報と chain ordinal）。

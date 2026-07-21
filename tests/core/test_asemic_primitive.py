@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import G
 from grafix.core.primitives import asemic as asemic_module
 from grafix.core.primitives.asemic import asemic as asemic_impl
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 
 
 def test_asemic_impl_is_deterministic() -> None:
@@ -94,6 +95,41 @@ def test_asemic_api_returns_valid_geometry() -> None:
     assert np.all(np.diff(g.offsets) >= 0)
     assert np.all(np.isfinite(g.coords))
     assert g.coords.shape[0] > 0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"seed": -1}, "seed"),
+        ({"n_nodes": -1}, "n_nodes"),
+        ({"candidates": 0}, "candidates"),
+        ({"stroke_min": -1}, "stroke_min"),
+        ({"stroke_max": -1}, "stroke_max"),
+        ({"stroke_min": 4, "stroke_max": 3}, "stroke_min"),
+        ({"walk_min_steps": 0}, "walk_min_steps"),
+        ({"walk_max_steps": 0}, "walk_max_steps"),
+        ({"walk_min_steps": 3, "walk_max_steps": 2}, "walk_min_steps"),
+        ({"bezier_samples": 1}, "bezier_samples"),
+        ({"bezier_tension": -0.1}, "bezier_tension"),
+        ({"bezier_tension": 1.1}, "bezier_tension"),
+    ],
+)
+def test_asemic_rejects_out_of_domain_parameters_before_empty_text(
+    kwargs: dict[str, int | float],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.asemic(text="", **kwargs))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
+
+
+def test_asemic_zero_nodes_returns_empty_geometry_for_regular_text() -> None:
+    geometry = realize(G.asemic(text="A", n_nodes=0))
+
+    assert geometry.coords.shape == (0, 3)
+    assert geometry.offsets.tolist() == [0]
 
 
 def test_asemic_rng_adjacency_matches_small_reference() -> None:

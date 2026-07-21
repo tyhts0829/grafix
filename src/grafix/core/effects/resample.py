@@ -9,7 +9,6 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import current_resource_budget, ensure_geometry_output
 
-from .argument_validation import known_choice
 from .util import (
     RESAMPLE_CLOSED_DISTANCE_EPS,
     ResampleLinePlan,
@@ -94,7 +93,7 @@ def resample(
         再標本化する実体ジオメトリ（coords, offsets）。
     step : float, default 0.5
         隣接する出力頂点間で目標とする XYZ 弧長。
-        0 以下または非有限なら入力をそのまま返す。
+        0 なら入力をそのまま返す。
     closed : {"auto", "open", "closed"}, default "auto"
         ``"open"`` は各線を開曲線として扱い、``"closed"`` は 3 点以上の線を
         閉曲線として扱う。``"auto"`` は端点距離が 0.01 以下なら閉曲線とみなす。
@@ -103,21 +102,21 @@ def resample(
     -------
     tuple[np.ndarray, np.ndarray]
         再標本化後の実体ジオメトリ（coords, offsets）。
+
+    Raises
+    ------
+    ValueError
+        `step` が負の場合。
     """
 
-    closed_mode = known_choice(
-        closed,
-        choices=_CLOSED_CHOICES,
-        name="resample: closed",
-    )
+    if step < 0.0:
+        raise ValueError("resample の step は 0 以上である必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    step_size = float(step)
-    if not np.isfinite(step_size) or step_size <= 0.0:
-        return coords, offsets
-    if not bool(np.all(np.isfinite(coords))):
+    if step == 0.0:
         return coords, offsets
 
     line_count = max(0, int(offsets.size) - 1)
@@ -128,8 +127,8 @@ def resample(
     plan = ResamplePlan.from_geometry(
         coords,
         offsets,
-        step=step_size,
-        closed=closed_mode,
+        step=step,
+        closed=closed,
         max_vertices=int(budget.max_output_vertices),
         closed_distance=RESAMPLE_CLOSED_DISTANCE_EPS,
     )

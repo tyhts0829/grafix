@@ -49,8 +49,8 @@ def rect(
 ) -> GeomTuple:
     """中心・幅・高さから閉じた長方形を生成する。"""
 
-    width_f = float(width)
-    height_f = float(height)
+    width_f = width
+    height_f = height
     if width_f < 0.0 or height_f < 0.0:
         raise ValueError("rect の width/height は0以上である必要がある")
     ensure_geometry_output("rect", vertices=5, lines=1)

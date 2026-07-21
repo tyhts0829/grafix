@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 from grafix.core.builtins import (
     ensure_builtin_primitive_registered,
@@ -26,9 +26,7 @@ from ._operation_selector import (
     resolve_primitive_selection,
 )
 from ._param_resolution import resolve_api_params, set_api_label
-
-
-_DEFAULT_TARGET = cast(str, object())
+from ._unset import _UNSET_TARGET, _UnsetTarget
 
 
 class PrimitiveNamespace:
@@ -38,7 +36,7 @@ class PrimitiveNamespace:
     ----------
     <name> : Callable[..., Geometry]
         登録済み primitive 名ごとのファクトリ。
-        例: G.circle(r=1.0) -> Geometry(op="circle", inputs=(), params=...)
+        例: G.circle(radius=1.0) -> Geometry
     """
 
     def catalog(self) -> tuple[OpCatalogEntry[PrimitiveFunc], ...]:
@@ -82,7 +80,7 @@ class PrimitiveNamespace:
     def select(
         self,
         *,
-        target: str = _DEFAULT_TARGET,
+        target: str | _UnsetTarget = _UNSET_TARGET,
         params_by_target: Mapping[str, Mapping[str, Any]] | None = None,
         key: str | int | None = None,
         instance_key: str | int | None = None,
@@ -119,7 +117,7 @@ class PrimitiveNamespace:
             instance_key=instance_key,
             shared=shared,
         )
-        target_explicit = target is not _DEFAULT_TARGET
+        target_explicit = target is not _UNSET_TARGET
         target_name = (
             identity_string(target, name="primitive selector target")
             if target_explicit
@@ -136,7 +134,11 @@ class PrimitiveNamespace:
             site_id=site_id,
             label=self._pending_label,
         )
-        return Geometry.create(op=selected.target, params=selected.params)
+        return Geometry._from_canonical_args(
+            op=selected.target,
+            inputs=(),
+            args=tuple(sorted(selected.params.items())),
+        )
 
     def __getattr__(self, name: str) -> Callable[..., Geometry]:
         """primitive 名に対応する Geometry ファクトリを返す。
@@ -182,7 +184,7 @@ class PrimitiveNamespace:
             key = params.pop("key", None)
             instance_key = params.pop("instance_key", None)
             shared = params.pop("shared", False)
-            validate_operation_kwargs(op=name, spec=spec, params=params)
+            params = validate_operation_kwargs(op=name, spec=spec, params=params)
 
             # key は semantic site、instance_key は loop/comprehension 内の個体を表す。
             # shared=True は個体 suffix を付けず、同じ semantic site を意図的に共有する。
@@ -209,9 +211,13 @@ class PrimitiveNamespace:
                 defaults=spec.defaults,
                 meta=spec.meta,
             )
-            # resolved は Geometry.create に渡され、正規化・署名化される。
-            # primitive は inputs を持たないため op と params のみでノードが確定する。
-            return Geometry.create(op=name, params=resolved)
+            # 値は operation validator / parameter resolver で canonical 化済み。
+            # 再走査せず、署名計算だけを行う core-owned factory へ渡す。
+            return Geometry._from_canonical_args(
+                op=name,
+                inputs=(),
+                args=tuple(sorted(resolved.items())),
+            )
 
         return factory
 

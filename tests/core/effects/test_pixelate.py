@@ -184,18 +184,6 @@ def test_pixelate_rejects_nonpositive_step() -> None:
         )
 
 
-def test_pixelate_rejects_invalid_step_shape_and_corner() -> None:
-    base = realize(G.pixelate_test_noop_input())
-    geometry = (base.coords, base.offsets)
-
-    with pytest.raises(TypeError, match="step"):
-        pixelate_impl(geometry, step=[1.0, 1.0, 1.0])  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="step"):
-        pixelate_impl(geometry, step=(1.0, 1.0))  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="corner"):
-        pixelate_impl(geometry, corner="diagonal")
-
-
 def test_pixelate_empty_and_single_point() -> None:
     g0 = G.pixelate_test_empty()
     r0 = realize(E.pixelate(step=(1.0, 1.0, 1.0))(g0))

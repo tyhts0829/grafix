@@ -313,6 +313,87 @@ def test_transactional_reload_can_rollback_registry_and_draw(tmp_path: Path) -> 
         np.testing.assert_allclose(realize(controller.draw(0.0)).coords[:, 0], [1.0, 2.0])
 
 
+def test_pending_transaction_must_be_explicitly_finished_before_next_poll(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=1.0))
+
+    with SourceReloadController(source_path) as controller:
+        first_draw = controller.draw
+        _write_source(source_path, _primitive_source(x=9.0))
+        result = controller.poll(force=True, retain_rollback=True)
+
+        with pytest.raises(RuntimeError, match="未確定.*accept_generation.*rollback_generation"):
+            controller.poll()
+        with pytest.raises(RuntimeError, match="generation=1"):
+            controller.poll(force=True)
+
+        assert controller.generation == result.generation
+        restored = controller.rollback_generation(result.generation)
+        assert restored is first_draw
+        assert controller.generation == 0
+
+
+def test_explicit_accept_allows_the_next_poll(tmp_path: Path) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=1.0))
+
+    with SourceReloadController(source_path) as controller:
+        _write_source(source_path, _primitive_source(x=2.0))
+        result = controller.poll(force=True, retain_rollback=True)
+
+        controller.accept_generation(result.generation)
+        unchanged = controller.poll()
+
+        assert unchanged.status == "unchanged"
+        assert unchanged.generation == result.generation
+
+
+def test_accept_and_rollback_are_one_shot_and_check_generation(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=1.0))
+
+    with SourceReloadController(source_path) as controller:
+        _write_source(source_path, _primitive_source(x=2.0))
+        accepted = controller.poll(force=True, retain_rollback=True)
+
+        with pytest.raises(ValueError, match="generation"):
+            controller.accept_generation(accepted.generation - 1)
+        with pytest.raises(ValueError, match="generation"):
+            controller.rollback_generation(accepted.generation - 1)
+        controller.accept_generation(accepted.generation)
+        with pytest.raises(ValueError, match="accept可能"):
+            controller.accept_generation(accepted.generation)
+        with pytest.raises(ValueError, match="rollback可能"):
+            controller.rollback_generation(accepted.generation)
+
+        _write_source(source_path, _primitive_source(x=3.0))
+        rolled_back = controller.poll(force=True, retain_rollback=True)
+        controller.rollback_generation(rolled_back.generation)
+        with pytest.raises(ValueError, match="accept可能"):
+            controller.accept_generation(rolled_back.generation)
+        with pytest.raises(ValueError, match="rollback可能"):
+            controller.rollback_generation(rolled_back.generation)
+
+
+def test_close_finishes_a_pending_transaction_as_terminal_cleanup(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "sketch.py"
+    _write_source(source_path, _primitive_source(x=1.0))
+    controller = SourceReloadController(source_path)
+    _write_source(source_path, _primitive_source(x=2.0))
+    controller.poll(force=True, retain_rollback=True)
+
+    controller.close()
+    controller.close()
+
+    assert "watch_reload_shape" not in primitive_registry
+
+
 def test_runtime_error_then_source_fix_uses_new_generation(tmp_path: Path) -> None:
     source_path = tmp_path / "sketch.py"
     _write_source(source_path, _primitive_source(x=4.0))

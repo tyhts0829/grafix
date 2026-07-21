@@ -83,7 +83,7 @@ def test_mp_draw_result_carries_worker_diagnostics_separately() -> None:
             pytest.fail("mp-draw result timeout")
 
         assert result.error is None
-        assert result.records == []
+        assert result.records == ()
         assert len(result.diagnostics) == 1
         assert result.diagnostics[0].op == "worker-example"
     finally:
@@ -124,14 +124,14 @@ def test_scene_runner_merges_worker_payload_before_center_publish() -> None:
     )
     worker_result = DrawResult(
         frame_id=1,
-        layers=[],
-        records=[],
-        labels=[],
+        layers=(),
+        records=(),
+        labels=(),
         t=1.0,
         epoch=0,
         generation=0,
         snapshot_revision=0,
-        effect_chains=[],
+        effect_chains=(),
         diagnostics=(payload,),
     )
     center = DiagnosticCenter()
@@ -143,15 +143,18 @@ def test_scene_runner_merges_worker_payload_before_center_publish() -> None:
     )
     runner._mp_draw = cast(Any, _WorkerResult(worker_result))
     try:
-        assert runner.run(
-            1.0,
-            store=ParamStore(),
-            cc_snapshot=None,
-            defaults=_defaults(),
-            recording=False,
-            transport_epoch=0,
-            quality="draft",
-        ) == []
+        assert (
+            runner.run(
+                1.0,
+                store=ParamStore(),
+                cc_snapshot=None,
+                defaults=_defaults(),
+                recording=False,
+                transport_epoch=0,
+                quality="draft",
+            )
+            == []
+        )
     finally:
         runner.close()
 

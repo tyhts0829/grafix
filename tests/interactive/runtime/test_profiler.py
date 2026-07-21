@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 
-from grafix.core.geometry import Geometry
+from grafix.api import G
 from grafix.core.layer import Layer, LayerStyleDefaults
 from grafix.core.parameters import ParamStore
 from grafix.core.pipeline import realize_scene
@@ -305,7 +305,7 @@ def test_profiler_collects_bounded_operation_layer_and_cache_snapshot() -> None:
         top_n=2,
         max_series=4,
     )
-    geometry = Geometry.create("polygon", params={"n_sides": 5})
+    geometry = G.polygon(n_sides=5)
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
 
     with RealizeSession(profiler=perf) as session:
@@ -358,8 +358,8 @@ def test_profiler_snapshot_discards_unbounded_dynamic_series() -> None:
 def test_realize_cache_eviction_is_forwarded_to_profiler() -> None:
     perf = PerfCollector(enabled=True, console_output=False)
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
-    first = Geometry.create("polygon", params={"n_sides": 5})
-    second = Geometry.create("polygon", params={"n_sides": 6})
+    first = G.polygon(n_sides=5)
+    second = G.polygon(n_sides=6)
 
     with RealizeSession(
         runtime_limits=RuntimeLimits(cpu_cache_bytes=100),
@@ -401,17 +401,17 @@ class _LaggedMpDraw:
 
 def test_scene_runner_records_worker_submit_to_result_lag() -> None:
     perf = PerfCollector(enabled=True, console_output=False)
-    geometry = Geometry.create("polygon", params={"n_sides": 5})
+    geometry = G.polygon(n_sides=5)
     result = DrawResult(
         frame_id=1,
         t=0.0,
         epoch=0,
         generation=0,
         snapshot_revision=0,
-        layers=[Layer(geometry, site_id="ink", name="Ink")],
-        records=[],
-        labels=[],
-        effect_chains=[],
+        layers=(Layer(geometry, site_id="ink", name="Ink"),),
+        records=(),
+        labels=(),
+        effect_chains=(),
         worker_lag_ms=24.5,
     )
     runner = SceneRunner(lambda _t: geometry, perf=perf, n_worker=0)
@@ -563,9 +563,11 @@ def test_deferred_frame_boundary_keeps_present_and_full_loop_in_same_record(
         "parameter_revision_created",
         "preview_presented",
     }
-    assert {
-        timing["name"] for timing in window["duration_timing"]
-    } == {"preview_core", "preview_draw_flip", "full_loop"}
+    assert {timing["name"] for timing in window["duration_timing"]} == {
+        "preview_core",
+        "preview_draw_flip",
+        "full_loop",
+    }
     assert window["input_to_present"]["samples"] == 1
 
 
@@ -678,9 +680,7 @@ def test_deferred_frame_tail_and_deadline_use_full_loop_duration() -> None:
     snapshot = perf.snapshot()
     assert snapshot.frame_p50_ms == pytest.approx(20.0)
     assert snapshot.frame_deadline_misses == 1
-    duration_by_name = {
-        item.name: item for item in snapshot.duration_timing
-    }
+    duration_by_name = {item.name: item for item in snapshot.duration_timing}
     assert duration_by_name["preview_core"].p50_ms < 20.0
 
 
@@ -824,15 +824,11 @@ def test_profiler_tracks_window_tails_and_input_to_present() -> None:
         )
 
     snapshot = perf.snapshot()
-    duration_by_name = {
-        item.name: item for item in snapshot.duration_timing
-    }
+    duration_by_name = {item.name: item for item in snapshot.duration_timing}
     assert duration_by_name["preview_draw_flip"].count == 2
     assert duration_by_name["preview_draw_flip"].p50_ms == pytest.approx(6.0)
     assert duration_by_name["preview_draw_flip"].max_ms == pytest.approx(8.0)
-    assert duration_by_name["parameter_gui_draw_flip"].p95_ms == pytest.approx(
-        3.0
-    )
+    assert duration_by_name["parameter_gui_draw_flip"].p95_ms == pytest.approx(3.0)
     assert duration_by_name["full_loop"].p99_ms == pytest.approx(12.0)
     assert snapshot.input_to_present_samples == 2
     assert snapshot.input_to_present_p50_ms == pytest.approx(10.5)

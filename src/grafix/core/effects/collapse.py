@@ -11,7 +11,6 @@ from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
-from .argument_validation import finite_vec3, integer_scalar
 
 EPS = 1e-12
 
@@ -53,7 +52,7 @@ collapse_meta = {
 }
 
 collapse_ui_visible = {
-    "pivot": lambda v: not bool(v.get("auto_center", True)),
+    "pivot": lambda v: v.get("auto_center", True) is False,
 }
 
 @effect(meta=collapse_meta, ui_visible=collapse_ui_visible)
@@ -100,43 +99,30 @@ def collapse(
     `intensity_eff = intensity * p_eff` として適用する。
     係数は `p_eff = 1 - (1-px)(1-py)(1-pz)`（OR 合成）で作る。
     """
-    intensity = float(intensity)
-    if not np.isfinite(intensity):
-        raise ValueError("collapse: intensity は有限値である必要がある")
     if intensity < 0.0:
         raise ValueError("collapse: intensity は 0 以上である必要がある")
-    divisions = integer_scalar(subdivisions, name="collapse: subdivisions")
-    if divisions < 0:
+    if subdivisions < 0:
         raise ValueError("collapse: subdivisions は 0 以上である必要がある")
-    mask_base = finite_vec3(
-        intensity_mask_base,
-        name="collapse: intensity_mask_base",
-    )
-    if not all(0.0 <= value <= 1.0 for value in mask_base):
+    if not all(0.0 <= value <= 1.0 for value in intensity_mask_base):
         raise ValueError(
             "collapse: intensity_mask_base の各要素は 0.0 以上 1.0 以下である必要がある"
         )
-    mask_slope = finite_vec3(
-        intensity_mask_slope,
-        name="collapse: intensity_mask_slope",
-    )
-    pivot3 = finite_vec3(pivot, name="collapse: pivot")
 
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
-    if intensity == 0.0 or divisions == 0:
+    if intensity == 0.0 or subdivisions == 0:
         return coords, offsets
 
     new_coords, new_offsets = _collapse_numba(
         coords,
         offsets,
         intensity,
-        divisions,
-        intensity_mask_base=mask_base,
-        intensity_mask_slope=mask_slope,
-        auto_center=bool(auto_center),
-        pivot=pivot3,
+        subdivisions,
+        intensity_mask_base=intensity_mask_base,
+        intensity_mask_slope=intensity_mask_slope,
+        auto_center=auto_center,
+        pivot=pivot,
     )
     return new_coords, new_offsets
 

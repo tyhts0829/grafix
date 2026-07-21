@@ -165,7 +165,7 @@ def resolve_params(
             )
             if (
                 code_meta is not None
-                and str(code_meta.kind) != str(snapshot_meta.kind)
+                and code_meta.kind != snapshot_meta.kind
             ):
                 state = replace(
                     state,

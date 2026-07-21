@@ -93,7 +93,7 @@ def merge_frame_params(store: ParamStore, records: list[FrameParamRecord]) -> No
             entry.last_effective = effective
             entry.last_source = source
 
-        # 永続 store 側は従来どおり部分変更を保持し得るため、構造 cache だけは
+        # 永続 store 側は部分変更を保持し得るため、構造 cache だけは
         # 必ず捨て、次回 merge で現在状態から再検証する。
         cache.entries.clear()
         cache.table_revision = -1
@@ -226,8 +226,8 @@ def _merge_frame_params(
         for key, entry in explicit_changes
         if entry.explicit_in_frame != entry.explicit
     }
-    # 空 mapping でも呼ぶことで、既存の commit hook/例外伝播 semantics を維持する。
-    _apply_explicit_override_follow_policy(store, explicit_by_key)
+    if explicit_by_key:
+        _apply_explicit_override_follow_policy(store, explicit_by_key)
     for key, entry in explicit_changes:
         entry.explicit = store._explicit_by_key[key]
 

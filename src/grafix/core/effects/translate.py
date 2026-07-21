@@ -24,21 +24,13 @@ _SCALAR_ADD_SAFE_ABS_MAX = np.float32(np.finfo(np.float32).max / 4.0)
 def _can_use_scalar_add(coords: np.ndarray, delta_vec: np.ndarray) -> bool:
     """軸別 ufunc でも浮動小数点通知が増えない通常範囲かを返す。"""
 
-    if (
-        type(coords) is not np.ndarray
-        or coords.dtype != np.float32
-        or coords.ndim != 2
-        or coords.shape[1] != 3
-        or not coords.flags.c_contiguous
-        or np.geterr()["under"] != "ignore"
-    ):
+    if np.geterr()["under"] != "ignore":
         return False
 
     coords_abs_max = np.max(np.abs(coords))
     delta_abs_max = np.max(np.abs(delta_vec))
     return bool(
-        np.isfinite(coords_abs_max)
-        and np.isfinite(delta_abs_max)
+        np.isfinite(delta_abs_max)
         and coords_abs_max <= _SCALAR_ADD_SAFE_ABS_MAX
         and delta_abs_max <= _SCALAR_ADD_SAFE_ABS_MAX
     )
@@ -68,7 +60,7 @@ def translate(
     if coords.shape[0] == 0:
         return coords, offsets
 
-    dx, dy, dz = float(delta[0]), float(delta[1]), float(delta[2])
+    dx, dy, dz = delta
     if dx == 0.0 and dy == 0.0 and dz == 0.0:
         return coords, offsets
 
@@ -78,14 +70,13 @@ def translate(
         return coords + delta_vec, offsets
 
     if not _can_use_scalar_add(coords, delta_vec):
-        # direct call で渡される非 canonical 入力は、従来の dtype promotion と
-        # ndarray subclass、出力 layout、浮動小数点通知の規則を維持する。
+        # 極端な有限値や NumPy error policy では一括演算の通知順を維持する。
         return coords + delta_vec, offsets
 
     coords_out = coords.copy()
     dx32, dy32, dz32 = delta_vec
-    # 0 の軸も加算する。省略すると入力の -0.0 がそのまま残り、従来の
-    # broadcast 加算が生成する +0.0 と bitwise に異なる。
+    # 0 の軸も加算する。省略すると入力の -0.0 が残り、broadcast 加算が
+    # 生成する +0.0 と bitwise に異なる。
     coords_out[:, 0] += dx32
     coords_out[:, 1] += dy32
     coords_out[:, 2] += dz32

@@ -1020,8 +1020,8 @@ def runtime_config() -> RuntimeConfig:
             break
 
     # 各 layer を merge する前に key tree を検証し、user config 内の path は
-    # その config file の親を基準に絶対化する。packaged default は従来どおり
-    # project CWD 相対を維持する。
+    # その config file の親、packaged default 内の path は project CWD を
+    # 基準に絶対化する。
     packaged_payload = _load_packaged_default_config()
     layers: list[tuple[dict[str, Any], str, Path, bool]] = [
         (packaged_payload, _PACKAGED_CONFIG_SOURCE, Path.cwd().resolve(), False)
@@ -1187,8 +1187,8 @@ def _packaged_runtime_config_report() -> RuntimeConfigReport:
 def runtime_config_with_fallback() -> tuple[RuntimeConfig, RuntimeConfigFallback | None]:
     """strict user configを試し、失敗時だけ通知情報付きでdefaultへ退避する。
 
-    CLI validationは従来どおり :func:`runtime_config_report` を直接呼び、失敗を
-    exit codeへ変換する。interactive runnerだけがこの明示fallbackを使用する。
+    CLI validationは :func:`runtime_config_report` を直接呼び、失敗を exit codeへ
+    変換する。interactive runnerだけがこの明示fallbackを使用する。
     fallback後は同一session内の全consumerが同じconfigを見るようcacheへ固定する。
     """
 

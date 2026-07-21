@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import numpy as np
+import shapely  # type: ignore[import-untyped]
+from shapely.errors import GEOSException  # type: ignore[import-untyped]
+from shapely.geometry import (  # type: ignore[import-untyped]
+    GeometryCollection,
+    MultiPoint,
+    MultiPolygon,
+    Point,
+    Polygon,
+)
+from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
+from shapely.ops import voronoi_diagram  # type: ignore[import-untyped]
 
 from grafix.core.effect_registry import effect
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
-from .argument_validation import finite_vec3, integer_scalar
 from .util import (
     canonical_planar_frame,
     pack_polylines,
@@ -65,7 +75,7 @@ partition_meta = {
 }
 
 partition_ui_visible = {
-    "pivot": lambda v: not bool(v.get("auto_center", True)),
+    "pivot": lambda v: v.get("auto_center", True) is False,
 }
 
 def _ensure_closed_2d(loop: np.ndarray) -> np.ndarray:
@@ -76,26 +86,26 @@ def _ensure_closed_2d(loop: np.ndarray) -> np.ndarray:
     return np.concatenate([loop, loop[:1]], axis=0)
 
 
-def _collect_polygon_exteriors(geom) -> list[np.ndarray]:  # type: ignore[no-untyped-def]
+def _collect_polygon_exteriors(geom: BaseGeometry) -> list[np.ndarray]:
     """Shapely geometry から Polygon 外周を ndarray で抽出する（holes は無視）。"""
     try:
         if geom.is_empty:
             return []
-    except Exception:
+    except GEOSException:
         return []
 
-    gtype = getattr(geom, "geom_type", "")
-    if gtype == "Polygon":
+    if isinstance(geom, Polygon):
         coords = np.asarray(geom.exterior.coords, dtype=np.float32)
         return [coords]
 
     out: list[np.ndarray] = []
-    for g in getattr(geom, "geoms", []):  # type: ignore[attr-defined]
-        out.extend(_collect_polygon_exteriors(g))
+    if isinstance(geom, (MultiPolygon, GeometryCollection)):
+        for child in geom.geoms:
+            out.extend(_collect_polygon_exteriors(child))
     return out
 
 
-def _combine_evenodd(polys, Polygon):  # type: ignore[no-untyped-def]
+def _combine_evenodd(polys: list[BaseGeometry]) -> BaseGeometry | None:
     if not polys:
         return None
 
@@ -107,12 +117,12 @@ def _combine_evenodd(polys, Polygon):  # type: ignore[no-untyped-def]
         if a.geom_type == "Polygon" and b.geom_type == "Polygon" and a.contains(b):
             try:
                 return Polygon(a.exterior.coords, holes=[b.exterior.coords])
-            except Exception:
+            except (GEOSException, ValueError):
                 return a.symmetric_difference(b)
         if a.geom_type == "Polygon" and b.geom_type == "Polygon" and b.contains(a):
             try:
                 return Polygon(b.exterior.coords, holes=[a.exterior.coords])
-            except Exception:
+            except (GEOSException, ValueError):
                 return a.symmetric_difference(b)
         if a.disjoint(b):
             return a.union(b)
@@ -124,7 +134,10 @@ def _combine_evenodd(polys, Polygon):  # type: ignore[no-untyped-def]
     return region
 
 
-def _build_evenodd_groups(polys, rings_2d, Point):  # type: ignore[no-untyped-def]
+def _build_evenodd_groups(
+    polys: list[BaseGeometry],
+    rings_2d: list[np.ndarray],
+) -> list[list[int]]:
     """外周＋穴を even-odd でグルーピングし、[outer, hole...] のインデックス列を返す。"""
     n = int(len(polys))
     if n == 0:
@@ -133,7 +146,7 @@ def _build_evenodd_groups(polys, rings_2d, Point):  # type: ignore[no-untyped-de
         raise ValueError("polys と rings_2d のサイズが一致しない")
 
     rep_pts = [(float(ring[0, 0]), float(ring[0, 1])) for ring in rings_2d]
-    areas = [float(getattr(poly, "area", 0.0)) for poly in polys]
+    areas = [float(poly.area) for poly in polys]
 
     contains_count = [0] * n
     for i in range(n):
@@ -146,7 +159,7 @@ def _build_evenodd_groups(polys, rings_2d, Point):  # type: ignore[no-untyped-de
             try:
                 if polys[j].contains(pt):
                     count += 1
-            except Exception:
+            except GEOSException:
                 continue
         contains_count[i] = count
 
@@ -170,7 +183,7 @@ def _build_evenodd_groups(polys, rings_2d, Point):  # type: ignore[no-untyped-de
                     if a < best_area:
                         best_area = a
                         best = j
-            except Exception:
+            except GEOSException:
                 continue
         parent_outer[i] = best
 
@@ -244,31 +257,16 @@ def partition(
     ``max(1e-6, 1e-5 * bbox_diagonal)`` 以下の有限入力だけを処理する。
     非共平面または linear な入力は射影せず no-op として返す。
     """
-    if not isinstance(mode, str):
-        raise TypeError("partition: mode は str である必要がある")
-    if mode not in {"merge", "group", "ring"}:
-        raise ValueError(f"partition: 未知の mode です: {mode!r}")
-    mode_s = mode
-
-    site_count_i = integer_scalar(site_count, name="partition: site_count")
-    if site_count_i <= 0:
+    if site_count <= 0:
         raise ValueError("partition: site_count は正の整数である必要がある")
 
-    base_x, base_y, base_z = finite_vec3(
-        site_density_base,
-        name="partition: site_density_base",
-    )
+    base_x, base_y, base_z = site_density_base
     if not all(0.0 <= value <= 1.0 for value in (base_x, base_y, base_z)):
         raise ValueError(
             "partition: site_density_base の各要素は 0.0 以上 1.0 以下である必要がある"
         )
-    slope_x, slope_y, slope_z = finite_vec3(
-        site_density_slope,
-        name="partition: site_density_slope",
-    )
-    pivot_value = finite_vec3(pivot, name="partition: pivot")
-    seed_i = integer_scalar(seed, name="partition: seed")
-    if seed_i < 0:
+    slope_x, slope_y, slope_z = site_density_slope
+    if seed < 0:
         raise ValueError("partition: seed は 0 以上である必要がある")
 
     coords, offsets = g
@@ -278,16 +276,9 @@ def partition(
     if not frame.is_planar(planarity_threshold(coords)):
         return coords, offsets
 
-    try:
-        import shapely  # type: ignore
-        from shapely.geometry import MultiPoint, Point, Polygon  # type: ignore
-        from shapely.ops import voronoi_diagram  # type: ignore
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError("partition effect は shapely が必要です") from exc
-
     coords_2d_all = frame.project(coords)
     rings_2d: list[np.ndarray] = []
-    polys = []
+    polys: list[BaseGeometry] = []
     for i in range(int(offsets.size) - 1):
         s = int(offsets[i])
         e = int(offsets[i + 1])
@@ -299,7 +290,7 @@ def partition(
             poly = Polygon(ring_2d)
             if not poly.is_valid:
                 poly = poly.buffer(0)
-        except Exception:
+        except (GEOSException, ValueError):
             continue
         if poly.is_empty:
             continue
@@ -309,19 +300,19 @@ def partition(
     if not polys:
         return coords, offsets
 
-    rng = np.random.default_rng(seed_i)
+    rng = np.random.default_rng(seed)
 
     regions = []
-    if mode_s == "ring":
+    if mode == "ring":
         regions = list(polys)
-    elif mode_s == "group":
-        groups = _build_evenodd_groups(polys, rings_2d, Point)
-        for g in groups:
-            region = _combine_evenodd([polys[i] for i in g], Polygon)
+    elif mode == "group":
+        groups = _build_evenodd_groups(polys, rings_2d)
+        for group_indices in groups:
+            region = _combine_evenodd([polys[i] for i in group_indices])
             if region is not None and not region.is_empty:
                 regions.append(region)
     else:
-        region = _combine_evenodd(polys, Polygon)
+        region = _combine_evenodd(polys)
         if region is None or region.is_empty:
             return coords, offsets
         regions = [region]
@@ -349,7 +340,7 @@ def partition(
         if auto_center:
             pivot3 = bbox_center
         else:
-            pivot3 = np.asarray(pivot_value, dtype=np.float64)
+            pivot3 = np.asarray(pivot, dtype=np.float64)
 
         def _p_eff_for_xy(xy: np.ndarray) -> np.ndarray:
             p3 = frame.lift(xy)
@@ -372,18 +363,18 @@ def partition(
 
         pts: list[tuple[float, float]] = []
         if width > 0.0 and height > 0.0:
-            trials_per_phase = max(1000, site_count_i * 50)
-            batch = max(256, site_count_i * 20)
+            trials_per_phase = max(1000, site_count * 50)
+            batch = max(256, site_count * 20)
 
             def _append_points(xs: np.ndarray, ys: np.ndarray) -> None:
-                need = site_count_i - len(pts)
+                need = site_count - len(pts)
                 if need <= 0:
                     return
                 for x, y in zip(xs[:need], ys[:need], strict=False):
                     pts.append((float(x), float(y)))
 
             trials_left = int(trials_per_phase)
-            while len(pts) < site_count_i and trials_left > 0:
+            while len(pts) < site_count and trials_left > 0:
                 n = min(int(batch), int(trials_left))
                 xs = float(minx) + rng.random(n) * width
                 ys = float(miny) + rng.random(n) * height
@@ -405,9 +396,9 @@ def partition(
                 trials_left -= n
 
             # top-up: density で足りない場合は、一様サンプリングで埋めて site_count を満たす。
-            if density_enabled and len(pts) < site_count_i:
+            if density_enabled and len(pts) < site_count:
                 trials_left = int(trials_per_phase)
-                while len(pts) < site_count_i and trials_left > 0:
+                while len(pts) < site_count and trials_left > 0:
                     n = min(int(batch), int(trials_left))
                     xs = float(minx) + rng.random(n) * width
                     ys = float(miny) + rng.random(n) * height
@@ -420,7 +411,7 @@ def partition(
             try:
                 c = region.representative_point()
                 pts = [(float(c.x), float(c.y))]
-            except Exception:
+            except GEOSException:
                 continue
 
         if len(pts) <= 1:
@@ -430,13 +421,13 @@ def partition(
         mp = MultiPoint(pts)
         try:
             vd = voronoi_diagram(mp, envelope=region.envelope, edges=False)  # type: ignore[arg-type]
-        except Exception:
+        except GEOSException:
             continue
 
-        for cell in getattr(vd, "geoms", []):  # type: ignore[attr-defined]
+        for cell in vd.geoms:
             try:
                 inter = cell.intersection(region)
-            except Exception:
+            except GEOSException:
                 continue
             if inter.is_empty:
                 continue

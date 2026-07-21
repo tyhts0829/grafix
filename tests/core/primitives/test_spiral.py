@@ -10,7 +10,7 @@ import pytest
 
 from grafix import G
 from grafix.core.primitives.spiral import spiral
-from grafix.core.realize import RealizeSession
+from grafix.core.realize import RealizeError, RealizeSession, realize
 from grafix.core.resource_budget import (
     ResourceBudget,
     ResourceLimitError,
@@ -128,14 +128,17 @@ def test_spiral_minimum_sample_count_is_open_one_polyline() -> None:
 
 @pytest.mark.parametrize("samples", [1, 0, -1])
 def test_spiral_rejects_samples_below_two(samples: int) -> None:
-    with pytest.raises(ValueError, match="samples は 2 以上"):
-        spiral(samples=samples)
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.spiral(samples=samples))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "samples は 2 以上" in str(exc_info.value.__cause__)
 
 
 @pytest.mark.parametrize("samples", [float("nan"), float("inf"), "not-an-int"])
 def test_spiral_rejects_non_integer_sample_values(samples: object) -> None:
-    with pytest.raises(ValueError, match="samples は整数"):
-        spiral(samples=samples)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="samples"):
+        G.spiral(samples=samples)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -150,14 +153,17 @@ def test_spiral_rejects_non_integer_sample_values(samples: object) -> None:
     ],
 )
 def test_spiral_rejects_non_finite_scalar_parameters(name: str, value: float) -> None:
-    with pytest.raises(ValueError, match="有限"):
-        spiral(**{name: value})
+    with pytest.raises(ValueError, match=name):
+        G.spiral(**{name: value})
 
 
 @pytest.mark.parametrize("name", ["inner_radius", "outer_radius"])
 def test_spiral_rejects_negative_radius(name: str) -> None:
-    with pytest.raises(ValueError, match="0 以上"):
-        spiral(**{name: -0.01})
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.spiral(**{name: -0.01}))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "0 以上" in str(exc_info.value.__cause__)
 
 
 @pytest.mark.parametrize(
@@ -171,8 +177,8 @@ def test_spiral_rejects_negative_radius(name: str) -> None:
     ],
 )
 def test_spiral_rejects_invalid_center(center: tuple[float, ...]) -> None:
-    with pytest.raises(ValueError, match="center|有限"):
-        spiral(center=center)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError), match="center"):
+        G.spiral(center=center)  # type: ignore[arg-type]
 
 
 def test_spiral_rejects_finite_values_that_overflow_float32_output() -> None:
@@ -215,13 +221,11 @@ def test_spiral_is_independent_of_numpy_underflow_policy() -> None:
     assert np.isfinite(coords).all()
 
 
-def test_spiral_raw_calls_are_fresh_writable_and_do_not_mutate_input() -> None:
-    center = [2.0, -3.0, 4.0]
-    original_center = center.copy()
-    first_coords, first_offsets = spiral(samples=8, center=center)  # type: ignore[arg-type]
-    second_coords, second_offsets = spiral(samples=8, center=center)  # type: ignore[arg-type]
+def test_spiral_raw_calls_are_fresh_and_writable() -> None:
+    center = (2.0, -3.0, 4.0)
+    first_coords, first_offsets = spiral(samples=8, center=center)
+    second_coords, second_offsets = spiral(samples=8, center=center)
 
-    assert center == original_center
     assert first_coords.flags.writeable
     assert first_offsets.flags.writeable
     assert second_coords.flags.writeable

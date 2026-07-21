@@ -52,9 +52,9 @@ mirror_meta = {
 }
 
 mirror_ui_visible = {
-    "cy": lambda v: int(v.get("n_mirror", 1)) != 1,
-    "source_positive_x": lambda v: int(v.get("n_mirror", 1)) in {1, 2},
-    "source_positive_y": lambda v: int(v.get("n_mirror", 1)) == 2,
+    "cy": lambda v: v.get("n_mirror", 1) != 1,
+    "source_positive_x": lambda v: v.get("n_mirror", 1) in {1, 2},
+    "source_positive_y": lambda v: v.get("n_mirror", 1) == 2,
 }
 
 @effect(meta=mirror_meta, ui_visible=mirror_ui_visible)
@@ -76,7 +76,7 @@ def mirror(
         入力の実体ジオメトリ（coords, offsets）。
     n_mirror : int, default 1
         1: x=cx による半空間ミラー。2: x=cx と y=cy による象限ミラー。
-        3 以上: 中心 (cx,cy) を基準に放射状の 2n 対称（楔を回転 + 反転で複製）。
+        3 以上: 中心 (cx,cy) を基準に放射状の 2n 対称（楔を回転 + 反転で複製）。1 以上が必要。
     cx, cy : float, default 0.0
         対称の中心座標（z は不変）。
     source_positive_x : bool, default True
@@ -91,26 +91,30 @@ def mirror(
     tuple[np.ndarray, np.ndarray]
         ミラー後の実体ジオメトリ（coords, offsets）。
 
+    Raises
+    ------
+    ValueError
+        `n_mirror` が 1 未満の場合。
+
     Notes
     -----
     - クリップは線分の半空間交差で行い、重心判定はしない。
     - 境界は内側扱い（include boundary）とし、EPS=1e-6 を使用する。
     """
+    if n_mirror < 1:
+        raise ValueError("mirror の n_mirror は 1 以上である必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    n = int(n_mirror)
-    if n < 1:
-        return coords, offsets
+    n = n_mirror
 
-    cx_f = float(cx)
-    cy_f = float(cy)
-    if not (np.isfinite(cx_f) and np.isfinite(cy_f)):
-        return coords, offsets
+    cx_f = cx
+    cy_f = cy
 
-    sx = 1 if bool(source_positive_x) else -1
-    sy = 1 if bool(source_positive_y) else -1
+    sx = 1 if source_positive_x else -1
+    sy = 1 if source_positive_y else -1
 
     out_lines: list[np.ndarray] = []
     src_lines: list[np.ndarray] = []

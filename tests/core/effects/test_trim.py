@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from grafix.api import E, G
 from grafix.core.primitive_registry import primitive
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -81,22 +82,29 @@ def test_trim_noop_for_full_range() -> None:
     assert out.offsets.tolist() == base.offsets.tolist()
 
 
-def test_trim_noop_when_start_ge_end() -> None:
-    g = G.trim_test_line_0_10()
-    base = realize(g)
-    out = realize(E.trim(start_param=0.9, end_param=0.2)(g))
+@pytest.mark.parametrize(
+    ("start_param", "end_param", "parameter"),
+    [
+        (-0.1, 0.5, "start_param"),
+        (0.1, 1.1, "end_param"),
+        (0.9, 0.2, "start_param"),
+        (0.5, 0.5, "start_param"),
+    ],
+)
+def test_trim_rejects_invalid_range_before_empty_input(
+    start_param: float,
+    end_param: float,
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(
+            E.trim(start_param=start_param, end_param=end_param)(
+                G.trim_test_empty()
+            )
+        )
 
-    np.testing.assert_allclose(out.coords, base.coords, rtol=0.0, atol=0.0)
-    assert out.offsets.tolist() == base.offsets.tolist()
-
-
-def test_trim_clamps_params() -> None:
-    g = G.trim_test_line_0_10()
-    out = realize(E.trim(start_param=-1.0, end_param=0.5)(g))
-
-    assert out.offsets.tolist() == [0, 2]
-    np.testing.assert_allclose(out.coords[0], [0.0, 0.0, 0.0], rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(out.coords[1], [5.0, 0.0, 0.0], rtol=0.0, atol=1e-6)
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
 
 
 def test_trim_handles_multiple_polylines_independently() -> None:

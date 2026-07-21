@@ -72,28 +72,42 @@ def weave(
     g : tuple[np.ndarray, np.ndarray]
         入力実体ジオメトリ（coords, offsets）。
     num_candidate_lines : int, default 100
-        候補線本数（0–500 にクランプ）。
+        候補線本数。500 を超える値はクランプする。0 では候補線を生成しない。
     relaxation_iterations : int, default 15
-        弾性緩和の反復回数（0–50 にクランプ）。
+        弾性緩和の反復回数。50 を超える値はクランプする。0 では緩和しない。
     step : float, default 0.125
-        1 ステップの移動係数（0.0–0.5 にクランプ）。
+        1 ステップの移動係数。0.5 を超える値はクランプする。0 では緩和しない。
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         ウェブ構造を含むポリライン集合（coords, offsets）。
 
+    Raises
+    ------
+    ValueError
+        `num_candidate_lines`、`relaxation_iterations`、`step` のいずれかが負の場合。
+
     Notes
     -----
     開ポリライン（始点と終点が一致しない線）は対象外とし、そのまま返す。
     """
+    if num_candidate_lines < 0:
+        raise ValueError("weave の num_candidate_lines は 0 以上である必要がある")
+    if relaxation_iterations < 0:
+        raise ValueError(
+            "weave の relaxation_iterations は 0 以上である必要がある"
+        )
+    if step < 0.0:
+        raise ValueError("weave の step は 0 以上である必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    requested_num_lines = int(num_candidate_lines)
+    requested_num_lines = num_candidate_lines
     num_lines = requested_num_lines
-    num_lines = max(0, min(MAX_NUM_CANDIDATE_LINES, num_lines))
+    num_lines = min(MAX_NUM_CANDIDATE_LINES, num_lines)
     if num_lines != requested_num_lines:
         emit_operation_diagnostic(
             op="weave.num_candidate_lines",
@@ -102,9 +116,9 @@ def weave(
             reason="candidate line count was clamped to the supported range",
         )
 
-    requested_iterations = int(relaxation_iterations)
+    requested_iterations = relaxation_iterations
     iterations = requested_iterations
-    iterations = max(0, min(MAX_RELAXATION_ITERATIONS, iterations))
+    iterations = min(MAX_RELAXATION_ITERATIONS, iterations)
     if iterations != requested_iterations:
         emit_operation_diagnostic(
             op="weave.relaxation_iterations",
@@ -113,10 +127,8 @@ def weave(
             reason="relaxation iterations was clamped to the supported range",
         )
 
-    requested_step = float(step)
+    requested_step = step
     step_size = requested_step
-    if step_size < 0.0:
-        step_size = 0.0
     if step_size > MAX_STEP:
         step_size = MAX_STEP
     if step_size != requested_step:

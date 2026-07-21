@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from grafix.core.parameters import history as history_module
+from grafix.core.parameters.collapsed_header import primitive_collapsed_header_key
 from grafix.core.parameters.effects import EffectStepTopology
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.history import ParamSnapshotSlots, ParamStoreHistory
@@ -292,14 +293,15 @@ def test_snapshot_restore_preserves_a_newly_discovered_adjusted_parameter() -> N
     )
     _set_value(store, original_key, 0.8)
     _set_value(store, discovered_key, 0.9)
-    store._collapsed_headers_ref().add("primitive:circle:site-2")
+    header = primitive_collapsed_header_key(("circle", "site-2"))
+    store._collapsed_headers_ref().add(header)
     store._touch()
 
     assert slots.restore("A") is True
     assert _value(store, original_key) == 0.25
     assert _value(store, discovered_key) == 0.9
     # Snapshot A 作成後に発見した header の GUI 状態も壊さない。
-    assert "primitive:circle:site-2" in store._collapsed_headers_ref()
+    assert header in store._collapsed_headers_ref()
 
 
 def test_snapshot_restore_same_state_is_noop_and_does_not_add_history() -> None:

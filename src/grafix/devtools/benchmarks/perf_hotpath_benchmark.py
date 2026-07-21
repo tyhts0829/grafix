@@ -144,14 +144,18 @@ def run_perf_backlog_scenario(
             "future_remaining": future_remaining,
             "prefix_remaining": prefix_remaining,
             "all_remaining": all_remaining,
-            "future_bounds": future_bounds,
-            "prefix_bounds": prefix_bounds,
-            "latency_counts": (
+            "future_bounds": (
+                None if future_bounds is None else list(future_bounds)
+            ),
+            "prefix_bounds": (
+                None if prefix_bounds is None else list(prefix_bounds)
+            ),
+            "latency_counts": [
                 future_latency_count,
                 prefix_latency_count,
                 all_latency_count,
-            ),
-            "latency_drop_counts": drop_counts,
+            ],
+            "latency_drop_counts": list(drop_counts),
             "semantic_digest": semantic_digest,
         },
         metrics=(

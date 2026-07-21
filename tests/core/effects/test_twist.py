@@ -108,11 +108,12 @@ def test_twist_empty_geometry_is_noop() -> None:
     assert realized.offsets.tolist() == [0]
 
 
-def test_twist_axis_dir_zero_raises() -> None:
-    g = G.twist_test_line_y3()
-    with pytest.raises(RealizeError) as exc:
-        _ = realize(E.twist(angle=90.0, axis_dir=(0.0, 0.0, 0.0))(g))
-    assert isinstance(exc.value.__cause__, ValueError)
+def test_twist_axis_dir_zero_raises_before_empty_or_zero_angle() -> None:
+    cases = [(G.twist_test_empty(), 90.0), (G.twist_test_line_y3(), 0.0)]
+    for geometry, angle in cases:
+        with pytest.raises(RealizeError) as exc_info:
+            realize(E.twist(angle=angle, axis_dir=(0.0, 0.0, 0.0))(geometry))
+        assert isinstance(exc_info.value.__cause__, ValueError)
 
 
 def test_twist_pivot_changes_rotation_center() -> None:

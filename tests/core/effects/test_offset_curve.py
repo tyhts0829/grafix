@@ -260,7 +260,6 @@ def test_offset_curve_rejects_nonplanar_or_rank_zero_input() -> None:
     [
         (0.0, 1),
         (-1.0, 1),
-        (float("nan"), 1),
         (1.0, 0),
     ],
 )
@@ -274,7 +273,7 @@ def test_offset_curve_rejects_invalid_growth_parameter(
         offset_curve(geometry, distance=distance, count=count)
 
 
-def test_offset_curve_empty_is_identity_and_nonfinite_geometry_is_rejected() -> None:
+def test_offset_curve_empty_is_identity() -> None:
     empty = _geometry()
 
     result = offset_curve(empty, distance=0.5)
@@ -282,9 +281,12 @@ def test_offset_curve_empty_is_identity_and_nonfinite_geometry_is_rejected() -> 
     assert result[0] is empty[0]
     assert result[1] is empty[1]
 
-    nonfinite = _geometry([(0.0, 0.0, 0.0), (np.nan, 1.0, 0.0)])
-    with pytest.raises(ValueError, match="非有限"):
-        offset_curve(nonfinite, distance=0.5)
+
+def test_offset_curve_rejects_nonfinite_maximum_distance_before_empty_input() -> None:
+    empty = _geometry()
+
+    with pytest.raises(ValueError, match=r"distance \* count"):
+        offset_curve(empty, distance=float(np.finfo(np.float64).max), count=2)
 
 
 def test_offset_curve_checks_resource_budget_before_packing() -> None:

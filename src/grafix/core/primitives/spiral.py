@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from typing import Any
 
 import numpy as np
 
@@ -52,30 +51,6 @@ spiral_meta = {
 }
 
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
-
-
-def _finite_float(value: Any, *, name: str) -> float:
-    """引数を有限のfloatへ正規化する。"""
-
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"spiral の {name} は有限な数値である必要がある") from exc
-    if not math.isfinite(normalized):
-        raise ValueError(f"spiral の {name} は有限な数値である必要がある")
-    return normalized
-
-
-def _sample_count(value: Any) -> int:
-    """頂点数を整数化し、open polylineの最小値を検証する。"""
-
-    try:
-        count = int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("spiral の samples は整数である必要がある") from exc
-    if count < 2:
-        raise ValueError("spiral の samples は 2 以上である必要がある")
-    return count
 
 
 def _assign_float32_component(
@@ -143,27 +118,23 @@ def spiral(
         float32の有限範囲を超える場合。
     """
 
-    inner = _finite_float(inner_radius, name="inner_radius")
-    outer = _finite_float(outer_radius, name="outer_radius")
-    turns_f = _finite_float(turns, name="turns")
-    phase_f = _finite_float(phase, name="phase")
+    inner = inner_radius
+    outer = outer_radius
+    turns_f = turns
+    phase_f = phase
     if inner < 0.0 or outer < 0.0:
         raise ValueError("spiral の inner_radius/outer_radius は 0 以上である必要がある")
 
-    try:
-        cx_raw, cy_raw, cz_raw = center
-    except Exception as exc:
-        raise ValueError("spiral の center は長さ 3 のシーケンスである必要がある") from exc
-    cx = _finite_float(cx_raw, name="center[0]")
-    cy = _finite_float(cy_raw, name="center[1]")
-    cz = _finite_float(cz_raw, name="center[2]")
+    cx, cy, cz = center
 
     if abs(cz) > _FLOAT32_MAX:
         raise ValueError(
             "spiral の出力 Z 座標は有限な float32 の範囲である必要がある"
         )
 
-    samples_i = _sample_count(samples)
+    samples_i = samples
+    if samples_i < 2:
+        raise ValueError("spiral の samples は 2 以上である必要がある")
     # 位相は360度周期なので、巨大な有限値をそのままradiansへ拡大しない。
     # 先に剰余へ落とすことで、小さなturnsがfloatの桁落ちで消えるのを防ぐ。
     phase_rad = math.radians(math.remainder(phase_f, 360.0))

@@ -53,7 +53,7 @@ def circle(
         円の中心。
     """
 
-    radius_f = float(radius)
+    radius_f = radius
     if radius_f < 0.0:
         raise ValueError("circle の radius は0以上である必要がある")
     count = segment_count(segments, op="circle", minimum=3)

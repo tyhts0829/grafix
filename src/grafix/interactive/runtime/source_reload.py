@@ -434,10 +434,13 @@ class SourceReloadController:
         )
         if self._closed:
             raise RuntimeError("SourceReloadControllerはclose済みです")
-        # 前回の呼び出し側が明示確定を忘れても、次のpollまで正常に進んだ
-        # generationは確定済みとみなし、古いmodule参照を保持し続けない。
-        if self._rollback_state is not None:
-            self.accept_generation(self._generation)
+        pending = self._rollback_state
+        if pending is not None:
+            raise RuntimeError(
+                "前回の reload generation が未確定です。"
+                "accept_generation() または rollback_generation() を先に呼んでください: "
+                f"generation={pending.committed_generation}"
+            )
         fingerprint = self._fingerprint()
         if not force and fingerprint == self._last_fingerprint:
             return SourceReloadResult(
@@ -529,12 +532,10 @@ class SourceReloadController:
         expected = exact_integer(generation, name="generation", minimum=0)
         state = self._rollback_state
         if state is None:
-            if expected != self._generation:
-                raise ValueError(
-                    f"reload generationが一致しません: current={self._generation}, "
-                    f"got={expected}"
-                )
-            return
+            raise ValueError(
+                "accept可能なreload generationではありません: "
+                f"current={self._generation}, got={expected}"
+            )
         if expected != state.committed_generation or expected != self._generation:
             raise ValueError(
                 f"reload generationが一致しません: current={self._generation}, "

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from grafix.core.geometry import Geometry
+from grafix import G
 from grafix.core.primitives.torus import torus
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 from grafix.core.primitives import torus as _torus_module  # noqa: F401
 
 
@@ -22,14 +23,11 @@ def test_torus_offsets_and_closed_polylines() -> None:
     """子午線+緯線の本数と offsets、閉ポリラインを満たす。"""
     major_segments = 8
     minor_segments = 6
-    g = Geometry.create(
-        "torus",
-        params={
-            "major_radius": 2.0,
-            "minor_radius": 0.5,
-            "major_segments": major_segments,
-            "minor_segments": minor_segments,
-        },
+    g = G.torus(
+        major_radius=2.0,
+        minor_radius=0.5,
+        major_segments=major_segments,
+        minor_segments=minor_segments,
     )
 
     realized = realize(g)
@@ -63,16 +61,13 @@ def test_torus_center_and_scale_affect_coords() -> None:
         "minor_segments": 5,
     }
 
-    base = realize(Geometry.create("torus", params=params))
+    base = realize(G.torus(**params))
 
     scaled = realize(
-        Geometry.create(
-            "torus",
-            params={
-                **params,
-                "center": (10.0, 20.0, 30.0),
-                "scale": 2.0,
-            },
+        G.torus(
+            **params,
+            center=(10.0, 20.0, 30.0),
+            scale=2.0,
         )
     )
 
@@ -81,26 +76,36 @@ def test_torus_center_and_scale_affect_coords() -> None:
     np.testing.assert_array_equal(scaled.coords, expected)
 
 
-def test_torus_clamps_segments_lt_3() -> None:
-    """major_segments/minor_segments < 3 は 3 にクランプされる。"""
-    g = Geometry.create(
-        "torus",
-        params={
-            "major_segments": 2,
-            "minor_segments": 1,
-        },
+@pytest.mark.parametrize(
+    ("major_segments", "minor_segments"),
+    [(2, 3), (3, 2)],
+)
+def test_torus_rejects_segments_lt_3(
+    major_segments: int,
+    minor_segments: int,
+) -> None:
+    """公開 G 経路は 3 未満の分割数を拒否する。"""
+
+    with pytest.raises(RealizeError) as exc_info:
+        realize(
+            G.torus(
+                major_segments=major_segments,
+                minor_segments=minor_segments,
+            )
+        )
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "major_segments/minor_segments は 3 以上" in str(
+        exc_info.value.__cause__
     )
-    realized = realize(g)
 
-    major_segments = 3
-    minor_segments = 3
-    meridian_len = minor_segments + 1
-    parallel_len = major_segments + 1
-    expected_coords_n = major_segments * meridian_len + minor_segments * parallel_len
 
-    assert realized.coords.shape == (expected_coords_n, 3)
-    assert realized.offsets.tolist() == [0, 4, 8, 12, 16, 20, 24]
-    _assert_polylines_closed(realized.coords, realized.offsets)
+@pytest.mark.parametrize("name", ["major_radius", "minor_radius"])
+def test_torus_rejects_negative_radius(name: str) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(G.torus(**{name: -0.1}))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "major_radius/minor_radius" in str(exc_info.value.__cause__)
 
 
 def test_torus_raw_arrays_are_fresh_writable_and_non_sharing() -> None:

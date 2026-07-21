@@ -9,14 +9,19 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Iterable, cast
+from typing import Any, Callable, Iterable
 
 import numpy as np
 
 from grafix.core.font_resolver import resolve_font_path
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.primitive_registry import primitive
+from grafix.core.primitives._text_layout import (
+    aligned_line_origin_em,
+    bounding_box_polylines_em,
+    measure_line_width_em,
+    wrap_line_by_width_em,
+)
 from grafix.core.realized_geometry import GeomTuple, empty_geom_tuple
 
 DEFAULT_FONT = "NotoSansJP-Regular.ttf"
@@ -321,68 +326,6 @@ def _get_font_ascent_em(tt_font: Any, *, units_per_em: float) -> float:
     return ascent_units / upm
 
 
-def _wrap_line_by_width_em(
-    line_str: str,
-    *,
-    max_width_em: float,
-    char_advance_em: Callable[[str], float],
-    letter_spacing_em: float,
-) -> list[str]:
-    """1 行分の文字列を指定幅（em）で折り返して返す。
-
-    空白がある場合は直近の空白で折り、無い場合は文字単位で折る。
-    折り返し直後の行頭空白は落とす（`" "` の連続をスキップ）。
-    """
-    if max_width_em <= 0.0:
-        return [line_str]
-    if not line_str:
-        return [""]
-
-    s_em = float(letter_spacing_em)
-    n = int(len(line_str))
-
-    out: list[str] = []
-    i = 0
-    segment_start = 0
-    segment_width_em = 0.0
-    segment_len = 0
-    last_space: int | None = None
-
-    while i < n:
-        ch = line_str[i]
-        adv = char_advance_em(ch)
-        inc = adv + (s_em if segment_len > 0 else 0.0)
-
-        if segment_len > 0 and (segment_width_em + inc) > float(max_width_em):
-            if last_space is not None and last_space > segment_start:
-                out.append(line_str[segment_start:last_space])
-                segment_start = last_space + 1
-                while segment_start < n and line_str[segment_start] == " ":
-                    segment_start += 1
-                i = segment_start
-            else:
-                out.append(line_str[segment_start:i])
-                segment_start = i
-                while segment_start < n and line_str[segment_start] == " ":
-                    segment_start += 1
-                i = segment_start
-
-            segment_width_em = 0.0
-            segment_len = 0
-            last_space = None
-            continue
-
-        if ch == " ":
-            last_space = i
-        segment_width_em += inc
-        segment_len += 1
-        i += 1
-
-    if segment_start < n:
-        out.append(line_str[segment_start:])
-    return out
-
-
 def _glyph_commands_to_polylines_font_units(
     glyph_commands: Iterable,
 ) -> tuple[np.ndarray, ...]:
@@ -487,21 +430,9 @@ def _pack_text_geometry(
         line_index += 1
         offsets[line_index] = cursor
 
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "text の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
-    try:
-        s_f = float(scale)
-    except Exception as exc:
-        raise ValueError("text の scale は float である必要がある") from exc
-
-    cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
-    if (cx_f, cy_f, cz_f) != (0.0, 0.0, 0.0) or s_f != 1.0:
-        center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
-        coords = coords * np.float32(s_f) + center_vec
+    if center != (0.0, 0.0, 0.0) or scale != 1.0:
+        center_vec = np.asarray(center, dtype=np.float32)
+        coords = coords * np.float32(scale) + center_vec
 
     return coords, offsets
 
@@ -646,6 +577,8 @@ def text(
 
     Raises
     ------
+    ValueError
+        `font_index` が負、または `quality` が 0 以上 1 以下の範囲外の場合。
     FileNotFoundError
         フォントを解決できない場合。
 
@@ -655,54 +588,22 @@ def text(
     `box_width/box_height` は「出力座標系（scale 適用後）」で指定し、内部で em 座標へ換算して折り返し/枠を生成する。
     `y=0` をボックス上辺として扱えるように、1 行目のベースラインは常にフォントの ascent 分だけ下げる。
     """
-    text_s = cast(
-        str,
-        validate_parameter_value(text, kind="str", choices=None),
-    )
-    font_s = cast(
-        str,
-        validate_parameter_value(font, kind="font", choices=None),
-    )
-    fi = cast(
-        int,
-        validate_parameter_value(font_index, kind="int", choices=None),
-    )
-    text_align_s = cast(
-        str,
-        validate_parameter_value(
-            text_align,
-            kind="choice",
-            choices=_TEXT_ALIGN_CHOICES,
-        ),
-    )
-    use_bb = cast(
-        bool,
-        validate_parameter_value(
-            use_bounding_box,
-            kind="bool",
-            choices=None,
-        ),
-    )
-    show_bounding_box_b = cast(
-        bool,
-        validate_parameter_value(
-            show_bounding_box,
-            kind="bool",
-            choices=None,
-        ),
-    )
+    text_s = text
+    font_s = font
+    fi = font_index
+    text_align_s = text_align
+    use_bb = use_bounding_box
+    show_bounding_box_b = show_bounding_box
     if fi < 0:
-        fi = 0
+        raise ValueError("text の font_index は 0 以上である必要がある")
+    if not 0.0 <= quality <= 1.0:
+        raise ValueError("text の quality は 0 以上 1 以下である必要がある")
 
     font_path = resolve_font_path(font_s)
     tt_font = TEXT_RENDERER.get_font(font_path, fi)
     units_per_em = float(tt_font["head"].unitsPerEm)  # type: ignore[index]
     metrics = _CallLocalFontMetrics(tt_font)
-    q = float(quality)
-    if q < 0.0:
-        q = 0.0
-    elif q > 1.0:
-        q = 1.0
+    q = quality
 
     tol_min_em = 0.001
     tol_max_em = 0.1
@@ -710,20 +611,20 @@ def text(
     seg_len_units = max(1.0, flat_seg_len_em * units_per_em)
 
     lines = text_s.split("\n")
-    s_f = float(scale)
+    s_f = scale
     s_abs = abs(s_f)
-    bw = float(box_width)
-    bh = float(box_height)
+    bw = box_width
+    bh = box_height
     if use_bb and bw > 0.0 and s_abs > 0.0:
         bw_em = bw / s_abs
         wrapped: list[str] = []
         for line_str in lines:
             wrapped.extend(
-                _wrap_line_by_width_em(
+                wrap_line_by_width_em(
                     line_str,
                     max_width_em=bw_em,
                     char_advance_em=metrics.char_advance_em,
-                    letter_spacing_em=float(letter_spacing_em),
+                    letter_spacing_em=letter_spacing_em,
                 )
             )
         lines = wrapped
@@ -733,18 +634,12 @@ def text(
 
     y_em = _get_font_ascent_em(tt_font, units_per_em=units_per_em)
     for li, line_str in enumerate(lines):
-        width_em = 0.0
-        for ch in line_str:
-            width_em += metrics.char_advance_em(ch) + float(letter_spacing_em)
-        if line_str:
-            width_em -= float(letter_spacing_em)
-
-        if text_align_s == "center":
-            x_em = -width_em / 2.0
-        elif text_align_s == "right":
-            x_em = -width_em
-        else:
-            x_em = 0.0
+        width_em = measure_line_width_em(
+            line_str,
+            char_advance_em=metrics.char_advance_em,
+            letter_spacing_em=letter_spacing_em,
+        )
+        x_em = aligned_line_origin_em(width_em, text_align_s)
 
         cur_x_em = x_em
         for ch in line_str:
@@ -762,10 +657,10 @@ def text(
                     glyphs_by_char[ch] = glyph_polylines
                 if glyph_polylines:
                     placements.append((glyph_polylines, cur_x_em, y_em))
-            cur_x_em += metrics.char_advance_em(ch) + float(letter_spacing_em)
+            cur_x_em += metrics.char_advance_em(ch) + letter_spacing_em
 
         if li < len(lines) - 1:
-            y_em += float(line_height)
+            y_em += line_height
 
     extra_polylines: list[np.ndarray] = []
     if (
@@ -778,26 +673,12 @@ def text(
         bw_em = bw / s_abs
         bh_em = bh / s_abs
 
-        if text_align_s == "center":
-            x0 = -bw_em / 2.0
-            x1 = bw_em / 2.0
-        elif text_align_s == "right":
-            x0 = -bw_em
-            x1 = 0.0
-        else:
-            x0 = 0.0
-            x1 = bw_em
-
-        y0 = 0.0
-        y1 = bh_em
-        z0 = 0.0
         extra_polylines.extend(
-            [
-                np.asarray([[x0, y0, z0], [x1, y0, z0]], dtype=np.float32),
-                np.asarray([[x1, y0, z0], [x1, y1, z0]], dtype=np.float32),
-                np.asarray([[x1, y1, z0], [x0, y1, z0]], dtype=np.float32),
-                np.asarray([[x0, y1, z0], [x0, y0, z0]], dtype=np.float32),
-            ]
+            bounding_box_polylines_em(
+                width_em=bw_em,
+                height_em=bh_em,
+                align=text_align_s,
+            )
         )
 
     return _pack_text_geometry(

@@ -44,8 +44,8 @@ grid_meta = {
 @primitive(meta=grid_meta)
 def grid(
     *,
-    nx: int | float = 20,
-    ny: int | float = 20,
+    nx: int = 20,
+    ny: int = 20,
     center: tuple[float, float, float] = (0.0, 0.0, 0.0),
     scale: float = 1.0,
 ) -> GeomTuple:
@@ -53,9 +53,9 @@ def grid(
 
     Parameters
     ----------
-    nx : int | float, optional
+    nx : int, optional
         縦線の本数。
-    ny : int | float, optional
+    ny : int, optional
         横線の本数。
     center : tuple[float, float, float], optional
         平行移動ベクトル (cx, cy, cz)。
@@ -67,8 +67,8 @@ def grid(
     tuple[np.ndarray, np.ndarray]
         各線が 2 頂点からなるポリライン列としてのグリッド（coords, offsets）。
     """
-    nx_i = int(nx)
-    ny_i = int(ny)
+    nx_i = nx
+    ny_i = ny
     if nx_i < 0 or ny_i < 0:
         raise ValueError("grid の nx/ny は 0 以上である必要がある")
 
@@ -119,20 +119,11 @@ def grid(
     coords = lines.reshape((-1, 3))
     offsets = np.arange(0, coords.shape[0] + 1, 2, dtype=np.int32)
 
-    try:
-        cx, cy, cz = center
-    except Exception as exc:
-        raise ValueError(
-            "grid の center は長さ 3 のシーケンスである必要がある"
-        ) from exc
-    try:
-        s_f = float(scale)
-    except Exception as exc:
-        raise ValueError("grid の scale は float である必要がある") from exc
+    cx, cy, cz = center
+    s_f = scale
 
-    cx_f, cy_f, cz_f = float(cx), float(cy), float(cz)
-    if (cx_f, cy_f, cz_f) != (0.0, 0.0, 0.0) or s_f != 1.0:
-        center_vec = np.array([cx_f, cy_f, cz_f], dtype=np.float32)
+    if (cx, cy, cz) != (0.0, 0.0, 0.0) or s_f != 1.0:
+        center_vec = np.array([cx, cy, cz], dtype=np.float32)
         coords = coords.copy()
         coords *= np.float32(s_f)
         coords += center_vec

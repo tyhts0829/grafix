@@ -13,7 +13,7 @@ from grafix.core.operation_diagnostics import (
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
 
-# 旧仕様（from_previous_project/subdivide.py）を踏襲した停止条件/上限。
+# 細分化の停止条件と出力上限。
 MAX_SUBDIVISIONS = 10
 MIN_SEG_LEN = 0.01
 MIN_SEG_LEN_SQ = float(MIN_SEG_LEN * MIN_SEG_LEN)
@@ -45,34 +45,34 @@ def subdivide(
     g : tuple[np.ndarray, np.ndarray]
         入力実体ジオメトリ（coords, offsets）。
     subdivisions : int, default 0
-        細分回数。0 以下は no-op。上限は 10。
+        細分回数。0 は no-op。10 を超える値はクランプする。
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         細分化後の実体ジオメトリ（coords, offsets）。
 
+    Raises
+    ------
+    ValueError
+        `subdivisions` が負の場合。
+
     Notes
     -----
-    旧仕様踏襲:
     - 初期状態で最短セグメント長が `MIN_SEG_LEN` 未満なら、そのポリラインは細分化しない。
     - 細分化の途中で最短セグメント長が `MIN_SEG_LEN` 未満になった場合、そこで反復を停止する。
     - 出力合計頂点数が `MAX_TOTAL_VERTICES` を超えないようにガードする。
     """
+    if subdivisions < 0:
+        raise ValueError("subdivide の subdivisions は 0 以上である必要がある")
+
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    requested_divisions = int(subdivisions)
+    requested_divisions = subdivisions
     divisions = requested_divisions
     degradation_reasons: list[str] = []
-    if divisions < 0:
-        _emit_subdivide_diagnostic(
-            requested=requested_divisions,
-            effective=0,
-            reasons=("negative subdivisions was clamped to zero",),
-        )
-        return coords, offsets
     if divisions == 0:
         return coords, offsets
     if divisions > MAX_SUBDIVISIONS:
@@ -80,9 +80,6 @@ def subdivide(
         degradation_reasons.append(
             f"subdivisions was clamped to MAX_SUBDIVISIONS={MAX_SUBDIVISIONS}"
         )
-    if divisions <= 0:
-        return coords, offsets
-
     n_lines = int(offsets.size) - 1
     if n_lines <= 0:
         return coords, offsets
@@ -98,7 +95,7 @@ def subdivide(
         )
         return coords, offsets
 
-    use_batch = _can_use_subdivide_batch(coords, offsets)
+    use_batch = _subdivide_batch_values_are_safe(coords)
     if use_batch:
         # canonical finite geometry は全 polyline を一括解析する。
         selected_divisions, counts, total_vertices = _analyze_subdivision_plan(
@@ -108,8 +105,7 @@ def subdivide(
             MAX_TOTAL_VERTICES,
         )
     if not use_batch:
-        # 非 canonical dtype/layout と非有限値は、入力 dtype で中点と
-        # fastmath の停止判定を行う従来経路へ戻して演算結果を維持する。
+        # 極端な有限座標や NumPy error policy では strict NumPy 経路を使う。
         selected_divisions = divisions
         count_list: list[int] = []
         while selected_divisions > 0:
@@ -151,7 +147,7 @@ def subdivide(
         )
         return coords, offsets
 
-    coords_out = np.empty((total_vertices, coords.shape[1]), dtype=np.float32)
+    coords_out = np.empty((total_vertices, 3), dtype=np.float32)
     offsets_out = np.empty((n_lines + 1,), dtype=np.int32)
     if use_batch:
         write_at, applied_levels_mask = _subdivide_batch(
@@ -215,45 +211,24 @@ def _emit_subdivide_diagnostic(
     unique_reasons = tuple(dict.fromkeys(reason for reason in reasons if reason))
     emit_operation_diagnostic(
         op="subdivide",
-        original_value=int(requested),
+        original_value=requested,
         effective_value=effective,
         reason="; ".join(unique_reasons),
         severity="warning",
     )
 
 
-def _can_use_subdivide_batch(
-    coords: np.ndarray,
-    offsets: np.ndarray,
-) -> bool:
-    """一括 kernel で旧演算を保てる canonical finite geometry かを返す。"""
+def _subdivide_batch_values_are_safe(coords: np.ndarray) -> bool:
+    """一括 kernel で strict NumPy 経路と同じ演算を保てる値域か返す。"""
 
-    if not (
-        type(coords) is np.ndarray
-        and coords.dtype == np.float32
-        and coords.ndim == 2
-        and coords.shape[1] == 3
-        and coords.flags.c_contiguous
-        and type(offsets) is np.ndarray
-        and offsets.dtype == np.int32
-        and offsets.ndim == 1
-        and offsets.flags.c_contiguous
-        and offsets.size >= 1
-        and offsets[0] == 0
-        and offsets[-1] == coords.shape[0]
-        and np.all(offsets[1:] >= offsets[:-1])
-        and np.geterr()["under"] == "ignore"
-    ):
+    if np.geterr()["under"] != "ignore":
         return False
     coords_abs_max = np.max(np.abs(coords))
-    return bool(
-        np.isfinite(coords_abs_max)
-        and coords_abs_max <= _BATCH_SAFE_COORD_ABS_MAX
-    )
+    return bool(coords_abs_max <= _BATCH_SAFE_COORD_ABS_MAX)
 
 
 def _subdivided_vertex_count(vertices: np.ndarray, subdivisions: int) -> int:
-    """非 canonical fallback の出力頂点数を配列確保なしで返す。"""
+    """strict NumPy 経路の出力頂点数を配列確保なしで返す。"""
 
     n = int(vertices.shape[0])
     if n < 2 or subdivisions <= 0:
@@ -296,7 +271,7 @@ def _analyze_subdivision_plan(
     n_lines = offsets.size - 1
     counts = np.empty((n_lines,), dtype=np.int64)
 
-    # ここは従来の NumPy count 経路と同じ strict な浮動小数点演算にする。
+    # NumPy count 経路と同じ strict な浮動小数点演算にする。
     for line_index in range(n_lines):
         start = int(offsets[line_index])
         end = int(offsets[line_index + 1])
@@ -367,7 +342,7 @@ def _subdivide_core(
     subdivisions: int,
     max_vertices: int,
 ) -> tuple[np.ndarray, int]:
-    """非 canonical/non-finite 入力を従来の演算順で細分化する。"""
+    """極端な有限値を strict NumPy の演算順で細分化する。"""
 
     n0 = vertices.shape[0]
     if n0 < 2 or subdivisions <= 0:

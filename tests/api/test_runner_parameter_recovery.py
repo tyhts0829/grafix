@@ -23,6 +23,10 @@ from grafix.core.parameters.persistence import (
 )
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.runtime_config import RuntimeConfigFallback
+from grafix.interactive.midi.midi_controller import (
+    CcSnapshotLoadResult,
+    CcSnapshotWriteBlockedError,
+)
 from grafix.interactive.runtime.monitor import RuntimeMonitor
 from grafix.interactive.runtime.diagnostics import DiagnosticAction, DiagnosticEvent
 
@@ -385,6 +389,61 @@ def test_midi_save_failure_still_closes_the_owned_input_port() -> None:
     assert calls == ["save", "close"]
 
 
+def test_midi_base_exception_still_closes_the_owned_input_port() -> None:
+    calls: list[str] = []
+
+    class CleanupFault(BaseException):
+        pass
+
+    save_error = CleanupFault("snapshot write aborted")
+
+    class Midi:
+        def save(self) -> None:
+            calls.append("save")
+            raise save_error
+
+        def close(self) -> None:
+            calls.append("close")
+
+    with pytest.raises(CleanupFault) as exc_info:
+        runner_module._close_midi_controller(cast(Any, Midi()))
+
+    assert exc_info.value is save_error
+    assert calls == ["save", "close"]
+
+
+def test_unowned_rejected_midi_snapshot_uses_shutdown_skip_policy(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[str] = []
+    diagnostic = DiagnosticEvent(
+        category="midi",
+        severity="warning",
+        summary="old MIDI snapshot",
+    )
+
+    class Midi:
+        snapshot_load_result = CcSnapshotLoadResult(
+            values=(),
+            status="old",
+            source=tmp_path / "snapshot.json",
+            diagnostic=diagnostic,
+        )
+
+        def save(self) -> None:
+            calls.append("save")
+            raise CcSnapshotWriteBlockedError("blocked")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    runner_module._close_midi_controller(cast(Any, Midi()))
+
+    assert calls == ["save", "close"]
+    assert any("auto-save skipped" in record.getMessage() for record in caplog.records)
+
+
 def test_acquisition_failure_closes_midi_created_before_draw_window(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -447,6 +506,13 @@ def test_failure_after_draw_window_construction_runs_registered_closer(
     calls: list[str] = []
 
     class Midi:
+        def __init__(self) -> None:
+            self.snapshot_load_result = CcSnapshotLoadResult(
+                values=(),
+                status="missing",
+                source=tmp_path / "midi.json",
+            )
+
         def save(self) -> None:
             calls.append("save midi")
 
@@ -522,6 +588,13 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
     autoload_configs: list[object] = []
 
     class Midi:
+        def __init__(self) -> None:
+            self.snapshot_load_result = CcSnapshotLoadResult(
+                values=(),
+                status="missing",
+                source=tmp_path / "midi.json",
+            )
+
         def save(self) -> None:
             calls.append("save midi")
 

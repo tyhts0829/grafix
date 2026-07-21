@@ -41,13 +41,13 @@ def test_effect_defaults_recorded_when_no_kwargs():
 def test_meta_default_none_is_rejected():
     meta = {"x": ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)}
 
-    with pytest.raises(ValueError, match="None"):
+    with pytest.raises(TypeError, match="float parameter value"):
 
         @primitive(meta=meta)
         def _tmp_none_default_primitive(*, x: float | None = None) -> GeomTuple:
             return _empty_geometry()
 
-    with pytest.raises(ValueError, match="None"):
+    with pytest.raises(TypeError, match="float parameter value"):
 
         @effect(meta=meta)
         def _tmp_none_default_effect(g: GeomTuple, *, x: float | None = None) -> GeomTuple:

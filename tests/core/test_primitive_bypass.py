@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from grafix.api import G
-from grafix.core.geometry import Geometry
 from grafix.core.primitive_registry import primitive, primitive_registry
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple
@@ -21,7 +20,7 @@ def test_primitive_activate_false_returns_empty_geometry() -> None:
     assert bypassed.offsets.tolist() == [0]
 
 
-def test_primitive_activate_false_works_without_meta() -> None:
+def test_primitive_without_meta_has_no_hidden_activate_argument() -> None:
     original_specs = dict(primitive_registry.items())
     try:
         @primitive(meta=None)
@@ -30,23 +29,10 @@ def test_primitive_activate_false_works_without_meta() -> None:
             offsets = np.asarray([0, 1], dtype=np.int32)
             return coords, offsets
 
-        base = realize(Geometry.create("dummy_primitive", params={"x": 2.0}))
-        bypassed = realize(
-            Geometry.create("dummy_primitive", params={"x": 2.0, "activate": False})
-        )
+        base = realize(G.dummy_primitive(x=2.0))
 
         assert base.coords.shape == (1, 3)
-        assert bypassed.coords.shape == (0, 3)
-        assert bypassed.offsets.tolist() == [0]
+        with pytest.raises(TypeError, match="不明な引数"):
+            G.dummy_primitive(x=2.0, activate=False)
     finally:
         primitive_registry.replace_all(original_specs)
-
-
-@pytest.mark.parametrize("invalid", ["false", "true", 0, 1, None])
-def test_primitive_registry_wrapper_requires_exact_bool_activate(
-    invalid: object,
-) -> None:
-    spec = primitive_registry["polygon"]
-
-    with pytest.raises(TypeError, match="exact bool"):
-        spec.evaluator((("activate", invalid),))

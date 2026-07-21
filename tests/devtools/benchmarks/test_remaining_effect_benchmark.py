@@ -63,12 +63,20 @@ _EXPECTED_ALIAS_KEYS = {
 }
 
 
+def test_remaining_effect_case_arguments_are_owned_and_read_only() -> None:
+    case = remaining_effect_benchmark_cases()[0]
+    with pytest.raises(TypeError):
+        case.arguments["activate"] = False  # type: ignore[index]
+
+    parameters = case.parameters()
+    parameters["arguments"]["activate"] = False
+    assert case.parameters()["arguments"].get("activate") is not False
+
+
 def test_remaining_effect_suite_covers_exact_builtin_target_set() -> None:
     builtins.ensure_builtin_effects_registered()
     expected = {
-        name
-        for name in effect_registry
-        if builtins.ensure_builtin_effect_registered(name)
+        name for name in effect_registry if builtins.ensure_builtin_effect_registered(name)
     } - _EXCLUDED
     definitions = select_case_definitions(suites=("effects-remaining",))
 
@@ -80,9 +88,7 @@ def test_remaining_effect_suite_covers_exact_builtin_target_set() -> None:
         assert definition.category == "effect"
         assert definition.suite == "effects-remaining"
         assert "effects-remaining" in definition.selectable_suites
-        assert {"actual-work", "direct-evaluator", "exact-checksum"} <= set(
-            definition.tags
-        )
+        assert {"actual-work", "direct-evaluator", "exact-checksum"} <= set(definition.tags)
         assert definition.postprocess is not None
         assert definition.measurement_context is not None
         assert definition.parameters["expected_checksum"]
@@ -90,14 +96,8 @@ def test_remaining_effect_suite_covers_exact_builtin_target_set() -> None:
         assert definition.parameters["expected_warnings"] is not None
         assert definition.parameters["expected_layout"] is not None
         assert definition.parameters["expected_alias"] is not None
-        assert (
-            set(definition.parameters["expected_layout"])
-            == _EXPECTED_LAYOUT_KEYS
-        )
-        assert (
-            set(definition.parameters["expected_alias"])
-            == _EXPECTED_ALIAS_KEYS
-        )
+        assert set(definition.parameters["expected_layout"]) == _EXPECTED_LAYOUT_KEYS
+        assert set(definition.parameters["expected_alias"]) == _EXPECTED_ALIAS_KEYS
         assert (
             definition.parameters["expected_alias"]["offsets_is_input"]
             is definition.parameters["expected_alias"]["offsets_alias_input"]
@@ -110,9 +110,7 @@ def test_remaining_effect_suite_covers_exact_builtin_target_set() -> None:
 
     cold_effects = {
         definition.parameters["effect"]
-        for definition in select_case_definitions(
-            suites=("effects-remaining-cold",)
-        )
+        for definition in select_case_definitions(suites=("effects-remaining-cold",))
     }
     assert cold_effects == {
         "boolean",
@@ -124,9 +122,7 @@ def test_remaining_effect_suite_covers_exact_builtin_target_set() -> None:
     }
     jit_effects = {
         definition.parameters["effect"]
-        for definition in select_case_definitions(
-            suites=("effects-remaining-jit",)
-        )
+        for definition in select_case_definitions(suites=("effects-remaining-jit",))
     }
     assert {
         "collapse",
@@ -170,9 +166,7 @@ def test_foundational_effect_fixtures_are_exact_and_deterministic() -> None:
     assert [geometry_checksum(value) for value in first_regions] == [
         geometry_checksum(value) for value in second_regions
     ]
-    assert geometry_checksum(first_regions[0]) != geometry_checksum(
-        first_regions[1]
-    )
+    assert geometry_checksum(first_regions[0]) != geometry_checksum(first_regions[1])
 
     first_duplicates = remaining_benchmark._build_inputs(
         fixture="dedup_duplicates",
@@ -184,9 +178,7 @@ def test_foundational_effect_fixtures_are_exact_and_deterministic() -> None:
     )[0]
     assert first_duplicates.coords.shape == (96_000, 3)
     assert first_duplicates.offsets.shape == (48_001,)
-    assert geometry_checksum(first_duplicates) == geometry_checksum(
-        second_duplicates
-    )
+    assert geometry_checksum(first_duplicates) == geometry_checksum(second_duplicates)
     first_group = first_duplicates.coords[:8]
     assert np.all(first_group[[0, 3, 4, 7]] == first_group[0])
     assert np.all(first_group[[1, 2, 5, 6]] == first_group[1])
@@ -273,7 +265,7 @@ def test_foundational_effect_direct_cases_pass_frozen_contracts(
         if value.case_id == case_id
     )
     # frozen checksum は benchmark CLI の既定 seed=0 に対する契約。
-    state = definition.setup(dict(definition.parameters), 0)
+    state = definition.setup(definition.materialize_parameters(), 0)
     assert isinstance(state, RemainingEffectBenchmarkState)
     assert definition.measurement_context is not None
     assert definition.postprocess is not None
@@ -309,7 +301,7 @@ def test_remaining_effect_direct_cases_pass_frozen_hard_contracts(
         if value.case_id == case_id
     )
     # frozen checksum は benchmark CLI の既定 seed=0 に対する契約。
-    state = definition.setup(dict(definition.parameters), 0)
+    state = definition.setup(definition.materialize_parameters(), 0)
     assert isinstance(state, RemainingEffectBenchmarkState)
     assert definition.measurement_context is not None
     assert definition.postprocess is not None
@@ -335,18 +327,11 @@ def test_remaining_effect_direct_cases_pass_frozen_hard_contracts(
     assert output.contracts
     assert all(contract.severity == "hard" for contract in output.contracts)
     assert all(contract.passed for contract in output.contracts)
+    assert any(contract.contract_id.endswith(".baseline_checksum") for contract in output.contracts)
     assert any(
-        contract.contract_id.endswith(".baseline_checksum")
-        for contract in output.contracts
+        contract.contract_id.endswith(".baseline_diagnostics") for contract in output.contracts
     )
-    assert any(
-        contract.contract_id.endswith(".baseline_diagnostics")
-        for contract in output.contracts
-    )
-    assert any(
-        contract.contract_id.endswith(".baseline_alias")
-        for contract in output.contracts
-    )
+    assert any(contract.contract_id.endswith(".baseline_alias") for contract in output.contracts)
 
 
 def test_remaining_effect_case_runs_warm_in_isolated_process() -> None:
@@ -378,34 +363,34 @@ def test_remaining_effect_case_runs_warm_in_isolated_process() -> None:
     assert metrics["actual_work"] is True
 
 
-def test_input_mutation_contract_detects_writeability_checksum_miss() -> None:
+def test_benchmark_inputs_cannot_be_made_writeable() -> None:
     definition = next(
         value
         for value in select_case_definitions(suites=("effects-remaining",))
         if value.case_id == "effect.remaining.affine.polyline_long"
     )
-    state = definition.setup(dict(definition.parameters), 20260719)
+    state = definition.setup(definition.materialize_parameters(), 20260719)
     assert isinstance(state, RemainingEffectBenchmarkState)
     assert definition.measurement_context is not None
     assert definition.postprocess is not None
 
+    snapshot = remaining_benchmark._geometry_mutation_snapshot(state.inputs[0])
+    with pytest.raises(ValueError):
+        state.inputs[0].coords.setflags(write=True)
+    with pytest.raises(ValueError):
+        state.inputs[0].offsets.setflags(write=True)
+    assert remaining_benchmark._geometry_mutation_snapshot(state.inputs[0]) == snapshot
+
     with definition.measurement_context(state):
         raw_output = definition.workload(state)
-        checksum_before = geometry_checksum(state.inputs[0])
-        state.inputs[0].coords.setflags(write=True)
-        try:
-            # 旧 checksum では flags mutation が同一と判定されていた。
-            assert geometry_checksum(state.inputs[0]) == checksum_before
-            output = definition.postprocess(state, raw_output)
-        finally:
-            state.inputs[0].coords.setflags(write=False)
+        output = definition.postprocess(state, raw_output)
 
     input_contract = next(
         contract
         for contract in output.contracts
         if contract.contract_id.endswith(".input_unchanged")
     )
-    assert input_contract.passed is False
+    assert input_contract.passed is True
 
 
 def test_input_snapshot_covers_bytes_shape_strides_and_all_flags() -> None:
@@ -429,10 +414,7 @@ def test_input_snapshot_covers_bytes_shape_strides_and_all_flags() -> None:
     raw = bytearray(1 + 4 * np.dtype(np.int32).itemsize)
     unaligned = np.ndarray((4,), dtype=np.int32, buffer=raw, offset=1)
     assert unaligned.flags.aligned is False
-    assert (
-        remaining_benchmark._array_mutation_snapshot(unaligned).aligned
-        is False
-    )
+    assert remaining_benchmark._array_mutation_snapshot(unaligned).aligned is False
 
 
 def test_alias_contract_distinguishes_same_object_from_view() -> None:
@@ -441,7 +423,7 @@ def test_alias_contract_distinguishes_same_object_from_view() -> None:
         for value in select_case_definitions(suites=("effects-remaining",))
         if value.case_id == "effect.remaining.affine.polyline_long"
     )
-    state = definition.setup(dict(definition.parameters), 20260719)
+    state = definition.setup(definition.materialize_parameters(), 20260719)
     assert isinstance(state, RemainingEffectBenchmarkState)
     assert definition.measurement_context is not None
     assert definition.postprocess is not None

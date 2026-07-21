@@ -22,6 +22,7 @@ from grafix import (
     render_variation_batch,
 )
 from grafix.core.geometry import Geometry
+from grafix.core.parameters.collapsed_header import primitive_collapsed_header_key
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.merge_ops import merge_frame_params
@@ -107,7 +108,9 @@ class _Session:
             )
             self.param_store._favorite_keys_ref().add(_DISCOVERED)
             self.param_store._locked_keys_ref().add(_DISCOVERED)
-            self.param_store._collapsed_headers_ref().add("primitive:batch:main")
+            self.param_store._collapsed_headers_ref().add(
+                primitive_collapsed_header_key(("batch", "main"))
+            )
             self.param_store._runtime_ref().observed_groups.add(("batch", "mutated"))
             # Render 中の予期しない collection 変更も batch 外へ漏らさない。
             self.param_store._variations_ref().pop("A & first", None)

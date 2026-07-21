@@ -122,8 +122,8 @@ def visible_group_layout(
             )
         )
 
-        # filter で中間 block が消えた場合は、filtered rows を改めて grouping
-        # した従来挙動と同様に、隣接した同一 group を 1 つへ戻す。
+        # filter で中間 block が消えた場合も、表示上隣接した同一 group は
+        # 1 つの block として扱う。
         if out and out[-1].group_id == visible_block.group_id:
             previous = out[-1]
             out[-1] = GroupBlockLayout(

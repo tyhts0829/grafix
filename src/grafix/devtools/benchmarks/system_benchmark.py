@@ -137,13 +137,14 @@ def _percentile(ordered: list[int], fraction: float) -> float:
 def _draw_geometry(*, frame: int, sides: int) -> Geometry:
     base = Geometry.create(
         "polygon",
-        params={"n_sides": int(sides), "scale": 20.0},
+        params={"activate": True, "n_sides": int(sides), "scale": 20.0},
     )
     angle = float(int(frame)) * 0.125
     return Geometry.create(
         "rotate",
         inputs=(base,),
         params={
+            "activate": True,
             "rotation": (0.0, 0.0, angle),
             "auto_center": False,
             "pivot": (0.0, 0.0, 0.0),
@@ -157,9 +158,7 @@ def _animated_soak(*, frames: int, sides: int) -> dict[str, Any]:
     ).itemsize
     cache_limit = max(1_024, 2 * int(estimated_bytes) + 64)
     last: RealizedGeometry | None = None
-    with RealizeSession(
-        runtime_limits=RuntimeLimits(cpu_cache_bytes=cache_limit)
-    ) as session:
+    with RealizeSession(runtime_limits=RuntimeLimits(cpu_cache_bytes=cache_limit)) as session:
         for frame in range(max(1, int(frames))):
             last = session.realize(_draw_geometry(frame=frame, sides=int(sides)))
         stats = session.stats()
@@ -189,12 +188,12 @@ def _draw_realize_indices(*, grid_size: int) -> dict[str, Any]:
     def draw(_t: float) -> Geometry:
         base = Geometry.create(
             "grid",
-            params={"nx": size, "ny": size, "scale": 100.0},
+            params={"activate": True, "nx": size, "ny": size, "scale": 100.0},
         )
         return Geometry.create(
             "rotate",
             inputs=(base,),
-            params={"rotation": (0.0, 0.0, 17.0)},
+            params={"activate": True, "rotation": (0.0, 0.0, 17.0)},
         )
 
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -258,8 +257,8 @@ def _rotate_scale_identity_workload(
     rotate = effect_registry["rotate"].evaluator
     scale = effect_registry["scale"].evaluator
     inputs = (geometry,)
-    rotate_args = (("rotation", (0.0, 0.0, 0.0)),)
-    scale_args = (("scale", (1.0, 1.0, 1.0)),)
+    rotate_args = (("activate", True), ("rotation", (0.0, 0.0, 0.0)))
+    scale_args = (("activate", True), ("scale", (1.0, 1.0, 1.0)))
 
     count = max(1, int(iterations))
     reused = 0
@@ -403,6 +402,14 @@ def _renderer_geometry(*, polylines: int) -> RealizedGeometry:
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
+def _changing_renderer_offsets(offsets: np.ndarray, *, frame: int) -> np.ndarray:
+    """空 polyline 境界を切り替え、描画結果を保ったまま topology を変える。"""
+
+    if frame % 2 == 0:
+        return offsets.copy()
+    return np.insert(offsets, 1, offsets[1])
+
+
 def _fake_renderer() -> DrawRenderer:
     """GL resource constructorだけをfakeにし、rendererを正式初期化する。"""
 
@@ -481,10 +488,7 @@ def _renderer_cache_workload(
                 raise RuntimeError("renderer benchmark が空 mesh を返した")
             benchmark_mesh = cast(_BenchmarkFakeMesh, mesh)
             if include_semantic_frames:
-                if (
-                    benchmark_mesh.last_vertices is None
-                    or benchmark_mesh.last_indices is None
-                ):
+                if benchmark_mesh.last_vertices is None or benchmark_mesh.last_indices is None:
                     raise RuntimeError("renderer benchmark mesh upload state is missing")
                 semantic_frames.append(
                     (
@@ -551,7 +555,6 @@ def _renderer_multilayer_dynamic_workload(
     layer_count = max(1, int(layers))
     frame_count = max(2, int(frames))
     base = _renderer_geometry(polylines=max(1, int(polylines)))
-    stable_offsets = tuple(base.offsets.copy() for _ in range(layer_count))
     _BenchmarkFakeMesh.instances.clear()
     renderer = _fake_renderer()
     original_build = renderer_module.build_line_indices_and_stats
@@ -574,13 +577,11 @@ def _renderer_multilayer_dynamic_workload(
         for frame in range(frame_count):
             for layer_index in range(layer_count):
                 coords = base.coords.copy()
-                coords[:, 1] = np.float32(
-                    frame * layer_count + layer_index
-                ) * np.float32(0.001)
+                coords[:, 1] = np.float32(frame * layer_count + layer_index) * np.float32(0.001)
                 offsets = (
-                    stable_offsets[layer_index]
+                    base.offsets
                     if stable_topology
-                    else base.offsets.copy()
+                    else _changing_renderer_offsets(base.offsets, frame=frame)
                 )
                 geometry = RealizedGeometry(coords=coords, offsets=offsets)
                 mesh, _stats = renderer.prepare_layer_mesh(
@@ -594,18 +595,11 @@ def _renderer_multilayer_dynamic_workload(
                     dynamic_slot=layer_index,
                 )
                 if mesh is None:
-                    raise RuntimeError(
-                        "multi-layer renderer benchmark returned an empty mesh"
-                    )
+                    raise RuntimeError("multi-layer renderer benchmark returned an empty mesh")
                 benchmark_mesh = cast(_BenchmarkFakeMesh, mesh)
                 if include_semantic_frames:
-                    if (
-                        benchmark_mesh.last_vertices is None
-                        or benchmark_mesh.last_indices is None
-                    ):
-                        raise RuntimeError(
-                            "multi-layer renderer upload state is missing"
-                        )
+                    if benchmark_mesh.last_vertices is None or benchmark_mesh.last_indices is None:
+                        raise RuntimeError("multi-layer renderer upload state is missing")
                     semantic_frames.append(
                         (
                             benchmark_mesh.last_vertices.copy(),
@@ -622,17 +616,13 @@ def _renderer_multilayer_dynamic_workload(
             "stable_topology": bool(stable_topology),
             "index_builds": index_builds,
             "full_uploads": sum(mesh.upload_count for mesh in meshes),
-            "vertex_only_uploads": sum(
-                mesh.vertex_upload_count for mesh in meshes
-            ),
+            "vertex_only_uploads": sum(mesh.vertex_upload_count for mesh in meshes),
             "dynamic_entries": len(renderer._dynamic_meshes),
             "dynamic_bytes": int(renderer._dynamic_mesh_bytes),
             "dynamic_entry_limit": int(renderer._dynamic_mesh_max_entries),
             "dynamic_byte_limit": int(renderer._dynamic_mesh_max_bytes),
             "candidate_entries": len(renderer._mesh_candidates),
-            "candidate_entry_limit": int(
-                renderer._mesh_candidates_max_entries
-            ),
+            "candidate_entry_limit": int(renderer._mesh_candidates_max_entries),
         },
         "cache": {
             "hits": max(0, layer_count * frame_count - index_builds),

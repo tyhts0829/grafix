@@ -257,7 +257,7 @@ def _normalize_output_size(
     return positive_integer_pair(output_size, name="output_size")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ExportJob:
     """worker へ渡す不変 export request。"""
 

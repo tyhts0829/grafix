@@ -11,7 +11,7 @@ from typing import TypeVar
 from grafix.core.operation_selector import selector_kind
 from grafix.core.parameters.key import ParameterKey
 
-GroupKey = tuple[str, int]
+PrimitiveDisplayGroupKey = tuple[str, int]
 K = TypeVar("K", bound=Hashable)
 
 
@@ -64,11 +64,11 @@ def primitive_header_display_names_from_snapshot(
     *,
     is_primitive_op: Callable[[str], bool],
     display_order_by_group: Mapping[tuple[str, str], int] | None = None,
-) -> dict[GroupKey, str]:
+) -> dict[PrimitiveDisplayGroupKey, str]:
     """snapshot から Primitive 用のヘッダ表示名（衝突解消済み）を作る。"""
 
-    base_name_by_group: dict[GroupKey, str] = {}
-    site_id_by_group: dict[GroupKey, str] = {}
+    base_name_by_group: dict[PrimitiveDisplayGroupKey, str] = {}
+    site_id_by_group: dict[PrimitiveDisplayGroupKey, str] = {}
     for key, (_meta, _state, ordinal, label) in snapshot.items():
         if not is_primitive_op(key.op):
             continue
@@ -82,7 +82,7 @@ def primitive_header_display_names_from_snapshot(
         base_name_by_group[group_key] = base_name
         site_id_by_group[group_key] = key.site_id
 
-    def _sort_key(group_key: GroupKey) -> tuple[int, str, int]:
+    def _sort_key(group_key: PrimitiveDisplayGroupKey) -> tuple[int, str, int]:
         op, ordinal = group_key
         site_id = site_id_by_group.get(group_key, "")
         order = 10**9

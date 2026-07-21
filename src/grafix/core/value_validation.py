@@ -4,9 +4,79 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Sequence
-from math import isfinite
+from math import copysign, isfinite
 from numbers import Real
 from typing import SupportsIndex, cast
+
+
+def _canonical_immutable_value_detailed(value: object, *, name: str) -> object:
+    """不正箇所を含む診断を生成しながら immutable tree を検証する。"""
+
+    value_type = type(value)
+    if value is None or value_type in {bool, int, str}:
+        return value
+    if value_type is float:
+        float_value = cast(float, value)
+        if not isfinite(float_value):
+            raise ValueError(f"{name} に非有限な float は使用できません")
+        if float_value == 0.0 and copysign(1.0, float_value) < 0.0:
+            return 0.0
+        return float_value
+    if value_type is tuple:
+        return tuple(
+            _canonical_immutable_value_detailed(item, name=f"{name}[{index}]")
+            for index, item in enumerate(cast(tuple[object, ...], value))
+        )
+    raise TypeError(
+        f"{name} は None/bool/int/float/str と exact tuple だけからなる"
+        " immutable 値である必要があります"
+    )
+
+
+class _InvalidCanonicalImmutableValue(Exception):
+    """高速検証から詳細なエラー生成へ切り替えるための内部 signal。"""
+
+
+def _canonical_immutable_value_fast(value: object) -> object:
+    """正規 tuple tree を alias-free のまま再利用する common path。"""
+
+    value_type = type(value)
+    if value is None or value_type in {bool, int, str}:
+        return value
+    if value_type is float:
+        float_value = cast(float, value)
+        if not isfinite(float_value):
+            raise _InvalidCanonicalImmutableValue
+        if float_value == 0.0 and copysign(1.0, float_value) < 0.0:
+            return 0.0
+        return float_value
+    if value_type is tuple:
+        source = cast(tuple[object, ...], value)
+        changed: list[object] | None = None
+        for index, item in enumerate(source):
+            normalized = _canonical_immutable_value_fast(item)
+            if normalized is item:
+                continue
+            if changed is None:
+                changed = list(source)
+            changed[index] = normalized
+        return source if changed is None else tuple(changed)
+    raise _InvalidCanonicalImmutableValue
+
+
+def canonical_immutable_value(value: object, *, name: str) -> object:
+    """Geometry 引数用の exact immutable scalar/tuple tree を検証する。
+
+    mutable container や scalar subclass を暗黙変換せず拒否し、有限な
+    ``float`` の負のゼロだけを canonical な ``0.0`` にそろえる。正規値は
+    もともと immutable なので同じ tuple tree を再利用し、不正入力時だけ
+    要素 path を含む診断を構築する。
+    """
+
+    try:
+        return _canonical_immutable_value_fast(value)
+    except _InvalidCanonicalImmutableValue:
+        return _canonical_immutable_value_detailed(value, name=name)
 
 
 def exact_bool(value: object, *, name: str) -> bool:
@@ -119,6 +189,7 @@ def rgb01_tuple(
 
 
 __all__ = [
+    "canonical_immutable_value",
     "exact_bool",
     "exact_integer",
     "exact_string",

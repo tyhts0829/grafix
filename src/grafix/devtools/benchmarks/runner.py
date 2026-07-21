@@ -6,6 +6,7 @@ import dataclasses
 import gc
 import hashlib
 import json
+import math
 import os
 import resource
 import signal
@@ -13,7 +14,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import AbstractContextManager
+from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -36,6 +38,8 @@ from grafix.devtools.benchmarks.schema import (
     case_result_from_dict,
     case_result_to_dict,
     evaluate_contract,
+    freeze_json_object,
+    materialize_json_object,
     summarize_samples,
 )
 
@@ -44,35 +48,21 @@ _MAX_CALIBRATION_ITERATIONS = 1 << 20
 _CASES_SOURCE_FILE = Path(__file__).with_name("cases.py")
 _SYSTEM_SOURCE_FILE = Path(__file__).with_name("system_benchmark.py")
 _MP_SOURCE_FILE = Path(__file__).with_name("mp_draw_benchmark.py")
-_INTERACTIVE_SCENARIO_SOURCE_FILE = Path(__file__).with_name(
-    "interactive_scenario_benchmark.py"
-)
-_PARAMETER_EDIT_SOURCE_FILE = Path(__file__).with_name(
-    "parameter_edit_benchmark.py"
-)
-_PARAMETER_HOTPATH_SOURCE_FILE = Path(__file__).with_name(
-    "parameter_hotpath_benchmark.py"
-)
-_PERF_HOTPATH_SOURCE_FILE = Path(__file__).with_name(
-    "perf_hotpath_benchmark.py"
-)
+_INTERACTIVE_SCENARIO_SOURCE_FILE = Path(__file__).with_name("interactive_scenario_benchmark.py")
+_PARAMETER_EDIT_SOURCE_FILE = Path(__file__).with_name("parameter_edit_benchmark.py")
+_PARAMETER_HOTPATH_SOURCE_FILE = Path(__file__).with_name("parameter_hotpath_benchmark.py")
+_PERF_HOTPATH_SOURCE_FILE = Path(__file__).with_name("perf_hotpath_benchmark.py")
 _PRIMITIVE_SOURCE_FILE = Path(__file__).with_name("primitive_benchmark.py")
-_REMAINING_EFFECT_SOURCE_FILE = Path(__file__).with_name(
-    "remaining_effect_benchmark.py"
-)
+_REMAINING_EFFECT_SOURCE_FILE = Path(__file__).with_name("remaining_effect_benchmark.py")
 _HEAVY_EFFECT_FINAL_CHECKSUMS = {
     "growth": "88db2188d515eb8320998e5613ca66f5ce773842ae0318ba834ff3c1f2d7db35",
     "metaball": "1df0d8425ddd1f520de5a984eba822ee063fb080a4ae04f7b95a9317610177fd",
-    "reaction_diffusion": (
-        "b012b5cdb123b635ce475180ba7b12099f7c761c4d0833f4e499044c9d142d40"
-    ),
+    "reaction_diffusion": ("b012b5cdb123b635ce475180ba7b12099f7c761c4d0833f4e499044c9d142d40"),
 }
 _HEAVY_EFFECT_DRAFT_CHECKSUMS = {
     "growth": "74f2b9d7186860a848bc2df2eecb99049f805926b5760da6a2ff81275e77850f",
     "metaball": "06ef8acbe6cc943a3d7e0dce65cc783ca3febecc7e83a805c7399711fdadf8ae",
-    "reaction_diffusion": (
-        "1d04f1417005b3409b8bc35a1e3fdcd689aa04b3433afa6d4c5ed0c85d509f3b"
-    ),
+    "reaction_diffusion": ("1d04f1417005b3409b8bc35a1e3fdcd689aa04b3433afa6d4c5ed0c85d509f3b"),
 }
 
 
@@ -86,30 +76,31 @@ class CaseDefinition:
     category: str
     suite: str
     fixture: str
-    parameters: dict[str, Any]
+    parameters: Mapping[str, object]
     tags: tuple[str, ...]
     selectable_suites: tuple[str, ...]
     setup: Callable[[dict[str, Any], int], object]
     workload: Callable[[object], object]
     postprocess: Callable[[object, object], BenchmarkOutput] | None = None
-    measurement_context: (
-        Callable[[object], AbstractContextManager[object]] | None
-    ) = None
+    measurement_context: Callable[[object], AbstractContextManager[object]] | None = None
     support_source_files: tuple[Path, ...] = ()
     support_implementations: tuple[Callable[..., object], ...] = ()
     checksum_policy: str = "exact"
     self_sampling: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "parameters",
+            freeze_json_object(self.parameters),
+        )
 
     def spec(self, *, seed: int) -> CaseSpec:
         implementations: tuple[Callable[..., object], ...] = (
             self.setup,
             self.workload,
             *((self.postprocess,) if self.postprocess is not None else ()),
-            *(
-                (self.measurement_context,)
-                if self.measurement_context is not None
-                else ()
-            ),
+            *((self.measurement_context,) if self.measurement_context is not None else ()),
             *self.support_implementations,
         )
         return make_case_spec(
@@ -127,6 +118,12 @@ class CaseDefinition:
             checksum_policy=self.checksum_policy,
             self_sampling=self.self_sampling,
         )
+
+    def materialize_parameters(self) -> dict[str, Any]:
+        """setup 一回分の独立した plain JSON tree を返す。"""
+
+        return materialize_json_object(freeze_json_object(self.parameters))
+
 
 def case_definitions() -> tuple[CaseDefinition, ...]:
     """組み込み benchmark case を安定順で返す。"""
@@ -482,24 +479,16 @@ def select_case_definitions(
     definitions = case_definitions()
     by_id = {definition.case_id: definition for definition in definitions}
     if case_ids:
-        duplicate_ids = sorted(
-            case_id
-            for case_id in set(case_ids)
-            if case_ids.count(case_id) > 1
-        )
+        duplicate_ids = sorted(case_id for case_id in set(case_ids) if case_ids.count(case_id) > 1)
         if duplicate_ids:
-            raise ValueError(
-                "duplicate benchmark case: " + ", ".join(duplicate_ids)
-            )
+            raise ValueError("duplicate benchmark case: " + ", ".join(duplicate_ids))
         unknown_ids = sorted(set(case_ids) - set(by_id))
         if unknown_ids:
             raise ValueError(f"unknown benchmark case: {', '.join(unknown_ids)}")
         return tuple(by_id[case_id] for case_id in case_ids)
 
     available_suites = {
-        suite
-        for definition in definitions
-        for suite in definition.selectable_suites
+        suite for definition in definitions for suite in definition.selectable_suites
     } | {"all"}
     unknown_suites = sorted(set(suites) - available_suites)
     if unknown_suites:
@@ -507,9 +496,7 @@ def select_case_definitions(
     if "all" in suites:
         return definitions
     selected = [
-        definition
-        for definition in definitions
-        if set(suites) & set(definition.selectable_suites)
+        definition for definition in definitions if set(suites) & set(definition.selectable_suites)
     ]
     return tuple(selected)
 
@@ -577,9 +564,9 @@ def geometry_checksum(geometry: RealizedGeometry) -> str:
 def canonical_checksum(value: object) -> tuple[str, str]:
     """benchmark output を exact checksum 化する。"""
 
-    if isinstance(value, RealizedGeometry):
+    if type(value) is RealizedGeometry:
         return geometry_checksum(value), "realized_geometry_exact_v1"
-    if isinstance(value, Geometry):
+    if type(value) is Geometry:
         digest = hashlib.sha256(b"grafix.geometry.concat-semantics.v1\0")
         stack = [value]
         leaf_count = 0
@@ -592,22 +579,15 @@ def canonical_checksum(value: object) -> tuple[str, str]:
             leaf_count += 1
         digest.update(leaf_count.to_bytes(8, "big"))
         return digest.hexdigest(), "geometry_concat_leaf_order_v1"
-    if (
-        isinstance(value, tuple)
-        and len(value) == 2
-        and isinstance(value[0], np.ndarray)
-        and isinstance(value[1], np.ndarray)
-    ):
-        realized = RealizedGeometry(coords=value[0], offsets=value[1])
-        return geometry_checksum(realized), "realized_geometry_exact_v1"
     normalized = _json_value(value)
     encoded = json.dumps(
         normalized,
+        allow_nan=False,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest(), "canonical_json_sha256_v1"
+    return hashlib.sha256(encoded).hexdigest(), "canonical_json_sha256_v2"
 
 
 def _counter_metric(
@@ -927,118 +907,31 @@ def _measure_in_process(
     target_ns: int,
     disable_gc: bool,
 ) -> CaseResult:
-    context: AbstractContextManager[object] | None = None
-    context_entered = False
     try:
-        state = definition.setup(dict(definition.parameters), int(seed))
-        if definition.measurement_context is not None:
-            context = definition.measurement_context(state)
-            context.__enter__()
-            context_entered = True
-        setup_rss = _peak_rss_bytes()
-        if definition.self_sampling:
-            iterations = 1
-            samples = 1
-        elif mode == "warm":
-            for _ in range(warmup):
-                definition.workload(state)
-            iterations = _calibrate(
-                definition.workload,
-                state,
-                target_ns=target_ns,
-            )
-        else:
-            iterations = 1
-
-        baseline_rss = _peak_rss_bytes()
-        raw_samples: list[Sample] = []
-        measured_outputs: list[BenchmarkOutput] = []
-        semantic_checksum: tuple[str, str] | None = None
-        output: BenchmarkOutput | None = None
-        raw_output: object | None = None
-        was_gc_enabled = gc.isenabled()
-        if disable_gc and was_gc_enabled:
-            gc.disable()
-        try:
-            for _ in range(samples):
-                started = time.perf_counter_ns()
-                for _iteration in range(iterations):
-                    raw_output = definition.workload(state)
-                raw_samples.append(
-                    Sample(
-                        elapsed_ns=time.perf_counter_ns() - started,
-                        iterations=iterations,
-                    )
-                )
-                if raw_output is None:
-                    raise RuntimeError("benchmark workload returned no output")
-                output = _postprocess_case_output(
+        state = definition.setup(definition.materialize_parameters(), int(seed))
+        context = (
+            nullcontext()
+            if definition.measurement_context is None
+            else definition.measurement_context(state)
+        )
+        suppressed: BaseException | None = None
+        with context:
+            try:
+                return _measure_entered_context(
                     definition,
+                    spec=spec,
                     state=state,
-                    raw_output=raw_output,
+                    mode=mode,
+                    samples=samples,
+                    warmup=warmup,
+                    target_ns=target_ns,
+                    disable_gc=disable_gc,
                 )
-                measured_outputs.append(
-                    BenchmarkOutput(
-                        value=None,
-                        metrics=output.metrics,
-                        contracts=output.contracts,
-                    )
-                )
-                current_checksum = canonical_checksum(output.value)
-                if semantic_checksum is None:
-                    semantic_checksum = current_checksum
-                elif current_checksum != semantic_checksum:
-                    raise RuntimeError(
-                        "warm samples produced different output checksums"
-                    )
-        finally:
-            if disable_gc and was_gc_enabled:
-                gc.enable()
-        if output is None:
-            raise RuntimeError("benchmark workload returned no output")
-        output = _aggregate_measured_outputs(
-            measured_outputs,
-            last=output,
-        )
-        peak_rss = _peak_rss_bytes()
-        assert semantic_checksum is not None
-        checksum, checksum_kind = semantic_checksum
-        failed_hard = tuple(
-            contract
-            for contract in output.contracts
-            if contract.severity == "hard" and not contract.passed
-        )
-        status = "contract-failure" if failed_hard else "ok"
-        contract_error = (
-            "failed hard contracts: "
-            + "; ".join(
-                f"{contract.contract_id}: {contract.reason}"
-                for contract in failed_hard
-            )
-            if failed_hard
-            else None
-        )
-        return CaseResult(
-            spec=spec,
-            status=status,
-            samples=tuple(raw_samples),
-            stats=summarize_samples(raw_samples),
-            checksum=checksum,
-            checksum_kind=checksum_kind,
-            setup_rss_bytes=setup_rss,
-            baseline_rss_bytes=baseline_rss,
-            peak_rss_bytes=peak_rss,
-            peak_rss_delta_bytes=max(0, peak_rss - baseline_rss),
-            metrics=output.metrics,
-            contracts=output.contracts,
-            error=contract_error,
-        )
-    except (ModuleNotFoundError, ImportError) as exc:
-        return CaseResult(
-            spec=spec,
-            status="skipped",
-            error=f"{type(exc).__name__}: {exc}",
-        )
+            except BaseException as exc:
+                suppressed = exc
+                raise
+        assert suppressed is not None
+        raise suppressed
     except ResourceLimitError as exc:
         return CaseResult(
             spec=spec,
@@ -1046,14 +939,139 @@ def _measure_in_process(
             error=f"{type(exc).__name__}: {exc}",
         )
     except Exception as exc:  # noqa: BLE001
+        primary = exc.__context__
+        if primary is not None and not isinstance(primary, Exception):
+            primary.add_note(
+                f"measurement context teardown also failed: {type(exc).__name__}: {exc}"
+            )
+            raise primary
         return CaseResult(
             spec=spec,
             status="error",
-            error=f"{type(exc).__name__}: {exc}",
+            error=_exception_chain_text(exc),
         )
+
+
+def _exception_chain_text(exc: Exception) -> str:
+    """例外 context を原因側から順に失わず表示する。"""
+
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__context__
+    chain.reverse()
+    return "; while handling: ".join(f"{type(item).__name__}: {item}" for item in chain)
+
+
+def _measure_entered_context(
+    definition: CaseDefinition,
+    *,
+    spec: CaseSpec,
+    state: object,
+    mode: str,
+    samples: int,
+    warmup: int,
+    target_ns: int,
+    disable_gc: bool,
+) -> CaseResult:
+    """measurement context 内で warmup/calibration/計測を実行する。"""
+
+    setup_rss = _peak_rss_bytes()
+    if definition.self_sampling:
+        iterations = 1
+        samples = 1
+    elif mode == "warm":
+        for _ in range(warmup):
+            definition.workload(state)
+        iterations = _calibrate(
+            definition.workload,
+            state,
+            target_ns=target_ns,
+        )
+    else:
+        iterations = 1
+
+    baseline_rss = _peak_rss_bytes()
+    raw_samples: list[Sample] = []
+    measured_outputs: list[BenchmarkOutput] = []
+    semantic_checksum: tuple[str, str] | None = None
+    output: BenchmarkOutput | None = None
+    raw_output: object | None = None
+    was_gc_enabled = gc.isenabled()
+    if disable_gc and was_gc_enabled:
+        gc.disable()
+    try:
+        for _ in range(samples):
+            started = time.perf_counter_ns()
+            for _iteration in range(iterations):
+                raw_output = definition.workload(state)
+            raw_samples.append(
+                Sample(
+                    elapsed_ns=time.perf_counter_ns() - started,
+                    iterations=iterations,
+                )
+            )
+            if raw_output is None:
+                raise RuntimeError("benchmark workload returned no output")
+            output = _postprocess_case_output(
+                definition,
+                state=state,
+                raw_output=raw_output,
+            )
+            measured_outputs.append(
+                BenchmarkOutput(
+                    value=None,
+                    metrics=output.metrics,
+                    contracts=output.contracts,
+                )
+            )
+            current_checksum = canonical_checksum(output.value)
+            if semantic_checksum is None:
+                semantic_checksum = current_checksum
+            elif current_checksum != semantic_checksum:
+                raise RuntimeError("warm samples produced different output checksums")
     finally:
-        if context is not None and context_entered:
-            context.__exit__(None, None, None)
+        if disable_gc and was_gc_enabled:
+            gc.enable()
+    if output is None:
+        raise RuntimeError("benchmark workload returned no output")
+    output = _aggregate_measured_outputs(
+        measured_outputs,
+        last=output,
+    )
+    peak_rss = _peak_rss_bytes()
+    assert semantic_checksum is not None
+    checksum, checksum_kind = semantic_checksum
+    failed_hard = tuple(
+        contract
+        for contract in output.contracts
+        if contract.severity == "hard" and not contract.passed
+    )
+    status = "contract-failure" if failed_hard else "ok"
+    contract_error = (
+        "failed hard contracts: "
+        + "; ".join(f"{contract.contract_id}: {contract.reason}" for contract in failed_hard)
+        if failed_hard
+        else None
+    )
+    return CaseResult(
+        spec=spec,
+        status=status,
+        samples=tuple(raw_samples),
+        stats=summarize_samples(raw_samples),
+        checksum=checksum,
+        checksum_kind=checksum_kind,
+        setup_rss_bytes=setup_rss,
+        baseline_rss_bytes=baseline_rss,
+        peak_rss_bytes=peak_rss,
+        peak_rss_delta_bytes=max(0, peak_rss - baseline_rss),
+        metrics=output.metrics,
+        contracts=output.contracts,
+        error=contract_error,
+    )
 
 
 def _aggregate_measured_outputs(
@@ -1069,12 +1087,9 @@ def _aggregate_measured_outputs(
     if any(output.metrics != metrics for output in outputs[1:]):
         raise RuntimeError("typed metrics changed across warm samples")
 
-    contract_ids = tuple(
-        contract.contract_id for contract in outputs[0].contracts
-    )
+    contract_ids = tuple(contract.contract_id for contract in outputs[0].contracts)
     if any(
-        tuple(contract.contract_id for contract in output.contracts)
-        != contract_ids
+        tuple(contract.contract_id for contract in output.contracts) != contract_ids
         for output in outputs[1:]
     ):
         raise RuntimeError("contract set changed across warm samples")
@@ -1101,12 +1116,8 @@ def _aggregate_measured_outputs(
             != identity
             for sample in samples[1:]
         ):
-            raise RuntimeError(
-                f"contract definition changed across warm samples: {contract_id}"
-            )
-        contracts.append(
-            next((sample for sample in samples if not sample.passed), samples[-1])
-        )
+            raise RuntimeError(f"contract definition changed across warm samples: {contract_id}")
+        contracts.append(next((sample for sample in samples if not sample.passed), samples[-1]))
 
     return BenchmarkOutput(
         value=last.value,
@@ -1161,11 +1172,7 @@ def _merge_cold_results(
     spec: CaseSpec,
     results: list[CaseResult],
 ) -> CaseResult:
-    failures = [
-        result
-        for result in results
-        if result.status not in {"ok", "contract-failure"}
-    ]
+    failures = [result for result in results if result.status not in {"ok", "contract-failure"}]
     if failures:
         first = failures[0]
         return CaseResult(spec=spec, status=first.status, error=first.error)
@@ -1183,11 +1190,7 @@ def _merge_cold_results(
         key=lambda result: result.peak_rss_delta_bytes or 0,
     )
     contract_result = next(
-        (
-            result
-            for result in results
-            if result.status == "contract-failure"
-        ),
+        (result for result in results if result.status == "contract-failure"),
         results[-1],
     )
     return CaseResult(
@@ -1214,15 +1217,13 @@ def _definition(
     category: str,
     suite: str,
     fixture: str,
-    parameters: dict[str, Any],
+    parameters: Mapping[str, object],
     tags: tuple[str, ...],
     selectable_suites: tuple[str, ...],
     setup: Callable[[dict[str, Any], int], object],
     workload: Callable[[object], object],
     postprocess: Callable[[object, object], BenchmarkOutput] | None = None,
-    measurement_context: (
-        Callable[[object], AbstractContextManager[object]] | None
-    ) = None,
+    measurement_context: (Callable[[object], AbstractContextManager[object]] | None) = None,
     support_source_files: tuple[Path, ...] = (),
     support_implementations: tuple[Callable[..., object], ...] = (),
     self_sampling: bool = False,
@@ -1575,10 +1576,13 @@ def _multilayer_renderer_definitions() -> list[CaseDefinition]:
 
 
 def _effect_definitions() -> list[CaseDefinition]:
-    """effect と互換 fixture を明示対応させた代表 case を返す。"""
+    """各 effect が要求する入力形へ fixture を明示対応させた代表 case を返す。"""
 
     fixtures: dict[str, tuple[str, dict[str, Any]]] = {
-        "affine": ("polyline_long", {"scale": [1.05, 1.02, 1.0], "rotation": [5.0, 10.0, 0.0], "delta": [12.0, 5.0, 0.0]}),
+        "affine": (
+            "polyline_long",
+            {"scale": [1.05, 1.02, 1.0], "rotation": [5.0, 10.0, 0.0], "delta": [12.0, 5.0, 0.0]},
+        ),
         "bold": ("rings_2", {}),
         "buffer": ("rings_2", {"distance": 5.0, "quad_segs": 8, "join": "round"}),
         "clip": ("binary_mask", {}),
@@ -1678,9 +1682,7 @@ def _effect_definitions() -> list[CaseDefinition]:
 def _target_effect_speedup_definitions() -> list[CaseDefinition]:
     """高速化対象 effect の actual-work と shape 別 case を返す。"""
 
-    cases: tuple[
-        tuple[str, str, str, str, dict[str, Any], tuple[str, ...]], ...
-    ] = (
+    cases: tuple[tuple[str, str, str, str, dict[str, Any], tuple[str, ...]], ...] = (
         (
             "effect.translate.polyline_long",
             "translate / 50k vertices",
@@ -1923,8 +1925,7 @@ def _system_definitions() -> list[CaseDefinition]:
             setup=_setup_system,
             workload=_workload_system,
             support_source_files=(_SYSTEM_SOURCE_FILE,),
-            self_sampling=workload_id
-            in {"parameter_snapshot_model", "asemic", "cold_import"},
+            self_sampling=workload_id in {"parameter_snapshot_model", "asemic", "cold_import"},
         )
         for case_id, label, workload_id, parameters in cases
     ]
@@ -1981,8 +1982,7 @@ def _setup_effect(parameters: dict[str, Any], seed: int) -> object:
         if meta is not None and meta.kind in {"vec3", "rgb"}:
             if not isinstance(value, list) or len(value) != 3:
                 raise TypeError(
-                    f"{effect_name}.{key} benchmark parameter must be a "
-                    "three-item JSON array"
+                    f"{effect_name}.{key} benchmark parameter must be a three-item JSON array"
                 )
             value = tuple(value)
         args[key] = value
@@ -2003,9 +2003,7 @@ def _setup_system(parameters: dict[str, Any], seed: int) -> object:
     state = dict(parameters)
     workload = str(state["workload"])
     if workload == "rotate_scale_identity":
-        state["geometry"] = system_benchmark._identity_geometry(
-            points=int(state["points"])
-        )
+        state["geometry"] = system_benchmark._identity_geometry(points=int(state["points"]))
     elif workload == "parameter_snapshot_model":
         state["store"] = system_benchmark._parameter_store(rows=int(state["rows"]))
     elif workload == "realized_concat":
@@ -2035,13 +2033,9 @@ def _workload_system(state: object) -> BenchmarkOutput:
         estimated_bytes = (sides + 1) * 3 * np.dtype(np.float32).itemsize + 8
         cache_limit = max(1_024, 2 * estimated_bytes + 64)
         last: RealizedGeometry | None = None
-        with RealizeSession(
-            runtime_limits=RuntimeLimits(cpu_cache_bytes=cache_limit)
-        ) as session:
+        with RealizeSession(runtime_limits=RuntimeLimits(cpu_cache_bytes=cache_limit)) as session:
             for frame in range(frames):
-                last = session.realize(
-                    system_benchmark._draw_geometry(frame=frame, sides=sides)
-                )
+                last = session.realize(system_benchmark._draw_geometry(frame=frame, sides=sides))
             stats = session.stats()
         if last is None:
             raise RuntimeError("animated soak returned no geometry")
@@ -2130,7 +2124,7 @@ def _workload_system(state: object) -> BenchmarkOutput:
             iterations=int(values["iterations"]),
             include_semantic_outputs=True,
         )
-        semantic_outputs = payload.pop("_semantic_outputs")
+        semantic_outputs = list(cast(tuple[object, ...], payload.pop("_semantic_outputs")))
         output = cast(dict[str, Any], payload["output"])
         return BenchmarkOutput(
             value=semantic_outputs,
@@ -2225,8 +2219,7 @@ def _workload_system(state: object) -> BenchmarkOutput:
         )
         output = payload["output"]
         semantic = {
-            key: output[key]
-            for key in ("frames", "rows", "snapshot_entries", "render_calls")
+            key: output[key] for key in ("frames", "rows", "snapshot_entries", "render_calls")
         }
         cache = cast(dict[str, Any], payload["cache"])
         return BenchmarkOutput(
@@ -2278,9 +2271,7 @@ def _workload_system(state: object) -> BenchmarkOutput:
             ),
         )
     if workload == "realized_concat":
-        result = concat_realized_geometries(
-            *cast(tuple[RealizedGeometry, ...], values["inputs"])
-        )
+        result = concat_realized_geometries(*cast(tuple[RealizedGeometry, ...], values["inputs"]))
         return BenchmarkOutput(
             value=result,
             metrics=(
@@ -2320,10 +2311,16 @@ def _workload_system(state: object) -> BenchmarkOutput:
             nodes=int(values["nodes"]),
             include_semantic_geometry=True,
         )
-        semantic_geometry = payload.pop("_semantic_geometry")
+        semantic_geometry = cast(
+            tuple[np.ndarray, np.ndarray],
+            payload.pop("_semantic_geometry"),
+        )
         output = cast(dict[str, Any], payload["output"])
         return BenchmarkOutput(
-            value=semantic_geometry,
+            value=RealizedGeometry(
+                coords=semantic_geometry[0],
+                offsets=semantic_geometry[1],
+            ),
             metrics=(
                 _counter_metric(
                     "n_vertices",
@@ -2355,9 +2352,7 @@ def _workload_system(state: object) -> BenchmarkOutput:
             ),
         )
     if workload == "gcode_ordering":
-        payload = system_benchmark._gcode_ordering_workload(
-            values["stroke_values"]
-        )
+        payload = system_benchmark._gcode_ordering_workload(values["stroke_values"])
         output = cast(dict[str, Any], payload["output"])
         return BenchmarkOutput(
             value=output,
@@ -2386,9 +2381,7 @@ def _workload_system(state: object) -> BenchmarkOutput:
             ),
         )
     if workload == "cold_import":
-        payload = system_benchmark._cold_import_benchmark(
-            repeats=int(values["repeats"])
-        )
+        payload = system_benchmark._cold_import_benchmark(repeats=int(values["repeats"]))
         if payload.get("status") != "ok":
             raise RuntimeError(str(payload.get("error", "cold import failed")))
         return BenchmarkOutput(
@@ -2955,7 +2948,7 @@ def _setup_deep_dag(parameters: dict[str, Any], _seed: int) -> object:
         node = Geometry.create(
             "translate",
             inputs=(node,),
-            params={"delta": (0.001, 0.0, 0.0)},
+            params={"activate": True, "delta": (0.001, 0.0, 0.0)},
         )
     return node
 
@@ -2964,9 +2957,7 @@ def _workload_deep_dag(state: object) -> BenchmarkOutput:
     from grafix.core.realize import RealizeSession
     from grafix.core.runtime_limits import RuntimeLimits
 
-    geometry = RealizeSession(
-        runtime_limits=RuntimeLimits(cpu_cache_bytes=0)
-    ).realize(state)  # type: ignore[arg-type]
+    geometry = RealizeSession(runtime_limits=RuntimeLimits(cpu_cache_bytes=0)).realize(state)  # type: ignore[arg-type]
     return BenchmarkOutput(
         value=geometry,
         metrics=(
@@ -2996,12 +2987,12 @@ def _workload_draw_realize_indices(state: object) -> BenchmarkOutput:
     def draw(_t: float) -> Geometry:
         base = Geometry.create(
             "grid",
-            params={"nx": size, "ny": size, "scale": 100.0},
+            params={"activate": True, "nx": size, "ny": size, "scale": 100.0},
         )
         return Geometry.create(
             "rotate",
             inputs=(base,),
-            params={"rotation": (0.0, 0.0, 17.0)},
+            params={"activate": True, "rotation": (0.0, 0.0, 17.0)},
         )
 
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -3087,6 +3078,13 @@ def _workload_interactive_slider_scenario(state: object) -> BenchmarkOutput:
     return run_interactive_slider_scenario(state)
 
 
+def _semantic_frame_values(value: object) -> list[dict[str, np.ndarray]]:
+    """renderer の typed frame tuple を checksum 用 JSON list へ変換する。"""
+
+    frames = cast(tuple[tuple[np.ndarray, np.ndarray], ...], value)
+    return [{"vertices": vertices, "indices": indices} for vertices, indices in frames]
+
+
 def _setup_renderer(parameters: dict[str, Any], _seed: int) -> object:
     from grafix.devtools.benchmarks.system_benchmark import _renderer_geometry
 
@@ -3105,7 +3103,7 @@ def _workload_renderer(state: object) -> BenchmarkOutput:
         frames=frames,
         include_semantic_frames=True,
     )
-    semantic_frames = payload.pop("_semantic_frames")
+    semantic_frames = _semantic_frame_values(payload.pop("_semantic_frames"))
     output = cast(dict[str, Any], payload["output"])
     metrics = (
         *(
@@ -3165,7 +3163,10 @@ def _workload_renderer(state: object) -> BenchmarkOutput:
 
 
 def _setup_animated_renderer(parameters: dict[str, Any], _seed: int) -> object:
-    from grafix.devtools.benchmarks.system_benchmark import _renderer_geometry
+    from grafix.devtools.benchmarks.system_benchmark import (
+        _changing_renderer_offsets,
+        _renderer_geometry,
+    )
 
     base = _renderer_geometry(polylines=int(parameters["polylines"]))
     geometries: list[RealizedGeometry] = []
@@ -3173,7 +3174,11 @@ def _setup_animated_renderer(parameters: dict[str, Any], _seed: int) -> object:
     for frame in range(int(parameters["frames"])):
         coords = base.coords.copy()
         coords[:, 1] = np.float32(frame) * np.float32(0.001)
-        offsets = base.offsets if static_topology else base.offsets.copy()
+        offsets = (
+            base.offsets
+            if static_topology
+            else _changing_renderer_offsets(base.offsets, frame=frame)
+        )
         geometries.append(RealizedGeometry(coords=coords, offsets=offsets))
     return tuple(geometries)
 
@@ -3189,7 +3194,7 @@ def _workload_animated_renderer(state: object) -> BenchmarkOutput:
     renderer = system_benchmark._fake_renderer()
     original_build = renderer_module.build_line_indices_and_stats
     index_builds = 0
-    semantic_frames: list[tuple[np.ndarray, np.ndarray]] = []
+    semantic_frames: list[dict[str, np.ndarray]] = []
 
     def counted_build(offsets: np.ndarray) -> Any:
         nonlocal index_builds
@@ -3221,13 +3226,13 @@ def _workload_animated_renderer(state: object) -> BenchmarkOutput:
                 system_benchmark._BenchmarkFakeMesh,
                 mesh,
             )
-            if (
-                benchmark_mesh.last_vertices is None
-                or benchmark_mesh.last_indices is None
-            ):
+            if benchmark_mesh.last_vertices is None or benchmark_mesh.last_indices is None:
                 raise RuntimeError("renderer benchmark mesh upload state is missing")
             semantic_frames.append(
-                (benchmark_mesh.last_vertices, benchmark_mesh.last_indices)
+                {
+                    "vertices": benchmark_mesh.last_vertices,
+                    "indices": benchmark_mesh.last_indices,
+                }
             )
 
     meshes = system_benchmark._BenchmarkFakeMesh.instances
@@ -3237,15 +3242,9 @@ def _workload_animated_renderer(state: object) -> BenchmarkOutput:
         "index_builds": index_builds,
         "full_uploads": sum(mesh.upload_count for mesh in meshes),
         "vertex_only_uploads": sum(mesh.vertex_upload_count for mesh in meshes),
-        "full_vertex_upload_bytes": sum(
-            mesh.full_vertex_upload_bytes for mesh in meshes
-        ),
-        "full_index_upload_bytes": sum(
-            mesh.full_index_upload_bytes for mesh in meshes
-        ),
-        "vertex_only_upload_bytes": sum(
-            mesh.vertex_only_upload_bytes for mesh in meshes
-        ),
+        "full_vertex_upload_bytes": sum(mesh.full_vertex_upload_bytes for mesh in meshes),
+        "full_index_upload_bytes": sum(mesh.full_index_upload_bytes for mesh in meshes),
+        "vertex_only_upload_bytes": sum(mesh.vertex_only_upload_bytes for mesh in meshes),
         "candidate_entries": len(renderer._mesh_candidates),
     }
     metrics = (
@@ -3281,7 +3280,7 @@ def _workload_animated_renderer(state: object) -> BenchmarkOutput:
             )
         ),
     )
-    return BenchmarkOutput(value=tuple(semantic_frames), metrics=metrics)
+    return BenchmarkOutput(value=semantic_frames, metrics=metrics)
 
 
 def _setup_multilayer_renderer(
@@ -3307,7 +3306,7 @@ def _workload_multilayer_renderer(state: object) -> BenchmarkOutput:
         stable_topology=stable_topology,
         include_semantic_frames=True,
     )
-    semantic_frames = payload.pop("_semantic_frames")
+    semantic_frames = _semantic_frame_values(payload.pop("_semantic_frames"))
     output = cast(dict[str, Any], payload["output"])
     expected_rebuilds = layers if stable_topology else layers * frames
     expected_vertex_updates = layers * (frames - 1) if stable_topology else 0
@@ -3554,9 +3553,7 @@ def _workload_mp_slider_churn(state: object) -> BenchmarkOutput:
                     actual=bool(mode["progress_contract_met"]),
                     comparator="eq",
                     limit=True,
-                    reason=(
-                        "revision、checksum、queue progress の invariant を満たす"
-                    ),
+                    reason=("revision、checksum、queue progress の invariant を満たす"),
                 )
             )
             contracts.append(
@@ -3687,6 +3684,10 @@ def _workload_mp_slider_churn(state: object) -> BenchmarkOutput:
 
 
 def _hash_array(digest: Any, array: np.ndarray) -> None:
+    if array.dtype.hasobject:
+        raise TypeError("object dtype array cannot be checksummed deterministically")
+    if array.dtype.fields is not None or array.dtype.subdtype is not None:
+        raise TypeError("structured array dtype is not a benchmark checksum value")
     contiguous = np.ascontiguousarray(array)
     digest.update(contiguous.dtype.str.encode("ascii"))
     digest.update(json.dumps(list(contiguous.shape), separators=(",", ":")).encode("ascii"))
@@ -3695,32 +3696,63 @@ def _hash_array(digest: Any, array: np.ndarray) -> None:
 
 
 def _json_value(value: object) -> object:
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _json_value(dataclasses.asdict(value))
-    if isinstance(value, Geometry):
-        return {"geometry_id": str(value.id), "op": value.op}
-    if isinstance(value, np.ndarray):
+    if type(value) is RealizedGeometry:
+        return {
+            "$grafix_checksum_type": "realized_geometry",
+            "coords": _json_value(value.coords),
+            "offsets": _json_value(value.offsets),
+        }
+    if type(value) is Geometry:
+        return {
+            "$grafix_checksum_type": "geometry",
+            "geometry_id": value.id,
+            "op": value.op,
+        }
+    if type(value) is np.ndarray:
         digest = hashlib.sha256()
         _hash_array(digest, value)
         return {
+            "$grafix_checksum_type": "ndarray",
             "dtype": value.dtype.str,
             "shape": list(value.shape),
             "sha256": digest.hexdigest(),
         }
     if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, bytes):
-        return {"bytes_hex": value.hex()}
-    if isinstance(value, dict):
+        scalar = value.item()
+        if isinstance(scalar, np.generic) or type(scalar) not in {
+            bool,
+            int,
+            float,
+            str,
+            bytes,
+        }:
+            raise TypeError(f"unsupported NumPy benchmark checksum scalar: {type(value)!r}")
+        return _json_value(scalar)
+    if type(value) is bytes:
         return {
-            str(key): _json_value(item)
-            for key, item in value.items()
+            "$grafix_checksum_type": "bytes",
+            "hex": value.hex(),
         }
-    if isinstance(value, (list, tuple)):
+    if type(value) is dict:
+        items: list[list[object]] = []
+        for key in value:
+            if type(key) is not str:
+                raise TypeError("benchmark JSON object keys must be exact strings")
+        for key in sorted(value):
+            items.append([key, _json_value(value[key])])
+        return {
+            "$grafix_checksum_type": "mapping",
+            "items": items,
+        }
+    if type(value) is list:
         return [_json_value(item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if value is None or type(value) in {str, bool, int}:
         return value
-    return repr(value)
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("benchmark JSON numbers must be finite")
+        return value
+    raise TypeError(f"unsupported benchmark checksum value: {type(value)!r}")
 
 
 def _peak_rss_bytes() -> int:

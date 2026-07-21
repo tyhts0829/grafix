@@ -19,9 +19,7 @@ ParamKind: TypeAlias = Literal[
 ]
 CcKey: TypeAlias = int | tuple[int | None, int | None, int | None] | None
 
-PARAM_KINDS = frozenset(
-    {"bool", "int", "float", "str", "font", "choice", "vec3", "rgb"}
-)
+PARAM_KINDS = frozenset({"bool", "int", "float", "str", "font", "choice", "vec3", "rgb"})
 NUMERIC_PARAM_KINDS = frozenset({"int", "float", "vec3", "rgb"})
 SCALAR_CC_PARAM_KINDS = frozenset({"float", "int", "choice"})
 _CC_DISABLED_OPS = frozenset({"__style__", "__layer_style__"})
@@ -137,8 +135,7 @@ def validate_parameter_value(
         if type(value) is not tuple or len(value) != 3:
             raise TypeError("vec3 parameter value must be a three-float tuple")
         if any(
-            isinstance(component, bool) or not isinstance(component, Real)
-            for component in value
+            isinstance(component, bool) or not isinstance(component, Real) for component in value
         ):
             raise TypeError("vec3 components must be real numbers")
         normalized_vec = tuple(float(component) for component in value)
@@ -168,20 +165,31 @@ def validate_cc_key(
 ) -> CcKey:
     """parameter kind/op に対応する canonical MIDI CC assignment を返す。"""
 
-    if cc_key is None:
+    canonical = validate_cc_key_shape(cc_key)
+    if canonical is None:
         return None
     if op in _CC_DISABLED_OPS:
         raise ValueError(f"MIDI CC is not supported for {op}")
-    if type(cc_key) is int:
+    if type(canonical) is int:
         if kind not in SCALAR_CC_PARAM_KINDS:
             raise ValueError(f"scalar MIDI CC is not supported for {kind}")
+        return canonical
+    if kind != "vec3":
+        raise ValueError(f"component MIDI CC is not supported for {kind}")
+    return canonical
+
+
+def validate_cc_key_shape(cc_key: object) -> CcKey:
+    """kind に依存しない MIDI CC の immutable shape と値域を検証する。"""
+
+    if cc_key is None:
+        return None
+    if type(cc_key) is int:
         if not 0 <= cc_key <= 127:
             raise ValueError("MIDI CC must be in 0..127")
         return cc_key
     if type(cc_key) is not tuple or len(cc_key) != 3:
         raise TypeError("MIDI CC must be an int, a three-item tuple, or None")
-    if kind != "vec3":
-        raise ValueError(f"component MIDI CC is not supported for {kind}")
     for component in cc_key:
         if component is None:
             continue
@@ -201,6 +209,7 @@ __all__ = [
     "ParamKind",
     "SCALAR_CC_PARAM_KINDS",
     "validate_cc_key",
+    "validate_cc_key_shape",
     "validate_param_choices",
     "validate_param_kind",
     "validate_param_range",

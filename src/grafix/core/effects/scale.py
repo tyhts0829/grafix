@@ -7,10 +7,9 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .argument_validation import finite_vec3
 
 _CLOSED_ATOL = 1e-6
-# 1 本では従来 loop が速く、8 本では bulk 経路が明確に速くなる実測結果に基づく。
+# 1 本では slice loop が速く、8 本では bulk 経路が明確に速くなる実測結果に基づく。
 _BULK_LINE_THRESHOLD = 8
 # 閉判定・中心計算用の一時配列をこの line 数以下に抑える。
 _BULK_LINE_CHUNK = 8192
@@ -47,14 +46,15 @@ scale_meta = {
 
 def _mode_is(name: str):
     def _pred(v) -> bool:
-        return str(v.get("mode", "all")) == name
+        return v.get("mode", "all") == name
 
     return _pred
 
 
 scale_ui_visible = {
     "auto_center": _mode_is("all"),
-    "pivot": lambda v: str(v.get("mode", "all")) == "all" and not bool(v.get("auto_center", True)),
+    "pivot": lambda v: v.get("mode", "all") == "all"
+    and v.get("auto_center", True) is False,
 }
 
 
@@ -71,7 +71,7 @@ def _scale_polylines_loop(
     mode: str,
     factors: np.ndarray,
 ) -> None:
-    """少数 line と非 canonical な直接入力を従来どおり処理する。"""
+    """少数 line を slice 単位で処理する。"""
     for i in range(int(offsets.size) - 1):
         s = int(offsets[i])
         e = int(offsets[i + 1])
@@ -94,28 +94,13 @@ def _scale_polylines_loop(
 
 
 def _can_scale_polylines_in_bulk(
-    coords: np.ndarray,
-    offsets: np.ndarray,
     *,
     line_count: int,
     factors: np.ndarray,
 ) -> bool:
-    """bulk 経路が前提とする canonical packed geometry かを返す。"""
+    """bulk 経路が有利かつ分割 ufunc に安全な値域かを返す。"""
     return bool(
         line_count >= _BULK_LINE_THRESHOLD
-        and type(coords) is np.ndarray
-        and coords.ndim == 2
-        and coords.shape[1] == 3
-        and coords.dtype == np.float32
-        and coords.flags.c_contiguous
-        and type(offsets) is np.ndarray
-        and offsets.ndim == 1
-        and offsets.dtype == np.int32
-        and offsets.size >= 1
-        and offsets[0] == 0
-        and offsets[-1] == coords.shape[0]
-        and np.all(offsets[1:] >= offsets[:-1])
-        and np.isfinite(coords).all()
         and _split_ufunc_values_are_safe(factors)
     )
 
@@ -226,7 +211,7 @@ def _scale_polyline_chunk(
         length = int(length_raw)
         same_length_lines = target_lines[target_lengths == length_raw]
 
-        # 巨大 line は index/gather 配列を作らず、従来の slice 演算を用いる。
+        # 巨大 line は index/gather 配列を作らず、slice 演算を用いる。
         if length > _BULK_VERTEX_CHUNK:
             for line_index in same_length_lines:
                 s = int(starts[line_index])
@@ -280,56 +265,27 @@ def scale(
     tuple[np.ndarray, np.ndarray]
         スケール後の実体ジオメトリ（coords, offsets）。
     """
-    if not isinstance(mode, str):
-        raise TypeError("scale: mode は str である必要がある")
-    if mode not in {"all", "by_line", "by_face"}:
-        raise ValueError(f"scale: 未知の mode です: {mode!r}")
-    mode_s = mode
-    scale_value = finite_vec3(scale, name="scale: scale")
-    pivot_value = finite_vec3(pivot, name="scale: pivot")
-
     coords, offsets = g
     if coords.shape[0] == 0:
         return coords, offsets
 
-    sx, sy, sz = scale_value
+    sx, sy, sz = scale
     if sx == 1.0 and sy == 1.0 and sz == 1.0:
         return coords, offsets
 
     factors = np.array([sx, sy, sz], dtype=np.float64)
 
-    if mode_s == "all":
-        optimize_buffers = bool(
-            type(coords) is np.ndarray
-            and coords.dtype == np.float32
-            and coords.ndim == 2
-            and coords.shape[1] == 3
-            and coords.flags.c_contiguous
-            and np.isfinite(coords).all()
-        )
-        if not optimize_buffers:
-            # ndarray subclass は従来の ufunc dispatch と例外を維持する。
-            if auto_center:
-                center = coords.astype(np.float64, copy=False).mean(axis=0)
-            else:
-                center = np.asarray(pivot_value, dtype=np.float64)
-            shifted = coords.astype(np.float64, copy=False) - center
-            scaled = shifted * factors + center
-            coords_out = scaled.astype(np.float32, copy=False)
-            return coords_out, offsets
-
+    if mode == "all":
         # 中心を決定（auto_center 優先）
         if auto_center:
             coords64 = coords.astype(np.float64, copy=True)
             center = coords64.mean(axis=0)
         else:
-            center = np.asarray(pivot_value, dtype=np.float64)
+            center = np.asarray(pivot, dtype=np.float64)
             coords64 = coords.astype(np.float64, copy=True)
 
         if (
             coords64.shape[0] >= _AXIS_WISE_VERTEX_THRESHOLD
-            and coords64.ndim == 2
-            and coords64.shape[1] == 3
             and _split_ufunc_values_are_safe(factors)
             and _split_ufunc_values_are_safe(center)
         ):
@@ -339,7 +295,6 @@ def scale(
                 axis_coords *= factors[axis]
                 axis_coords += center[axis]
         else:
-            # 非 canonical shape は従来の broadcast 演算へ渡し、同じ例外を保つ。
             coords64 -= center
             coords64 *= factors
             coords64 += center
@@ -349,14 +304,12 @@ def scale(
     coords64 = coords.astype(np.float64, copy=True)
     line_count = int(offsets.size) - 1
     if _can_scale_polylines_in_bulk(
-        coords,
-        offsets,
         line_count=line_count,
         factors=factors,
     ):
-        _scale_polylines_bulk(coords64, offsets, mode=mode_s, factors=factors)
+        _scale_polylines_bulk(coords64, offsets, mode=mode, factors=factors)
     else:
-        _scale_polylines_loop(coords64, offsets, mode=mode_s, factors=factors)
+        _scale_polylines_loop(coords64, offsets, mode=mode, factors=factors)
 
     coords_out = coords64.astype(np.float32, copy=False)
     return coords_out, offsets

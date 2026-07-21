@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import psutil
 import pytest
 
 from grafix.interactive.parameter_gui.monitor_bar import (
@@ -276,3 +279,82 @@ def test_monitor_snapshot_validates_direct_construction(
     values.update(kwargs)
     with pytest.raises((TypeError, ValueError)):
         MonitorSnapshot(**values)  # type: ignore[arg-type]
+
+
+class _ProcessMetrics:
+    def __init__(
+        self,
+        *,
+        user: float = 1.0,
+        system: float = 2.0,
+        rss: int = 10,
+        children: tuple[object, ...] = (),
+    ) -> None:
+        self._times = SimpleNamespace(user=user, system=system)
+        self._rss = rss
+        self._children = children
+
+    def cpu_times(self) -> object:
+        return self._times
+
+    def memory_info(self) -> object:
+        return SimpleNamespace(rss=self._rss)
+
+    def children(self, *, recursive: bool) -> list[object]:
+        assert recursive is True
+        return list(self._children)
+
+
+class _VanishedProcess:
+    def cpu_times(self) -> object:
+        raise psutil.NoSuchProcess(12345)
+
+    def memory_info(self) -> object:
+        raise psutil.NoSuchProcess(12345)
+
+
+def test_runtime_monitor_skips_only_known_child_process_races() -> None:
+    child = _ProcessMetrics(user=0.25, system=0.75, rss=7)
+    parent = _ProcessMetrics(children=(child, _VanishedProcess()))
+    monitor = RuntimeMonitor()
+    monitor._process = parent  # type: ignore[assignment]
+
+    assert monitor._cpu_total_s() == pytest.approx(4.0)
+    assert monitor._rss_bytes() == 17
+
+
+def test_runtime_monitor_tolerates_known_child_enumeration_race() -> None:
+    class ChildEnumerationUnavailable(_ProcessMetrics):
+        def children(self, *, recursive: bool) -> list[object]:
+            assert recursive is True
+            raise psutil.AccessDenied(12345)
+
+    monitor = RuntimeMonitor()
+    monitor._process = ChildEnumerationUnavailable()  # type: ignore[assignment]
+
+    assert monitor._cpu_total_s() == pytest.approx(3.0)
+    assert monitor._rss_bytes() == 10
+
+
+def test_runtime_monitor_does_not_hide_psutil_api_mismatch() -> None:
+    class IncompleteProcess(_ProcessMetrics):
+        def cpu_times(self) -> object:
+            return SimpleNamespace(user=1.0)
+
+    monitor = RuntimeMonitor()
+    monitor._process = IncompleteProcess()  # type: ignore[assignment]
+
+    with pytest.raises(AttributeError, match="system"):
+        monitor._cpu_total_s()
+
+
+def test_runtime_monitor_does_not_hide_unexpected_child_error() -> None:
+    class BrokenChild(_ProcessMetrics):
+        def cpu_times(self) -> object:
+            raise RuntimeError("broken psutil adapter")
+
+    monitor = RuntimeMonitor()
+    monitor._process = _ProcessMetrics(children=(BrokenChild(),))  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="broken psutil adapter"):
+        monitor._cpu_total_s()

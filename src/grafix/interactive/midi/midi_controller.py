@@ -6,13 +6,123 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sys
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, NoReturn, Protocol, runtime_checkable
 
 from grafix.core.atomic_write import atomic_write_text
+from grafix.core.lifecycle import CleanupErrors
 from grafix.core.runtime_config import output_root_dir
-from grafix.core.value_validation import exact_string_choice
+from grafix.core.value_validation import exact_string, exact_string_choice
+from grafix.interactive.runtime.diagnostics import DiagnosticAction, DiagnosticEvent
+
+
+MIDI_CC_SNAPSHOT_SCHEMA_VERSION = 1
+CcSnapshotLoadStatus = Literal["loaded", "missing", "corrupt", "old", "future"]
+
+
+def _cc_number(value: object, *, name: str) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{name} は int である必要があります")
+    if not 0 <= value <= 127:
+        raise ValueError(f"{name} は 0..127 である必要があります")
+    return value
+
+
+def _cc_value(value: object, *, name: str) -> float:
+    if type(value) is not float:
+        raise TypeError(f"{name} は float である必要があります")
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} は有限な 0.0..1.0 である必要があります")
+    return value
+
+
+@runtime_checkable
+class MidiInputPort(Protocol):
+    """MidiController が所有する入力 port の最小 interface。"""
+
+    def iter_pending(self) -> Iterable[object]:
+        """未処理 message を返す。"""
+
+    def close(self) -> None:
+        """入力 port を閉じる。"""
+
+
+def _validated_input_port(value: object) -> MidiInputPort:
+    if (
+        not isinstance(value, MidiInputPort)
+        or not callable(value.iter_pending)
+        or not callable(value.close)
+    ):
+        raise TypeError("inport は iter_pending()/close() を持つ必要があります")
+    return value
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CcSnapshotLoadResult:
+    """CC snapshot の strict load 結果。"""
+
+    values: tuple[tuple[int, float], ...]
+    status: CcSnapshotLoadStatus
+    source: Path
+    diagnostic: DiagnosticEvent | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.values) is not tuple:
+            raise TypeError("values は (cc, value) の tuple である必要があります")
+        previous_cc = -1
+        for index, entry in enumerate(self.values):
+            if type(entry) is not tuple or len(entry) != 2:
+                raise TypeError(f"values[{index}] は (cc, value) tuple である必要があります")
+            cc = _cc_number(entry[0], name=f"values[{index}].cc")
+            value = _cc_value(entry[1], name=f"values[{index}].value")
+            if cc <= previous_cc:
+                raise ValueError("values の CC は昇順かつ一意である必要があります")
+            previous_cc = cc
+            if type(entry[1]) is not float or entry != (cc, value):
+                raise TypeError(f"values[{index}] は canonical 値である必要があります")
+        exact_string_choice(
+            self.status,
+            name="status",
+            choices=("loaded", "missing", "corrupt", "old", "future"),
+        )
+        if not isinstance(self.source, Path):
+            raise TypeError("source は Path である必要があります")
+        if self.diagnostic is not None and not isinstance(
+            self.diagnostic,
+            DiagnosticEvent,
+        ):
+            raise TypeError("diagnostic は DiagnosticEvent または None である必要があります")
+        if self.status in {"loaded", "missing"}:
+            if self.diagnostic is not None:
+                raise ValueError("loaded/missing result に diagnostic は指定できません")
+            if self.status == "missing" and self.values:
+                raise ValueError("missing result の values は空である必要があります")
+        elif self.values or self.diagnostic is None:
+            raise ValueError("reject result は空 values と diagnostic を持つ必要があります")
+
+    @property
+    def writable(self) -> bool:
+        """既存原本を通常 save で更新してよい場合に True を返す。"""
+
+        return self.status in {"loaded", "missing"}
+
+    def as_dict(self) -> dict[int, float]:
+        """controller が所有できる mutable copy を返す。"""
+
+        return dict(self.values)
+
+
+class CcSnapshotWriteBlockedError(RuntimeError):
+    """reject した snapshot 原本への暗黙上書きを表す例外。"""
+
+
+class MidiConnectionError(RuntimeError):
+    """MIDI input port の取得または iterator 処理失敗を表す。"""
 
 
 def _contains_japanese(text: str) -> bool:
@@ -45,7 +155,7 @@ def _restore_macos_mojibake(text: str) -> str:
 def _sanitize_filename_fragment(text: str) -> str:
     """ファイル名に埋め込めるように text を正規化して返す。"""
 
-    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(text))
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
     normalized = normalized.strip("._-")
     return normalized or "unknown"
 
@@ -54,59 +164,217 @@ def _default_profile_name() -> str:
     """実行スクリプト名から profile 名を推定して返す。"""
 
     argv0 = sys.argv[0] if sys.argv else ""
-    stem = Path(str(argv0)).stem if argv0 else ""
+    stem = Path(argv0).stem if argv0 else ""
     return stem or "unknown"
 
 
 def default_cc_snapshot_path(*, profile_name: str, save_dir: Path | None) -> Path:
     """CC スナップショットの既定保存パスを返す。"""
 
+    profile = exact_string(profile_name, name="profile_name")
+    if not profile:
+        raise ValueError("profile_name は空にできません")
+    if save_dir is not None and not isinstance(save_dir, Path):
+        raise TypeError("save_dir は Path または None である必要があります")
     base = save_dir if save_dir is not None else output_root_dir() / "midi"
-    profile_fragment = _sanitize_filename_fragment(profile_name)
+    profile_fragment = _sanitize_filename_fragment(profile)
     return base / f"{profile_fragment}.json"
 
 
-def load_cc_snapshot(path: Path) -> dict[int, float]:
-    """CC スナップショットを JSON からロードして返す。無ければ空 dict を返す。"""
+def _snapshot_diagnostic(
+    *,
+    status: Literal["corrupt", "old", "future"],
+    path: Path,
+    details: str,
+) -> DiagnosticEvent:
+    summaries = {
+        "corrupt": "MIDI CC snapshot が破損しているため値を復元しません",
+        "old": "古い MIDI CC snapshot のため値を復元しません",
+        "future": "未対応の MIDI CC snapshot のため値を復元しません",
+    }
+    return DiagnosticEvent(
+        category="midi",
+        severity="warning",
+        summary=summaries[status],
+        details=details,
+        source=str(path),
+        actions=(DiagnosticAction("discard", "Clear saved snapshot"),),
+        dedupe_key=f"midi-snapshot-{status}:{path}",
+    )
 
+
+def _rejected_snapshot(
+    *,
+    status: Literal["corrupt", "old", "future"],
+    path: Path,
+    details: str,
+) -> CcSnapshotLoadResult:
+    return CcSnapshotLoadResult(
+        values=(),
+        status=status,
+        source=path,
+        diagnostic=_snapshot_diagnostic(
+            status=status,
+            path=path,
+            details=details,
+        ),
+    )
+
+
+def _decode_cc_snapshot(data: object) -> tuple[tuple[int, float], ...]:
+    if type(data) is not dict:
+        raise ValueError("MIDI CC snapshot は object である必要があります")
+    if set(data) != {"schema_version", "values"}:
+        raise ValueError(
+            "MIDI CC snapshot は schema_version/values だけを含む必要があります"
+        )
+    values = data["values"]
+    if type(values) is not list:
+        raise ValueError("MIDI CC snapshot values は array である必要があります")
+
+    decoded: list[tuple[int, float]] = []
+    previous_cc = -1
+    for index, raw_entry in enumerate(values):
+        if type(raw_entry) is not dict or set(raw_entry) != {"cc", "value"}:
+            raise ValueError(
+                f"MIDI CC snapshot values[{index}] は cc/value record である必要があります"
+            )
+        cc = _cc_number(raw_entry["cc"], name=f"values[{index}].cc")
+        value = _cc_value(raw_entry["value"], name=f"values[{index}].value")
+        if cc <= previous_cc:
+            raise ValueError("MIDI CC snapshot values は CC 昇順かつ一意である必要があります")
+        previous_cc = cc
+        decoded.append((cc, value))
+    return tuple(decoded)
+
+
+def _json_object_without_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    decoded: dict[str, object] = {}
+    for key, value in pairs:
+        if key in decoded:
+            raise ValueError(f"MIDI CC snapshot に重複 key があります: {key!r}")
+        decoded[key] = value
+    return decoded
+
+
+def load_cc_snapshot(path: Path) -> CcSnapshotLoadResult:
+    """CC snapshot を現行 schema だけから診断付きでロードする。"""
+
+    if not isinstance(path, Path):
+        raise TypeError("path は Path である必要があります")
     try:
         payload = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {}
-    except OSError:
-        return {}
+        return CcSnapshotLoadResult(values=(), status="missing", source=path)
+    except (OSError, UnicodeError) as exc:
+        return _rejected_snapshot(
+            status="corrupt",
+            path=path,
+            details=f"{type(exc).__name__}: {exc}",
+        )
 
     try:
-        data = json.loads(payload)
-    except json.JSONDecodeError:
-        return {}
+        data = json.loads(
+            payload,
+            object_pairs_hook=_json_object_without_duplicate_keys,
+        )
+    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
+        return _rejected_snapshot(
+            status="corrupt",
+            path=path,
+            details=f"{type(exc).__name__}: {exc}",
+        )
+    if type(data) is not dict:
+        return _rejected_snapshot(
+            status="corrupt",
+            path=path,
+            details="top-level value は object である必要があります",
+        )
 
-    if not isinstance(data, dict):
-        return {}
+    if "schema_version" not in data:
+        return _rejected_snapshot(
+            status="old",
+            path=path,
+            details="schema_version がありません",
+        )
+    version = data["schema_version"]
+    if type(version) is not int:
+        return _rejected_snapshot(
+            status="corrupt",
+            path=path,
+            details="schema_version は int である必要があります",
+        )
+    if version < MIDI_CC_SNAPSHOT_SCHEMA_VERSION:
+        return _rejected_snapshot(
+            status="old",
+            path=path,
+            details=f"schema_version={version}",
+        )
+    if version > MIDI_CC_SNAPSHOT_SCHEMA_VERSION:
+        return _rejected_snapshot(
+            status="future",
+            path=path,
+            details=f"schema_version={version}",
+        )
 
-    out: dict[int, float] = {}
-    for key, value in data.items():
-        try:
-            cc_number = int(key)
-            out[cc_number] = float(value)
-        except Exception:
-            continue
-    return out
+    try:
+        values = _decode_cc_snapshot(data)
+    except (TypeError, ValueError) as exc:
+        return _rejected_snapshot(
+            status="corrupt",
+            path=path,
+            details=f"{type(exc).__name__}: {exc}",
+        )
+    return CcSnapshotLoadResult(values=values, status="loaded", source=path)
+
+
+def _normalized_snapshot_values(
+    snapshot: dict[int, float],
+) -> tuple[tuple[int, float], ...]:
+    if type(snapshot) is not dict:
+        raise TypeError("snapshot は dict[int, float] である必要があります")
+    normalized: list[tuple[int, float]] = []
+    for raw_cc, raw_value in snapshot.items():
+        cc = _cc_number(raw_cc, name="snapshot cc")
+        value = _cc_value(raw_value, name=f"snapshot[{cc}]")
+        normalized.append((cc, value))
+    return tuple(sorted(normalized, key=lambda item: item[0]))
+
+
+def _snapshot_records(snapshot: dict[int, float]) -> list[dict[str, int | float]]:
+    return [
+        {"cc": cc, "value": value}
+        for cc, value in _normalized_snapshot_values(snapshot)
+    ]
 
 
 def save_cc_snapshot(snapshot: dict[int, float], path: Path) -> None:
-    """CC スナップショットを JSON として保存する。"""
+    """CC snapshot を現行 schema 一形で atomic 保存する。"""
 
-    payload = {str(k): float(v) for k, v in sorted(snapshot.items())}
+    if not isinstance(path, Path):
+        raise TypeError("path は Path である必要があります")
+    payload = {
+        "schema_version": MIDI_CC_SNAPSHOT_SCHEMA_VERSION,
+        "values": _snapshot_records(snapshot),
+    }
     atomic_write_text(
         path,
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n",
     )
 
 
 def load_frozen_cc_snapshot(
     *, profile_name: str, save_dir: Path | None = None
-) -> dict[int, float]:
+) -> CcSnapshotLoadResult:
     """永続化済みの CC スナップショットをロードして返す。
 
     Notes
@@ -115,7 +383,7 @@ def load_frozen_cc_snapshot(
     - ファイル命名ルールは `default_cc_snapshot_path()` に従う（現行維持）。
     """
 
-    path = default_cc_snapshot_path(profile_name=str(profile_name), save_dir=save_dir)
+    path = default_cc_snapshot_path(profile_name=profile_name, save_dir=save_dir)
     return load_cc_snapshot(path)
 
 
@@ -125,7 +393,7 @@ def maybe_load_frozen_cc_snapshot(
     controller: "MidiController | None",
     profile_name: str,
     save_dir: Path | None = None,
-) -> dict[int, float] | None:
+) -> CcSnapshotLoadResult | None:
     """MIDI 接続に失敗した場合に限り、凍結 CC スナップショットを返す。
 
     - port_name=None（ユーザーが明示的に MIDI 無効）なら凍結しない。
@@ -162,7 +430,7 @@ class MidiController:
     persistence_path
         永続化ファイルパス。指定時は profile_name/save_dir より優先する。
     inport
-        既存の入力ポート（テスト用）。指定時は mido を使ってポートを開かない。
+        既存の入力ポート。指定時は mido を使ってポートを開かない。
     """
 
     MSB_THRESHOLD = 32
@@ -177,22 +445,36 @@ class MidiController:
         profile_name: str | None = None,
         save_dir: Path | None = None,
         persistence_path: Path | None = None,
-        inport: object | None = None,
+        inport: MidiInputPort | None = None,
     ) -> None:
+        port = exact_string(port_name, name="port_name")
+        if not port:
+            raise ValueError("port_name は空にできません")
         mode_value = exact_string_choice(
             mode,
             name="mode",
             choices=("7bit", "14bit"),
         )
-
-        self.port_name = str(port_name)
-        self.mode = mode_value
-        self.profile_name = (
-            str(profile_name) if profile_name is not None else _default_profile_name()
+        profile = (
+            _default_profile_name()
+            if profile_name is None
+            else exact_string(profile_name, name="profile_name")
         )
+        if not profile:
+            raise ValueError("profile_name は空にできません")
+        if save_dir is not None and not isinstance(save_dir, Path):
+            raise TypeError("save_dir は Path または None である必要があります")
+        if persistence_path is not None and not isinstance(persistence_path, Path):
+            raise TypeError(
+                "persistence_path は Path または None である必要があります"
+            )
+
+        self.port_name = port
+        self.mode = mode_value
+        self.profile_name = profile
         self._save_dir = save_dir
         self._path = (
-            Path(persistence_path)
+            persistence_path
             if persistence_path is not None
             else default_cc_snapshot_path(
                 profile_name=self.profile_name,
@@ -200,18 +482,22 @@ class MidiController:
             )
         )
 
-        self._logger = logging.getLogger(__name__)
         self._msb_by_cc: dict[int, int] = {}
         self.cc: dict[int, float] = {}
         self.cc_change_seq = 0
         self.last_cc_change: tuple[int, int] | None = None
 
-        self.inport = (
-            inport
+        self.inport: MidiInputPort | None = (
+            _validated_input_port(inport)
             if inport is not None
             else self.validate_and_open_port(self.port_name)
         )
-        self.load()
+        self._snapshot_load_result = CcSnapshotLoadResult(
+            values=(),
+            status="missing",
+            source=self._path,
+        )
+        self._load_snapshot()
 
     @property
     def path(self) -> Path:
@@ -219,35 +505,73 @@ class MidiController:
 
         return self._path
 
-    def load(self) -> None:
-        """永続化ファイルから CC スナップショットをロードして反映する。"""
+    @property
+    def snapshot_load_result(self) -> CcSnapshotLoadResult:
+        """直近の永続 snapshot load 結果を返す。"""
 
-        self.cc = load_cc_snapshot(self._path)
+        return self._snapshot_load_result
+
+    def _load_snapshot(self) -> CcSnapshotLoadResult:
+        """永続化ファイルを読み、現行 schema の値だけを反映する。"""
+
+        result = load_cc_snapshot(self._path)
+        self.cc = result.as_dict()
+        self._snapshot_load_result = result
+        return result
 
     def save(self) -> None:
         """現在の CC スナップショットを永続化ファイルへ保存する。"""
 
+        if not self._snapshot_load_result.writable:
+            raise CcSnapshotWriteBlockedError(
+                "reject した MIDI CC snapshot 原本は自動保存で上書きできません: "
+                f"status={self._snapshot_load_result.status}, path={self._path}"
+            )
         save_cc_snapshot(self.cc, self._path)
+        self._snapshot_load_result = CcSnapshotLoadResult(
+            values=_normalized_snapshot_values(self.cc),
+            status="loaded",
+            source=self._path,
+        )
+
+    def discard_persisted_snapshot(self) -> None:
+        """保存済み原本だけを空の現行 schema へ置き換える。"""
+
+        save_cc_snapshot({}, self._path)
+        self._snapshot_load_result = CcSnapshotLoadResult(
+            values=(),
+            status="loaded",
+            source=self._path,
+        )
 
     def snapshot(self) -> dict[int, float]:
         """現在の CC スナップショット（コピー）を返す。"""
 
         return dict(self.cc)
 
-    def iter_pending(self):
+    def iter_pending(self) -> Iterable[object]:
         """入力ポートの pending メッセージを返す（mido の API に準拠）。"""
 
         if self.inport is None:
             return iter(())
-        return self.inport.iter_pending()  # type: ignore[attr-defined]
+        return self.inport.iter_pending()
 
-    def poll_pending(self, *, max_messages: int | None = None) -> int:
+    def poll_pending(self) -> int:
         """pending メッセージを取り出して処理し、CC 更新回数を返す。"""
 
+        try:
+            pending = iter(self.iter_pending())
+        except Exception as exc:
+            raise MidiConnectionError("MIDI input port から pending を取得できません") from exc
+
         updated = 0
-        for i, msg in enumerate(self.iter_pending()):
-            if max_messages is not None and i >= max_messages:
+        while True:
+            try:
+                msg = next(pending)
+            except StopIteration:
                 break
+            except Exception as exc:
+                raise MidiConnectionError("MIDI input iterator の読み取りに失敗しました") from exc
             if self.update(msg):
                 updated += 1
         return updated
@@ -255,27 +579,23 @@ class MidiController:
     def update(self, msg: object) -> bool:
         """MIDI メッセージを 1 つ処理し、CC が更新されたら True を返す。"""
 
-        if getattr(msg, "type", None) != "control_change":
+        message_type = exact_string(getattr(msg, "type"), name="message.type")
+        if message_type != "control_change":
             return False
-        try:
-            control = int(getattr(msg, "control"))
-            value = int(getattr(msg, "value"))
-        except Exception:
-            return False
+        control = _cc_number(getattr(msg, "control"), name="message.control")
+        value = _cc_number(getattr(msg, "value"), name="message.value")
         return self.update_cc(control=control, value=value)
 
     def update_cc(self, *, control: int, value: int) -> bool:
         """CC メッセージを処理し、CC が更新されたら True を返す。"""
 
+        control_i = _cc_number(control, name="control")
+        value_i = _cc_number(value, name="value")
         if self.mode == "7bit":
-            cc_number = int(control)
-            self.cc[cc_number] = float(value) / float(self.MAX_7BIT_VAL)
+            self.cc[control_i] = value_i / self.MAX_7BIT_VAL
             self.cc_change_seq += 1
-            self.last_cc_change = (int(self.cc_change_seq), int(cc_number))
+            self.last_cc_change = (self.cc_change_seq, control_i)
             return True
-
-        control_i = int(control)
-        value_i = int(value)
 
         if control_i < self.MSB_THRESHOLD:
             self._msb_by_cc[control_i] = value_i
@@ -286,36 +606,34 @@ class MidiController:
         if msb is None:
             return False
 
-        value_14bit = (int(msb) << 7) | value_i
-        cc_number = int(msb_cc)
-        self.cc[cc_number] = float(value_14bit) / float(self.MAX_14BIT_VAL)
+        value_14bit = (msb << 7) | value_i
+        self.cc[msb_cc] = value_14bit / self.MAX_14BIT_VAL
         self.cc_change_seq += 1
-        self.last_cc_change = (int(self.cc_change_seq), int(cc_number))
+        self.last_cc_change = (self.cc_change_seq, msb_cc)
         return True
 
     def close(self) -> None:
-        """入力ポートを close する（対応していれば）。"""
+        """入力ポートを close する。"""
 
         inport = self.inport
         self.inport = None
         if inport is None:
             return
-        close = getattr(inport, "close", None)
-        if callable(close):
-            close()
+        inport.close()
 
     @staticmethod
-    def validate_and_open_port(port_name: str):
+    def validate_and_open_port(port_name: str) -> MidiInputPort:
         """ポート名を検証して入力ポートを開く。"""
 
         import mido  # type: ignore
 
         if port_name in mido.get_input_names():  # type: ignore
-            return mido.open_input(port_name)  # type: ignore
+            inport = mido.open_input(port_name)  # type: ignore
+            return _validated_input_port(inport)
         MidiController.handle_invalid_port_name(port_name)
 
     @staticmethod
-    def handle_invalid_port_name(port_name: str) -> None:
+    def handle_invalid_port_name(port_name: str) -> NoReturn:
         """InvalidPortError を送出する（利用可能ポート名も含める）。"""
 
         import mido  # type: ignore
@@ -339,6 +657,27 @@ class MidiController:
         logger.info("Available ports:")
         logger.info("  input: %s", input_names_display)
         logger.info("  output: %s", output_names_display)
+
+
+def _shutdown_midi_controller(
+    controller: MidiController,
+    *,
+    on_snapshot_save_skipped: Callable[[MidiController], None],
+    report_secondary: Callable[[str], None] | None = None,
+) -> None:
+    """snapshot save と port close を独立に実行し、最初の失敗を保持する。"""
+
+    errors = CleanupErrors(report_secondary=report_secondary)
+
+    def save_snapshot() -> None:
+        try:
+            controller.save()
+        except CcSnapshotWriteBlockedError:
+            on_snapshot_save_skipped(controller)
+
+    errors.attempt(save_snapshot, "save MIDI CC snapshot")
+    errors.attempt(controller.close, "close MIDI controller")
+    errors.raise_if_any()
 
 
 if __name__ == "__main__":

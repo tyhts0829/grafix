@@ -779,7 +779,7 @@ def _run_visibility(
             "model_builds": model_builds,
             "view_builds": view_builds,
             "search_mode": "query-change" if search else "stable",
-            "search_trace": search_trace,
+            "search_trace": [list(item) for item in search_trace],
             "visibility_digest": visibility_digest,
         },
         metrics=tuple(metrics),

@@ -9,10 +9,10 @@ from grafix.core.parameters.style import (
     STYLE_BACKGROUND_COLOR,
     STYLE_GLOBAL_LINE_COLOR,
     STYLE_GLOBAL_THICKNESS,
-    coerce_rgb255,
     rgb01_to_rgb255,
     rgb255_to_rgb01,
     style_key,
+    validate_rgb255,
 )
 
 
@@ -28,17 +28,29 @@ def test_rgb255_to_rgb01_converts():
     assert b == 1.0
 
 
-def test_coerce_rgb255_returns_rgb255_tuple():
-    assert coerce_rgb255((0, 128, 255)) == (0, 128, 255)
+def test_validate_rgb255_returns_canonical_rgb255_tuple():
+    assert validate_rgb255((0, 128, 255)) == (0, 128, 255)
 
 
-def test_coerce_rgb255_converts_and_clamps():
-    assert coerce_rgb255((-1, 256, 0.2)) == (0, 255, 0)
+@pytest.mark.parametrize(
+    "value",
+    [
+        [0, 128, 255],
+        ("0", 128, 255),
+        (False, 128, 255),
+        (0.0, 128, 255),
+        (0, 128),
+    ],
+)
+def test_validate_rgb255_rejects_noncanonical_types(value: object):
+    with pytest.raises(TypeError):
+        validate_rgb255(value)
 
 
-def test_coerce_rgb255_rejects_non_length3():
+@pytest.mark.parametrize("value", [(-1, 128, 255), (0, 128, 256)])
+def test_validate_rgb255_rejects_out_of_range_values(value: object):
     with pytest.raises(ValueError):
-        coerce_rgb255((1, 2))
+        validate_rgb255(value)
 
 
 def test_ensure_style_entries_creates_state_and_meta():

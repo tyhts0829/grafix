@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from grafix.api.effects import EffectBuilder
+from grafix.api.effects import EffectBuilder, _make_effect_operation_step
 from grafix.core.builtins import ensure_builtin_effect_registered
 from grafix.core.geometry import Geometry
 from grafix.core.parameters.effects import EffectStepKey
@@ -20,8 +20,16 @@ ensure_builtin_effect_registered("rotate")
 ensure_builtin_effect_registered("translate")
 _BUILDER = EffectBuilder(
     steps=(
-        ("rotate", {"rotation": (0.0, 0.0, 20.0)}, _ROTATE_KEY[1]),
-        ("translate", {"delta": (2.0, 3.0, 4.0)}, _TRANSLATE_KEY[1]),
+        _make_effect_operation_step(
+            op="rotate",
+            params={"rotation": (0.0, 0.0, 20.0)},
+            site_id=_ROTATE_KEY[1],
+        ),
+        _make_effect_operation_step(
+            op="translate",
+            params={"delta": (2.0, 3.0, 4.0)},
+            site_id=_TRANSLATE_KEY[1],
+        ),
     ),
     chain_id=_CHAIN_ID,
 )
@@ -117,4 +125,4 @@ def test_failed_worker_result_discards_partial_effect_topology() -> None:
 
     assert result.error is not None
     assert "draw failed after topology observation" in result.error
-    assert result.effect_chains == []
+    assert result.effect_chains == ()

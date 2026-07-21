@@ -4,17 +4,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal
 
 from grafix.core.value_validation import exact_integer
 
-from .identity import group_key
+from .identity import GroupKey, group_key
 from .key import ParameterKey
 from .meta import ParamMeta
-
-GroupKey = tuple[str, str]  # (op, site_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +24,15 @@ class GroupFingerprint:
     args: frozenset[str]
     kind_by_arg: Mapping[str, str]
     label: str | None
+
+    def __post_init__(self) -> None:
+        """引数 kind の owned immutable copy を保持する。"""
+
+        object.__setattr__(
+            self,
+            "kind_by_arg",
+            MappingProxyType(dict(self.kind_by_arg)),
+        )
 
 
 ReconcileOrphanReason = Literal["tie", "claimed"]
@@ -89,7 +97,7 @@ def _match_score(a: GroupFingerprint, b: GroupFingerprint) -> int:
     """fingerprint 間の類似度スコアを返す（大きいほど近い）。"""
 
     if a.op != b.op:
-        return -10**9
+        return -(10**9)
 
     score = 0
 
@@ -162,9 +170,7 @@ def plan_group_reconciliation(
             continue
 
         best_score = max(score for score, _group in scored)
-        best_stale = tuple(
-            sorted(group for score, group in scored if score == best_score)
-        )
+        best_stale = tuple(sorted(group for score, group in scored if score == best_score))
         if len(best_stale) != 1:
             orphans.append(
                 ReconcileOrphan(
@@ -191,11 +197,7 @@ def plan_group_reconciliation(
         proposals = candidates_by_stale[stale_group]
         best_score = max(score for score, _fresh_group in proposals)
         best_fresh = tuple(
-            sorted(
-                fresh_group
-                for score, fresh_group in proposals
-                if score == best_score
-            )
+            sorted(fresh_group for score, fresh_group in proposals if score == best_score)
         )
         if len(best_fresh) != 1:
             for fresh_group in best_fresh:
@@ -228,11 +230,7 @@ def plan_group_reconciliation(
     # 全候補が使用済みになった orphan は一覧から外す。
     available_orphans: list[ReconcileOrphan] = []
     for orphan in orphans:
-        available = tuple(
-            group
-            for group in orphan.candidate_old_groups
-            if group not in used_stale
-        )
+        available = tuple(group for group in orphan.candidate_old_groups if group not in used_stale)
         if available:
             available_orphans.append(
                 ReconcileOrphan(
@@ -249,7 +247,6 @@ def plan_group_reconciliation(
 
 __all__ = [
     "GroupFingerprint",
-    "GroupKey",
     "ReconcileOrphan",
     "ReconcileOrphanReason",
     "ReconcilePlan",

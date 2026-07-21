@@ -104,11 +104,10 @@ def test_deep_binary_recipe_object_protocols_do_not_recurse() -> None:
     geometry = leaf
     for _ in range(10_000):
         geometry = geometry + leaf
-    same_content = Geometry(
-        id=geometry.id,
+    same_content = Geometry.create(
         op=geometry.op,
         inputs=geometry.inputs,
-        args=geometry.args,
+        params=dict(geometry.args),
     )
 
     assert geometry == same_content
@@ -119,3 +118,15 @@ def test_deep_binary_recipe_object_protocols_do_not_recurse() -> None:
 
     assert restored == geometry
     assert restored.inputs[1] == leaf
+
+
+def test_geometry_direct_constructor_is_not_an_identity_injection_surface() -> None:
+    geometry = _g("source")
+
+    with pytest.raises(TypeError):
+        Geometry(  # type: ignore[call-arg]
+            id=geometry.id,
+            op="different-recipe",
+            inputs=(),
+            args=(),
+        )

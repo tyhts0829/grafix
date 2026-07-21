@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
+
 import numpy as np
 import pytest
+from shapely.errors import GEOSException  # type: ignore[import-untyped]
 
 from grafix.api import E, G
 from grafix.core.effects.partition import partition as partition_impl
@@ -11,7 +14,7 @@ from grafix.core.primitive_registry import primitive
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
-pytest.importorskip("shapely")
+partition_module = importlib.import_module("grafix.core.effects.partition")
 
 
 @primitive
@@ -30,23 +33,42 @@ def partition_test_square() -> GeomTuple:
     return coords, offsets
 
 
-def test_partition_rejects_invalid_control_parameters() -> None:
+def test_partition_rejects_invalid_control_ranges() -> None:
     base = realize(G.partition_test_square())
     geometry = (base.coords, base.offsets)
 
-    with pytest.raises(ValueError, match="mode"):
-        partition_impl(geometry, mode="unknown")
     with pytest.raises(ValueError, match="site_count"):
         partition_impl(geometry, site_count=0)
     with pytest.raises(ValueError, match="site_density_base"):
         partition_impl(geometry, site_density_base=(1.1, 0.0, 0.0))
-    with pytest.raises(TypeError, match="site_density_slope"):
-        partition_impl(
-            geometry,
-            site_density_slope=[0.0, 0.0, 0.0],  # type: ignore[arg-type]
-        )
-    with pytest.raises(ValueError, match="pivot"):
-        partition_impl(geometry, pivot=(0.0, float("nan"), 0.0))
+
+
+def test_partition_treats_polygon_geos_failure_as_invalid_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = realize(G.partition_test_square())
+
+    def raise_domain_error(*_args: object, **_kwargs: object) -> None:
+        raise GEOSException("invalid polygon")
+
+    monkeypatch.setattr(partition_module, "Polygon", raise_domain_error)
+    coords, offsets = partition_impl((base.coords, base.offsets))
+
+    assert coords is base.coords
+    assert offsets is base.offsets
+
+
+def test_partition_does_not_hide_internal_polygon_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = realize(G.partition_test_square())
+
+    def raise_internal_error(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("internal bug")
+
+    monkeypatch.setattr(partition_module, "Polygon", raise_internal_error)
+    with pytest.raises(RuntimeError, match="internal bug"):
+        partition_impl((base.coords, base.offsets))
 
 
 @primitive

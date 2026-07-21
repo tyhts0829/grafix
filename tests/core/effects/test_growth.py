@@ -10,7 +10,7 @@ import pytest
 from grafix.api import E, G
 from grafix.core.operation_diagnostics import operation_diagnostic_context
 from grafix.core.preview_quality import preview_quality_context
-from grafix.core.realize import realize
+from grafix.core.realize import RealizeError, realize
 
 
 def _geometry_digest(geometry: tuple[np.ndarray, np.ndarray]) -> str:
@@ -170,6 +170,27 @@ def test_growth_seed_count_zero_returns_empty_or_mask() -> None:
     out_show = realize(E.growth(seed_count=0, iters=100, show_mask=True)(mask))
     np.testing.assert_allclose(out_show.coords, realized_mask.coords, rtol=0.0, atol=1e-6)
     assert out_show.offsets.tolist() == realized_mask.offsets.tolist()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "parameter"),
+    [
+        ({"seed": -1}, "seed"),
+        ({"target_spacing": 0.0}, "target_spacing"),
+        ({"seed_count": -1}, "seed_count"),
+        ({"iters": -1}, "iters"),
+        ({"boundary_avoid": -0.1}, "boundary_avoid"),
+    ],
+)
+def test_growth_rejects_invalid_parameters_before_empty_mask(
+    kwargs: dict[str, int | float],
+    parameter: str,
+) -> None:
+    with pytest.raises(RealizeError) as exc_info:
+        realize(E.growth(**kwargs)(G.polyline(points=())))
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert parameter in str(exc_info.value.__cause__)
 
 
 def test_growth_draft_caps_iterations_and_sets_total_point_budget(

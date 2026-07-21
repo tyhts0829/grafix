@@ -29,8 +29,11 @@
 
 ## Parameter / effect topology
 
-- ParamStore は schema v3 だけを受理する。versionless、v1、v2、future schema は
+- ParamStore は schema v4 だけを受理する。versionless、v1、v2、v3、future schema は
   変換せず明示的に拒否し、原本を上書き・隔離しない。
+- 折りたたみヘッダは prefix 文字列でなく、`style` / `primitive` / `preset` /
+  `effect_chain` の tagged record として保存する。variation snapshot も同じ key record と
+  exact bool の `collapsed` を持つ record 列を使用する。
 - decode は診断を保持する `decode_param_store_result()` /
   `loads_param_store_result()` だけを使用し、復元値は `.store` から取得する。
   partial-invalid entry の `issues` を黙って捨てる旧 convenience 関数は削除した。
@@ -44,11 +47,13 @@
 - UI 更新は widget が返す canonical 値だけを受理する。数値文字列、bool から数値、
   float から int への切り捨て、NaN/Inf、範囲外 choice を暗黙変換せず、
   エラー時は ParamStore を変更しない。
+- RGB255 は exact 3-tuple の整数 `0..255` だけを受理する。list、数値文字列、bool、float、
+  範囲外値を `int()` 化や clamp で修復しない。
 - MIDI CC 番号は非 bool の整数 `0..127` に限定する。scalar CC は
   float/int/choice、3成分 CC は vec3 だけが対応し、RGB、bool、文字列、
   global/layer style への非機能 mapping は拒否する。JSON の
   `[null, null, null]` も `null` の別表現として受理しない。
-- 現行 writer が必ず出力する parameter/effect-chain ordinal が欠損した v3 payload は、
+- 現行 writer が必ず出力する parameter/effect-chain ordinal が欠損した v4 payload は、
   無診断で補わず decode issue として quarantine/recovery 経路へ送る。
 - effect chain は完全な `effect_steps` topology を必須とする。parameter record 単独の
   `chain_id` / `step_index` から chain を復元する経路は削除した。
@@ -88,6 +93,7 @@
 - 旧 site ID を新 encoding へ自動移行する対応表、読替え、互換 fallback はない。
   保存済み ParamStore の旧 ID は新 ID と同一視されないため、必要な値は明示的に
   作り直すか、保存データを repository 外で更新する。
+- Python frame/stack を取得できない場合は衝突する固定 site ID を生成せず、即時に失敗する。
 
 ## Capture / export / video
 
@@ -120,6 +126,7 @@
 
 - clock 名は `TransportClock` に統一し、`RealTimeClock` alias は削除した。
 - internal message DTO は keyword-only で、現在の処理に必要な metadata を明示する。
+- `ExportJob` も keyword-only であり、旧 positional field 順は受理しない。
 - scene evaluation は `quality`、frame export snapshot は capture 時刻 `t` を必須とする。
   draft/時刻 0 を暗黙に補う経路はない。
 - 対応 GUI dependency は `imgui>=2,<3`、`pyglet>=2.1,<3`。
@@ -131,11 +138,59 @@
 - parameter table は呼び出し側で構築した `ParameterTableView`、
   `GroupBlockLayout`、model rows を唯一の入力とし、render 中に同じ model を
   別引数から再構築する経路はない。
+- `retain_rollback=True` の source reload は、成功 generation ごとに
+  `accept_generation()` または `rollback_generation()` で明示的に完結させる。
+  pending transaction のまま次の `poll()` を呼ぶと失敗し、自動 accept は行わない。
+
+## MIDI snapshot / runtime dependency
+
+- MIDI CC snapshot は schema v1 の
+  `{schema_version, values: [{cc, value}, ...]}` 一形だけを受理する。record は CC 昇順かつ
+  一意、CC は exact built-in `int` `0..127`、value は exact built-in `float` の有限値
+  `0.0..1.0` である。JSON の重複 key、過大整数、
+  parser の再帰上限も corrupt として診断する。
+- missing file だけを空 snapshot とする。versionless、old/future、JSON破損、部分不正、
+  I/O error は診断付きで全体を拒否し、旧 flat dict の decoder や部分復元はない。
+- 拒否した原本は終了時の自動保存で上書きせず、skip を診断して通常終了する。
+  Inspector の `Clear saved snapshot` などの明示 discard は原本を空の現行 schema へ置き換え、
+  接続中 controller の live CC 値は保持する。
+- `MidiSession` は controller と同一 instance の load result、または未接続時の load result と
+  永続 discard callback を構築時にまとめて受け取る。後付け activation や値だけの別系統はない。
+- port の pending 取得と iterator 失敗だけを `MidiConnectionError` として frozen 遷移させる。
+  message の strict validation error や controller 内部の不具合は切断として握りつぶさず伝播する。
+- 切断時の controller は最新 live CC の shutdown save 所有者として保持する。
+  frozen snapshot を明示 clear した後は所有を破棄し、shutdown で値を書き戻さない。
+- retry/discard 診断 action は現在の event、controller、load result の同一性を検査する。
+  controller の snapshot load は constructor 内の private 操作であり、後から診断を stale 化する public `load()` はない。
+- shutdown は snapshot save が `BaseException` で失敗しても port close を試み、
+  二重失敗時は最初の例外 identity と後続 cleanup 診断を保持する。
+- GUI の reconnect は「未接続かつ reconnect factory あり」の場合だけ有効になる。
+  MIDI 明示無効は reconnect 失敗診断を発生させない。
+- 注入する MIDI input port は `iter_pending()` と `close()` の両方を実装する必要がある。
+  不完全な test double を補う production fallback はない。
+- `mido` / `python-rtmidi` は required dependency であり、import 失敗や backend error を
+  MIDI 無効として握りつぶさず伝播する。
+- 対応 Shapely は `shapely>=2,<3` であり、Shapely 1.x の `shapely.geos` fallback はない。
+  required dependency の `psutil` も正規 API を直接使用し、API mismatch を CPU 0 や
+  欠測へ読み替えない。
+
+## CLI
+
+- `python -m grafix config validate|show [PATH]` の config path は positional だけである。
+  同義の `--config` は削除した。
+- `python -m grafix run ... --midi-port none` だけが MIDI を無効化する。空文字、`off`、
+  大小違い、前後空白付き token は alias として扱わない。
+- subcommand の引数で先頭に区切りの `--` を置く場合は一度だけ除去する。
 
 ## Geometry / text / benchmark
 
 - `Geometry.create()` と `compute_geometry_id()` から caller 指定の `schema_version` を削除した。
   Geometry ID は固定 schema v2 domain だけで計算する。
+- `Geometry` の ID は canonical `op` / `inputs` / `args` からだけ生成する。constructor や
+  pickle payload から任意 ID を注入する入口はなく、復元時も recipe から再計算する。
+- `RealizedGeometry` は exact float32 `(N,3)` coords と exact int32 offsets の
+  C-contiguous・有限・整合済み配列だけを受理する。2D 補完、dtype cast、整数切り捨ては行わず、
+  外部配列と共有しない bytes-backed immutable snapshot を保持する。
 - buffer と partition の平面基底は `PlanarFrame` /
   `canonical_planar_frame()` を共通基盤とする。
   とくに spatial/linear input は旧 XY 寄せではなく canonical frame を使うため、
@@ -148,13 +203,29 @@
 - nested mapping から metric 名・unit・phase・scope を推論する adapter は削除した。
   JSON の vec3 配列は setup 境界で一度だけ tuple へ正規化し、checksum contract は
   現行の安定出力へ同期した。
+- JSON 系 benchmark checksum は `canonical_json_sha256_v2` へ更新した。mapping、bytes、
+  ndarray、nested `Geometry` / `RealizedGeometry` は型 tag 付きの owned encoding を使い、
+  unknown 値、非文字列 key、非有限値、structured/object dtype を拒否する。
+- JSON array の checksum 入力は exact `list` 一形であり、任意 tuple を配列へ読み替えない。
+  v1 と v2 の checksum は直接比較できないため、旧 benchmark baseline は再計測する。
+- benchmark の case 定義、primitive/effect case、environment/spec、比較 row は
+  `FrozenJsonObject` で深く固定する。setup/CLI JSON の境界だけが独立した plain
+  `dict` / `list` tree を materialize する。
 
 ## Effect 引数
 
+- G/E の `meta` 付き引数は Parameter 記録 context の有無にかかわらず、factory で同じ
+  validator を通り、型・shape・choice を検証する。値域や引数間の相関などの意味検証は
+  evaluator が空入力・identity/no-op 判定より先に行う。
 - choice 引数は exact `str` と既知値だけを受理する。未知値を identity/no-op として
   扱わない。
 - vec3 引数は3要素 tuple 一形の有限実数、整数引数は bool/float/数値文字列を除く
   整数スカラーとする。
+- `E` の通常 step と selector step は frozen DTO と immutable tuple 引数を保持する。
+  builder は nested mapping を公開せず、値として比較・hash 化できる。
+- `dash` と `fill` の引数は scalar 一形である。旧 list/sequence の cycle 指定は削除した。
+- raw builtin も canonical `(coords, offsets)` と現在の scalar/tuple 引数だけを前提とする。
+  `drop` / `clip` / `mirror3d` の旧 layout 分岐や、`polyhedron` の旧配列 schema は受理しない。
 - 非有限値、意味のない負値、無効な count/grid/range は明示的に拒否する。
   distance 0、repeat count 0 など、effect の意味として定義された identity だけを残す。
 - probability clamp、数値アルゴリズム内部の安定化 clamp、Shapely geometry の
@@ -162,6 +233,11 @@
 
 ## Strict DTO / normalization 境界
 
+- `polyline`、`spline`、`bezier` の code-owned point は immutable tuple 列を使用する。
+  ndarray 専用 fast path や raw Sequence 変換はなく、公開 G 経路では ndarray を拒否する。
+- builtin primitive/effect は append-only catalog と live registry を分離する。
+  live registry の clear/replace 後は import reload や互換 wrapperを使わず、catalog に記録した
+  同一 `OpSpec` を不足時だけ再登録する。明示的な live override は上書きしない。
 - 文字列 identity、status、mode、choice は exact built-in `str` と既知値を検証し、
   `str(value)` で補わない。variation / batch 名は前後空白を値として保持し、
   空白だけの名前だけを拒否する。
@@ -170,6 +246,11 @@
 - process message、capture snapshot、内部 export job/result、variation batch result などの
   内部 DTO は、必要箇所で keyword-only、exact tuple、`Path`、enum、要素型を検証する。
   list-to-tuple、文字列-to-`Path`、旧 positional field 順を DTO 内で救済しない。
+- worker の `DrawResult` は layers/records/labels/effect chain を immutable tuple で保持する。
+  ParamState snapshot、reconcile fingerprint、selector 解決結果、GUI snapshot も nested mutable
+  mapping/value を外へ公開しない。
+- Parameter GUI の Copy Code は canonical scalar/tuple/plain dict だけを Python literal 化し、
+  unknown object を `repr()` や `str()` へ落として実行不能コードを生成しない。
 - history、autosave、parameter recovery、window loop、workspace、output path、doctor の
   入口も同じ共有 validator を使用する。callable、exact bool/string/integer/tuple/`Path`、
   有限実数を入口で検証し、暗黙の `str` / `int` / `float` / `bool` 変換は行わない。

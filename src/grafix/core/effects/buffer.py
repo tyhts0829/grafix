@@ -9,7 +9,6 @@ import numpy as np
 from grafix.core.effect_registry import effect
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
-from .argument_validation import integer_scalar
 from .util import canonical_planar_frame, close_curve, empty_geom
 
 buffer_meta = {
@@ -40,7 +39,6 @@ buffer_meta = {
     ),
 }
 
-_JOIN_STYLE_SET = {"mitre", "round", "bevel"}
 _AUTO_CLOSE_THRESHOLD = 1e-3
 _QUAD_SEGS_MAX = 256
 
@@ -143,23 +141,15 @@ def buffer(
     - rank 2/3 の有限入力は canonical best-fit plane へ射影して処理する。
       `partition` と異なり、平面残差による拒否は行わない。
     """
-    d = float(distance)
-    if not np.isfinite(d):
-        raise ValueError("buffer: distance は有限値である必要がある")
-    if not isinstance(join, str):
-        raise TypeError("buffer: join は str である必要がある")
-    if join not in _JOIN_STYLE_SET:
-        raise ValueError(f"buffer: 未知の join です: {join!r}")
-    quad_segs_i = integer_scalar(quad_segs, name="buffer: quad_segs")
-    if not 1 <= quad_segs_i <= _QUAD_SEGS_MAX:
+    if not 1 <= quad_segs <= _QUAD_SEGS_MAX:
         raise ValueError(
             f"buffer: quad_segs は 1 以上 {_QUAD_SEGS_MAX} 以下である必要がある"
         )
 
     coords, offsets = g
-    if coords.shape[0] == 0 or d == 0.0:
+    if coords.shape[0] == 0 or distance == 0.0:
         return coords, offsets
-    abs_d = abs(d)
+    abs_distance = abs(distance)
 
     join_style = cast(Literal["mitre", "round", "bevel"], join)
 
@@ -167,7 +157,7 @@ def buffer(
     from shapely.geometry import LineString, MultiLineString  # type: ignore[import-not-found]
 
     out_lines: list[np.ndarray] = []
-    if bool(union):
+    if union:
         frame = canonical_planar_frame(
             coords,
             offsets,
@@ -187,11 +177,11 @@ def buffer(
 
         if lines2:
             buffered = MultiLineString(lines2).buffer(  # type: ignore[arg-type]
-                abs_d,
-                quad_segs=quad_segs_i,
+                abs_distance,
+                quad_segs=quad_segs,
                 join_style=join_style,
             )
-            which = "exterior" if d > 0.0 else "interior"
+            which = "exterior" if distance > 0.0 else "interior"
             for v2 in _extract_vertices_2d(buffered, which=which):
                 if v2.shape[0] < 2:
                     continue
@@ -212,11 +202,11 @@ def buffer(
             line2 = frame.project(line3)
 
             buffered = LineString(line2).buffer(  # type: ignore[arg-type]
-                abs_d,
-                quad_segs=quad_segs_i,
+                abs_distance,
+                quad_segs=quad_segs,
                 join_style=join_style,
             )
-            which = "exterior" if d > 0.0 else "interior"
+            which = "exterior" if distance > 0.0 else "interior"
             for v2 in _extract_vertices_2d(buffered, which=which):
                 if v2.shape[0] < 2:
                     continue
@@ -232,7 +222,7 @@ def buffer(
                 out_lines.append(original.astype(np.float32, copy=False))
 
     if not out_lines:
-        return (coords, offsets) if d > 0.0 else empty_geom()
+        return (coords, offsets) if distance > 0.0 else empty_geom()
 
     out_coords = np.concatenate(out_lines, axis=0).astype(np.float32, copy=False)
     out_offsets = np.empty((len(out_lines) + 1,), dtype=np.int32)

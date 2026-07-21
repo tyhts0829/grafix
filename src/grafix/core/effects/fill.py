@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 from numba import njit  # type: ignore[attr-defined]
@@ -19,7 +19,6 @@ from grafix.core.realized_geometry import GeomTuple
 from .util import (
     PlanarFrame,
     empty_geom,
-    float_cycle,
     pack_polylines,
     planarity_threshold,
 )
@@ -49,8 +48,8 @@ fill_meta = {
     ),
     "spacing_gradient": ParamMeta(
         kind="float",
-        ui_min=-5.0,
-        ui_max=5.0,
+        ui_min=-4.0,
+        ui_max=4.0,
         description="スキャン方向に沿ってハッチング線の間隔を変化させる。",
     ),
     "remove_boundary": ParamMeta(
@@ -58,21 +57,6 @@ fill_meta = {
         description="塗り線だけを残し、入力された境界線を出力から除く。",
     ),
 }
-
-
-def _effective_angle_sets(value: int) -> int:
-    """angle set数を1以上にし、要求値との差を診断へ残す。"""
-
-    requested = int(value)
-    effective = max(1, requested)
-    if effective != requested:
-        emit_operation_diagnostic(
-            op="fill.angle_sets",
-            original_value=requested,
-            effective_value=effective,
-            reason="angle set count was clamped to at least one",
-        )
-    return effective
 
 
 def _emit_fill_fallback(original: str, *, reason: str) -> None:
@@ -84,36 +68,6 @@ def _emit_fill_fallback(original: str, *, reason: str) -> None:
         effective_value="boundary_only",
         reason=reason,
     )
-
-def _as_int_cycle(value: int | Sequence[int]) -> tuple[int, ...]:
-    """int または int 列を「サイクル可能なタプル」に正規化する。"""
-    if isinstance(value, np.ndarray):
-        if value.ndim == 0:
-            return (int(value),)
-        if value.size <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(int(v) for v in value.ravel())
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        if len(value) <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(int(v) for v in value)
-    return (int(value),)
-
-
-def _as_bool_cycle(value: bool | Sequence[bool]) -> tuple[bool, ...]:
-    """bool または bool 列を「サイクル可能なタプル」に正規化する。"""
-    if isinstance(value, np.ndarray):
-        if value.ndim == 0:
-            return (bool(value),)
-        if value.size <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(bool(v) for v in value.ravel())
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        if len(value) <= 0:
-            raise ValueError("空のシーケンスは指定できません")
-        return tuple(bool(v) for v in value)
-    return (bool(value),)
-
 
 def _polygon_area_abs(vertices: np.ndarray) -> float:
     """2D ポリゴンの面積絶対値を返す（閉じは仮定しない）。"""
@@ -345,7 +299,7 @@ def _build_evenodd_groups(coords_2d_all: np.ndarray, offsets: np.ndarray) -> lis
     # - 入力が「外周 + 穴 + 穴の穴 + ...」の入れ子になっていても、
     #   偶奇規則（even-odd）で「外環ごとに穴をぶら下げた集合」を作る。
     #
-    # 実装方針（旧実装に寄せたもの）:
+    # 実装方針:
     # 1) 各リングの代表点（第1頂点）を取り、他リングへの内包関係を判定する。
     # 2) 「内包している外側リングの個数」の偶奇で outer/hole を決める。
     # 3) hole は、それを含む outer のうち「面積が最小のもの」にぶら下げる。
@@ -403,7 +357,7 @@ def _build_evenodd_groups(coords_2d_all: np.ndarray, offsets: np.ndarray) -> lis
 
 
 def _spacing_from_height(height: float, density: float) -> float:
-    """高さと密度から線間隔を算出する（旧仕様: round(density) 本相当）。"""
+    """高さと密度から線間隔を算出する（round(density) 本相当）。"""
     # density は「本数そのもの」ではなく「本数スケール」。
     # 高さから spacing を決めることで、図形サイズや angle の回転に対して見かけ密度を安定化する。
     num_lines = int(round(float(density)))
@@ -419,13 +373,11 @@ def _spacing_from_height(height: float, density: float) -> float:
 def _generate_y_values(
     min_y: float, max_y: float, base_spacing: float, spacing_gradient: float
 ) -> np.ndarray:
-    """旧仕様のスキャンライン Y 値列を生成する（max_y は含めない）。"""
+    """スキャンライン Y 値列を生成する（max_y は含めない）。"""
     # 入力は「回転後の作業座標」での min/max。
     # 返す y は「交点計算を行う水平スキャンライン」の列。
     if not np.isfinite(base_spacing) or base_spacing <= 0.0:
         return np.empty(0, dtype=np.float32)
-    if not np.isfinite(spacing_gradient):
-        spacing_gradient = 0.0
     if max_y <= min_y:
         return np.empty(0, dtype=np.float32)
 
@@ -437,15 +389,11 @@ def _generate_y_values(
         return np.asarray([mid], dtype=np.float32)
 
     if abs(spacing_gradient) < 1e-6:
-        # 等間隔（旧仕様）
+        # 等間隔
         return np.arange(start, max_y, base_spacing, dtype=np.float32)
 
     height = max_y - min_y
-    k = float(spacing_gradient)
-    if k > 4.0:
-        k = 4.0
-    elif k < -4.0:
-        k = -4.0
+    k = spacing_gradient
 
     if abs(k) < 1e-3:
         c = 1.0
@@ -649,7 +597,7 @@ def _scanline_endpoints_numpy(
     edy: np.ndarray,
     y_values: np.ndarray,
 ) -> np.ndarray:
-    """浮動小数点境界用に従来の NumPy scanline 演算を実行する。"""
+    """浮動小数点境界用に strict な NumPy scanline 演算を実行する。"""
 
     scanlines: list[tuple[np.float32, np.ndarray]] = []
     segment_count = 0
@@ -831,11 +779,11 @@ def _pack_planar_fill_chunks(
 def fill(
     g: GeomTuple,
     *,
-    angle_sets: int | Sequence[int] = 1,
-    angle: float | Sequence[float] = 45.0,
-    density: float | Sequence[float] = 35.0,
-    spacing_gradient: float | Sequence[float] = 0.0,
-    remove_boundary: bool | Sequence[bool] = False,
+    angle_sets: int = 1,
+    angle: float = 45.0,
+    density: float = 35.0,
+    spacing_gradient: float = 0.0,
+    remove_boundary: bool = False,
 ) -> GeomTuple:
     """閉領域をハッチングで塗りつぶす。
 
@@ -843,33 +791,40 @@ def fill(
     ----------
     g : tuple[np.ndarray, np.ndarray]
         入力実体ジオメトリ（coords, offsets）。
-    angle_sets : int | Sequence[int], default 1
-        方向本数（シーケンス指定時はグループごとにサイクル適用）。1=単方向、2=90°クロス、3=60°間隔、...（180°を等分）。
-    angle : float | Sequence[float], default 45.0
-        基準角 [deg]（シーケンス指定時はグループごとにサイクル適用）。
-    density : float | Sequence[float], default 35.0
-        旧仕様の密度スケール（シーケンス指定時はグループごとにサイクル適用）。
-        `round(density)` 本相当の間隔を基準高さから算出する。0 以下はそのグループでは塗り線を生成しない。
-    spacing_gradient : float | Sequence[float], default 0.0
-        スキャン方向に沿った線間隔勾配（シーケンス指定時はグループごとにサイクル適用）。
+    angle_sets : int, default 1
+        方向本数。1=単方向、2=90°クロス、3=60°間隔、...（180°を等分）。
+    angle : float, default 45.0
+        基準角 [deg]。
+    density : float, default 35.0
+        密度スケール。
+        `round(density)` 本相当の間隔を基準高さから算出する。0 では塗り線を生成しない。
+    spacing_gradient : float, default 0.0
+        -4 以上 4 以下の、スキャン方向に沿った線間隔勾配。
         0.0 で一様間隔。
-    remove_boundary : bool | Sequence[bool], default False
-        True なら入力境界（入力ポリライン）を出力から除去する（シーケンス指定時はグループごとにサイクル適用）。
+    remove_boundary : bool, default False
+        True なら入力境界（入力ポリライン）を出力から除去する。
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         境界線（必要なら）と塗り線を含む実体ジオメトリ（coords, offsets）。
 
-    Notes
-    -----
-    シーケンス指定はコードからの指定を想定する（parameter_gui の編集対象にはしない）。
+    Raises
+    ------
+    ValueError
+        `angle_sets` が 1 未満、`density` が負、または `spacing_gradient` が
+        -4 から 4 の範囲外の場合。
     """
-    angle_sets_seq = _as_int_cycle(angle_sets)
-    angle_seq = float_cycle(angle)
-    density_seq = float_cycle(density)
-    spacing_gradient_seq = float_cycle(spacing_gradient)
-    remove_boundary_seq = _as_bool_cycle(remove_boundary)
+    if angle_sets < 1:
+        raise ValueError("fill の angle_sets は 1 以上である必要がある")
+    if density < 0.0:
+        raise ValueError("fill の density は 0 以上である必要がある")
+    if not -4.0 <= spacing_gradient <= 4.0:
+        raise ValueError(
+            "fill の spacing_gradient は -4 以上 4 以下である必要がある"
+        )
+
+    base_angle_rad = float(np.deg2rad(angle))
 
     # 返すジオメトリの構造:
     # - remove_boundary=False: 入力境界ポリライン（そのまま）+ 生成したハッチ線分
@@ -903,7 +858,7 @@ def fill(
             )
             out_lines = []
             for poly_i in range(int(offsets.size) - 1):
-                if bool(remove_boundary_seq[poly_i % len(remove_boundary_seq)]):
+                if remove_boundary:
                     continue
                 s = int(offsets[poly_i])
                 e = int(offsets[poly_i + 1])
@@ -914,8 +869,8 @@ def fill(
         if ref_height_global <= 0.0:
             # グループの実体が無い場合は境界のみを返す。
             out_lines = []
-            for gi, ring_indices in enumerate(groups):
-                if bool(remove_boundary_seq[gi % len(remove_boundary_seq)]):
+            for ring_indices in groups:
+                if remove_boundary:
                     continue
                 for ring_i in ring_indices:
                     s = int(offsets[ring_i])
@@ -924,27 +879,20 @@ def fill(
             return pack_polylines(out_lines)
 
         out_chunks: list[np.ndarray] = []
-        for gi, ring_indices in enumerate(groups):
-            # groupwise cycle
-            remove_boundary_i = bool(remove_boundary_seq[gi % len(remove_boundary_seq)])
-            density_i = float(density_seq[gi % len(density_seq)])
-            grad_i = float(spacing_gradient_seq[gi % len(spacing_gradient_seq)])
-            base_angle_rad = float(np.deg2rad(float(angle_seq[gi % len(angle_seq)])))
-            k_i = _effective_angle_sets(angle_sets_seq[gi % len(angle_sets_seq)])
-
+        for ring_indices in groups:
             # 境界保持（グループ単位）
-            if not remove_boundary_i:
+            if not remove_boundary:
                 for ring_i in ring_indices:
                     s = int(offsets[ring_i])
                     e = int(offsets[ring_i + 1])
                     out_chunks.append(coords_xy_all[s:e])
 
             # density<=0 は「塗り線無し」。境界だけで終わる。
-            if not np.isfinite(density_i) or density_i <= 0.0:
+            if density <= 0.0:
                 continue
 
             # global では「全体の参照高さ」から spacing を決め、グループ間で見かけ密度が揃うようにする。
-            base_spacing = _spacing_from_height(ref_height_global, density_i)
+            base_spacing = _spacing_from_height(ref_height_global, density)
             if base_spacing <= 0.0:
                 continue
 
@@ -965,15 +913,15 @@ def fill(
 
             # group の輪郭を 1 本の coords + offsets へ畳んで、交点計算を一括化する。
             g_coords2d = np.concatenate(parts, axis=0)
-            for i in range(k_i):
-                ang_i = base_angle_rad + (np.pi / k_i) * i
+            for i in range(angle_sets):
+                ang_i = base_angle_rad + (np.pi / angle_sets) * i
                 endpoints = _generate_line_fill_evenodd_multi(
                     g_coords2d,
                     g_offsets,
-                    density=density_i,
+                    density=density,
                     angle_rad=float(ang_i),
                     spacing_override=float(base_spacing),
-                    spacing_gradient=float(grad_i),
+                    spacing_gradient=spacing_gradient,
                 )
                 if endpoints.size > 0:
                     out_chunks.append(endpoints)
@@ -988,7 +936,6 @@ def fill(
         e = int(offsets[poly_i + 1])
         vertices = coords[s:e]
 
-        density_i = float(density_seq[poly_i % len(density_seq)])
         if vertices.shape[0] < 3:
             # 退化入力はそのまま返す（remove_boundary の有無に関わらず no-op）。
             _emit_fill_fallback(
@@ -1008,12 +955,11 @@ def fill(
             out_lines.append(vertices)
             continue
         if not frame.is_planar(planarity_threshold(vertices)):
-            # non-planar では「各ポリライン」をグループとみなし、poly_i でサイクルする。
             _emit_fill_fallback(
                 "nonplanar_boundary",
                 reason="fill only hatches planar boundaries",
             )
-            if not bool(remove_boundary_seq[poly_i % len(remove_boundary_seq)]):
+            if not remove_boundary:
                 out_lines.append(vertices)
             continue
         vxy = frame.to_local(vertices)
@@ -1028,32 +974,28 @@ def fill(
             out_lines.append(vertices)
             continue
 
-        # non-planar では「各ポリライン」をグループとみなし、poly_i でサイクルする。
-        if not bool(remove_boundary_seq[poly_i % len(remove_boundary_seq)]):
+        if not remove_boundary:
             out_lines.append(vertices)
 
-        if not np.isfinite(density_i) or density_i <= 0.0:
+        if density <= 0.0:
             continue
 
         ref_height = float(np.max(coords2d[:, 1]) - np.min(coords2d[:, 1]))
-        base_spacing = _spacing_from_height(ref_height, density_i)
+        base_spacing = _spacing_from_height(ref_height, density)
         if base_spacing <= 0.0:
             continue
 
         poly_offsets = np.array([0, coords2d.shape[0]], dtype=np.int32)
-        k_i = _effective_angle_sets(angle_sets_seq[poly_i % len(angle_sets_seq)])
-        base_angle_rad = float(np.deg2rad(float(angle_seq[poly_i % len(angle_seq)])))
-        grad_i = float(spacing_gradient_seq[poly_i % len(spacing_gradient_seq)])
         hatch_chunks: list[np.ndarray] = []
-        for i in range(k_i):
-            ang_i = base_angle_rad + (np.pi / k_i) * i
+        for i in range(angle_sets):
+            ang_i = base_angle_rad + (np.pi / angle_sets) * i
             endpoints = _generate_line_fill_evenodd_multi(
                 coords2d,
                 poly_offsets,
-                density=density_i,
+                density=density,
                 angle_rad=float(ang_i),
                 spacing_override=float(base_spacing),
-                spacing_gradient=float(grad_i),
+                spacing_gradient=spacing_gradient,
             )
             if endpoints.size > 0:
                 hatch_chunks.append(endpoints)
