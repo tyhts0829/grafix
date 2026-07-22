@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
-import inspect
 import json
 import os
 import platform
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from grafix.devtools.benchmarks.schema import (
-    CaseSpec,
     EnvironmentFingerprint,
     SourceIdentity,
-    case_compatibility_key,
     environment_compatibility_key,
     freeze_json_object,
 )
@@ -60,9 +57,7 @@ def collect_source_identity(root: str | Path | None = None) -> SourceIdentity:
 
     cwd = Path.cwd() if root is None else Path(root)
     try:
-        repository_root = Path(
-            _git(cwd, "rev-parse", "--show-toplevel").strip()
-        ).resolve()
+        repository_root = Path(_git(cwd, "rev-parse", "--show-toplevel").strip()).resolve()
         commit = _git(repository_root, "rev-parse", "HEAD").strip()
         status = _git_bytes(
             repository_root,
@@ -160,11 +155,7 @@ def collect_environment_fingerprint(
             "geos": _geos_version(unavailable),
         },
         "environment": {
-            name: (
-                overrides[name]
-                if name in overrides
-                else os.environ.get(name)
-            )
+            name: (overrides[name] if name in overrides else os.environ.get(name))
             for name in _ENVIRONMENT_VARIABLES
         },
     }
@@ -198,78 +189,6 @@ def _geos_version(unavailable: dict[str, str]) -> str | None:
     return version
 
 
-def make_case_spec(
-    *,
-    case_id: str,
-    version: int,
-    label: str,
-    category: str,
-    suite: str,
-    fixture: str,
-    parameters: Mapping[str, Any],
-    seed: int,
-    implementation: Callable[..., object] | tuple[Callable[..., object], ...],
-    support_source_files: tuple[str | Path, ...] = (),
-    tags: tuple[str, ...] = (),
-    checksum_policy: str = "exact",
-    self_sampling: bool = False,
-) -> CaseSpec:
-    """case 定義と workload source から CaseSpec を作る。"""
-
-    implementations = (
-        implementation
-        if isinstance(implementation, tuple)
-        else (implementation,)
-    )
-    digest = hashlib.sha256(b"grafix.benchmark.case-source.v1\0")
-    for function in implementations:
-        try:
-            source = inspect.getsource(function).encode("utf-8")
-        except (OSError, TypeError) as exc:
-            raise ValueError(
-                "benchmark implementation source を取得できません: "
-                f"{function.__module__}.{function.__qualname__}"
-            ) from exc
-        _update_framed_hash(
-            digest,
-            f"{function.__module__}.{function.__qualname__}".encode("utf-8"),
-        )
-        _update_framed_hash(digest, source)
-    for source_path in sorted(
-        (Path(path).resolve() for path in support_source_files),
-        key=lambda path: str(path),
-    ):
-        _update_framed_hash(digest, source_path.name.encode("utf-8"))
-        content = source_path.read_bytes()
-        _update_framed_hash(digest, content)
-    source_sha256 = digest.hexdigest()
-    frozen_parameters = freeze_json_object(parameters)
-    return CaseSpec(
-        case_id=case_id,
-        version=version,
-        label=label,
-        category=category,
-        suite=suite,
-        fixture=fixture,
-        parameters=frozen_parameters,
-        seed=seed,
-        source_sha256=source_sha256,
-        compatibility_key=case_compatibility_key(
-            case_id=case_id,
-            version=version,
-            fixture=fixture,
-            parameters=frozen_parameters,
-            seed=seed,
-            source_sha256=source_sha256,
-            checksum_policy=checksum_policy,
-            self_sampling=self_sampling,
-        ),
-        checksum_policy=checksum_policy,
-        tags=tags,
-        self_sampling=self_sampling,
-    )
-
-
 def _git(cwd: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
@@ -279,11 +198,6 @@ def _git(cwd: Path, *args: str) -> str:
         text=True,
     )
     return completed.stdout
-
-
-def _update_framed_hash(digest: Any, value: bytes) -> None:
-    digest.update(len(value).to_bytes(8, "big"))
-    digest.update(value)
 
 
 def _git_bytes(cwd: Path, *args: str) -> bytes:
@@ -400,5 +314,4 @@ def _command_text(argv: list[str]) -> str:
 __all__ = [
     "collect_environment_fingerprint",
     "collect_source_identity",
-    "make_case_spec",
 ]

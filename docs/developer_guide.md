@@ -31,12 +31,17 @@
 ### コア（変更の中心になる層）
 
 - `src/grafix/core/geometry.py`（Geometry: レシピ DAG / 署名）
-- `src/grafix/core/realize.py`（`realize(Geometry) -> RealizedGeometry` / cache / inflight）
+- `src/grafix/core/operation_authoring.py` / `src/grafix/core/operation_declaration.py`（decorator / immutable declaration）
+- `src/grafix/core/authoring_definitions.py` / `src/grafix/core/authoring_loader.py`（registration target / session snapshot）
+- `src/grafix/core/operation_catalog.py` / `src/grafix/core/preset_catalog.py`（immutable catalog）
+- `src/grafix/core/evaluation_context.py`（quality/config/external dependency/resource contract）
+- `src/grafix/core/realize.py`（`RealizeSession` / omitted-owned・explicit-borrowed dependency / inflight）
 - `src/grafix/core/realized_geometry.py`（配列表現と不変条件）
 - `src/grafix/core/scene.py`（Scene 正規化）
 - `src/grafix/core/pipeline.py`（interactive/export 共通の realize パイプライン）
-- `src/grafix/core/primitive_registry.py` / `src/grafix/core/effect_registry.py`（登録・meta/defaults）
-- `src/grafix/core/builtins.py`（組み込み op 登録の単一入口）
+- `src/grafix/core/builtins.py`（組み込み op manifest / bootstrap の単一入口）
+- `src/grafix/core/font_resources.py`（font asset fingerprint / bounded resource owner）
+- `src/grafix/core/geometry_kernels/`（effect 共通の pure numeric kernel）
 - `src/grafix/core/parameters/`（GUI/CC での param 解決と永続化。流れは `src/grafix/core/parameters/README.md`）
 
 ## 変更パターン別 “触る場所”
@@ -44,14 +49,16 @@
 ### primitive を追加/修正したい
 
 - 実装: `src/grafix/core/primitives/*.py`
-- 登録: `@primitive(...)`（`src/grafix/core/primitive_registry.py`）
-- 組み込みとして常時有効化: `src/grafix/core/builtins.py` の `_BUILTIN_PRIMITIVE_MODULES` に追加
+- 宣言: `@primitive(...)`（`src/grafix/core/operation_authoring.py`）
+- 組み込み化: `src/grafix/core/builtins.py` の manifest に locator と evaluator ABI を追加
+- custom module: session 作成前に通常 import、または config/source candidate から load
 
 ### effect を追加/修正したい
 
 - 実装: `src/grafix/core/effects/*.py`
-- 登録: `@effect(...)`（`src/grafix/core/effect_registry.py`）
-- 組み込みとして常時有効化: `src/grafix/core/builtins.py` の `_BUILTIN_EFFECT_MODULES` に追加
+- 宣言: `@effect(...)`（`src/grafix/core/operation_authoring.py`）
+- 組み込み化: `src/grafix/core/builtins.py` の manifest に locator と evaluator ABI を追加
+- 共通数値処理: sibling effect ではなく `src/grafix/core/geometry_kernels/` に置く
 
 ### preset を追加/修正したい
 
@@ -65,11 +72,15 @@
 - コア（値解決・永続の核）: `src/grafix/core/parameters/`
 - GUI 実装: `src/grafix/interactive/parameter_gui/`
 - GUI 起動と連携: `src/grafix/interactive/runtime/parameter_gui_system.py` / `src/grafix/api/runner.py`
+- schema snapshot: `src/grafix/interactive/parameter_gui/catalog.py`
+- renderer は `TableRenderInput -> TableEdits` に限定し、変更は store bridge/controller から core command へ渡す
 
 ### Export（headless 出力）を触りたい
 
 - render/store/config/cache: `src/grafix/api/render.py`
 - encode/no-clobber/manifest: `src/grafix/export/capture.py`
+- staging/publish: `src/grafix/export/capture_staging.py` / `src/grafix/export/capture_publish.py`
+- output path policy: `src/grafix/export/output_paths.py`
 - 入口 API: `src/grafix/api/export.py`
 - フォーマット別: `src/grafix/export/svg.py` / `src/grafix/export/image.py` / `src/grafix/export/gcode.py`
 - 共通パイプライン: `src/grafix/core/pipeline.py`
@@ -78,14 +89,73 @@
 
 - frame評価とworker世代: `src/grafix/interactive/runtime/scene_runner.py` / `mp_draw.py`
 - transactional source watch: `src/grafix/interactive/runtime/source_reload.py`
-- capture/recording配線: `src/grafix/interactive/runtime/draw_window_system.py`
-- 共通診断stream: `src/grafix/interactive/runtime/diagnostics.py`
+- frame順序と配線: `src/grafix/interactive/runtime/draw_window_system.py`
+- capture admission: `src/grafix/interactive/runtime/capture_queue.py`
+- recording lifecycle: `src/grafix/interactive/runtime/recording_session.py`
+- window policy: `src/grafix/interactive/runtime/workspace_window_controller.py`
+- parameter session: `src/grafix/interactive/runtime/parameter_session.py`
+- 共通診断stream: `src/grafix/interactive/diagnostics.py`
+- transport contract: `src/grafix/interactive/transport.py`
 - resource/profiler表示: `src/grafix/interactive/runtime/perf.py` / `parameter_gui/profiler_panel.py`
 - window状態復元: `src/grafix/interactive/runtime/workspace_state.py`
 
-reload candidateは必ずstaging registryで構築し、draw signatureと全registryを検証してから
-callable/worker世代と同じframe境界で交換する。失敗時にlive registryだけを先行更新したり、
-last-good workerを閉じたりしない。
+reload candidate は source bytes と local relative-import helper を隔離し、scoped
+`RegistrationTarget` から immutable authoring snapshot を構築する。draw signature、catalog、worker
+startup を検証してから同じ frame 境界で generation を交換する。失敗時に default authoring
+definitions を変更したり、last-good worker/catalog を閉じたりしない。
+
+### Architecture / cache identity を触りたい
+
+- declaration fingerprint: `src/grafix/core/definition_fingerprint.py`
+- typed cache key: `src/grafix/core/realize.py:GeometryCacheKey`
+- parent/child ownership: `src/grafix/api/render.py` / `interactive/runtime/scene_runner.py`
+- font external dependency: `src/grafix/core/font_resources.py` / `src/grafix/core/primitives/text.py`
+
+全 catalog revision や object identity を新しい cache key に入れない。Geometry が実際に参照した
+operation ref、quality/config、lookup 時点の external dependency だけを使う。
+
+`RenderSession` / `SceneRunner` は `EvaluationResources` と `RealizeCacheStore` を所有して明示注入し、
+子 `RealizeSession` は借用する。低水準で `RealizeSession` の `resources` / `cache_store` を省略した場合は、
+省略した dependency だけを session が所有して `close()` する。二つの引数は独立に判定されるため、
+明示注入した dependency を session 側から閉じない。
+
+### Benchmark harness を追加/修正したい
+
+通常利用は `python -m grafix benchmark ...` を入口とする。内部 harness を拡張する場合の canonical
+module は次のとおり。
+
+```python
+from grafix.devtools.benchmarks.catalog import (
+    case_definitions,
+    definition_for_case,
+    select_case_definitions,
+)
+from grafix.devtools.benchmarks.definition import (
+    CaseDefinition,
+    define_case,
+    make_case_spec,
+    scaled_case_definitions,
+)
+from grafix.devtools.benchmarks.runner import run_case_isolated
+```
+
+- case の immutable 定義と source identity: `definition.py`
+- provider 収集、重複検査、stable selection: `catalog.py`
+- checksum と typed metric/aggregation: `metrics.py`
+- in-process/fresh-process 計測、calibration、timeout、child lifecycle: `executor.py`
+- subsystem ごとの setup/workload/postprocess: `*_benchmark.py` provider
+- catalog と executor の composition/child entrypoint: `runner.py`
+
+metric helper は `grafix.devtools.benchmarks.metrics` から import する。executor の公開 helper
+（`execute_case_isolated`、`execute_child_request`、`measure_in_process`、`read_child_request`）が必要なのは
+harness test/tool の低水準実装だけである。`runner` の公開 symbol は `run_case_isolated` のみで、旧
+`runner._workload*`、集計 helper、case selection を import する経路や re-export shim はない。
+
+workload は対象 subsystem の provider に置き、`case_definitions()` で返した定義を `catalog.py` の
+provider 列へ明示追加する。provider から catalog/executor/runner へ逆依存させない。provider間の
+再利用が必要なら、architecture testの明示allowlistにある一方向のpublic helperだけを使い、siblingの
+private symbolへ到達しない。依存規則は`tests/architecture/test_benchmark_dependency_boundaries.py`が
+検査する。
 
 ## 関連ツール（CLI）
 

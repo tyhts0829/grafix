@@ -6,13 +6,17 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from grafix.core.evaluation_context import (
+    EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+    EvaluationFingerprint,
+)
 from grafix.core.realize import GeometryCacheKey
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.runtime_limits import RuntimeLimits
 from grafix.interactive.gl import draw_renderer as renderer_module
 from grafix.interactive.gl.draw_renderer import DrawRenderer
 from grafix.api.render import RenderOptions
-from grafix.interactive.runtime.diagnostics import DiagnosticCenter
+from grafix.interactive.diagnostics import DiagnosticCenter
 
 
 class _FakeMesh:
@@ -87,6 +91,7 @@ class _FakeDrawContext:
         self.clear_calls = 0
         self.released = False
         self.finish_count = 0
+        self.screen = _FakeScreen()
 
     def clear(self, *_args: object, **_kwargs: object) -> None:
         self.clear_calls += 1
@@ -96,6 +101,19 @@ class _FakeDrawContext:
 
     def finish(self) -> None:
         self.finish_count += 1
+
+
+class _FakeScreen:
+    def __init__(self) -> None:
+        self.use_count = 0
+        self.read_calls: list[dict[str, object]] = []
+
+    def use(self) -> None:
+        self.use_count += 1
+
+    def read(self, **kwargs: object) -> bytes:
+        self.read_calls.append(dict(kwargs))
+        return b"rgb24"
 
 
 class _FakeVao:
@@ -166,6 +184,30 @@ def _initialized_renderer(
             _FakeWindow(),
             RenderOptions(canvas_size=(800, 800)),
         )
+
+
+def test_renderer_owns_default_framebuffer_begin_and_rgb24_readback() -> None:
+    renderer = _renderer()
+    context = renderer._ctx
+
+    renderer.begin_frame(
+        1200,
+        800,
+        background_color=(0.1, 0.2, 0.3),
+    )
+    frame = renderer.read_frame_rgb24(1200, 800)
+
+    assert context.screen.use_count == 1
+    assert context.viewport == (200, 0, 800, 800)
+    assert context.clear_calls == 1
+    assert frame == b"rgb24"
+    assert context.screen.read_calls == [
+        {
+            "viewport": (0, 0, 1200, 800),
+            "components": 3,
+            "alignment": 1,
+        }
+    ]
 
 
 def test_renderer_skips_same_style_uniform_writes_across_layers_and_frames() -> None:
@@ -244,7 +286,11 @@ def _geometry(
 
 
 def _cache_key(geometry_id: str, revision: int = 1) -> GeometryCacheKey:
-    return geometry_id, (revision, revision)
+    return GeometryCacheKey(
+        geometry_id=geometry_id,
+        evaluation=EvaluationFingerprint(f"{revision:064x}"),
+        external_dependencies=EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+    )
 
 
 def test_renderer_cache_builds_indices_once_and_uploads_static_mesh_once(

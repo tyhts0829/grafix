@@ -7,7 +7,8 @@ from grafix.core.layer import LayerStyleDefaults
 from grafix.core.parameters import ParamStore
 from grafix.core.resource_budget import ResourceBudget
 from grafix.core.runtime_limits import RuntimeLimitProfiles, RuntimeLimits
-from grafix.interactive.runtime.diagnostics import DiagnosticCenter
+from grafix.core.runtime_config import runtime_config
+from grafix.interactive.diagnostics import DiagnosticCenter
 from grafix.interactive.runtime.export_job_system import ExportJobSystem
 from grafix.interactive.runtime.perf import PerfCollector
 from grafix.interactive.runtime.scene_runner import SceneRunner
@@ -51,6 +52,7 @@ def test_scene_runner_selects_preview_and_final_limit_profiles() -> None:
             final=final,
         ),
         diagnostic_center=center,
+        effective_config=runtime_config(),
     )
     try:
         with pytest.raises(Exception):
@@ -116,6 +118,7 @@ def test_cpu_cache_limit_reaches_common_diagnostic_center() -> None:
             final=limits,
         ),
         diagnostic_center=center,
+        effective_config=runtime_config(),
     )
     try:
         runner.run(

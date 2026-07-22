@@ -6,12 +6,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
-from .util import RESAMPLE_CLOSED_DISTANCE_EPS
+from grafix.core.geometry_kernels.resample import RESAMPLE_CLOSED_DISTANCE_EPS
 
 _SCRATCH_BYTES_PER_VERTEX = 64
 _SCRATCH_BYTES_PER_LINE = 16

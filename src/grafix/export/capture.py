@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import os
-import shutil
 import tempfile
 import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from grafix.core.capture_manifest import (
-    CaptureManifest,
+from grafix.core.capture_manifest import CaptureManifest, RecordingManifest
+from grafix.export.capture_publish import (
     PublishedCaptureGeneration,
     capture_manifest_path_for,
     publish_capture_generation,
@@ -20,7 +18,6 @@ from grafix.core.capture_provenance import CaptureProvenance
 from grafix.core.export_format import ExportFormat
 from grafix.core.export_result import ExportResult
 from grafix.core.gcode_params import GCodeParams
-from grafix.core.output_paths import VersionedPathAllocator, gcode_layer_output_path
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.value_validation import (
     exact_integer,
@@ -29,6 +26,16 @@ from grafix.core.value_validation import (
 )
 from grafix.export.gcode import export_gcode
 from grafix.export.image import rasterize_svg_to_png
+from grafix.export.output_paths import (
+    VersionedPathAllocator,
+    gcode_layer_family_is_occupied,
+    gcode_layer_output_path,
+)
+from grafix.export.capture_staging import (
+    CaptureStaging,
+    allocate_capture_generation_path,
+    publish_with_late_collision_retry,
+)
 from grafix.export.svg import export_svg
 
 _DEFAULT_ENCODE_TIMEOUT_S = 30.0
@@ -96,6 +103,24 @@ class CaptureService:
             raise TypeError("path_allocator は VersionedPathAllocator である必要があります")
         self._paths = VersionedPathAllocator() if path_allocator is None else path_allocator
         self._max_publish_retries = retries
+
+    def reserve_path(
+        self,
+        base_path: Path,
+        *,
+        split_gcode_layers: bool = False,
+    ) -> Path:
+        """artifact/manifest family が空いている session-local path を予約する。"""
+
+        if type(split_gcode_layers) is not bool:
+            raise TypeError("split_gcode_layers は bool である必要があります")
+        return allocate_capture_generation_path(
+            self._paths,
+            base_path,
+            candidate_is_occupied=(
+                gcode_layer_family_is_occupied if split_gcode_layers else None
+            ),
+        )
 
     def encode(
         self,
@@ -295,13 +320,113 @@ class CaptureService:
             overwrite=overwrite,
         )
 
-    def _allocate_path(self, base_path: Path) -> Path:
-        """artifact と manifest の双方が未使用の version path を予約する。"""
+    def publish_recording_staged(
+        self,
+        staged_path: Path,
+        output_path: Path,
+        *,
+        t: float,
+        canvas_size: tuple[int, int],
+        output_size: tuple[int, int],
+        provenance: CaptureProvenance,
+        recording: RecordingManifest,
+    ) -> PublishedCaptureGeneration:
+        """encode 完了済み video と recording manifest を一世代で公開する。"""
 
-        while True:
-            candidate = self._paths.allocate(base_path)
-            if not os.path.lexists(capture_manifest_path_for(candidate)):
-                return candidate
+        if not isinstance(staged_path, Path) or not isinstance(output_path, Path):
+            raise TypeError("staged_path と output_path は Path である必要があります")
+        if not isinstance(provenance, CaptureProvenance):
+            raise TypeError("provenance は CaptureProvenance である必要があります")
+        if not isinstance(recording, RecordingManifest):
+            raise TypeError("recording は RecordingManifest である必要があります")
+        manifest = CaptureManifest(
+            t=t,
+            canvas_size=canvas_size,
+            format=output_path.suffix.lstrip(".") or "video",
+            artifact_paths=(output_path,),
+            provenance=provenance,
+            output_size=output_size,
+            recording=recording,
+        )
+        return publish_capture_generation(
+            staged_artifact_paths=(staged_path,),
+            artifact_paths=(output_path,),
+            manifest_path=capture_manifest_path_for(output_path),
+            manifest=manifest,
+        )
+
+    def publish_staged_with_retry(
+        self,
+        frame: CaptureFrame,
+        base_path: Path,
+        staged_paths: Sequence[str | Path],
+        *,
+        format: ExportFormat,
+        split_gcode_layers: bool = False,
+        output_size: tuple[int, int] | None = None,
+        initial_path: Path | None = None,
+    ) -> PublishedCaptureGeneration:
+        """完成済み frame staging を空いている一世代へ公開する。"""
+
+        if not isinstance(base_path, Path):
+            raise TypeError("base_path は Path である必要があります")
+        retried = publish_with_late_collision_retry(
+            allocator=self._paths,
+            base_path=base_path,
+            initial_path=initial_path,
+            max_retries=self._max_publish_retries,
+            artifact_paths_for=lambda candidate: self.final_paths(
+                frame,
+                candidate,
+                format=format,
+                split_gcode_layers=split_gcode_layers,
+            ),
+            candidate_is_occupied=(
+                gcode_layer_family_is_occupied if split_gcode_layers else None
+            ),
+            publish=lambda output_path: self.publish_staged(
+                frame,
+                output_path,
+                staged_paths,
+                format=format,
+                split_gcode_layers=split_gcode_layers,
+                output_size=output_size,
+            ),
+        )
+        return retried.value
+
+    def publish_recording_staged_with_retry(
+        self,
+        staged_path: Path,
+        base_path: Path,
+        *,
+        initial_path: Path | None = None,
+        t: float,
+        canvas_size: tuple[int, int],
+        output_size: tuple[int, int],
+        provenance: CaptureProvenance,
+        recording: RecordingManifest,
+    ) -> PublishedCaptureGeneration:
+        """完成済み video staging を再 encode せず一世代へ公開する。"""
+
+        if not isinstance(base_path, Path):
+            raise TypeError("base_path は Path である必要があります")
+        retried = publish_with_late_collision_retry(
+            allocator=self._paths,
+            base_path=base_path,
+            initial_path=initial_path,
+            max_retries=self._max_publish_retries,
+            publish=lambda output_path: self.publish_recording_staged(
+                staged_path,
+                output_path,
+                t=t,
+                canvas_size=canvas_size,
+                output_size=output_size,
+                provenance=provenance,
+                recording=recording,
+            ),
+        )
+        return retried.value
 
     def export(
         self,
@@ -333,15 +458,7 @@ class CaptureService:
             raise TypeError("gcode_params は GCodeParams である必要があります")
         if output_size is not None:
             output_size = positive_integer_pair(output_size, name="output_size")
-        requested_path.parent.mkdir(parents=True, exist_ok=True)
-        staging_dir = Path(
-            tempfile.mkdtemp(
-                prefix=f".{requested_path.stem}.capture-",
-                dir=requested_path.parent,
-            )
-        )
-        staged_output = staging_dir / requested_path.name
-        try:
+        with CaptureStaging.create(requested_path, purpose="capture") as staging:
             if format is ExportFormat.PNG:
                 if output_size is None:
                     raise ValueError("PNG export には output_size が必要です")
@@ -349,7 +466,7 @@ class CaptureService:
                 raise ValueError("G-code export には gcode_params が必要です")
             staged_paths = self.encode(
                 frame,
-                staged_output,
+                staging.work_path,
                 format=format,
                 split_gcode_layers=split_gcode_layers,
                 output_size=output_size,
@@ -373,32 +490,19 @@ class CaptureService:
                     manifest_path=published.manifest_path,
                 )
 
-            last_collision: FileExistsError | None = None
-            for _attempt in range(self._max_publish_retries):
-                output_path = self._allocate_path(requested_path)
-                try:
-                    published = self.publish_staged(
-                        frame,
-                        output_path,
-                        staged_paths,
-                        format=format,
-                        split_gcode_layers=split_gcode_layers,
-                        output_size=output_size,
-                    )
-                except FileExistsError as exc:
-                    last_collision = exc
-                    continue
-                return ExportResult(
-                    path=published.artifact_paths[0],
-                    format=format,
-                    manifest_path=published.manifest_path,
-                )
-            raise FileExistsError(
-                "capture publish が late collision の再試行上限に達しました: "
-                f"retries={self._max_publish_retries}"
-            ) from last_collision
-        finally:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            published = self.publish_staged_with_retry(
+                frame,
+                requested_path,
+                staged_paths,
+                format=format,
+                split_gcode_layers=split_gcode_layers,
+                output_size=output_size,
+            )
+            return ExportResult(
+                path=published.artifact_paths[0],
+                format=format,
+                manifest_path=published.manifest_path,
+            )
 
 
 __all__ = ["CaptureFrame", "CaptureService"]

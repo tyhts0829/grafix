@@ -14,6 +14,7 @@
 主な入口
 --------
 - `create_midi_controller()`
+- `create_midi_session()`
 
 副作用
 ------
@@ -23,17 +24,26 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from grafix.core.value_validation import (
     exact_string,
     exact_string_choice,
 )
+from grafix.interactive.diagnostics import DiagnosticCenter
 
-from .midi_controller import MidiController
+from .midi_controller import (
+    MidiController,
+    maybe_load_frozen_cc_snapshot,
+    save_cc_snapshot,
+    shutdown_midi_controller,
+)
+from .session import MidiSession
 
 # Runner/CLI 側の設定値で使う特別な文字列（自動接続の合図）。
 _AUTO_MIDI_PORT = "auto"
+_logger = logging.getLogger(__name__)
 
 
 def create_midi_controller(
@@ -167,3 +177,71 @@ def create_midi_controller(
         profile_name=profile,
         save_dir=save_dir,
     )
+
+
+def create_midi_session(
+    *,
+    port_name: str | None,
+    mode: str,
+    profile_name: str,
+    save_dir: Path,
+    snapshot_path: Path,
+    priority_inputs: tuple[tuple[str, str], ...] = (),
+    diagnostics: DiagnosticCenter | None = None,
+) -> MidiSession:
+    """controller/frozen snapshot/reconnect を一つの所有 session に組み立てる。"""
+
+    if not isinstance(save_dir, Path) or not isinstance(snapshot_path, Path):
+        raise TypeError("save_dir と snapshot_path は Path である必要があります")
+    controller = create_midi_controller(
+        port_name=port_name,
+        mode=mode,
+        profile_name=profile_name,
+        save_dir=save_dir,
+        priority_inputs=priority_inputs,
+    )
+    try:
+        frozen_result = maybe_load_frozen_cc_snapshot(
+            port_name=port_name,
+            controller=controller,
+            profile_name=profile_name,
+            save_dir=save_dir,
+        )
+
+        def reconnect() -> MidiController | None:
+            return create_midi_controller(
+                port_name=port_name,
+                mode=mode,
+                profile_name=profile_name,
+                save_dir=save_dir,
+                priority_inputs=priority_inputs,
+            )
+
+        snapshot_result = (
+            controller.snapshot_load_result
+            if controller is not None
+            else frozen_result
+        )
+        return MidiSession(
+            controller=controller,
+            snapshot_load_result=snapshot_result,
+            reconnect=None if port_name is None else reconnect,
+            diagnostics=diagnostics,
+            discard_persisted_snapshot=lambda: save_cc_snapshot({}, snapshot_path),
+        )
+    except BaseException:
+        if controller is not None:
+            shutdown_midi_controller(
+                controller,
+                on_snapshot_save_skipped=lambda blocked: _logger.warning(
+                    "MIDI CC snapshot auto-save skipped during acquisition: "
+                    "status=%s, source=%s",
+                    blocked.snapshot_load_result.status,
+                    blocked.snapshot_load_result.source,
+                ),
+                report_secondary=lambda label: _logger.exception(
+                    "MIDI acquisition cleanup failed after an earlier error: %s",
+                    label,
+                ),
+            )
+        raise

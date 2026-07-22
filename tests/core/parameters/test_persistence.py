@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 import grafix.core.parameters.persistence as persistence_module
-from grafix.core.parameters import ParamMeta, ParamStore, ParameterKey
+from grafix.core.parameters import (
+    KnownOperationSchemaSnapshot,
+    ParamMeta,
+    ParamStore,
+    ParameterKey,
+)
 from grafix.core.parameters.codec import (
     PARAM_STORE_SCHEMA_VERSION,
     ParamStoreSchemaError,
@@ -21,7 +26,6 @@ from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.invariants import assert_invariants
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.persistence import (
-    default_param_store_path,
     finalize_param_store_session,
     load_param_store,
     load_param_store_with_recovery,
@@ -29,6 +33,7 @@ from grafix.core.parameters.persistence import (
     save_param_store,
     save_param_store_recovery,
 )
+from grafix.export.output_paths import default_param_store_path
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.parameters.variations import (
@@ -38,14 +43,6 @@ from grafix.core.parameters.variations import (
     restore_variation,
     set_parameters_locked,
 )
-from grafix.core.runtime_config import set_config_path
-
-
-@pytest.fixture(autouse=True)
-def _reset_runtime_config() -> None:
-    set_config_path(None)
-    yield
-    set_config_path(None)
 
 
 def _isolate_config_discovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -907,7 +904,11 @@ def test_session_recovery_preserves_live_explicit_override_until_clean_exit(
     assert recovered_state.ui_value == pytest.approx(0.9)
     assert recovered_state.override is True
 
-    finalize_param_store_session(recovered, primary)
+    finalize_param_store_session(
+        recovered,
+        primary,
+        known_operations=KnownOperationSchemaSnapshot.empty(),
+    )
     assert not recovery.exists()
     clean_state = load_param_store(primary).get_state(key)
     assert clean_state is not None
@@ -1146,7 +1147,11 @@ def test_finalize_keeps_recovery_when_primary_save_fails(
     monkeypatch.setattr(persistence_module, "save_param_store", fail_primary_save)
 
     with pytest.raises(OSError, match="primary unavailable"):
-        finalize_param_store_session(store, primary)
+        finalize_param_store_session(
+            store,
+            primary,
+            known_operations=KnownOperationSchemaSnapshot.empty(),
+        )
     assert recovery.read_bytes() == recovery_before
     assert not primary.exists()
 
@@ -1288,7 +1293,7 @@ def test_save_param_store_keeps_existing_file_when_replace_fails(
     ) -> None:
         raise OSError(f"replace failed: {src} -> {dst}")
 
-    monkeypatch.setattr("grafix.core.atomic_write.os.replace", fail_replace)
+    monkeypatch.setattr("grafix.file_io.os.replace", fail_replace)
     with pytest.raises(OSError, match="replace failed"):
         save_param_store(ParamStore(), path)
 
@@ -1296,10 +1301,7 @@ def test_save_param_store_keeps_existing_file_when_replace_fails(
     assert list(tmp_path.glob(".store.json.*.tmp")) == []
 
 
-def test_save_param_store_prunes_unknown_arg_for_known_primitive(tmp_path: Path):
-    # 登録（meta 取得）に必要なので、対象モジュールを明示的に import する。
-    from grafix.core.primitives import line as _primitive_line  # noqa: F401
-
+def test_direct_save_does_not_prune_unknown_argument(tmp_path: Path) -> None:
     store = ParamStore()
     known = ParameterKey(op="line", site_id="site-1", arg="length")
     unknown = ParameterKey(op="line", site_id="site-1", arg="__unknown__")
@@ -1327,6 +1329,47 @@ def test_save_param_store_prunes_unknown_arg_for_known_primitive(tmp_path: Path)
 
     path = tmp_path / "store.json"
     save_param_store(store, path)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for section in ["states", "meta", "explicit"]:
+        assert any(
+            it.get("op") == "line" and it.get("arg") == "__unknown__"
+            for it in payload.get(section, [])
+        )
+
+
+def test_session_finalize_prunes_with_injected_schema_snapshot(tmp_path: Path) -> None:
+    store = ParamStore()
+    known = ParameterKey(op="line", site_id="site-1", arg="length")
+    unknown = ParameterKey(op="line", site_id="site-1", arg="__unknown__")
+    merge_frame_params(
+        store,
+        [
+            FrameParamRecord(
+                key=known,
+                base=1.0,
+                meta=ParamMeta(kind="float", ui_min=0.0, ui_max=2.0),
+                effective=1.0,
+                source="code",
+                explicit=False,
+            ),
+            FrameParamRecord(
+                key=unknown,
+                base=0.1,
+                meta=ParamMeta(kind="float", ui_min=0.0, ui_max=1.0),
+                effective=0.1,
+                source="code",
+                explicit=True,
+            ),
+        ],
+    )
+
+    path = tmp_path / "store.json"
+    finalize_param_store_session(
+        store,
+        path,
+        known_operations=KnownOperationSchemaSnapshot({"line": frozenset({"length"})}),
+    )
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     for section in ["states", "meta", "explicit"]:

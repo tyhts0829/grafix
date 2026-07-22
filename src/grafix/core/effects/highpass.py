@@ -5,11 +5,11 @@ from __future__ import annotations
 import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .util import (
+from grafix.core.geometry_kernels.resample import (
     RESAMPLE_CLOSED_DISTANCE_EPS,
     ResamplePlan,
     build_gaussian_kernel,

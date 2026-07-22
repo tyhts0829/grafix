@@ -11,7 +11,12 @@ from typing import Any, cast
 
 from grafix.api import ExportFormat, ExportResult, RenderOptions, RenderSession, export
 from grafix.api.render import ParameterLoadMode
-from grafix.core.output_paths import output_path_for_draw
+from grafix.export.output_paths import output_path_for_draw
+from grafix.core.runtime_config import (
+    RuntimeConfig,
+    bind_runtime_config,
+    load_runtime_config,
+)
 from grafix.export.image import default_png_output_path
 
 
@@ -150,6 +155,7 @@ def _default_output_path(
     run_id: str | None,
     canvas_size: tuple[int, int],
     png_scale: float,
+    config: RuntimeConfig,
 ) -> Path:
     """形式ごとの既存出力規則を使って要求 base path を返す。"""
 
@@ -159,6 +165,7 @@ def _default_output_path(
             scale=png_scale,
             run_id=run_id,
             canvas_size=canvas_size,
+            config=config,
         )
     return output_path_for_draw(
         kind=export_format.value,
@@ -166,6 +173,7 @@ def _default_output_path(
         draw=draw,
         run_id=run_id,
         canvas_size=canvas_size,
+        config=config,
     )
 
 
@@ -181,7 +189,9 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
 
     args = _parse_args(argv)
-    draw = _resolve_callable(args.callable)
+    config = load_runtime_config(args.config)
+    with bind_runtime_config(config):
+        draw = _resolve_callable(args.callable)
     ts = [0.0] if args.t is None else [float(t) for t in args.t]
     canvas_w, canvas_h = args.canvas
     canvas_size = (int(canvas_w), int(canvas_h))
@@ -193,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         draw,
         options=RenderOptions(canvas_size=canvas_size),
         parameter_source=parameter_source,
-        config_path=args.config,
+        config=config,
         run_id=run_id,
         seed=args.seed,
     ) as session:
@@ -205,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_id=run_id,
                 canvas_size=canvas_size,
                 png_scale=session.config.png_scale,
+                config=session.config,
             )
             if explicit_path is None
             else explicit_path

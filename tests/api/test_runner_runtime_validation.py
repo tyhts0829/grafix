@@ -11,6 +11,10 @@ from grafix.core.runtime_limits import (  # noqa: E402
     DEFAULT_RUNTIME_LIMIT_PROFILES,
     RuntimeLimitProfiles,
 )
+from grafix.core.runtime_config import (  # noqa: E402
+    RuntimeConfigFallback,
+    runtime_config,
+)
 
 
 def _draw(_t: float) -> None:
@@ -38,17 +42,17 @@ def _assert_rejected_before_side_effect(
     error_type: type[Exception],
     match: str,
 ) -> None:
-    config_path_calls: list[object] = []
+    config_load_calls: list[object] = []
     monkeypatch.setattr(
         runner_module,
-        "set_config_path",
-        config_path_calls.append,
+        "runtime_config_with_fallback",
+        config_load_calls.append,
     )
 
     with pytest.raises(error_type, match=match):
         runner_module.run(_draw, **kwargs)
 
-    assert config_path_calls == []
+    assert config_load_calls == []
 
 
 @pytest.mark.parametrize("n_worker", [True, 1.0, "1"])
@@ -197,6 +201,57 @@ def test_run_preserves_nonpositive_fps_contract(
     def stop_after_validation(_path: object) -> None:
         raise ConfigPathReached
 
-    monkeypatch.setattr(runner_module, "set_config_path", stop_after_validation)
+    monkeypatch.setattr(
+        runner_module,
+        "runtime_config_with_fallback",
+        stop_after_validation,
+    )
     with pytest.raises(ConfigPathReached):
         runner_module.run(_draw, fps=fps)  # type: ignore[arg-type]
+
+
+def test_run_rejects_config_and_config_path_before_config_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(runner_module, "runtime_config_with_fallback", calls.append)
+
+    with pytest.raises(ValueError, match="同時"):
+        runner_module.run(
+            _draw,
+            config=runtime_config(),
+            config_path="config.yaml",
+        )
+
+    assert calls == []
+
+
+def test_run_rejects_config_fallback_without_config_before_config_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(runner_module, "runtime_config_with_fallback", calls.append)
+    fallback = RuntimeConfigFallback(
+        summary="RuntimeError: invalid config",
+        details="traceback",
+        source=None,
+    )
+
+    with pytest.raises(ValueError, match="config.*同時"):
+        runner_module.run(_draw, config_fallback=fallback)
+
+    assert calls == []
+
+
+def test_run_rejects_invalid_config_fallback_before_config_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_rejected_before_side_effect(
+        monkeypatch,
+        kwargs={
+            "config": runtime_config(),
+            "config_fallback": object(),
+        },
+        error_type=TypeError,
+        match="config_fallback.*RuntimeConfigFallback",
+    )

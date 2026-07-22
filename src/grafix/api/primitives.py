@@ -7,18 +7,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Callable
 
-from grafix.core.builtins import (
-    ensure_builtin_primitive_registered,
-    ensure_builtin_primitives_registered,
-)
 from grafix.core.geometry import Geometry
-from grafix.core.op_registry import OpCatalogEntry
+from grafix.core.operation_catalog import (
+    OperationCatalogEntry,
+    current_operation_catalog,
+)
+from grafix.core.operation_selector import selector_spec as build_selector_spec
 from grafix.core.parameters import caller_site_id
 from grafix.core.parameters.identity import identity_string
-from grafix.core.primitive_registry import PrimitiveFunc
-
-# parameters package の初期化後に読み、prune_ops 経由の循環 import を避ける。
-import grafix.core.primitive_registry as primitive_registry_module
 
 from ._op_validation import validate_operation_kwargs
 from ._operation_selector import (
@@ -39,19 +35,18 @@ class PrimitiveNamespace:
         例: G.circle(radius=1.0) -> Geometry
     """
 
-    def catalog(self) -> tuple[OpCatalogEntry[PrimitiveFunc], ...]:
+    def catalog(self) -> tuple[OperationCatalogEntry, ...]:
         """登録済み primitive の catalog を名前順で返す。
 
         Returns
         -------
-        tuple[OpCatalogEntry[PrimitiveFunc], ...]
+        tuple[OperationCatalogEntry, ...]
             名前、説明、引数、source を含む immutable entry の列。
         """
 
-        ensure_builtin_primitives_registered()
-        return primitive_registry_module.primitive_registry.catalog()
+        return current_operation_catalog().public_entries(kind="primitive")
 
-    def describe(self, name: str) -> OpCatalogEntry[PrimitiveFunc]:
+    def describe(self, name: str) -> OperationCatalogEntry:
         """primitive の catalog entry を名前で取得する。
 
         Parameters
@@ -61,8 +56,8 @@ class PrimitiveNamespace:
 
         Returns
         -------
-        OpCatalogEntry[PrimitiveFunc]
-            registry の :class:`~grafix.core.op_registry.OpSpec` を参照する entry。
+        OperationCatalogEntry
+            immutable catalog の declaration entry。
 
         Raises
         ------
@@ -71,11 +66,11 @@ class PrimitiveNamespace:
         """
 
         name_s = identity_string(name, name="primitive name")
-        if name_s not in primitive_registry_module.primitive_registry:
-            ensure_builtin_primitive_registered(name_s)
-        if name_s not in primitive_registry_module.primitive_registry:
+        catalog = current_operation_catalog()
+        try:
+            return catalog.resolve("primitive", name_s)
+        except KeyError:
             raise KeyError(f"未登録の primitive: {name_s!r}")
-        return primitive_registry_module.primitive_registry.describe(name_s)
 
     def select(
         self,
@@ -107,9 +102,13 @@ class PrimitiveNamespace:
             選択された実 primitive を op に持つ Geometry。
         """
 
+        catalog = current_operation_catalog()
+        selector = build_selector_spec(catalog, kind="primitive", n_inputs=0)
         frozen_params = freeze_params_by_target(
             params_by_target,
             kind="primitive",
+            catalog=catalog,
+            selector=selector,
         )
         site_id = caller_site_id(
             skip=1,
@@ -128,16 +127,21 @@ class PrimitiveNamespace:
             target_explicit=target_explicit,
             params_by_target=frozen_params,
             site_id=site_id,
+            catalog=catalog,
+            selector=selector,
         )
         set_api_label(
             op=selected.selector_op,
             site_id=site_id,
             label=self._pending_label,
         )
+        declaration = catalog.resolve("primitive", selected.target).declaration
         return Geometry._from_canonical_args(
             op=selected.target,
+            operation=declaration.ref,
             inputs=(),
             args=tuple(sorted(selected.params.items())),
+            cache_policy=declaration.cache_policy,
         )
 
     def __getattr__(self, name: str) -> Callable[..., Geometry]:
@@ -161,9 +165,10 @@ class PrimitiveNamespace:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        if name not in primitive_registry_module.primitive_registry:
-            ensure_builtin_primitive_registered(name)
-        if name not in primitive_registry_module.primitive_registry:
+        catalog = current_operation_catalog()
+        try:
+            declaration = catalog.resolve("primitive", name).declaration
+        except KeyError:
             raise AttributeError(f"未登録の primitive: {name!r}")
 
         def factory(**params: Any) -> Geometry:
@@ -180,11 +185,14 @@ class PrimitiveNamespace:
                 生成された Geometry ノード。
             """
 
-            spec = primitive_registry_module.primitive_registry[name]
             key = params.pop("key", None)
             instance_key = params.pop("instance_key", None)
             shared = params.pop("shared", False)
-            params = validate_operation_kwargs(op=name, spec=spec, params=params)
+            params = validate_operation_kwargs(
+                op=name,
+                spec=declaration,
+                params=params,
+            )
 
             # key は semantic site、instance_key は loop/comprehension 内の個体を表す。
             # shared=True は個体 suffix を付けず、同じ semantic site を意図的に共有する。
@@ -208,15 +216,17 @@ class PrimitiveNamespace:
                 op=name,
                 site_id=site_id,
                 user_params=params,
-                defaults=spec.defaults,
-                meta=spec.meta,
+                defaults=declaration.schema.defaults,
+                meta=declaration.schema.meta,
             )
             # 値は operation validator / parameter resolver で canonical 化済み。
             # 再走査せず、署名計算だけを行う core-owned factory へ渡す。
             return Geometry._from_canonical_args(
                 op=name,
+                operation=declaration.ref,
                 inputs=(),
                 args=tuple(sorted(resolved.items())),
+                cache_policy=declaration.cache_policy,
             )
 
         return factory

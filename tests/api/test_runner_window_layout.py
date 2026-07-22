@@ -1,4 +1,4 @@
-# ruff: noqa: E402 -- pyglet option must be set before importing runner.
+# ruff: noqa: E402 -- pyglet option must be set before importing window controller.
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pyglet
 
 pyglet.options["shadow_window"] = False
 
-import grafix.api.runner as runner_module
+import grafix.interactive.runtime.workspace_window_controller as workspace_module
 from grafix.interactive.runtime.window_layout import WindowRect
 from grafix.interactive.runtime.workspace_state import (
     WorkspaceState,
@@ -68,7 +68,7 @@ def test_usable_screen_bounds_uses_cocoa_visible_frame() -> None:
     )
     window = _Window(900, 900, screen)
 
-    bounds = runner_module._usable_screen_bounds(window, (200, 100))
+    bounds = workspace_module._usable_screen_bounds(window, (200, 100))
 
     assert bounds == WindowRect(80, 25, 1360, 850)
 
@@ -78,7 +78,7 @@ def test_apply_initial_layout_resizes_and_places_realistic_windows() -> None:
     preview = _Window(900, 900, screen)
     gui = _Window(800, 1000, screen)
 
-    applied = runner_module._apply_initial_window_layout(
+    applied = workspace_module._apply_initial_window_layout(
         preview_window=preview,
         parameter_gui_window=gui,
         preferred_preview_position=(200, 100),
@@ -123,10 +123,10 @@ def test_apply_initial_layout_uses_requested_size_in_platform_dpi_mode() -> None
     preview = HiDPIWindow(900, 900, screen)
     gui = HiDPIWindow(800, 1000, screen)
 
-    assert runner_module._window_content_size(preview) == (900, 900)
-    assert runner_module._window_content_size(gui) == (800, 1000)
+    assert workspace_module._window_content_size(preview) == (900, 900)
+    assert workspace_module._window_content_size(gui) == (800, 1000)
 
-    applied = runner_module._apply_initial_window_layout(
+    applied = workspace_module._apply_initial_window_layout(
         preview_window=preview,
         parameter_gui_window=gui,
         preferred_preview_position=(200, 100),
@@ -148,7 +148,7 @@ def test_apply_initial_layout_does_not_call_set_size_when_natural_sizes_fit() ->
     preview = _Window(900, 900, screen)
     gui = _Window(800, 1000, screen)
 
-    applied = runner_module._apply_initial_window_layout(
+    applied = workspace_module._apply_initial_window_layout(
         preview_window=preview,
         parameter_gui_window=gui,
         preferred_preview_position=(100, 100),
@@ -169,7 +169,7 @@ def test_apply_initial_layout_preserves_safe_dual_monitor_config() -> None:
     preview = _Window(900, 900, left_screen, screens=screens)
     gui = _Window(800, 1000, left_screen, screens=screens)
 
-    applied = runner_module._apply_initial_window_layout(
+    applied = workspace_module._apply_initial_window_layout(
         preview_window=preview,
         parameter_gui_window=gui,
         preferred_preview_position=(100, 100),
@@ -188,7 +188,7 @@ def test_apply_initial_layout_reflows_explicit_content_at_visible_frame_top() ->
     preview = _Window(900, 900, screen)
     gui = _Window(800, 1000, screen)
 
-    applied = runner_module._apply_initial_window_layout(
+    applied = workspace_module._apply_initial_window_layout(
         preview_window=preview,
         parameter_gui_window=gui,
         preferred_preview_position=(100, 0),
@@ -212,7 +212,7 @@ def test_activate_initial_windows_leaves_parameter_gui_in_front() -> None:
         activate=lambda: calls.append("gui"),
     )
 
-    runner_module._activate_initial_windows(preview, gui)
+    workspace_module._activate_initial_windows(preview, gui)
 
     assert calls == ["preview", "gui"]
 
@@ -225,7 +225,7 @@ def test_activate_initial_windows_does_not_reactivate_hidden_inspector() -> None
         activate=lambda: calls.append("gui"),
     )
 
-    runner_module._activate_initial_windows(preview, gui)
+    workspace_module._activate_initial_windows(preview, gui)
 
     assert calls == ["preview"]
 
@@ -238,7 +238,7 @@ def test_apply_initial_layout_rejects_invalid_content_size_without_mutation() ->
         def set_location(self, _x: int, _y: int) -> None:
             raise AssertionError("invalid layout must not mutate the window")
 
-    applied = runner_module._apply_initial_window_layout(
+    applied = workspace_module._apply_initial_window_layout(
         preview_window=InvalidWindow(),
         parameter_gui_window=InvalidWindow(),
         preferred_preview_position=(200, 100),
@@ -270,7 +270,7 @@ def test_inspector_close_hides_it_and_returns_focus_to_preview() -> None:
     preview = _ShortcutWindow("preview")
     inspector = _ShortcutWindow("inspector")
 
-    runner_module._set_inspector_visible(
+    workspace_module._set_inspector_visible(
         preview_window=preview,
         inspector_window=inspector,
         visible=False,
@@ -284,7 +284,7 @@ def test_inspector_close_hides_it_and_returns_focus_to_preview() -> None:
 def test_cmd_or_ctrl_i_toggles_and_reactivates_inspector() -> None:
     preview = _ShortcutWindow("preview")
     inspector = _ShortcutWindow("inspector")
-    runner_module._install_inspector_visibility_shortcut(
+    workspace_module._install_inspector_visibility_shortcut(
         preview_window=preview,
         inspector_window=inspector,
     )
@@ -357,19 +357,19 @@ def test_saved_workspace_is_clamped_to_current_screen_and_restores_visibility() 
         ui_scale=1.5,
     )
 
-    assert runner_module._apply_workspace_layout(
+    assert workspace_module._apply_workspace_layout(
         preview_window=preview,
         inspector_window=inspector,
         state=saved,
     )
 
     safe = WindowRect(32, 32, 1376, 836)
-    preview_rect = runner_module._window_rect(preview)
-    inspector_rect = runner_module._window_rect(inspector)
+    preview_rect = workspace_module._window_rect(preview)
+    inspector_rect = workspace_module._window_rect(inspector)
     assert preview_rect is not None
     assert inspector_rect is not None
-    assert runner_module._rect_is_inside(preview_rect, safe)
-    assert runner_module._rect_is_inside(inspector_rect, safe)
+    assert workspace_module._rect_is_inside(preview_rect, safe)
+    assert workspace_module._rect_is_inside(inspector_rect, safe)
     assert inspector.visible is False
     assert inspector.calls[-1] == ("visible", False)
 
@@ -386,7 +386,7 @@ def test_workspace_snapshot_keeps_loaded_ui_scale_and_hidden_inspector() -> None
         ui_scale=1.75,
     )
 
-    state = runner_module._workspace_state_from_windows(
+    state = workspace_module._workspace_state_from_windows(
         preview_window=preview,
         inspector_window=inspector,
         previous=previous,
@@ -413,7 +413,7 @@ def test_shutdown_persists_current_workspace(tmp_path: Path) -> None:
     )
     path = tmp_path / "workspace.json"
 
-    runner_module._persist_workspace_state_on_shutdown(
+    workspace_module._persist_workspace_state_on_shutdown(
         path=path,
         preview_window=preview,
         inspector_window=inspector,
@@ -428,3 +428,55 @@ def test_shutdown_persists_current_workspace(tmp_path: Path) -> None:
         inspector_visible=False,
         ui_scale=1.75,
     )
+
+
+def test_workspace_controller_owns_restore_and_persist_lifecycle(
+    tmp_path: Path,
+) -> None:
+    screen = SimpleNamespace(x=0, y=0, width=1440, height=900)
+    preview = _WorkspaceWindow(rect=WindowRect(0, 0, 800, 700), screen=screen)
+    inspector = _WorkspaceWindow(rect=WindowRect(800, 0, 500, 700), screen=screen)
+    saved = WorkspaceState(
+        preview_rect=WindowRect(40, 50, 700, 700),
+        inspector_rect=WindowRect(760, 50, 500, 800),
+        inspector_visible=False,
+        ui_scale=1.5,
+    )
+    path = tmp_path / "workspace.json"
+    controller = workspace_module.WorkspaceWindowController(
+        path=path,
+        state=saved,
+        restored=True,
+        preferred_preview_position=(200, 100),
+        preferred_inspector_position=(980, 100),
+    )
+
+    controller.attach_preview(preview)
+    controller.attach_inspector(inspector)
+
+    assert controller.apply_layout()
+    assert inspector.visible is False
+    controller.persist()
+
+    result = load_workspace_state(path, fallback=saved)
+    assert result.restored
+    assert result.state.preview_rect == workspace_module._window_rect(preview)
+    assert result.state.inspector_rect == workspace_module._window_rect(inspector)
+    assert result.state.inspector_visible is False
+    assert result.state.ui_scale == 1.5
+
+
+def test_workspace_controller_loads_missing_state_as_config_fallback(
+    tmp_path: Path,
+) -> None:
+    controller = workspace_module.WorkspaceWindowController.load(
+        path=tmp_path / "missing.json",
+        preview_size=(640, 480),
+        inspector_size=(760, 900),
+        preferred_preview_position=(40, 50),
+        preferred_inspector_position=(700, 50),
+    )
+
+    assert controller.restored is False
+    assert controller.diagnostic is None
+    assert controller.ui_scale == 1.0

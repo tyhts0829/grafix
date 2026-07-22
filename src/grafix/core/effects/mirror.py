@@ -7,10 +7,10 @@ from collections.abc import Iterable
 import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import empty_geom
+from grafix.core.geometry_kernels.packed import empty_packed_geometry
 
 EPS = 1e-6
 INCLUDE_BOUNDARY = True
@@ -192,7 +192,7 @@ def mirror(
                 need_dedup = True
 
         if not wedge_pieces:
-            return empty_geom()
+            return empty_packed_geometry()
 
         angles = (np.arange(n, dtype=np.float32) * np.float32(step)).astype(
             np.float32, copy=False
@@ -235,7 +235,7 @@ def mirror(
             ]
             uniq = _dedup_lines(lines)
             if not uniq:
-                return empty_geom()
+                return empty_packed_geometry()
             out_coords_arr = np.vstack(uniq).astype(np.float32, copy=False)
             out_offsets_arr = np.zeros((len(uniq) + 1,), dtype=np.int32)
             acc = 0
@@ -327,7 +327,7 @@ def mirror(
             uniq.extend(plane_lines)
 
     if not uniq:
-        return empty_geom()
+        return empty_packed_geometry()
 
     all_coords = np.vstack(uniq).astype(np.float32, copy=False)
     new_offsets = np.zeros((len(uniq) + 1,), dtype=np.int32)

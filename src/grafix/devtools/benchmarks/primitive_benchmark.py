@@ -4,15 +4,24 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 
+from grafix.core.evaluation_context import (
+    EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+    ExternalDependencySnapshot,
+    bind_external_dependency,
+)
+from grafix.core.font_resources import FontResources, ResolvedFontLease
 from grafix.core.geometry import normalize_args
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
+from grafix.core.runtime_config import runtime_config
+from grafix.devtools.benchmarks.definition import CaseDefinition, define_case
 from grafix.devtools.benchmarks.schema import (
     BenchmarkOutput,
     Metric,
@@ -23,6 +32,30 @@ from grafix.devtools.benchmarks.schema import (
 
 _FONT_SHA256 = "d930d5d52d15231c283089760f84584272ad5e37e14607ba0d19c798e7a9caec"
 _POLYHEDRON_SHA256 = "416bb767cb68fe1e66ca16a1b8476ae9141922dc1720f314cf28f10392556d52"
+_TEXT_EXTERNAL_DEPENDENCY_ID = "primitive-benchmark.text"
+
+
+def case_definitions() -> tuple[CaseDefinition, ...]:
+    """全組み込み primitive の direct raw actual-work case を返す。"""
+
+    return tuple(
+        define_case(
+            case.case_id,
+            case.label,
+            category="primitive",
+            suite="primitives",
+            fixture=case.fixture,
+            parameters=case.parameters(),
+            tags=case.tags,
+            selectable_suites=case.selectable_suites,
+            setup=setup_primitive_benchmark,
+            workload=run_raw_primitive,
+            postprocess=observe_primitive_output,
+            measurement_context=primitive_measurement_context,
+            support_source_files=(Path(__file__),),
+        )
+        for case in primitive_benchmark_cases()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +115,8 @@ class PrimitiveBenchmarkState:
     asset_sha256: str | None
     asset_bytes: int | None
     work: dict[str, int | float | str | bool]
+    font_resources: FontResources | None
+    font_lease: ResolvedFontLease | None
 
 
 def primitive_benchmark_cases() -> tuple[PrimitiveBenchmarkCase, ...]:
@@ -601,6 +636,24 @@ def setup_primitive_benchmark(
             )
 
     arguments = dict(normalize_args(arguments))
+    font_resources: FontResources | None = None
+    font_lease: ResolvedFontLease | None = None
+    if primitive == "text":
+        font = arguments["font"]
+        font_index = arguments["font_index"]
+        if type(font) is not str or type(font_index) is not int:
+            raise TypeError("text benchmark font/font_index must be canonical values")
+        font_resources = FontResources()
+        try:
+            font_lease = font_resources.resolve(
+                font,
+                font_index,
+                config=runtime_config(),
+            )
+        except BaseException:
+            font_resources.close()
+            raise
+
     return PrimitiveBenchmarkState(
         primitive=primitive,
         raw_function=cast(Callable[..., GeomTuple], raw_function),
@@ -615,7 +668,36 @@ def setup_primitive_benchmark(
                 parameters.get("work", {}),
             )
         ),
+        font_resources=font_resources,
+        font_lease=font_lease,
     )
+
+
+@contextmanager
+def primitive_measurement_context(state: object) -> Iterator[object]:
+    """text の preflight lease を raw call 群へ束縛し、最後に owner を閉じる。"""
+
+    primitive_state = cast(PrimitiveBenchmarkState, state)
+    owner = primitive_state.font_resources
+    lease = primitive_state.font_lease
+    if owner is None:
+        if lease is not None:
+            raise RuntimeError("font lease exists without its FontResources owner")
+        yield None
+        return
+    if lease is None:
+        owner.close()
+        raise RuntimeError("text benchmark FontResources has no resolved lease")
+
+    snapshot = ExternalDependencySnapshot(
+        fingerprint=EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+        leases={_TEXT_EXTERNAL_DEPENDENCY_ID: lease},
+    )
+    try:
+        with bind_external_dependency(snapshot, _TEXT_EXTERNAL_DEPENDENCY_ID):
+            yield None
+    finally:
+        owner.close()
 
 
 def run_raw_primitive(state: object) -> object:
@@ -632,7 +714,7 @@ def observe_primitive_output(
     """raw output のmetrics/checksum契約を timed区間外で構築する。"""
 
     from grafix.core.operation_diagnostics import operation_diagnostic_context
-    from grafix.devtools.benchmarks.runner import geometry_checksum
+    from grafix.devtools.benchmarks.metrics import geometry_checksum
 
     primitive_state = cast(PrimitiveBenchmarkState, state)
     coords, offsets = _raw_arrays(output, primitive=primitive_state.primitive)
@@ -988,9 +1070,11 @@ def _specific_metrics(
 
 
 __all__ = [
+    "case_definitions",
     "PrimitiveBenchmarkCase",
     "PrimitiveBenchmarkState",
     "observe_primitive_output",
+    "primitive_measurement_context",
     "primitive_benchmark_cases",
     "run_raw_primitive",
     "setup_primitive_benchmark",

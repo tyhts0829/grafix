@@ -12,7 +12,7 @@ from typing import TextIO
 
 import numpy as np
 
-from grafix.core.atomic_write import atomic_text_writer
+from grafix.file_io import atomic_text_writer
 from grafix.core.parameters.style import line_width_for_short_side, rgb01_to_rgb255
 from grafix.core.pipeline import RealizedLayer
 

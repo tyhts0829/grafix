@@ -8,13 +8,15 @@ from __future__ import annotations
 
 from _runner import PygletImGuiContext, run_pyglet_imgui
 
-from grafix.interactive.parameter_gui import render_parameter_table
-from grafix.interactive.parameter_gui.group_blocks import group_layout_from_rows
 from grafix.core.parameters.view import ParameterRow
+from grafix.interactive.parameter_gui import TableRenderInput, render_parameter_table
+from grafix.interactive.parameter_gui.catalog import current_parameter_gui_catalog
+from grafix.interactive.parameter_gui.group_blocks import group_layout_from_rows
 
 
 def main() -> None:
     """複数行のテーブルが描画でき、操作しても落ちないことを確認する。"""
+    catalog = current_parameter_gui_catalog()
     rows = [
         ParameterRow(
             label="1:enabled",
@@ -101,7 +103,7 @@ def main() -> None:
             ordinal=6,
         ),
     ]
-    group_layout = group_layout_from_rows(rows)
+    group_layout = group_layout_from_rows(rows, catalog=catalog)
 
     def draw_ui(ctx: PygletImGuiContext) -> None:
         nonlocal rows
@@ -115,10 +117,15 @@ def main() -> None:
             flags=imgui_mod.WINDOW_NO_RESIZE | imgui_mod.WINDOW_NO_COLLAPSE,
         )
 
-        _, rows = render_parameter_table(
-            group_layout=group_layout,
-            model_rows=rows,
+        edits = render_parameter_table(
+            TableRenderInput(
+                group_layout=tuple(group_layout),
+                model_rows=tuple(rows),
+                catalog=catalog,
+                collapsed_headers=frozenset(),
+            )
         )
+        rows = list(edits.rows)
         if imgui_mod.button("Quit"):
             ctx.stop()
 

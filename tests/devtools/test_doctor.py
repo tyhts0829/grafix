@@ -55,6 +55,28 @@ def test_output_write_failure_makes_report_unhealthy(
     assert report.checks[-1].status == "error"
 
 
+def test_explicit_invalid_config_is_reported_when_probe_paths_are_explicit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "invalid.yaml"
+    config_path.write_text("paths:\n  outpt_dir: broken\n", encoding="utf-8")
+    font = tmp_path / "font.ttf"
+    font.write_bytes(b"font")
+    monkeypatch.setattr(doctor, "_check_gl", lambda: _ok_check("gl"))
+    monkeypatch.setattr(doctor, "_check_midi", lambda: _ok_check("midi"))
+
+    report = doctor.run_doctor(
+        output_dir=tmp_path / "output",
+        font_path=font,
+        config_path=config_path,
+    )
+
+    config_check = next(check for check in report.checks if check.name == "runtime_config")
+    assert config_check.status == "error"
+    assert report.healthy is False
+
+
 def test_midi_native_failure_is_isolated_as_warning(monkeypatch) -> None:
     monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda _name: object())
     monkeypatch.setattr(

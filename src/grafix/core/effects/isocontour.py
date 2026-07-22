@@ -21,29 +21,67 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
+from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .util import (
+from grafix.core.geometry_kernels.grid import (
     DEFAULT_MAX_GRID_CELLS,
     GridSpec,
-    PlanarFrame,
-    empty_geom,
-    extract_planar_rings,
-    marching_squares_loops,
-    pack_planar_rings,
-    pack_polylines,
-    planarity_threshold,
-    signed_distance_grid_edt,
+    plan_grid_from_bbox,
 )
+from grafix.core.geometry_kernels.marching import marching_squares_loops
+from grafix.core.geometry_kernels.packed import (
+    empty_packed_geometry,
+    pack_polylines,
+)
+from grafix.core.geometry_kernels.planar import (
+    PlanarFrame,
+    extract_planar_rings,
+    pack_planar_rings,
+    planarity_threshold,
+)
+from grafix.core.geometry_kernels.raster import signed_distance_grid_edt
 
 MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
 _MODE_CHOICES = ("inside", "outside", "both")
+
+
+def _grid_spec_from_bbox(
+    mins: np.ndarray,
+    maxs: np.ndarray,
+    *,
+    pitch: float,
+    padding: float,
+    max_cells: int,
+    overflow: Literal["reject", "coarsen"],
+) -> GridSpec | None:
+    plan = plan_grid_from_bbox(
+        mins,
+        maxs,
+        pitch=pitch,
+        padding=padding,
+        max_cells=max_cells,
+        overflow=overflow,
+    )
+    diagnostic = plan.diagnostic
+    if diagnostic is not None:
+        emit_operation_diagnostic(
+            op="GridSpec.from_bbox",
+            original_value=diagnostic.original_value,
+            effective_value=diagnostic.effective_value,
+            reason=diagnostic.reason,
+            severity=diagnostic.severity,
+        )
+    return plan.spec
+
 
 isocontour_meta = {
     "spacing": ParamMeta(
@@ -159,13 +197,13 @@ def isocontour(
 
     mask_coords, mask_offsets = mask
     if mask_coords.shape[0] == 0:
-        return empty_geom()
+        return empty_packed_geometry()
 
     pitch = grid_pitch
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
     if not frame.is_planar(planarity_threshold(mask_coords)):
-        return empty_geom()
+        return empty_packed_geometry()
     coords_xy_all = frame.to_local(mask_coords)
 
     # 閉曲線のみを抽出（外周＋穴）。
@@ -175,14 +213,14 @@ def isocontour(
         auto_close_threshold=auto_close_threshold,
     )
     if not rings:
-        return empty_geom()
+        return empty_packed_geometry()
 
     mins = np.min(np.stack([r0.mins for r0 in rings], axis=0), axis=0)
     maxs = np.max(np.stack([r0.maxs for r0 in rings], axis=0), axis=0)
 
     # SDF は「輪郭から max_dist だけ離れた範囲」まで必要なので、AABB を余裕を持って拡張する。
     margin = max_dist + 2.0 * pitch
-    grid = GridSpec.from_bbox(
+    grid = _grid_spec_from_bbox(
         mins,
         maxs,
         pitch=pitch,
@@ -191,7 +229,7 @@ def isocontour(
         overflow="reject",
     )
     if grid is None:
-        return empty_geom()
+        return empty_packed_geometry()
     xs, ys = grid.coordinates()
     x0 = grid.origin_x
     y0 = grid.origin_y

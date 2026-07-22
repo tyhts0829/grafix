@@ -3,20 +3,17 @@ from typing import Any
 
 import pytest
 
+import grafix.core.runtime_config as runtime_config_module
 from grafix.core.runtime_config import (
+    bind_runtime_config,
+    current_runtime_config,
+    load_runtime_config,
+    load_runtime_config_report,
     output_root_dir,
     runtime_config,
     runtime_config_report,
     runtime_config_with_fallback,
-    set_config_path,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_runtime_config() -> None:
-    set_config_path(None)
-    yield
-    set_config_path(None)
 
 
 def _isolate_config_discovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -25,9 +22,68 @@ def _isolate_config_discovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.parametrize("value", (0, 1.0, object()))
-def test_set_config_path_rejects_implicit_path_conversion(value: Any) -> None:
+def test_load_runtime_config_rejects_implicit_path_conversion(value: Any) -> None:
     with pytest.raises(TypeError, match="str、Path、None"):
-        set_config_path(value)
+        load_runtime_config(value)  # type: ignore[arg-type]
+
+
+def test_nested_runtime_config_binding_restores_after_exception(tmp_path: Path) -> None:
+    path_a = tmp_path / "a.yaml"
+    path_b = tmp_path / "b.yaml"
+    path_a.write_text("paths:\n  output_dir: a\n", encoding="utf-8")
+    path_b.write_text("paths:\n  output_dir: b\n", encoding="utf-8")
+    config_a = load_runtime_config(path_a)
+    config_b = load_runtime_config(path_b)
+    default = current_runtime_config()
+
+    with bind_runtime_config(config_a):
+        assert current_runtime_config() is config_a
+        with pytest.raises(RuntimeError, match="stop"):
+            with bind_runtime_config(config_b):
+                assert current_runtime_config() is config_b
+                raise RuntimeError("stop")
+        assert current_runtime_config() is config_a
+
+    assert current_runtime_config() == default
+
+
+def test_loader_reloads_same_path_without_retaining_failed_state(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("paths:\n  output_dir: first\n", encoding="utf-8")
+    first = load_runtime_config(config_path)
+
+    config_path.write_text("paths:\n  outpt_dir: invalid\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="paths.outpt_dir"):
+        load_runtime_config(config_path)
+
+    config_path.write_text("paths:\n  output_dir: second\n", encoding="utf-8")
+    second = load_runtime_config(config_path)
+
+    assert first.output_dir == (tmp_path / "first").resolve()
+    assert second.output_dir == (tmp_path / "second").resolve()
+
+
+def test_explicit_path_matching_discovery_is_loaded_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_config_discovery(tmp_path, monkeypatch)
+    config_path = tmp_path / ".grafix" / "config.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text("paths:\n  output_dir: output\n", encoding="utf-8")
+    original_load = runtime_config_module._load_yaml_config
+    loaded_paths: list[Path] = []
+
+    def observed_load(path: Path) -> dict[str, Any]:
+        loaded_paths.append(path.resolve(strict=False))
+        return original_load(path)
+
+    monkeypatch.setattr(runtime_config_module, "_load_yaml_config", observed_load)
+
+    config = load_runtime_config(config_path)
+
+    assert config.output_dir == (tmp_path / ".grafix" / "output").resolve()
+    assert loaded_paths == [config_path.resolve()]
 
 
 def test_output_root_dir_uses_packaged_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -152,10 +208,8 @@ def test_removed_parameter_table_column_weights_key_is_rejected(
         "ui:\n  parameter_gui:\n    table_column_weights: [0.1, 0.2, 0.3, 0.4]\n",
         encoding="utf-8",
     )
-    set_config_path(config_path)
-
     with pytest.raises(RuntimeError, match="ui\\.parameter_gui\\.table_column_weights"):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 def test_explicit_config_overrides_discovered_config(
@@ -175,10 +229,8 @@ def test_explicit_config_overrides_discovered_config(
         'paths:\n  output_dir: "./out_explicit"\n  font_dirs:\n    - "./fonts_discovered"\n',
         encoding="utf-8",
     )
-    set_config_path(explicit)
-
-    assert output_root_dir() == explicit.parent / "out_explicit"
-    cfg = runtime_config()
+    cfg = load_runtime_config(explicit)
+    assert output_root_dir(cfg) == explicit.parent / "out_explicit"
     assert cfg.config_path == explicit
     assert cfg.output_dir == explicit.parent / "out_explicit"
     assert cfg.sketch_dir == Path("sketch")
@@ -202,10 +254,8 @@ def test_explicit_config_path_missing_raises(tmp_path: Path, monkeypatch: pytest
     _isolate_config_discovery(tmp_path, monkeypatch)
 
     missing = tmp_path / "missing.yaml"
-    set_config_path(missing)
-
     with pytest.raises(FileNotFoundError):
-        output_root_dir()
+        load_runtime_config(missing)
 
 
 def test_partial_export_override_keeps_packaged_gcode_defaults(
@@ -281,10 +331,8 @@ def test_unknown_key_is_rejected_before_merge_with_nearest_candidate(
         "paths:\n  outpt_dir: ./renders\n",
         encoding="utf-8",
     )
-    set_config_path(config_path)
-
     with pytest.raises(RuntimeError, match="paths\\.outpt_dir") as exc_info:
-        runtime_config()
+        load_runtime_config(config_path)
 
     assert "paths.output_dir" in str(exc_info.value)
     assert str(config_path) in str(exc_info.value)
@@ -307,10 +355,8 @@ def test_path_lists_reject_non_list_or_non_string_values(
     _isolate_config_discovery(tmp_path, monkeypatch)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml_text, encoding="utf-8")
-    set_config_path(config_path)
-
     with pytest.raises(RuntimeError, match=error_match):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 @pytest.mark.parametrize("yaml_value", ("1.0", '"1"', "true"))
@@ -322,10 +368,8 @@ def test_schema_version_requires_an_integer_without_coercion(
     _isolate_config_discovery(tmp_path, monkeypatch)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(f"version: {yaml_value}\n", encoding="utf-8")
-    set_config_path(config_path)
-
     with pytest.raises(RuntimeError, match="config\\.yaml\\.version.*整数"):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 @pytest.mark.parametrize("yaml_value", ("3.0", '"3"', "true"))
@@ -340,10 +384,8 @@ def test_gcode_decimals_requires_an_integer_without_coercion(
         f"export:\n  gcode:\n    decimals: {yaml_value}\n",
         encoding="utf-8",
     )
-    set_config_path(config_path)
-
     with pytest.raises(RuntimeError, match="export\\.gcode\\.decimals.*整数"):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 @pytest.mark.parametrize("yaml_value", ("1", '"true"'))
@@ -358,10 +400,8 @@ def test_gcode_boolean_requires_a_boolean_without_coercion(
         f"export:\n  gcode:\n    y_down: {yaml_value}\n",
         encoding="utf-8",
     )
-    set_config_path(config_path)
-
     with pytest.raises(RuntimeError, match="export\\.gcode\\.y_down.*bool"):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 @pytest.mark.parametrize("yaml_value", ('"8.0"', "true"))
@@ -376,10 +416,8 @@ def test_float_config_requires_a_real_number_without_coercion(
         f"export:\n  png:\n    scale: {yaml_value}\n",
         encoding="utf-8",
     )
-    set_config_path(config_path)
-
     with pytest.raises(RuntimeError, match="export\\.png\\.scale.*数値"):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 @pytest.mark.parametrize(
@@ -405,10 +443,8 @@ def test_path_string_and_shortcut_values_reject_implicit_string_conversion(
     _isolate_config_discovery(tmp_path, monkeypatch)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml_text, encoding="utf-8")
-    set_config_path(config_path)
-
     with pytest.raises((RuntimeError, ValueError), match=error_match):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 def test_integer_yaml_value_is_valid_for_a_real_config_field(
@@ -418,21 +454,17 @@ def test_integer_yaml_value_is_valid_for_a_real_config_field(
     _isolate_config_discovery(tmp_path, monkeypatch)
     config_path = tmp_path / "config.yaml"
     config_path.write_text("export:\n  png:\n    scale: 8\n", encoding="utf-8")
-    set_config_path(config_path)
-
-    assert runtime_config().png_scale == 8.0
+    assert load_runtime_config(config_path).png_scale == 8.0
 
 
-def test_interactive_fallback_is_explicit_and_cached_for_all_consumers(
+def test_interactive_fallback_is_explicit_and_does_not_mutate_default_discovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _isolate_config_discovery(tmp_path, monkeypatch)
     config_path = tmp_path / "config.yaml"
     config_path.write_text("paths:\n  outpt_dir: ./renders\n", encoding="utf-8")
-    set_config_path(config_path)
-
-    cfg, fallback = runtime_config_with_fallback()
+    cfg, fallback = runtime_config_with_fallback(config_path)
 
     assert fallback is not None
     assert fallback.source == config_path
@@ -440,7 +472,7 @@ def test_interactive_fallback_is_explicit_and_cached_for_all_consumers(
     assert "paths.output_dir" in fallback.details
     assert cfg.config_path is None
     assert cfg.output_dir == Path("data") / "output"
-    assert runtime_config() is cfg
+    assert runtime_config().config_path is None
     assert runtime_config_report().active_source == "grafix/resource/default_config.yaml"
 
 
@@ -456,10 +488,8 @@ def test_non_finite_float_is_rejected(
         f"export:\n  png:\n    scale: {value}\n",
         encoding="utf-8",
     )
-    set_config_path(config_path)
-
     with pytest.raises(ValueError, match="finite"):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 def test_gcode_range_must_be_in_ascending_order(
@@ -472,10 +502,8 @@ def test_gcode_range_must_be_in_ascending_order(
         "export:\n  gcode:\n    bed_x_range: [200.0, 10.0]\n",
         encoding="utf-8",
     )
-    set_config_path(config_path)
-
     with pytest.raises(ValueError, match="bed_x_range.*昇順"):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 def test_positive_float_and_midi_mode_are_strictly_validated(
@@ -488,17 +516,15 @@ def test_positive_float_and_midi_mode_are_strictly_validated(
         "export:\n  gcode:\n    travel_feed: 0.0\n",
         encoding="utf-8",
     )
-    set_config_path(config_path)
     with pytest.raises(ValueError, match="travel_feed.*正"):
-        runtime_config()
+        load_runtime_config(config_path)
 
     config_path.write_text(
         "midi:\n  inputs:\n    - port_name: Grid\n      mode: 16bit\n",
         encoding="utf-8",
     )
-    set_config_path(config_path)
     with pytest.raises(ValueError, match="midi\\.inputs\\[0\\]\\.mode"):
-        runtime_config()
+        load_runtime_config(config_path)
 
 
 def test_config_relative_paths_are_resolved_against_config_parent_not_cwd(
@@ -518,11 +544,10 @@ def test_config_relative_paths_are_resolved_against_config_parent_not_cwd(
         encoding="utf-8",
     )
 
-    set_config_path(config_path)
     other_cwd = tmp_path / "elsewhere"
     other_cwd.mkdir()
     monkeypatch.chdir(other_cwd)
-    cfg = runtime_config()
+    cfg = load_runtime_config(config_path)
 
     assert cfg.output_dir == config_dir.parent / "renders"
     assert cfg.sketch_dir == config_dir / "sketches"
@@ -530,7 +555,9 @@ def test_config_relative_paths_are_resolved_against_config_parent_not_cwd(
     assert cfg.font_dirs == (config_dir / "fonts",)
 
     output_value = next(
-        value for value in runtime_config_report().values if value.key == "paths.output_dir"
+        value
+        for value in load_runtime_config_report(config_path).values
+        if value.key == "paths.output_dir"
     )
     assert output_value.source == str(config_path)
     assert output_value.effective_value == "../renders"

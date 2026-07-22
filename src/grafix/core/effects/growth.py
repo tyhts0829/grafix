@@ -11,27 +11,30 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from numba import njit, prange  # type: ignore[attr-defined, import-untyped]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.preview_quality import current_preview_quality
 from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
 
-from .util import (
-    GridSpec,
+from grafix.core.geometry_kernels.grid import GridSpec, plan_grid_from_bbox
+from grafix.core.geometry_kernels.packed import (
+    empty_packed_geometry,
+    pack_polylines,
+)
+from grafix.core.geometry_kernels.planar import (
     PlanarFrame,
     PlanarRing,
-    empty_geom,
     extract_planar_rings,
     pack_planar_rings,
-    pack_polylines,
     planarity_threshold,
-    signed_distance_grid_edt,
 )
+from grafix.core.geometry_kernels.raster import signed_distance_grid_edt
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
 
@@ -44,6 +47,36 @@ DRAFT_MAX_FORCE_GRID_CELLS = 65_536
 
 _BOUNDARY_PUSH_GAIN = 0.1
 _MAX_SDF_GRID_CELLS = 1_000_000
+
+
+def _grid_spec_from_bbox(
+    mins: np.ndarray,
+    maxs: np.ndarray,
+    *,
+    pitch: float,
+    padding: float,
+    max_cells: int,
+    overflow: Literal["reject", "coarsen"],
+) -> GridSpec | None:
+    plan = plan_grid_from_bbox(
+        mins,
+        maxs,
+        pitch=pitch,
+        padding=padding,
+        max_cells=max_cells,
+        overflow=overflow,
+    )
+    diagnostic = plan.diagnostic
+    if diagnostic is not None:
+        emit_operation_diagnostic(
+            op="GridSpec.from_bbox",
+            original_value=diagnostic.original_value,
+            effective_value=diagnostic.effective_value,
+            reason=diagnostic.reason,
+            severity=diagnostic.severity,
+        )
+    return plan.spec
+
 
 growth_meta = {
     "seed_count": ParamMeta(
@@ -224,7 +257,7 @@ def _build_sdf_grid(
 
     bbox_min = np.min(ring_mins.astype(np.float64, copy=False), axis=0)
     bbox_max = np.max(ring_maxs.astype(np.float64, copy=False), axis=0)
-    grid = GridSpec.from_bbox(
+    grid = _grid_spec_from_bbox(
         bbox_min,
         bbox_max,
         pitch=pitch0,
@@ -1084,7 +1117,7 @@ def growth(
             effective_value="empty_output",
             reason="growth requires a non-empty closed planar mask",
         )
-        return empty_geom()
+        return empty_packed_geometry()
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
     if not frame.valid:
@@ -1094,7 +1127,7 @@ def growth(
             effective_value="empty_output",
             reason="growth requires a closed mask with a well-defined plane",
         )
-        return empty_geom()
+        return empty_packed_geometry()
     if not frame.is_planar(planarity_threshold(mask_coords)):
         emit_operation_diagnostic(
             op="growth.mask",
@@ -1102,7 +1135,7 @@ def growth(
             effective_value="empty_output",
             reason="growth requires a planar mask",
         )
-        return empty_geom()
+        return empty_packed_geometry()
 
     aligned_mask = frame.to_local(mask_coords)
 
@@ -1118,7 +1151,7 @@ def growth(
             effective_value="empty_output",
             reason="growth could not extract a closed ring from the mask",
         )
-        return empty_geom()
+        return empty_packed_geometry()
 
     spacing = target_spacing
 
@@ -1174,7 +1207,7 @@ def growth(
     boundary_mode_s = boundary_mode
 
     if seed_count_i == 0 or iters_i == 0:
-        out = empty_geom()
+        out = empty_packed_geometry()
         return concat_geom_tuples(out, mask) if show_mask else out
 
     rng = np.random.default_rng(seed)

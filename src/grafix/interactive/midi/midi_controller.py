@@ -14,11 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn, Protocol, runtime_checkable
 
-from grafix.core.atomic_write import atomic_write_text
+from grafix.file_io import atomic_write_text
 from grafix.core.lifecycle import CleanupErrors
 from grafix.core.runtime_config import output_root_dir
 from grafix.core.value_validation import exact_string, exact_string_choice
-from grafix.interactive.runtime.diagnostics import DiagnosticAction, DiagnosticEvent
+from grafix.interactive.diagnostics import DiagnosticAction, DiagnosticEvent
 
 
 MIDI_CC_SNAPSHOT_SCHEMA_VERSION = 1
@@ -659,7 +659,7 @@ class MidiController:
         logger.info("  output: %s", output_names_display)
 
 
-def _shutdown_midi_controller(
+def shutdown_midi_controller(
     controller: MidiController,
     *,
     on_snapshot_save_skipped: Callable[[MidiController], None],

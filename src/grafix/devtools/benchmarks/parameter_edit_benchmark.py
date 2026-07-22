@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -13,7 +14,10 @@ from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.ui_ops import update_state_from_ui
-from grafix.devtools.benchmarks import system_benchmark
+from grafix.devtools.benchmarks.definition import CaseDefinition, define_case
+from grafix.devtools.benchmarks.parameter_hotpath_benchmark import (
+    parameter_store_fixture,
+)
 from grafix.devtools.benchmarks.schema import (
     BenchmarkOutput,
     ContractResult,
@@ -30,6 +34,58 @@ _TARGET_KEY = ParameterKey(
     site_id="model-bench-000000",
     arg="length",
 )
+
+
+def case_definitions() -> tuple[CaseDefinition, ...]:
+    """PARAM-01 の 100/1,000/10,000-row formal cases を返す。"""
+
+    return tuple(
+        define_case(
+            f"gui.parameter_edit.rows_{rows}",
+            f"single-key parameter changed-frame ({rows:,} rows)",
+            category="gui",
+            suite="gui",
+            fixture="parameter_store_single_key_edit",
+            parameters={"rows": rows, "changed_frames": changed_frames},
+            tags=(
+                "PARAM-01",
+                "single-key",
+                "changed-frame",
+                "no-imgui",
+                "exact-checksum",
+            ),
+            selectable_suites=selectable_suites,
+            setup=setup_parameter_edit_scenario,
+            workload=workload_parameter_edit_scenario,
+            support_source_files=(
+                Path(__file__),
+                Path(__file__).with_name("parameter_hotpath_benchmark.py"),
+            ),
+            self_sampling=True,
+        )
+        for rows, changed_frames, selectable_suites in (
+            (100, 12, ("smoke", "gui")),
+            (1_000, 12, ("gui",)),
+            (10_000, 6, ("soak",)),
+        )
+    )
+
+
+def setup_parameter_edit_scenario(
+    parameters: dict[str, Any],
+    _seed: int,
+) -> object:
+    """Parameter edit scenario を構築する。"""
+
+    return make_parameter_edit_scenario(parameters)
+
+
+def workload_parameter_edit_scenario(state: object) -> BenchmarkOutput:
+    """Parameter edit scenario を一回実行する。"""
+
+    if not isinstance(state, ParameterEditScenario):
+        raise TypeError("parameter edit scenario state is invalid")
+    return run_parameter_edit_scenario(state)
 
 
 @dataclass(slots=True)
@@ -58,7 +114,7 @@ def make_parameter_edit_scenario(
         raise ValueError("changed_frames は 1 以上である必要があります")
 
     store_bridge.clear_parameter_table_model_cache()
-    store = system_benchmark._parameter_store(rows=rows)
+    store = parameter_store_fixture(rows=rows)
     meta = store.get_meta(_TARGET_KEY)
     if meta is None:
         raise RuntimeError("parameter edit benchmark metadata is missing")
@@ -181,24 +237,16 @@ def run_parameter_edit_scenario(
                 )
                 / 1_000_000.0
             )
-            state_apply_ms.append(
-                float(state_finished - state_started) / 1_000_000.0
-            )
+            state_apply_ms.append(float(state_finished - state_started) / 1_000_000.0)
 
             changed_keys = store.value_changes_since(before_value_revision)
-            changed_key_count = (
-                scenario.rows + 1
-                if changed_keys is None
-                else len(changed_keys)
-            )
+            changed_key_count = scenario.rows + 1 if changed_keys is None else len(changed_keys)
             max_changed_keys = max(max_changed_keys, changed_key_count)
 
             sparse_started = time.perf_counter_ns()
             model = store_bridge._parameter_table_model_for_store(store)
             sparse_finished = time.perf_counter_ns()
-            sparse_refresh_ms.append(
-                float(sparse_finished - sparse_started) / 1_000_000.0
-            )
+            sparse_refresh_ms.append(float(sparse_finished - sparse_started) / 1_000_000.0)
             changed_row_identities = sum(
                 before is not after
                 for before, after in zip(
@@ -212,16 +260,12 @@ def run_parameter_edit_scenario(
                 changed_row_identities,
             )
             row_index = model.row_index_by_key[key]
-            sparse_value_matches += int(
-                model.rows[row_index].ui_value == edited_value
-            )
+            sparse_value_matches += int(model.rows[row_index].ui_value == edited_value)
 
             reuse_started = time.perf_counter_ns()
             reused_model = store_bridge._parameter_table_model_for_store(store)
             reuse_finished = time.perf_counter_ns()
-            structure_reuse_ms.append(
-                float(reuse_finished - reuse_started) / 1_000_000.0
-            )
+            structure_reuse_ms.append(float(reuse_finished - reuse_started) / 1_000_000.0)
             model_reuse_frames += int(reused_model is model)
 
             overlay_started = time.perf_counter_ns()
@@ -230,22 +274,15 @@ def run_parameter_edit_scenario(
                 show_inactive_params=True,
             )
             overlay_finished = time.perf_counter_ns()
-            value_overlay_ms.append(
-                float(overlay_finished - overlay_started) / 1_000_000.0
-            )
+            value_overlay_ms.append(float(overlay_finished - overlay_started) / 1_000_000.0)
             visible_rows = int(view.filtered_count)
-            changed_frame_ms.append(
-                float(overlay_finished - frame_started) / 1_000_000.0
-            )
+            changed_frame_ms.append(float(overlay_finished - frame_started) / 1_000_000.0)
 
     changed_revision_delta = int(store.revision) - start_revision
     changed_table_revision_delta = int(store.table_revision) - start_table_revision
-    changed_value_revision_delta = (
-        int(store.value_revision) - start_value_revision
-    )
+    changed_value_revision_delta = int(store.value_revision) - start_value_revision
     changed_frame_model_builds = (
-        int(store_bridge.parameter_table_model_build_count())
-        - start_build_count
+        int(store_bridge.parameter_table_model_build_count()) - start_build_count
     )
     final_state = store.get_state(key)
     if final_state is None:
@@ -270,8 +307,7 @@ def run_parameter_edit_scenario(
     undo_model = store_bridge._parameter_table_model_for_store(store)
     undo_model_matches = (
         undo_state is not None
-        and undo_model.rows[undo_model.row_index_by_key[key]].ui_value
-        == undo_state.ui_value
+        and undo_model.rows[undo_model.row_index_by_key[key]].ui_value == undo_state.ui_value
     )
 
     redo_changed = history.redo()
@@ -288,8 +324,7 @@ def run_parameter_edit_scenario(
     redo_model = store_bridge._parameter_table_model_for_store(store)
     redo_model_matches = (
         redo_state is not None
-        and redo_model.rows[redo_model.row_index_by_key[key]].ui_value
-        == redo_state.ui_value
+        and redo_model.rows[redo_model.row_index_by_key[key]].ui_value == redo_state.ui_value
     )
     total_revision_delta = int(store.revision) - start_revision
     total_model_builds = int(store_bridge.parameter_table_model_build_count())
@@ -508,10 +543,7 @@ def run_parameter_edit_scenario(
         ),
         _hard_contract(
             "param_edit.final_value.exact",
-            (
-                redo_state is not None
-                and float(redo_state.ui_value) == float(final_value)
-            ),
+            (redo_state is not None and float(redo_state.ui_value) == float(final_value)),
             "eq",
             True,
             "Redo must leave the deterministic final value visible",
@@ -575,6 +607,7 @@ def _hard_contract(
 
 
 __all__ = [
+    "case_definitions",
     "ParameterEditScenario",
     "make_parameter_edit_scenario",
     "run_parameter_edit_scenario",

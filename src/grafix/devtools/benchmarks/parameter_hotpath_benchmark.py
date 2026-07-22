@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Iterable
+import dataclasses
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, cast
+from unittest.mock import patch
 
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.favorites import (
@@ -20,6 +23,17 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.ui_ops import update_state_from_ui
+from grafix.devtools.benchmarks.definition import (
+    CaseDefinition,
+    define_case,
+    scaled_case_definitions,
+)
+from grafix.devtools.benchmarks.metrics import (
+    cache_metrics,
+    counter_metric,
+    gauge_metric,
+    summarize_nanoseconds,
+)
 from grafix.devtools.benchmarks.schema import (
     BenchmarkOutput,
     ContractResult,
@@ -37,6 +51,7 @@ from grafix.interactive.parameter_gui.parameter_filter import (
     parameter_search_token_may_be_dynamic,
     parameter_search_tokens,
 )
+from grafix.interactive.parameter_gui.table import TableEdits
 
 ParameterHotPathOperation = Literal[
     "layout_reuse",
@@ -49,6 +64,71 @@ ParameterHotPathOperation = Literal[
 
 _SCOPE = "core+parameter-hotpath(no-imgui)"
 _SEARCH_MIDI_STRIDE = 1_000
+
+
+def case_definitions() -> tuple[CaseDefinition, ...]:
+    """Parameter GUI/runtime hot-path benchmark cases を返す。"""
+
+    parameter_source = Path(__file__)
+    definitions = [
+        *_hotpath_case_definitions(),
+        define_case(
+            "system.parameter_snapshot_model",
+            "parameter snapshot/model steady frames",
+            category="system",
+            suite="system",
+            fixture="parameter_snapshot_model",
+            parameters={"workload": "parameter_snapshot_model", "rows": 1_000, "frames": 60},
+            tags=("system-diagnostic",),
+            selectable_suites=("system",),
+            setup=setup_parameter_snapshot_model,
+            workload=workload_parameter_snapshot_model,
+            support_source_files=(parameter_source,),
+            self_sampling=True,
+        ),
+        *scaled_case_definitions(
+            prefix="runtime.provenance",
+            label="stable parameter provenance",
+            values=(100, 1_000, 5_000),
+            parameter_name="rows",
+            category="runtime",
+            suite="pipeline",
+            fixture="parameter_store",
+            setup=setup_provenance,
+            workload=workload_provenance,
+            suites=(("smoke", "pipeline"), ("pipeline",), ("soak",)),
+            support_source_files=(parameter_source,),
+            support_implementations=(benchmark_draw,),
+        ),
+        define_case(
+            "runtime.provenance_changed.rows_1000",
+            "changed parameter provenance (1,000)",
+            category="runtime",
+            suite="pipeline",
+            fixture="parameter_store",
+            parameters={"rows": 1_000, "changes_per_iteration": 2},
+            tags=("changed", "exact-checksum"),
+            selectable_suites=("pipeline",),
+            setup=setup_provenance_changed,
+            workload=workload_provenance_changed,
+            support_source_files=(parameter_source,),
+            support_implementations=(benchmark_draw,),
+        ),
+        *scaled_case_definitions(
+            prefix="gui.parameter_table",
+            label="parameter table steady view",
+            values=(100, 1_000, 10_000),
+            parameter_name="rows",
+            category="gui",
+            suite="gui",
+            fixture="parameter_store",
+            setup=setup_parameter_gui,
+            workload=workload_parameter_gui,
+            suites=(("smoke", "gui"), ("gui",), ("soak",)),
+            support_source_files=(parameter_source,),
+        ),
+    ]
+    return tuple(definitions)
 
 
 @dataclass(slots=True)
@@ -218,10 +298,7 @@ def _run_layout_reuse(
             block.group_id,
             block.header_id,
             block.header,
-            tuple(
-                (item.row_index, item.visible_label)
-                for item in block.items
-            ),
+            tuple((item.row_index, item.visible_label) for item in block.items),
         )
         for block in built_layout
     )
@@ -230,10 +307,7 @@ def _run_layout_reuse(
             block.group_id,
             block.header_id,
             block.header,
-            tuple(
-                (item.row_index, item.visible_label)
-                for item in block.items
-            ),
+            tuple((item.row_index, item.visible_label) for item in block.items),
         )
         for block in reused_layout
     )
@@ -317,9 +391,7 @@ def _run_merge_steady(
 
     revision_delta = int(store.revision) - revision_before
     table_revision_delta = int(store.table_revision) - table_revision_before
-    effective_revision_delta = (
-        int(runtime.effective_revision) - effective_revision_before
-    )
+    effective_revision_delta = int(runtime.effective_revision) - effective_revision_before
     distribution = summarize_distribution(elapsed_ms)
     p95 = distribution.p95 if distribution.p95 is not None else distribution.max
     assert p95 is not None
@@ -442,12 +514,8 @@ def _run_snapshot_one(
             max_patch_entries,
             int(getattr(current_snapshot, "patch_entries", 0)),
         )
-        old_snapshot_stable += int(
-            previous_snapshot[key][1].ui_value == previous_value
-        )
-        new_snapshot_matches += int(
-            current_snapshot[key][1].ui_value == next_value
-        )
+        old_snapshot_stable += int(previous_snapshot[key][1].ui_value == previous_value)
+        new_snapshot_matches += int(current_snapshot[key][1].ui_value == next_value)
         previous_snapshot = current_snapshot
         previous_value = next_value
 
@@ -585,9 +653,7 @@ def _run_visibility(
         if search:
             # short/broad/static/dynamic/selective query を巡回し、同一 query の
             # stable cache hit ではなく実際の typing 中 rebuild を測る。
-            query, expected_count = typing_queries[
-                sample_index % len(typing_queries)
-            ]
+            query, expected_count = typing_queries[sample_index % len(typing_queries)]
             expected_search_counts.append(expected_count)
             state = ParameterFilterState(query=query)
         started = time.perf_counter_ns()
@@ -602,10 +668,7 @@ def _run_visibility(
             tokens = parameter_search_tokens(query)
             target = (
                 dynamic_search_ms
-                if any(
-                    parameter_search_token_may_be_dynamic(token)
-                    for token in tokens
-                )
+                if any(parameter_search_token_may_be_dynamic(token) for token in tokens)
                 else static_search_ms
             )
             target.append(elapsed)
@@ -613,35 +676,18 @@ def _run_visibility(
         total_count = int(view.total_count)
         if search:
             visible = view.visible_row_indices
-            first = (
-                None
-                if not visible
-                else _key_token(view.model.keys[visible[0]])
-            )
-            last = (
-                None
-                if not visible
-                else _key_token(view.model.keys[visible[-1]])
-            )
+            first = None if not visible else _key_token(view.model.keys[visible[0]])
+            last = None if not visible else _key_token(view.model.keys[visible[-1]])
             search_trace.append((query, filtered_count, first, last))
 
-    model_builds = (
-        int(store_bridge.parameter_table_model_build_count())
-        - build_count_before
-    )
-    view_builds = (
-        int(store_bridge.parameter_table_view_build_count())
-        - view_build_count_before
-    )
-    expected_filtered = (
-        expected_search_counts[-1] if search else scenario.rows
-    )
+    model_builds = int(store_bridge.parameter_table_model_build_count()) - build_count_before
+    view_builds = int(store_bridge.parameter_table_view_build_count()) - view_build_count_before
+    expected_filtered = expected_search_counts[-1] if search else scenario.rows
     expected_view_builds = scenario.samples if search else 0
     search_count_digest = _digest_items(item[1] for item in search_trace)
     expected_search_count_digest = _digest_items(expected_search_counts)
     visibility_digest = _digest_items(
-        _key_token(view.model.keys[index])
-        for index in view.visible_row_indices
+        _key_token(view.model.keys[index]) for index in view.visible_row_indices
     )
     distribution = summarize_distribution(elapsed_ms)
     p95 = distribution.p95 if distribution.p95 is not None else distribution.max
@@ -649,11 +695,7 @@ def _run_visibility(
     target_ms = 8.0 if search else 1.0
     metrics = [
         _distribution_metric(
-            (
-                "parameter_visibility.search"
-                if search
-                else "parameter_visibility.default"
-            ),
+            ("parameter_visibility.search" if search else "parameter_visibility.default"),
             elapsed_ms,
         ),
         _gauge_metric(
@@ -805,9 +847,7 @@ def _run_favorite_view(
         current_set = favorite_parameter_key_set(store)
         current_ordered = favorite_parameter_keys(store)
         elapsed_ms.append((time.perf_counter_ns() - started) / 1_000_000.0)
-        identity_matches += int(
-            current_set is immutable_view and current_ordered is ordered_view
-        )
+        identity_matches += int(current_set is immutable_view and current_ordered is ordered_view)
 
     actual_digest = _digest_items(_key_token(key) for key in ordered_view)
     revision_delta = int(store.favorite_revision) - favorite_revision_before
@@ -1039,8 +1079,486 @@ def _contract(
     )
 
 
+def _hotpath_case_definitions() -> list[CaseDefinition]:
+    """大規模 ParamStore の merge/snapshot/visibility cases を返す。"""
+
+    definitions: list[CaseDefinition] = [
+        define_case(
+            "gui.parameter_layout.rows_10000",
+            "stable parameter group layout (10,000 rows)",
+            category="gui",
+            suite="parameters",
+            fixture="parameter_store_group_layout",
+            parameters={
+                "operation": "layout_reuse",
+                "rows": 10_000,
+                "samples": 24,
+            },
+            tags=(
+                "PARAM-05",
+                "group-layout",
+                "no-imgui",
+                "exact-checksum",
+            ),
+            selectable_suites=("parameters", "soak"),
+            setup=setup_parameter_hotpath_scenario,
+            workload=workload_parameter_hotpath_scenario,
+            support_source_files=(Path(__file__),),
+            self_sampling=True,
+        )
+    ]
+    for rows, selectable_suites in (
+        (1_000, ("parameters",)),
+        (10_000, ("parameters", "soak")),
+    ):
+        definitions.extend(
+            (
+                define_case(
+                    f"runtime.parameter_merge.rows_{rows}.change_steady",
+                    f"stable parameter merge ({rows:,} rows)",
+                    category="runtime",
+                    suite="parameters",
+                    fixture="parameter_store_stable_records",
+                    parameters={
+                        "operation": "merge_steady",
+                        "rows": rows,
+                        "samples": 24,
+                    },
+                    tags=(
+                        "PARAM-06",
+                        "stable-frame",
+                        "no-imgui",
+                        "exact-checksum",
+                    ),
+                    selectable_suites=selectable_suites,
+                    setup=setup_parameter_hotpath_scenario,
+                    workload=workload_parameter_hotpath_scenario,
+                    support_source_files=(Path(__file__),),
+                    self_sampling=True,
+                ),
+                define_case(
+                    f"runtime.parameter_snapshot.rows_{rows}.change_one",
+                    f"one-key parameter snapshot ({rows:,} rows)",
+                    category="runtime",
+                    suite="parameters",
+                    fixture="parameter_store_single_key_snapshot",
+                    parameters={
+                        "operation": "snapshot_one",
+                        "rows": rows,
+                        "samples": 24,
+                    },
+                    tags=(
+                        "PARAM-07",
+                        "single-key",
+                        "no-imgui",
+                        "exact-checksum",
+                    ),
+                    selectable_suites=selectable_suites,
+                    setup=setup_parameter_hotpath_scenario,
+                    workload=workload_parameter_hotpath_scenario,
+                    support_source_files=(Path(__file__),),
+                    self_sampling=True,
+                ),
+                define_case(
+                    f"gui.parameter_visibility.rows_{rows}.mode_default",
+                    f"default parameter visibility ({rows:,} rows)",
+                    category="gui",
+                    suite="parameters",
+                    fixture="parameter_store_visibility_default",
+                    parameters={
+                        "operation": "visibility_default",
+                        "rows": rows,
+                        "samples": 24,
+                    },
+                    tags=(
+                        "PARAM-08",
+                        "visibility",
+                        "no-imgui",
+                        "exact-checksum",
+                    ),
+                    selectable_suites=selectable_suites,
+                    setup=setup_parameter_hotpath_scenario,
+                    workload=workload_parameter_hotpath_scenario,
+                    support_source_files=(Path(__file__),),
+                    self_sampling=True,
+                ),
+            )
+        )
+    definitions.append(
+        define_case(
+            "gui.parameter_visibility.rows_10000.mode_search",
+            "parameter search visibility (10,000 rows)",
+            category="gui",
+            suite="parameters",
+            fixture="parameter_store_visibility_search",
+            parameters={
+                "operation": "visibility_search",
+                "rows": 10_000,
+                "samples": 24,
+            },
+            tags=(
+                "PARAM-08",
+                "search",
+                "no-imgui",
+                "exact-checksum",
+            ),
+            selectable_suites=("parameters", "soak"),
+            setup=setup_parameter_hotpath_scenario,
+            workload=workload_parameter_hotpath_scenario,
+            support_source_files=(Path(__file__),),
+            self_sampling=True,
+        )
+    )
+    definitions.append(
+        define_case(
+            "gui.parameter_favorites.rows_10000",
+            "stable parameter favorite view (10,000 rows)",
+            category="gui",
+            suite="parameters",
+            fixture="parameter_store_favorite_view",
+            parameters={
+                "operation": "favorite_view",
+                "rows": 10_000,
+                "samples": 24,
+            },
+            tags=(
+                "PARAM-09",
+                "favorite",
+                "no-imgui",
+                "exact-checksum",
+            ),
+            selectable_suites=("parameters", "soak"),
+            setup=setup_parameter_hotpath_scenario,
+            workload=workload_parameter_hotpath_scenario,
+            support_source_files=(Path(__file__),),
+            self_sampling=True,
+        )
+    )
+    return definitions
+
+
+def benchmark_draw(_t: float) -> tuple[()]:
+    return ()
+
+
+def setup_provenance(parameters: dict[str, Any], _seed: int) -> object:
+    from grafix.export.capture_provenance import CaptureProvenanceBuilder
+    from grafix.core.runtime_config import runtime_config
+
+    store = parameter_store_fixture(rows=int(parameters["rows"]))
+    builder = CaptureProvenanceBuilder(
+        benchmark_draw,
+        config=runtime_config(),
+        parameter_source="code",
+        parameter_store_path=None,
+        parameter_load_provenance=store.load_provenance,
+    )
+    return builder, store
+
+
+def workload_provenance(state: object) -> BenchmarkOutput:
+    builder, store = cast(tuple[Any, Any], state)
+    provenance = builder.frame(
+        store,
+        t=0.0,
+        frame_index=0,
+        quality="draft",
+        origin="interactive",
+    )
+    parameters = provenance.frame.parameters
+    return BenchmarkOutput(
+        value={
+            "revision": int(parameters.revision),
+            "entry_count": int(parameters.entry_count),
+            "sha256": parameters.sha256,
+        },
+        metrics=(
+            counter_metric(
+                "entry_count",
+                int(parameters.entry_count),
+                unit="count",
+                phase="measure",
+                scope="provenance",
+            ),
+        ),
+    )
+
+
+def setup_provenance_changed(parameters: dict[str, Any], seed: int) -> object:
+    from grafix.core.parameters.frame_params import FrameParamRecord
+
+    builder, store = cast(
+        tuple[Any, Any],
+        setup_provenance(parameters, seed),
+    )
+    runtime = store._runtime_ref()
+    key = next(iter(runtime.last_effective_by_key))
+    meta = store.get_meta(key)
+    if meta is None:
+        raise RuntimeError("provenance benchmark parameter metadata is missing")
+    record = FrameParamRecord(
+        key=key,
+        base=runtime.last_effective_by_key[key],
+        meta=meta,
+        explicit=False,
+        effective=runtime.last_effective_by_key[key],
+        source="code",
+    )
+    return builder, store, record
+
+
+def workload_provenance_changed(state: object) -> BenchmarkOutput:
+    from grafix.core.parameters.merge_ops import merge_frame_params
+
+    builder, store, record = cast(tuple[Any, Any, Any], state)
+    # 1 workload 内で A→B と2回変更し、各snapshotを具体化する。最終Bを固定
+    # するため、warmup/calibration回数によらずsemantic checksumは一定になる。
+    merge_frame_params(store, [dataclasses.replace(record, effective=-1.0)])
+    builder.frame(
+        store,
+        t=0.0,
+        frame_index=0,
+        quality="draft",
+        origin="interactive",
+    )
+    merge_frame_params(store, [dataclasses.replace(record, effective=-2.0)])
+    provenance = builder.frame(
+        store,
+        t=0.0,
+        frame_index=0,
+        quality="draft",
+        origin="interactive",
+    )
+    parameters = provenance.frame.parameters
+    return BenchmarkOutput(
+        value={
+            "revision": int(parameters.revision),
+            "entry_count": int(parameters.entry_count),
+            "sha256": parameters.sha256,
+        },
+        metrics=(
+            counter_metric(
+                "entry_count",
+                int(parameters.entry_count),
+                unit="count",
+                phase="measure",
+                scope="provenance",
+            ),
+            counter_metric(
+                "changes_per_iteration",
+                2,
+                unit="count",
+                phase="measure",
+                scope="provenance",
+            ),
+        ),
+    )
+
+
+def setup_parameter_gui(parameters: dict[str, Any], _seed: int) -> object:
+    from grafix.interactive.parameter_gui.store_bridge import (
+        clear_parameter_table_model_cache,
+    )
+
+    clear_parameter_table_model_cache()
+    return parameter_store_fixture(rows=int(parameters["rows"]))
+
+
+def workload_parameter_gui(state: object) -> BenchmarkOutput:
+    from grafix.interactive.parameter_gui.store_bridge import (
+        parameter_table_model_build_count,
+        parameter_table_view_for_store,
+    )
+
+    view = parameter_table_view_for_store(
+        state,  # type: ignore[arg-type]
+        show_inactive_params=True,
+    )
+    value = {
+        "total_count": int(view.total_count),
+        "filtered_count": int(view.filtered_count),
+        "visible_count": int(sum(view.visible_mask)),
+    }
+    return BenchmarkOutput(
+        value=value,
+        metrics=tuple(
+            counter_metric(
+                name,
+                metric_value,
+                unit="count",
+                phase="measure",
+                scope="parameter_gui",
+            )
+            for name, metric_value in (
+                ("total_count", value["total_count"]),
+                ("filtered_count", value["filtered_count"]),
+                ("visible_count", value["visible_count"]),
+                ("model_builds", int(parameter_table_model_build_count())),
+            )
+        ),
+    )
+
+
+def setup_parameter_hotpath_scenario(
+    parameters: dict[str, Any],
+    _seed: int,
+) -> object:
+    return make_parameter_hot_path_scenario(parameters)
+
+
+def workload_parameter_hotpath_scenario(state: object) -> BenchmarkOutput:
+    if not isinstance(state, ParameterHotPathScenario):
+        raise TypeError("parameter hot-path scenario state is invalid")
+    return run_parameter_hot_path_scenario(state)
+
+
+def parameter_store_fixture(*, rows: int) -> ParamStore:
+    row_count = max(1, int(rows))
+    meta = ParamMeta(kind="float", ui_min=0.0, ui_max=float(row_count))
+    records = [
+        FrameParamRecord(
+            key=ParameterKey(
+                op="line",
+                site_id=f"model-bench-{index:06d}",
+                arg="length",
+            ),
+            base=float(index),
+            meta=meta,
+            explicit=False,
+            effective=float(index),
+            source="code",
+        )
+        for index in range(row_count)
+    ]
+    store = ParamStore()
+    merge_frame_params(store, records)
+    return store
+
+
+def parameter_snapshot_model_workload(
+    store: ParamStore,
+    *,
+    frames: int,
+) -> dict[str, Any]:
+    """実 UI を呼ばず、snapshot/model と毎frame準備だけを通す。"""
+
+    frame_count = max(2, int(frames))
+    store._touch()
+    store_bridge.clear_parameter_table_model_cache()
+    render_calls = 0
+    visible_rows = 0
+
+    def fake_render(render_input: Any, **_kwargs: Any) -> TableEdits:
+        nonlocal render_calls, visible_rows
+        render_calls += 1
+        visible_rows = len(render_input.model_rows)
+        rows = tuple(
+            render_input.model_rows[item.row_index]
+            for block in render_input.group_layout
+            for item in block.items
+        )
+        return TableEdits(
+            rows=rows,
+            collapsed_headers=render_input.collapsed_headers,
+            midi_learn_state=render_input.midi_learn_state,
+        )
+
+    samples: list[int] = []
+    first_frame_ns = 0
+    with patch.object(store_bridge, "render_parameter_table", fake_render):
+        for frame in range(frame_count):
+            started = time.perf_counter_ns()
+            table_view = store_bridge.parameter_table_view_for_store(
+                store,
+                show_inactive_params=True,
+            )
+            changed = store_bridge.render_store_parameter_table(
+                store,
+                table_view=table_view,
+            )
+            elapsed = time.perf_counter_ns() - started
+            if changed.changed:
+                raise RuntimeError("benchmark の fake UI が store を変更した")
+            if frame == 0:
+                first_frame_ns = elapsed
+            else:
+                samples.append(elapsed)
+
+    build_count = store_bridge.parameter_table_model_build_count()
+    steady = summarize_nanoseconds(samples)
+    return {
+        "output": {
+            "frames": frame_count,
+            "rows": visible_rows,
+            "snapshot_entries": len(store_snapshot(store)),
+            "render_calls": render_calls,
+            "model_builds": build_count,
+            "first_frame_ms": float(first_frame_ns) / 1_000_000.0,
+            "steady_median_ms": steady["median_ms"],
+            "steady_p95_ms": steady["p95_ms"],
+        },
+        "cache": {
+            "hits": max(0, frame_count - build_count),
+            "misses": build_count,
+            "evictions": 0,
+            "entries": int(build_count > 0),
+            "bytes": 0,
+        },
+    }
+
+
+def setup_parameter_snapshot_model(parameters: dict[str, Any], _seed: int) -> object:
+    state = dict(parameters)
+    state["store"] = parameter_store_fixture(rows=int(state["rows"]))
+    return state
+
+
+def workload_parameter_snapshot_model(state: object) -> BenchmarkOutput:
+    values = cast(dict[str, Any], state)
+    payload = parameter_snapshot_model_workload(values["store"], frames=int(values["frames"]))
+    output = payload["output"]
+    semantic = {key: output[key] for key in ("frames", "rows", "snapshot_entries", "render_calls")}
+    cache = cast(dict[str, Any], payload["cache"])
+    return BenchmarkOutput(
+        value=semantic,
+        metrics=(
+            *(
+                counter_metric(
+                    name, int(output[name]), unit="count", phase="measure", scope="system"
+                )
+                for name in ("frames", "rows", "snapshot_entries", "render_calls", "model_builds")
+            ),
+            gauge_metric(
+                "first_frame_ms",
+                float(output["first_frame_ms"]),
+                unit="ms",
+                phase="measure",
+                scope="system",
+            ),
+            gauge_metric(
+                "steady_median_ms",
+                float(output["steady_median_ms"]),
+                unit="ms",
+                phase="measure",
+                scope="system",
+            ),
+            gauge_metric(
+                "steady_p95_ms",
+                float(output["steady_p95_ms"]),
+                unit="ms",
+                phase="measure",
+                scope="system",
+            ),
+            *cache_metrics(cache, name="cache", phase="measure", scope="system"),
+        ),
+    )
+
+
 __all__ = [
+    "case_definitions",
     "ParameterHotPathScenario",
     "make_parameter_hot_path_scenario",
     "run_parameter_hot_path_scenario",
+    "parameter_store_fixture",
+    "parameter_snapshot_model_workload",
 ]

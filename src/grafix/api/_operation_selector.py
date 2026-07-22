@@ -1,4 +1,4 @@
-"""G/E selector の target parameter 解決と実 operation への lowering を提供する。"""
+"""selector schema discovery と exact catalog runtime dispatch を接続する。"""
 
 from __future__ import annotations
 
@@ -7,23 +7,20 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, TypeAlias
 
-from grafix.core.op_registry import OpRegistry, OpSpec
-from grafix.core.parameters.identity import identity_string
+from grafix.core.operation_catalog import OperationCatalog, current_operation_catalog
+from grafix.core.operation_declaration import OpDeclaration
 from grafix.core.operation_selector import (
     PRIMITIVE_SELECTOR_OP,
     SelectorKind,
+    SelectorSpec,
     effect_selector_op,
-    ensure_effect_selector_spec,
-    ensure_primitive_selector_spec,
     selector_param_key,
+    selector_spec,
     validate_effect_selector_n_inputs,
-    validate_effect_selector_target,
     validate_selector_target,
 )
+from grafix.core.parameters.identity import identity_string
 from grafix.core.value_validation import exact_bool
-
-import grafix.core.effect_registry as effect_registry_module
-import grafix.core.primitive_registry as primitive_registry_module
 
 from ._op_validation import validate_operation_kwargs
 from ._param_resolution import resolve_api_params
@@ -44,9 +41,48 @@ class ResolvedSelection:
     params: Mapping[str, Any]
 
     def __post_init__(self) -> None:
-        """解決結果が所有する読み取り専用の引数 mapping を保持する。"""
-
         object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+
+
+def _selected_catalog(catalog: OperationCatalog | None) -> OperationCatalog:
+    if catalog is None:
+        return current_operation_catalog()
+    if type(catalog) is not OperationCatalog:
+        raise TypeError("catalog は exact OperationCatalog または None です")
+    return catalog
+
+
+def _selector_for(
+    catalog: OperationCatalog,
+    *,
+    kind: SelectorKind,
+    n_inputs: int,
+    spec: SelectorSpec | None,
+) -> SelectorSpec:
+    expected = selector_spec(catalog, kind=kind, n_inputs=n_inputs)
+    if spec is None:
+        return expected
+    if type(spec) is not SelectorSpec:
+        raise TypeError("selector は exact SelectorSpec または None です")
+    if spec.fingerprint != expected.fingerprint:
+        raise LookupError("selector schema と operation catalog が一致しません")
+    return spec
+
+
+def _target_declaration(
+    *,
+    catalog: OperationCatalog,
+    selector: SelectorSpec,
+    kind: SelectorKind,
+    target: str,
+) -> OpDeclaration:
+    entry = catalog.resolve(kind, target)
+    expected = selector.target_schema_fingerprints.get(target)
+    if expected != entry.schema_fingerprint.digest:
+        raise LookupError(
+            f"selector schema と {kind} {target!r} の schema fingerprint が一致しません"
+        )
+    return entry.declaration
 
 
 def freeze_params_by_target(
@@ -54,18 +90,24 @@ def freeze_params_by_target(
     *,
     kind: SelectorKind,
     n_inputs: int | None = None,
+    catalog: OperationCatalog | None = None,
+    selector: SelectorSpec | None = None,
 ) -> FrozenParamsByTarget:
-    """target別 kwargs を検証し、外側/内側 mapping から独立した値へ固定する。"""
+    """target 別 kwargs を一つの immutable catalog/schema に対して固定する。"""
 
-    selector_spec: OpSpec[Any]
+    selected_catalog = _selected_catalog(catalog)
     if kind == "primitive":
-        selector_spec = ensure_primitive_selector_spec()
-        registry: OpRegistry[Any] = primitive_registry_module.primitive_registry
+        count = 0
     else:
         if n_inputs is None:
             raise ValueError("effect selector には n_inputs が必要です")
-        selector_spec = ensure_effect_selector_spec(n_inputs)
-        registry = effect_registry_module.effect_registry
+        count = validate_effect_selector_n_inputs(n_inputs)
+    selected_selector = _selector_for(
+        selected_catalog,
+        kind=kind,
+        n_inputs=count,
+        spec=selector,
+    )
 
     if params_by_target is None:
         return ()
@@ -77,17 +119,23 @@ def freeze_params_by_target(
         target = validate_selector_target(
             kind=kind,
             target=identity_string(raw_target, name="params_by_target target"),
-            selector_spec=selector_spec,
+            selector_spec=selected_selector,
             n_inputs=n_inputs,
         )
         if not isinstance(raw_params, Mapping):
             raise TypeError(f"params_by_target[{target!r}] は mapping である必要があります")
         params = dict(raw_params)
-        if any(not isinstance(name, str) for name in params):
+        if any(type(name) is not str for name in params):
             raise TypeError("target parameter 名は str である必要があります")
+        declaration = _target_declaration(
+            catalog=selected_catalog,
+            selector=selected_selector,
+            kind=kind,
+            target=target,
+        )
         canonical = validate_operation_kwargs(
             op=target,
-            spec=registry[target],
+            spec=declaration,
             params=params,
         )
         frozen.append((target, tuple(sorted(canonical.items()))))
@@ -95,10 +143,7 @@ def freeze_params_by_target(
     return tuple(frozen)
 
 
-def _params_for_target(
-    frozen: FrozenParamsByTarget,
-    target: str,
-) -> dict[str, Any]:
+def _params_for_target(frozen: FrozenParamsByTarget, target: str) -> dict[str, Any]:
     for name, items in frozen:
         if name == target:
             return dict(items)
@@ -108,85 +153,87 @@ def _params_for_target(
 def _resolve_selection(
     *,
     kind: SelectorKind,
-    selector_op: str,
-    selector_spec: OpSpec[Any],
-    registry: OpRegistry[Any],
+    selector: SelectorSpec,
+    catalog: OperationCatalog,
     base_target: str,
     target_explicit: bool,
     frozen_params: FrozenParamsByTarget,
     site_id: str,
     n_inputs: int | None,
 ) -> ResolvedSelection:
-    target_is_explicit = exact_bool(
-        target_explicit,
-        name="target_explicit",
-    )
+    target_is_explicit = exact_bool(target_explicit, name="target_explicit")
     base_target_s = validate_selector_target(
         kind=kind,
         target=base_target,
-        selector_spec=selector_spec,
+        selector_spec=selector,
         n_inputs=n_inputs,
     )
     resolved_target = resolve_api_params(
-        op=selector_op,
+        op=selector.op,
         site_id=site_id,
         user_params={"target": base_target_s},
         defaults={},
-        meta={"target": selector_spec.meta["target"]},
+        meta={"target": selector.schema.meta["target"]},
         explicit_args={"target"} if target_is_explicit else set(),
     )["target"]
     target = validate_selector_target(
         kind=kind,
         target=identity_string(resolved_target, name="resolved selector target"),
-        selector_spec=selector_spec,
+        selector_spec=selector,
         n_inputs=n_inputs,
     )
-    target_spec = registry[target]
+    declaration = _target_declaration(
+        catalog=catalog,
+        selector=selector,
+        kind=kind,
+        target=target,
+    )
+    target_schema = declaration.schema
     code_params = validate_operation_kwargs(
         op=target,
-        spec=target_spec,
+        spec=declaration,
         params=_params_for_target(frozen_params, target),
     )
 
     visible_user_params = {
         selector_param_key(target, arg): value
         for arg, value in code_params.items()
-        if arg in target_spec.meta
+        if arg in target_schema.meta
     }
     visible_defaults = {
         selector_param_key(target, arg): value
-        for arg, value in target_spec.defaults.items()
-        if arg in target_spec.meta
+        for arg, value in target_schema.defaults.items()
+        if arg in target_schema.meta
     }
     visible_meta = {
-        selector_param_key(target, arg): selector_spec.meta[selector_param_key(target, arg)]
-        for arg in target_spec.meta
+        selector_param_key(target, arg): selector.schema.meta[
+            selector_param_key(target, arg)
+        ]
+        for arg in target_schema.meta
     }
     resolved_visible = resolve_api_params(
-        op=selector_op,
+        op=selector.op,
         site_id=site_id,
         user_params=visible_user_params,
         defaults=visible_defaults,
         meta=visible_meta,
     )
 
-    params = {arg: value for arg, value in code_params.items() if arg not in target_spec.meta}
+    params = {
+        arg: value for arg, value in code_params.items() if arg not in target_schema.meta
+    }
     params.update(
         {
             arg: resolved_visible[selector_param_key(target, arg)]
-            for arg in target_spec.meta
+            for arg in target_schema.meta
             if selector_param_key(target, arg) in resolved_visible
         }
     )
-    missing = tuple(arg for arg in target_spec.required_args if arg not in params)
+    missing = tuple(arg for arg in declaration.required_args if arg not in params)
     if missing:
         names = ", ".join(repr(name) for name in missing)
         raise TypeError(f"{kind} {target!r} に必要な引数がありません: {names}")
-    return ResolvedSelection(
-        selector_op=selector_op,
-        target=target,
-        params=params,
-    )
+    return ResolvedSelection(selector_op=selector.op, target=target, params=params)
 
 
 def resolve_primitive_selection(
@@ -195,15 +242,22 @@ def resolve_primitive_selection(
     target_explicit: bool,
     params_by_target: FrozenParamsByTarget,
     site_id: str,
+    catalog: OperationCatalog | None = None,
+    selector: SelectorSpec | None = None,
 ) -> ResolvedSelection:
-    """primitive selector を解決し、実 target の Geometry 引数を返す。"""
+    """primitive selector を exact catalog entry へ lower する。"""
 
-    selector_spec = ensure_primitive_selector_spec()
+    selected_catalog = _selected_catalog(catalog)
+    selected_selector = _selector_for(
+        selected_catalog,
+        kind="primitive",
+        n_inputs=0,
+        spec=selector,
+    )
     return _resolve_selection(
         kind="primitive",
-        selector_op=PRIMITIVE_SELECTOR_OP,
-        selector_spec=selector_spec,
-        registry=primitive_registry_module.primitive_registry,
+        selector=selected_selector,
+        catalog=selected_catalog,
         base_target=target,
         target_explicit=target_explicit,
         frozen_params=params_by_target,
@@ -219,22 +273,24 @@ def resolve_effect_selection(
     n_inputs: int,
     params_by_target: FrozenParamsByTarget,
     site_id: str,
+    catalog: OperationCatalog | None = None,
+    selector: SelectorSpec | None = None,
 ) -> ResolvedSelection:
-    """effect selector を解決し、実 target の Geometry 引数を返す。"""
+    """effect selector を exact catalog entry へ lower する。"""
 
     count = validate_effect_selector_n_inputs(n_inputs)
-    current_target = validate_effect_selector_target(
-        target,
+    selected_catalog = _selected_catalog(catalog)
+    selected_selector = _selector_for(
+        selected_catalog,
+        kind="effect",
         n_inputs=count,
+        spec=selector,
     )
-    selector_op = effect_selector_op(count)
-    selector_spec = ensure_effect_selector_spec(count)
     return _resolve_selection(
         kind="effect",
-        selector_op=selector_op,
-        selector_spec=selector_spec,
-        registry=effect_registry_module.effect_registry,
-        base_target=current_target,
+        selector=selected_selector,
+        catalog=selected_catalog,
+        base_target=target,
         target_explicit=target_explicit,
         frozen_params=params_by_target,
         site_id=site_id,
@@ -248,12 +304,9 @@ __all__ = [
     "ParamsByTarget",
     "ResolvedSelection",
     "effect_selector_op",
-    "ensure_effect_selector_spec",
-    "ensure_primitive_selector_spec",
     "freeze_params_by_target",
     "resolve_effect_selection",
     "resolve_primitive_selection",
     "selector_param_key",
     "validate_effect_selector_n_inputs",
-    "validate_effect_selector_target",
 ]

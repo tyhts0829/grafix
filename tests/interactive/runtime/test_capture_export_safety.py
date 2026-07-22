@@ -13,14 +13,20 @@ import pytest
 
 pyglet.options["shadow_window"] = False
 
-from grafix.core.capture_manifest import capture_manifest_path_for
-from grafix.core.capture_provenance import CaptureProvenanceBuilder
+from grafix.export.capture import CaptureService
+from grafix.export.capture_publish import capture_manifest_path_for
+from grafix.export.capture_provenance import CaptureProvenanceBuilder
+from grafix.core.evaluation_context import (
+    EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+    EvaluationFingerprint,
+)
 from grafix.core.export_format import ExportFormat
 from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer
-from grafix.core.output_paths import VersionedPathAllocator, gcode_layer_output_path
+from grafix.export.output_paths import VersionedPathAllocator, gcode_layer_output_path
 from grafix.core.parameters import ParamStore
 from grafix.core.pipeline import RealizedLayer
+from grafix.core.realize import GeometryCacheKey
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.runtime_config import runtime_config
 from grafix.interactive.runtime import export_job_system as export_module
@@ -49,7 +55,11 @@ def _realized_layer(name: str, index: int) -> RealizedLayer:
             ),
             offsets=np.asarray((0, 2), dtype=np.int32),
         ),
-        cache_key=(geometry.id, (0, 0)),
+        cache_key=GeometryCacheKey(
+            geometry_id=geometry.id,
+            evaluation=EvaluationFingerprint("0" * 64),
+            external_dependencies=EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+        ),
         color=(0.0, 0.0, 0.0),
         thickness=0.001,
     )
@@ -222,7 +232,7 @@ def test_backend_error_removes_staged_artifact_without_publishing_final(
         system.close()
 
 
-def test_parent_commit_never_replaces_a_late_existing_destination(tmp_path: Path) -> None:
+def test_parent_commit_retries_without_replacing_a_late_destination(tmp_path: Path) -> None:
     output_path = tmp_path / "capture.gcode"
     output_path.write_bytes(b"created-after-allocation")
     staging_dir = tmp_path / ".capture.export-1-test"
@@ -247,14 +257,16 @@ def test_parent_commit_never_replaces_a_late_existing_destination(tmp_path: Path
 
     finalized = export_module._finalize_backend_result(job, result)
 
-    assert finalized.status is ExportJobStatus.ERROR
-    assert "parent-side export commit failed" in (finalized.error or "")
+    assert finalized.status is ExportJobStatus.SUCCESS
+    assert finalized.paths == (tmp_path / "capture_001.gcode",)
+    assert finalized.paths[0].read_bytes() == b"new-capture"
     assert output_path.read_bytes() == b"created-after-allocation"
+    assert finalized.manifest_path == capture_manifest_path_for(finalized.paths[0])
     assert not staging_dir.exists()
 
 
 @pytest.mark.parametrize("format", [ExportFormat.PNG, ExportFormat.GCODE])
-def test_parent_commit_rolls_back_artifact_when_manifest_late_collides(
+def test_parent_commit_retries_when_manifest_late_collides(
     tmp_path: Path,
     format: ExportFormat,
 ) -> None:
@@ -285,10 +297,13 @@ def test_parent_commit_rolls_back_artifact_when_manifest_late_collides(
 
     finalized = export_module._finalize_backend_result(job, result)
 
-    assert finalized.status is ExportJobStatus.ERROR
-    assert "parent-side export commit failed" in (finalized.error or "")
+    assert finalized.status is ExportJobStatus.SUCCESS
+    expected_path = tmp_path / f"capture_001{suffix}"
+    assert finalized.paths == (expected_path,)
+    assert expected_path.read_bytes() == b"new capture"
     assert not output_path.exists()
     assert manifest_path.read_bytes() == b"external manifest"
+    assert finalized.manifest_path == capture_manifest_path_for(expected_path)
     assert not staging_dir.exists()
 
 
@@ -354,7 +369,7 @@ def test_gcode_layer_commit_failure_rolls_back_already_published_layers(
     assert not staging_dir.exists()
 
 
-def test_gcode_layer_late_collision_keeps_external_layer_and_rolls_back_ours(
+def test_gcode_layer_late_collision_keeps_external_layer_and_retries_family(
     tmp_path: Path,
 ) -> None:
     output_path = tmp_path / "capture.gcode"
@@ -394,10 +409,26 @@ def test_gcode_layer_late_collision_keeps_external_layer_and_rolls_back_ours(
 
     finalized = export_module._finalize_backend_result(job, result)
 
-    assert finalized.status is ExportJobStatus.ERROR
+    assert finalized.status is ExportJobStatus.SUCCESS
     assert not final_paths[0].exists()
     assert final_paths[1].read_bytes() == b"external layer"
     assert not capture_manifest_path_for(output_path).exists()
+    expected_base = tmp_path / "capture_001.gcode"
+    expected_paths = tuple(
+        gcode_layer_output_path(
+            expected_base,
+            layer_index=index,
+            n_layers=len(snapshot.layers),
+            layer_name=layer.layer.name,
+        )
+        for index, layer in enumerate(snapshot.layers, start=1)
+    )
+    assert finalized.paths == expected_paths
+    assert [path.read_bytes() for path in expected_paths] == [
+        b"new-layer-0",
+        b"new-layer-1",
+    ]
+    assert finalized.manifest_path == capture_manifest_path_for(expected_base)
     assert not staging_dir.exists()
 
 
@@ -407,10 +438,15 @@ def test_gcode_layer_family_collision_checks_old_names_and_extra_indices(
     stale_path = tmp_path / "piece_layer009_old-name.gcode"
     stale_path.write_text("stale partial capture", encoding="utf-8")
     system = make_draw_window_system()
-    system._capture_paths = VersionedPathAllocator()
+    system._capture_service = CaptureService(
+        path_allocator=VersionedPathAllocator()
+    )
     system._gcode_output_path = tmp_path / "piece.gcode"
 
-    allocated = system._allocate_gcode_layers_path()
+    allocated = system._capture_service.reserve_path(
+        system._gcode_output_path,
+        split_gcode_layers=True,
+    )
 
     assert allocated == tmp_path / "piece_001.gcode"
     assert stale_path.read_text(encoding="utf-8") == "stale partial capture"

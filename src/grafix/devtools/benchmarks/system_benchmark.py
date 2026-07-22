@@ -8,217 +8,148 @@ import os
 import resource
 import subprocess
 import sys
-import time
-from dataclasses import dataclass
+from pathlib import Path
 from types import CodeType
 from typing import Any, cast
-from unittest.mock import patch
 
 import numpy as np
 
-from grafix.core.builtins import ensure_builtin_effect_registered
-from grafix.core.effect_registry import effect_registry
+from grafix.core.builtins import builtin_operation_catalog
 from grafix.core.geometry import Geometry
-from grafix.core.layer import LayerStyleDefaults
-from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.key import _automatic_site_id
-from grafix.core.parameters.key import ParameterKey
-from grafix.core.parameters.merge_ops import merge_frame_params
-from grafix.core.parameters.meta import ParamMeta
-from grafix.core.parameters.snapshot_ops import store_snapshot
-from grafix.core.parameters.store import ParamStore
-from grafix.core.pipeline import realize_scene
 from grafix.core.primitives.asemic import _generate_asemic_glyph, asemic
 from grafix.core.realize import RealizeSession
 from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
 from grafix.core.runtime_limits import RuntimeLimits
+from grafix.devtools.benchmarks.definition import (
+    CaseDefinition,
+    define_case,
+    scaled_case_definitions,
+)
+from grafix.devtools.benchmarks.metrics import (
+    cache_metrics,
+    counter_metric,
+    gauge_metric,
+    summarize_nanoseconds,
+)
+from grafix.devtools.benchmarks.schema import BenchmarkOutput
 from grafix.export.gcode import _Stroke, _order_strokes_in_layer
-from grafix.interactive.gl import draw_renderer as renderer_module
-from grafix.interactive.gl.draw_renderer import DrawRenderer
-from grafix.interactive.gl.index_buffer import build_line_indices_and_stats
-from grafix.interactive.parameter_gui import store_bridge
-from grafix.api.render import RenderOptions
 
 
-@dataclass(slots=True)
-class _FakeBuffer:
-    size: int
+def case_definitions() -> tuple[CaseDefinition, ...]:
+    """System/micro benchmark cases を返す。"""
 
-
-class _BenchmarkFakeMesh:
-    """GL を使わず upload 回数と予約 byte 数だけを再現する mesh。"""
-
-    instances: list[_BenchmarkFakeMesh] = []
-
-    def __init__(
-        self,
-        ctx: object,
-        program: object,
-        initial_reserve: int = 4_096,
-    ) -> None:
-        del ctx, program
-        self.vbo = _FakeBuffer(size=int(initial_reserve))
-        self.ibo = _FakeBuffer(size=int(initial_reserve))
-        self.upload_count = 0
-        self.vertex_upload_count = 0
-        self.full_vertex_upload_bytes = 0
-        self.full_index_upload_bytes = 0
-        self.vertex_only_upload_bytes = 0
-        self.last_vertices: np.ndarray | None = None
-        self.last_indices: np.ndarray | None = None
-        self.released = False
-        self.instances.append(self)
-
-    def upload(self, vertices: np.ndarray, indices: np.ndarray) -> None:
-        vertices_f32 = np.ascontiguousarray(vertices, dtype=np.float32)
-        indices_u32 = np.ascontiguousarray(indices, dtype=np.uint32)
-        self.upload_count += 1
-        self.full_vertex_upload_bytes += int(vertices_f32.nbytes)
-        self.full_index_upload_bytes += int(indices_u32.nbytes)
-        self.last_vertices = vertices_f32
-        self.last_indices = indices_u32
-        self.vbo.size = max(self.vbo.size, int(vertices_f32.nbytes))
-        self.ibo.size = max(self.ibo.size, int(indices_u32.nbytes))
-
-    def upload_vertices(self, vertices: np.ndarray) -> None:
-        """scratch topology 再利用時の VBO-only upload を再現する。"""
-
-        vertices_f32 = np.ascontiguousarray(vertices, dtype=np.float32)
-        self.vertex_upload_count += 1
-        self.vertex_only_upload_bytes += int(vertices_f32.nbytes)
-        self.last_vertices = vertices_f32
-        self.vbo.size = max(self.vbo.size, int(vertices_f32.nbytes))
-
-    def release(self) -> None:
-        self.released = True
-
-
-class _BenchmarkFakeUniform:
-    def __init__(self) -> None:
-        self.value: object | None = None
-
-    def write(self, _value: bytes) -> None:
-        return None
-
-
-class _BenchmarkFakeProgram(dict[str, _BenchmarkFakeUniform]):
-    def release(self) -> None:
-        return None
-
-
-class _BenchmarkFakeWindow:
-    def switch_to(self) -> None:
-        return None
-
-
-def _summarize_ns(samples: list[int]) -> dict[str, float | int]:
-    ordered = sorted(int(sample) for sample in samples)
-    if not ordered:
-        return {"mean_ms": 0.0, "median_ms": 0.0, "p95_ms": 0.0, "n": 0}
-    mean = float(sum(ordered)) / float(len(ordered))
-    return {
-        "mean_ms": mean / 1_000_000.0,
-        "median_ms": _percentile(ordered, 0.5) / 1_000_000.0,
-        "p95_ms": _percentile(ordered, 0.95) / 1_000_000.0,
-        "n": len(ordered),
-    }
-
-
-def _percentile(ordered: list[int], fraction: float) -> float:
-    if len(ordered) == 1:
-        return float(ordered[0])
-    position = float(len(ordered) - 1) * float(fraction)
-    lower = int(position)
-    upper = min(lower + 1, len(ordered) - 1)
-    weight = position - float(lower)
-    return float(ordered[lower]) * (1.0 - weight) + float(ordered[upper]) * weight
-
-
-def _draw_geometry(*, frame: int, sides: int) -> Geometry:
-    base = Geometry.create(
-        "polygon",
-        params={"activate": True, "n_sides": int(sides), "scale": 20.0},
+    cases = (
+        (
+            "micro.geometry_signature",
+            "Geometry signature",
+            "geometry_signature",
+            {"iterations": 1_000},
+            setup_passthrough,
+            workload_geometry_signature,
+            False,
+        ),
+        (
+            "micro.rotate_scale_identity",
+            "rotate/scale identity",
+            "rotate_scale_identity",
+            {"points": 50_000, "iterations": 1_000},
+            setup_rotate_scale_identity,
+            workload_rotate_scale_identity,
+            False,
+        ),
+        (
+            "micro.cached_site_id",
+            "cached site ID",
+            "cached_site_id",
+            {"iterations": 10_000},
+            setup_passthrough,
+            workload_cached_site_id,
+            False,
+        ),
+        (
+            "micro.realized_concat",
+            "packed realized concat",
+            "realized_concat",
+            {"parts": 128, "vertices_per_part": 3},
+            setup_realized_concat,
+            workload_realized_concat,
+            False,
+        ),
+        (
+            "micro.asemic",
+            "asemic cached glyph/layout",
+            "asemic",
+            {"text": "CACHE CACHE\nSYSTEM", "nodes": 24},
+            setup_passthrough,
+            workload_asemic,
+            True,
+        ),
+        (
+            "micro.gcode_ordering",
+            "G-code stroke ordering",
+            "gcode_ordering",
+            {"strokes": 200},
+            setup_gcode_ordering,
+            workload_gcode_ordering,
+            False,
+        ),
+        (
+            "system.cold_import",
+            "cold import grafix",
+            "cold_import",
+            {"repeats": 1},
+            setup_passthrough,
+            workload_cold_import,
+            True,
+        ),
     )
-    angle = float(int(frame)) * 0.125
-    return Geometry.create(
-        "rotate",
-        inputs=(base,),
-        params={
-            "activate": True,
-            "rotation": (0.0, 0.0, angle),
-            "auto_center": False,
-            "pivot": (0.0, 0.0, 0.0),
-        },
+    definitions = [
+        define_case(
+            case_id,
+            label,
+            category="system" if case_id.startswith("system.") else "micro",
+            suite="system",
+            fixture=fixture,
+            parameters={"workload": fixture, **parameters},
+            tags=("system-diagnostic",),
+            selectable_suites=("system",),
+            setup=setup,
+            workload=workload,
+            support_source_files=(Path(__file__),),
+            self_sampling=self_sampling,
+        )
+        for case_id, label, fixture, parameters, setup, workload, self_sampling in cases
+    ]
+    definitions.extend(
+        scaled_case_definitions(
+            prefix="core.concat_recipe",
+            label="repeated Geometry +",
+            values=(10, 1_000, 10_000),
+            parameter_name="parts",
+            category="core",
+            suite="micro",
+            fixture="line_recipe_sequence",
+            setup=setup_concat_recipe,
+            workload=workload_concat_recipe,
+            suites=(("smoke", "micro"), ("micro",), ("soak",)),
+        )
     )
-
-
-def _animated_soak(*, frames: int, sides: int) -> dict[str, Any]:
-    estimated_bytes = (int(sides) + 1) * 3 * np.dtype(np.float32).itemsize + 2 * np.dtype(
-        np.int32
-    ).itemsize
-    cache_limit = max(1_024, 2 * int(estimated_bytes) + 64)
-    last: RealizedGeometry | None = None
-    with RealizeSession(runtime_limits=RuntimeLimits(cpu_cache_bytes=cache_limit)) as session:
-        for frame in range(max(1, int(frames))):
-            last = session.realize(_draw_geometry(frame=frame, sides=int(sides)))
-        stats = session.stats()
-
-    assert last is not None
-    return {
-        "output": {
-            **_describe_realized(last),
-            "frames": max(1, int(frames)),
-            "unique_geometry_ids": max(1, int(frames)),
-            "static_base_hits": max(0, int(frames) - 1),
-        },
-        "cache": {
-            "hits": stats.hits,
-            "misses": stats.misses,
-            "evictions": stats.evictions,
-            "entries": stats.entries,
-            "bytes": stats.bytes,
-            "budget_bytes": cache_limit,
-        },
-    }
-
-
-def _draw_realize_indices(*, grid_size: int) -> dict[str, Any]:
-    size = max(1, int(grid_size))
-
-    def draw(_t: float) -> Geometry:
-        base = Geometry.create(
-            "grid",
-            params={"activate": True, "nx": size, "ny": size, "scale": 100.0},
+    definitions.append(
+        define_case(
+            "core.deep_dag.depth_5000",
+            "deep translate DAG realize",
+            category="core",
+            suite="pipeline",
+            fixture="translate_chain",
+            parameters={"depth": 5_000},
+            tags=("deep-dag", "cache-disabled", "exact-checksum"),
+            selectable_suites=("soak",),
+            setup=setup_deep_dag,
+            workload=workload_deep_dag,
         )
-        return Geometry.create(
-            "rotate",
-            inputs=(base,),
-            params={"activate": True, "rotation": (0.0, 0.0, 17.0)},
-        )
-
-    defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
-    with RealizeSession() as session:
-        layers = realize_scene(draw, 0.0, defaults, session=session)
-        cache = session.stats()
-    realized = layers[0].realized
-    indices, draw_stats = build_line_indices_and_stats(realized.offsets)
-    return {
-        "output": {
-            **_describe_realized(realized),
-            "layers": len(layers),
-            "index_count": int(indices.size),
-            "index_bytes": int(indices.nbytes),
-            "draw_vertices": draw_stats.draw_vertices,
-            "draw_lines": draw_stats.draw_lines,
-        },
-        "cache": {
-            "hits": cache.hits,
-            "misses": cache.misses,
-            "evictions": cache.evictions,
-            "entries": cache.entries,
-            "bytes": cache.bytes,
-        },
-    }
+    )
+    return tuple(definitions)
 
 
 def _geometry_signature_workload(*, iterations: int) -> dict[str, Any]:
@@ -252,10 +183,9 @@ def _rotate_scale_identity_workload(
     iterations: int,
     include_semantic_outputs: bool = False,
 ) -> dict[str, Any]:
-    ensure_builtin_effect_registered("rotate")
-    ensure_builtin_effect_registered("scale")
-    rotate = effect_registry["rotate"].evaluator
-    scale = effect_registry["scale"].evaluator
+    catalog = builtin_operation_catalog()
+    rotate = catalog.resolve("effect", "rotate").evaluator
+    scale = catalog.resolve("effect", "scale").evaluator
     inputs = (geometry,)
     rotate_args = (("activate", True), ("rotation", (0.0, 0.0, 0.0)))
     scale_args = (("activate", True), ("scale", (1.0, 1.0, 1.0)))
@@ -302,339 +232,6 @@ def _cached_site_id_workload(*, iterations: int, code: CodeType) -> dict[str, An
             "bytes": 0,
         },
     }
-
-
-def _parameter_store(*, rows: int) -> ParamStore:
-    row_count = max(1, int(rows))
-    meta = ParamMeta(kind="float", ui_min=0.0, ui_max=float(row_count))
-    records = [
-        FrameParamRecord(
-            key=ParameterKey(
-                op="line",
-                site_id=f"model-bench-{index:06d}",
-                arg="length",
-            ),
-            base=float(index),
-            meta=meta,
-            explicit=False,
-            effective=float(index),
-            source="code",
-        )
-        for index in range(row_count)
-    ]
-    store = ParamStore()
-    merge_frame_params(store, records)
-    return store
-
-
-def _parameter_snapshot_model_workload(
-    store: ParamStore,
-    *,
-    frames: int,
-) -> dict[str, Any]:
-    """実 UI を呼ばず、snapshot/model と毎frame準備だけを通す。"""
-
-    frame_count = max(2, int(frames))
-    store._touch()
-    store_bridge.clear_parameter_table_model_cache()
-    render_calls = 0
-    visible_rows = 0
-
-    def fake_render(
-        *,
-        model_rows: list[Any],
-        **_kwargs: Any,
-    ) -> tuple[bool, list[Any]]:
-        nonlocal render_calls, visible_rows
-        render_calls += 1
-        visible_rows = len(model_rows)
-        return False, model_rows
-
-    samples: list[int] = []
-    first_frame_ns = 0
-    with patch.object(store_bridge, "render_parameter_table", fake_render):
-        for frame in range(frame_count):
-            started = time.perf_counter_ns()
-            table_view = store_bridge.parameter_table_view_for_store(
-                store,
-                show_inactive_params=True,
-            )
-            changed = store_bridge.render_store_parameter_table(
-                store,
-                table_view=table_view,
-            )
-            elapsed = time.perf_counter_ns() - started
-            if changed:
-                raise RuntimeError("benchmark の fake UI が store を変更した")
-            if frame == 0:
-                first_frame_ns = elapsed
-            else:
-                samples.append(elapsed)
-
-    build_count = store_bridge.parameter_table_model_build_count()
-    steady = _summarize_ns(samples)
-    return {
-        "output": {
-            "frames": frame_count,
-            "rows": visible_rows,
-            "snapshot_entries": len(store_snapshot(store)),
-            "render_calls": render_calls,
-            "model_builds": build_count,
-            "first_frame_ms": float(first_frame_ns) / 1_000_000.0,
-            "steady_median_ms": steady["median_ms"],
-            "steady_p95_ms": steady["p95_ms"],
-        },
-        "cache": {
-            "hits": max(0, frame_count - build_count),
-            "misses": build_count,
-            "evictions": 0,
-            "entries": int(build_count > 0),
-            "bytes": 0,
-        },
-    }
-
-
-def _renderer_geometry(*, polylines: int) -> RealizedGeometry:
-    line_count = max(1, int(polylines))
-    coords = np.zeros((line_count * 2, 3), dtype=np.float32)
-    coords[:, 0] = np.arange(line_count * 2, dtype=np.float32)
-    offsets = np.arange(0, line_count * 2 + 1, 2, dtype=np.int32)
-    return RealizedGeometry(coords=coords, offsets=offsets)
-
-
-def _changing_renderer_offsets(offsets: np.ndarray, *, frame: int) -> np.ndarray:
-    """空 polyline 境界を切り替え、描画結果を保ったまま topology を変える。"""
-
-    if frame % 2 == 0:
-        return offsets.copy()
-    return np.insert(offsets, 1, offsets[1])
-
-
-def _fake_renderer() -> DrawRenderer:
-    """GL resource constructorだけをfakeにし、rendererを正式初期化する。"""
-
-    context = object()
-    program = _BenchmarkFakeProgram(
-        {
-            "viewport_size": _BenchmarkFakeUniform(),
-            "line_width_px": _BenchmarkFakeUniform(),
-            "color": _BenchmarkFakeUniform(),
-            "projection": _BenchmarkFakeUniform(),
-        }
-    )
-    with (
-        patch.object(
-            renderer_module.moderngl,
-            "create_context",
-            return_value=context,
-        ),
-        patch.object(
-            renderer_module.Shader,
-            "create_shader",
-            return_value=program,
-        ),
-        patch.object(renderer_module, "LineMesh", _BenchmarkFakeMesh),
-    ):
-        return DrawRenderer(
-            cast(Any, _BenchmarkFakeWindow()),
-            RenderOptions(),
-        )
-
-
-def _renderer_cache_workload(
-    geometry: RealizedGeometry,
-    *,
-    frames: int,
-    include_semantic_frames: bool = False,
-) -> dict[str, Any]:
-    """fake mesh で candidate→昇格→steady cache hit を計測する。"""
-
-    frame_count = max(3, int(frames))
-    _BenchmarkFakeMesh.instances.clear()
-    renderer = _fake_renderer()
-    cache_key = ("renderer-benchmark", (1, 1))
-    original_build = renderer_module.build_line_indices_and_stats
-    index_builds = 0
-    cache_hits = 0
-    cache_misses = 0
-
-    def counted_build(offsets: np.ndarray):
-        nonlocal index_builds
-        index_builds += 1
-        return original_build(offsets)
-
-    steady_samples: list[int] = []
-    semantic_frames: list[tuple[np.ndarray, np.ndarray]] = []
-    stats = None
-    with (
-        patch.object(renderer_module, "LineMesh", _BenchmarkFakeMesh),
-        patch.object(
-            renderer_module,
-            "build_line_indices_and_stats",
-            counted_build,
-        ),
-    ):
-        for frame in range(frame_count):
-            cached_before = cache_key in renderer._mesh_cache
-            started = time.perf_counter_ns()
-            mesh, stats = renderer.prepare_layer_mesh(
-                geometry,
-                cache_key=cache_key,
-                scene_serial=frame + 1,
-                snapshot_revision=1,
-            )
-            elapsed = time.perf_counter_ns() - started
-            if mesh is None:
-                raise RuntimeError("renderer benchmark が空 mesh を返した")
-            benchmark_mesh = cast(_BenchmarkFakeMesh, mesh)
-            if include_semantic_frames:
-                if benchmark_mesh.last_vertices is None or benchmark_mesh.last_indices is None:
-                    raise RuntimeError("renderer benchmark mesh upload state is missing")
-                semantic_frames.append(
-                    (
-                        benchmark_mesh.last_vertices,
-                        benchmark_mesh.last_indices,
-                    )
-                )
-            cache_hits += int(cached_before)
-            cache_misses += int(not cached_before)
-            if frame >= 2:
-                steady_samples.append(elapsed)
-
-    if stats is None:
-        raise RuntimeError("renderer benchmark の stats が未生成")
-    uploads = sum(mesh.upload_count for mesh in _BenchmarkFakeMesh.instances)
-    full_vertex_upload_bytes = sum(
-        mesh.full_vertex_upload_bytes for mesh in _BenchmarkFakeMesh.instances
-    )
-    full_index_upload_bytes = sum(
-        mesh.full_index_upload_bytes for mesh in _BenchmarkFakeMesh.instances
-    )
-    vertex_only_upload_bytes = sum(
-        mesh.vertex_only_upload_bytes for mesh in _BenchmarkFakeMesh.instances
-    )
-    steady = _summarize_ns(steady_samples)
-    result: dict[str, Any] = {
-        "output": {
-            **_describe_realized(geometry),
-            "frames": frame_count,
-            "index_count": stats.draw_vertices + max(0, stats.draw_lines - 1),
-            "index_builds": index_builds,
-            "uploads": uploads,
-            "full_vertex_upload_bytes": full_vertex_upload_bytes,
-            "full_index_upload_bytes": full_index_upload_bytes,
-            "vertex_only_upload_bytes": vertex_only_upload_bytes,
-            "steady_median_ms": steady["median_ms"],
-            "steady_p95_ms": steady["p95_ms"],
-        },
-        "cache": {
-            "hits": cache_hits,
-            "misses": cache_misses,
-            "evictions": 0,
-            "entries": len(renderer._mesh_cache),
-            "candidate_entries": len(renderer._mesh_candidates),
-            "bytes": int(renderer._mesh_cache_bytes),
-            "budget_bytes": int(renderer._mesh_cache_max_bytes),
-        },
-    }
-    if include_semantic_frames:
-        result["_semantic_frames"] = tuple(semantic_frames)
-    return result
-
-
-def _renderer_multilayer_dynamic_workload(
-    *,
-    layers: int,
-    frames: int,
-    polylines: int,
-    stable_topology: bool,
-    include_semantic_frames: bool = False,
-) -> dict[str, Any]:
-    """複数 animated layer の slot 別 topology 再利用を fake GL で測る。"""
-
-    layer_count = max(1, int(layers))
-    frame_count = max(2, int(frames))
-    base = _renderer_geometry(polylines=max(1, int(polylines)))
-    _BenchmarkFakeMesh.instances.clear()
-    renderer = _fake_renderer()
-    original_build = renderer_module.build_line_indices_and_stats
-    index_builds = 0
-    semantic_frames: list[tuple[np.ndarray, np.ndarray]] = []
-
-    def counted_build(offsets: np.ndarray):
-        nonlocal index_builds
-        index_builds += 1
-        return original_build(offsets)
-
-    with (
-        patch.object(renderer_module, "LineMesh", _BenchmarkFakeMesh),
-        patch.object(
-            renderer_module,
-            "build_line_indices_and_stats",
-            counted_build,
-        ),
-    ):
-        for frame in range(frame_count):
-            for layer_index in range(layer_count):
-                coords = base.coords.copy()
-                coords[:, 1] = np.float32(frame * layer_count + layer_index) * np.float32(0.001)
-                offsets = (
-                    base.offsets
-                    if stable_topology
-                    else _changing_renderer_offsets(base.offsets, frame=frame)
-                )
-                geometry = RealizedGeometry(coords=coords, offsets=offsets)
-                mesh, _stats = renderer.prepare_layer_mesh(
-                    geometry,
-                    cache_key=(
-                        "renderer-multilayer",
-                        (frame * layer_count + layer_index, 1),
-                    ),
-                    scene_serial=frame + 1,
-                    snapshot_revision=frame + 1,
-                    dynamic_slot=layer_index,
-                )
-                if mesh is None:
-                    raise RuntimeError("multi-layer renderer benchmark returned an empty mesh")
-                benchmark_mesh = cast(_BenchmarkFakeMesh, mesh)
-                if include_semantic_frames:
-                    if benchmark_mesh.last_vertices is None or benchmark_mesh.last_indices is None:
-                        raise RuntimeError("multi-layer renderer upload state is missing")
-                    semantic_frames.append(
-                        (
-                            benchmark_mesh.last_vertices.copy(),
-                            benchmark_mesh.last_indices.copy(),
-                        )
-                    )
-
-    meshes = _BenchmarkFakeMesh.instances
-    output: dict[str, Any] = {
-        "output": {
-            "layers": layer_count,
-            "frames": frame_count,
-            "polylines_per_layer": max(1, int(polylines)),
-            "stable_topology": bool(stable_topology),
-            "index_builds": index_builds,
-            "full_uploads": sum(mesh.upload_count for mesh in meshes),
-            "vertex_only_uploads": sum(mesh.vertex_upload_count for mesh in meshes),
-            "dynamic_entries": len(renderer._dynamic_meshes),
-            "dynamic_bytes": int(renderer._dynamic_mesh_bytes),
-            "dynamic_entry_limit": int(renderer._dynamic_mesh_max_entries),
-            "dynamic_byte_limit": int(renderer._dynamic_mesh_max_bytes),
-            "candidate_entries": len(renderer._mesh_candidates),
-            "candidate_entry_limit": int(renderer._mesh_candidates_max_entries),
-        },
-        "cache": {
-            "hits": max(0, layer_count * frame_count - index_builds),
-            "misses": index_builds,
-            "evictions": 0,
-            "entries": len(renderer._dynamic_meshes),
-            "bytes": int(renderer._dynamic_mesh_bytes),
-        },
-    }
-    if include_semantic_frames:
-        output["_semantic_frames"] = tuple(semantic_frames)
-    return output
 
 
 def _concat_inputs(*, parts: int, vertices_per_part: int) -> tuple[RealizedGeometry, ...]:
@@ -770,7 +367,7 @@ def _cold_import_benchmark(*, repeats: int) -> dict[str, Any]:
     result.update(
         {
             "status": "ok",
-            **_summarize_ns(samples),
+            **summarize_nanoseconds(samples),
             "peak_rss_bytes": peak_rss,
             "output": {"module": "grafix"},
         }
@@ -797,4 +394,319 @@ def _peak_rss_bytes() -> int:
     return rss if sys.platform == "darwin" else rss * 1024
 
 
-__all__: list[str] = []
+def setup_passthrough(parameters: dict[str, Any], _seed: int) -> object:
+    return dict(parameters)
+
+
+def setup_rotate_scale_identity(parameters: dict[str, Any], _seed: int) -> object:
+    state = dict(parameters)
+    state["geometry"] = _identity_geometry(points=int(state["points"]))
+    return state
+
+
+def setup_realized_concat(parameters: dict[str, Any], _seed: int) -> object:
+    state = dict(parameters)
+    state["inputs"] = _concat_inputs(
+        parts=int(state["parts"]),
+        vertices_per_part=int(state["vertices_per_part"]),
+    )
+    return state
+
+
+def setup_gcode_ordering(parameters: dict[str, Any], seed: int) -> object:
+    state = dict(parameters)
+    state["stroke_values"] = _random_strokes(count=int(state["strokes"]), seed=int(seed))
+    return state
+
+
+def setup_concat_recipe(parameters: dict[str, Any], _seed: int) -> object:
+    count = max(1, int(parameters["parts"]))
+    return tuple(
+        Geometry.create(
+            "__benchmark_leaf__",
+            params={"index": index},
+        )
+        for index in range(count)
+    )
+
+
+def workload_concat_recipe(state: object) -> BenchmarkOutput:
+    geometries = cast(tuple[Geometry, ...], state)
+    result = geometries[0]
+    for geometry in geometries[1:]:
+        result = cast(Geometry, result + geometry)
+    return BenchmarkOutput(
+        value=result,
+        metrics=(
+            counter_metric(
+                "parts",
+                len(geometries),
+                unit="count",
+                phase="measure",
+                scope="core",
+            ),
+            counter_metric(
+                "root_inputs",
+                len(result.inputs),
+                unit="count",
+                phase="measure",
+                scope="core",
+            ),
+            gauge_metric(
+                "recipe_id",
+                result.id,
+                unit="sha256",
+                phase="measure",
+                scope="core",
+            ),
+        ),
+    )
+
+
+def setup_deep_dag(parameters: dict[str, Any], _seed: int) -> object:
+    from grafix import G
+    from grafix.core.builtins import ensure_builtin_effect_registered
+
+    ensure_builtin_effect_registered("translate")
+    node = G.line(length=1.0)
+    for _ in range(max(1, int(parameters["depth"]))):
+        node = Geometry.create(
+            "translate",
+            inputs=(node,),
+            params={"activate": True, "delta": (0.001, 0.0, 0.0)},
+        )
+    return node
+
+
+def workload_deep_dag(state: object) -> BenchmarkOutput:
+    with RealizeSession(runtime_limits=RuntimeLimits(cpu_cache_bytes=0)) as session:
+        geometry = session.realize(state)  # type: ignore[arg-type]
+    return BenchmarkOutput(
+        value=geometry,
+        metrics=(
+            counter_metric(
+                "depth",
+                5_000,
+                unit="count",
+                phase="measure",
+                scope="core",
+            ),
+        ),
+    )
+
+
+def workload_geometry_signature(state: object) -> BenchmarkOutput:
+    values = cast(dict[str, Any], state)
+    payload = _geometry_signature_workload(iterations=int(values["iterations"]))
+    output = cast(dict[str, Any], payload["output"])
+    return BenchmarkOutput(
+        value=output,
+        metrics=(
+            counter_metric(
+                "signatures",
+                int(output["signatures"]),
+                unit="count",
+                phase="measure",
+                scope="system",
+            ),
+            gauge_metric(
+                "checksum", str(output["checksum"]), unit="blake2b", phase="measure", scope="system"
+            ),
+        ),
+    )
+
+
+def workload_rotate_scale_identity(state: object) -> BenchmarkOutput:
+    values = cast(dict[str, Any], state)
+    geometry = cast(RealizedGeometry, values["geometry"])
+    payload = _rotate_scale_identity_workload(
+        geometry, iterations=int(values["iterations"]), include_semantic_outputs=True
+    )
+    semantic_outputs = list(cast(tuple[object, ...], payload.pop("_semantic_outputs")))
+    output = cast(dict[str, Any], payload["output"])
+    return BenchmarkOutput(
+        value=semantic_outputs,
+        metrics=(
+            counter_metric(
+                "n_vertices",
+                int(output["n_vertices"]),
+                unit="count",
+                phase="measure",
+                scope="system",
+            ),
+            counter_metric(
+                "n_lines", int(output["n_lines"]), unit="count", phase="measure", scope="system"
+            ),
+            counter_metric(
+                "output_bytes", int(output["bytes"]), unit="bytes", phase="measure", scope="system"
+            ),
+            counter_metric(
+                "iterations",
+                int(output["iterations"]),
+                unit="count",
+                phase="measure",
+                scope="system",
+            ),
+            counter_metric(
+                "operations",
+                int(output["operations"]),
+                unit="count",
+                phase="measure",
+                scope="system",
+            ),
+            counter_metric(
+                "input_reuses",
+                int(output["input_reuses"]),
+                unit="count",
+                phase="measure",
+                scope="system",
+            ),
+            gauge_metric(
+                "input_object_reused",
+                bool(output["input_object_reused"]),
+                unit="boolean",
+                phase="measure",
+                scope="system",
+            ),
+        ),
+    )
+
+
+def workload_cached_site_id(state: object) -> BenchmarkOutput:
+    values = cast(dict[str, Any], state)
+    payload = _cached_site_id_workload(
+        iterations=int(values["iterations"]), code=_cached_site_id_workload.__code__
+    )
+    output = cast(dict[str, Any], payload["output"])
+    cache = cast(dict[str, Any], payload["cache"])
+    return BenchmarkOutput(
+        value=output,
+        metrics=(
+            counter_metric(
+                "lookups", int(output["lookups"]), unit="count", phase="measure", scope="system"
+            ),
+            gauge_metric(
+                "site_id", str(output["site_id"]), unit="text", phase="measure", scope="system"
+            ),
+            *cache_metrics(cache, name="cache", phase="measure", scope="system"),
+        ),
+    )
+
+
+def workload_realized_concat(state: object) -> BenchmarkOutput:
+    values = cast(dict[str, Any], state)
+    result = concat_realized_geometries(*cast(tuple[RealizedGeometry, ...], values["inputs"]))
+    return BenchmarkOutput(
+        value=result,
+        metrics=(
+            counter_metric(
+                "parts", int(values["parts"]), unit="count", phase="measure", scope="system"
+            ),
+            counter_metric(
+                "n_vertices",
+                int(result.coords.shape[0]),
+                unit="count",
+                phase="measure",
+                scope="system",
+            ),
+            counter_metric(
+                "n_lines",
+                int(result.offsets.size - 1),
+                unit="count",
+                phase="measure",
+                scope="system",
+            ),
+            counter_metric(
+                "output_bytes", result.byte_size, unit="bytes", phase="measure", scope="system"
+            ),
+        ),
+    )
+
+
+def workload_asemic(state: object) -> BenchmarkOutput:
+    values = cast(dict[str, Any], state)
+    payload = _asemic_workload(
+        text=str(values["text"]), nodes=int(values["nodes"]), include_semantic_geometry=True
+    )
+    semantic_geometry = cast(tuple[np.ndarray, np.ndarray], payload.pop("_semantic_geometry"))
+    output = cast(dict[str, Any], payload["output"])
+    return BenchmarkOutput(
+        value=RealizedGeometry(coords=semantic_geometry[0], offsets=semantic_geometry[1]),
+        metrics=(
+            counter_metric(
+                "n_vertices",
+                int(output["n_vertices"]),
+                unit="count",
+                phase="measure",
+                scope="system",
+            ),
+            counter_metric(
+                "n_lines", int(output["n_lines"]), unit="count", phase="measure", scope="system"
+            ),
+            counter_metric(
+                "output_bytes", int(output["bytes"]), unit="bytes", phase="measure", scope="system"
+            ),
+            *cache_metrics(
+                cast(dict[str, Any], payload["cache"]),
+                name="cache",
+                phase="measure",
+                scope="system",
+            ),
+        ),
+    )
+
+
+def workload_gcode_ordering(state: object) -> BenchmarkOutput:
+    values = cast(dict[str, Any], state)
+    payload = _gcode_ordering_workload(values["stroke_values"])
+    output = cast(dict[str, Any], payload["output"])
+    return BenchmarkOutput(
+        value=output,
+        metrics=(
+            counter_metric(
+                "strokes", int(output["strokes"]), unit="count", phase="measure", scope="system"
+            ),
+            counter_metric(
+                "reversed", int(output["reversed"]), unit="count", phase="measure", scope="system"
+            ),
+            gauge_metric(
+                "checksum", str(output["checksum"]), unit="blake2b", phase="measure", scope="system"
+            ),
+        ),
+    )
+
+
+def workload_cold_import(state: object) -> BenchmarkOutput:
+    values = cast(dict[str, Any], state)
+    payload = _cold_import_benchmark(repeats=int(values["repeats"]))
+    if payload.get("status") != "ok":
+        raise RuntimeError(str(payload.get("error", "cold import failed")))
+    return BenchmarkOutput(
+        value=payload["output"],
+        metrics=(
+            gauge_metric(
+                "mean_ms", float(payload["mean_ms"]), unit="ms", phase="measure", scope="system"
+            ),
+            gauge_metric(
+                "median_ms", float(payload["median_ms"]), unit="ms", phase="measure", scope="system"
+            ),
+            gauge_metric(
+                "p95_ms", float(payload["p95_ms"]), unit="ms", phase="measure", scope="system"
+            ),
+            counter_metric(
+                "samples", int(payload["n"]), unit="count", phase="measure", scope="system"
+            ),
+            counter_metric(
+                "peak_rss_bytes",
+                int(payload["peak_rss_bytes"]),
+                unit="bytes",
+                phase="measure",
+                scope="system",
+            ),
+        ),
+    )
+
+
+__all__ = [
+    "case_definitions",
+]

@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from grafix.api import E, G
-from grafix.core.effect_registry import effect
-from grafix.core.primitive_registry import primitive
+from grafix.core.operation_authoring import effect
+from grafix.core.operation_authoring import primitive
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters import ParamMeta, ParamStore, parameter_context
 from grafix.core.parameters.snapshot_ops import store_snapshot

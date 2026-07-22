@@ -9,6 +9,7 @@ from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.parameters.variations import create_variation
 from grafix.interactive.parameter_gui.gui import ParameterGUI
+from grafix.interactive.parameter_gui.variation_controller import VariationController
 
 
 META = ParamMeta(kind="float", ui_min=0.0, ui_max=1.0)
@@ -75,7 +76,8 @@ def _setup(
     gui_state = cast(Any, gui)
     gui_state._store = store
     gui_state._history = history
-    gui_state._parameter_table_view = None
+    gui_state._variation_controller = VariationController(store, history=history)
+    gui_state._session.table_view = None
     return gui_state, store, key, history
 
 
@@ -110,7 +112,7 @@ def test_named_variation_restore_is_itself_undoable(
 
     _set(store, key, 0.9)
     history.synchronize()
-    assert gui._load_named_variation("saved") is True
+    assert gui._variation_controller.load("saved") is True
     assert _value(store, key) == 0.25
 
     assert history.undo() is True

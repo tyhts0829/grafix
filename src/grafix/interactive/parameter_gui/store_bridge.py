@@ -6,28 +6,21 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from weakref import WeakKeyDictionary
 
-from grafix.core.operation_selector import ensure_selector_spec_registered
-from grafix.core.builtins import (
-    ensure_builtin_effect_registered,
-    ensure_builtin_primitive_registered,
-)
-from grafix.core.effect_registry import effect_registry
-from grafix.core.primitive_registry import primitive_registry
 from grafix.core.parameters.key import ParameterKey
-from grafix.core.parameters.favorites import (
-    favorite_parameter_key_set,
-    set_parameters_favorite,
-)
+from grafix.core.parameters.edit_commands import ParameterEdit, apply_parameter_edits
+from grafix.core.parameters.effect_order_ops import move_effect_step, reset_effect_order
+from grafix.core.parameters.favorites import favorite_parameter_key_set
+from grafix.core.parameters.history import ParamStoreHistory
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.meta import (
     ParamMeta,
     merge_code_meta_with_stored_gui_meta,
 )
-from grafix.core.parameters.meta_ops import set_meta
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.snapshot_ops import (
@@ -35,14 +28,13 @@ from grafix.core.parameters.snapshot_ops import (
     ParamSnapshotEntry,
     store_snapshot,
 )
-from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.parameters.view import (
     ParameterRow,
     canonicalize_ui_value_for_meta_change,
     rows_from_snapshot,
 )
-from grafix.core.preset_registry import preset_registry
 
+from .catalog import ParameterGuiCatalog, current_parameter_gui_catalog
 from .labeling import primitive_header_display_names_from_snapshot
 from .labeling import (
     effect_chain_header_display_names_from_snapshot,
@@ -65,6 +57,8 @@ from .parameter_filter import (
 )
 from .table import (
     EffectOrderCommand,
+    TableEdits,
+    TableRenderInput,
     parameter_group_collapse_keys,
     render_parameter_table,
     source_badge_for_row,
@@ -74,18 +68,13 @@ from .table_model import (
     ParameterTableCacheKey,
     ParameterTableModel,
     ParameterTableModelCache,
-    RegistryRevision,
     effect_chain_table_states,
 )
 from .visibility import active_mask_for_rows
 
 _logger = logging.getLogger(__name__)
 _TABLE_MODEL_CACHE = ParameterTableModelCache()
-_ENSURED_OPS_BY_STORE_REVISION: WeakKeyDictionary[ParamStore, int] = WeakKeyDictionary()
-_ENSURED_SELECTORS_BY_REVISION: WeakKeyDictionary[
-    ParamStore,
-    tuple[int, int, int],
-] = WeakKeyDictionary()
+_DEFAULT_CATALOG_BY_STORE: WeakKeyDictionary[ParamStore, ParameterGuiCatalog] = WeakKeyDictionary()
 _TABLE_VIEW_CACHE: WeakKeyDictionary[
     ParamStore,
     tuple["_ParameterTableViewCacheKey", "ParameterTableView"],
@@ -156,13 +145,32 @@ class ParameterTableView:
         return max(0, int(self.total_count) - int(self.filtered_count))
 
 
+@dataclass(frozen=True, slots=True)
+class TableCommitResult:
+    """renderer output と store commit の結果。"""
+
+    changed: bool
+    edits: TableEdits
+
+    @property
+    def midi_learn_state(self) -> MidiLearnState | None:
+        """次 frame に渡す immutable MIDI learn state を返す。"""
+
+        return self.edits.midi_learn_state
+
+
 def _order_rows_for_display(
     rows: list[ParameterRow],
     *,
+    catalog: ParameterGuiCatalog | None = None,
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]],
     display_order_by_group: Mapping[tuple[str, str], int],
 ) -> list[ParameterRow]:
     """GUI 表示順に並び替えた rows を返す。"""
+
+    selected_catalog = current_parameter_gui_catalog() if catalog is None else catalog
+    if type(selected_catalog) is not ParameterGuiCatalog:
+        raise TypeError("catalog は exact ParameterGuiCatalog である必要があります")
 
     # この関数は「表示の読みやすさ」と「フレーム間の安定性」を優先して並べ替える。
     #
@@ -182,11 +190,11 @@ def _order_rows_for_display(
             style_global_rows.append(row)
         elif row.op == LAYER_STYLE_OP:
             style_layer_rows.append(row)
-        elif row.op in preset_registry:
+        elif selected_catalog.is_preset(row.op):
             preset_rows.append(row)
-        elif row.op in primitive_registry:
+        elif selected_catalog.is_primitive_parameter(row.op):
             primitive_rows.append(row)
-        elif row.op in effect_registry:
+        elif selected_catalog.is_effect_parameter(row.op):
             effect_rows.append(row)
         else:
             other_rows.append(row)
@@ -201,9 +209,7 @@ def _order_rows_for_display(
 
     # Style（layer）は layer ordinal 順に、line_thickness → line_color の順で出す。
     layer_style_order = {"line_thickness": 0, "line_color": 1}
-    style_layer_rows.sort(
-        key=lambda r: (int(r.ordinal), layer_style_order.get(r.arg, 999), r.arg)
-    )
+    style_layer_rows.sort(key=lambda r: (int(r.ordinal), layer_style_order.get(r.arg, 999), r.arg))
 
     def _display_order(row: ParameterRow) -> int:
         # display_order_by_group は (op, site_id) 単位の「観測順（コード順）」の近似。
@@ -224,21 +230,24 @@ def _order_rows_for_display(
 
     def _primitive_arg_index(op: str, arg: str) -> int:
         if op not in primitive_arg_index_by_op:
-            order = primitive_registry[op].param_order
+            entry = selected_catalog.resolve(op)
+            order = () if entry is None else entry.schema.param_order
             primitive_arg_index_by_op[op] = {a: i for i, a in enumerate(order)}
         index_by_arg = primitive_arg_index_by_op[op]
         return int(index_by_arg.get(arg, 10**9))
 
     def _effect_arg_index(op: str, arg: str) -> int:
         if op not in effect_arg_index_by_op:
-            order = effect_registry[op].param_order
+            entry = selected_catalog.resolve(op)
+            order = () if entry is None else entry.schema.param_order
             effect_arg_index_by_op[op] = {a: i for i, a in enumerate(order)}
         index_by_arg = effect_arg_index_by_op[op]
         return int(index_by_arg.get(arg, 10**9))
 
     def _preset_arg_index(op: str, arg: str) -> int:
         if op not in preset_arg_index_by_op:
-            order = preset_registry[op].param_order
+            entry = selected_catalog.resolve(op)
+            order = () if entry is None else entry.schema.param_order
             preset_arg_index_by_op[op] = {a: i for i, a in enumerate(order)}
         index_by_arg = preset_arg_index_by_op[op]
         return int(index_by_arg.get(arg, 10**9))
@@ -337,7 +346,7 @@ def _order_rows_for_display(
         op, site_id = other_key
         # other ブロックも primitive 同様、ブロック内の min(display_order) に寄せる。
         order = min(_display_order(r) for r in block_rows)
-        if op in effect_registry:
+        if selected_catalog.is_effect_parameter(op):
             ordered = sorted(
                 block_rows,
                 key=lambda row: (_effect_arg_index(op, row.arg), row.arg),
@@ -363,20 +372,12 @@ def _order_rows_for_display(
     return style_global_rows + style_layer_rows + out_non_style
 
 
-def _registry_revision() -> RegistryRevision:
-    """テーブル構造に影響する registry revision をまとめて返す。"""
-
-    return (
-        int(primitive_registry.revision),
-        int(effect_registry.revision),
-        int(preset_registry.revision),
-    )
-
-
-def _snapshot_with_current_registry_meta(
+def _snapshot_with_catalog_meta(
     snapshot: ParamSnapshot,
+    *,
+    catalog: ParameterGuiCatalog,
 ) -> ParamSnapshot:
-    """保存 state を維持しつつ code-owned metadata を current registry へ追随させる。"""
+    """保存 state を維持しつつ code-owned metadata を session catalog へ追随させる。"""
 
     overrides: dict[ParameterKey, ParamSnapshotEntry] = {}
     for key, entry in snapshot.items():
@@ -384,19 +385,12 @@ def _snapshot_with_current_registry_meta(
         op = key.op
         code_meta: ParamMeta | None
         code_base: object = ""
-        if op in primitive_registry:
-            primitive_spec = primitive_registry[op]
-            code_meta = primitive_spec.meta.get(key.arg)
-            code_base = primitive_spec.defaults.get(key.arg, "")
-        elif op in effect_registry:
-            effect_spec = effect_registry[op]
-            code_meta = effect_spec.meta.get(key.arg)
-            code_base = effect_spec.defaults.get(key.arg, "")
-        elif op in preset_registry:
-            preset_spec = preset_registry[op]
-            code_meta = preset_spec.meta.get(key.arg)
-        else:
+        catalog_entry = catalog.resolve(op)
+        if catalog_entry is None:
             code_meta = None
+        else:
+            code_meta = catalog_entry.schema.meta.get(key.arg)
+            code_base = catalog_entry.schema.defaults.get(key.arg, "")
         if code_meta is None:
             continue
         merged_meta = merge_code_meta_with_stored_gui_meta(
@@ -434,19 +428,16 @@ def _build_parameter_table_model(
     store: ParamStore,
     snapshot: ParamSnapshot,
     cache_key: ParameterTableCacheKey,
+    *,
+    catalog: ParameterGuiCatalog,
 ) -> ParameterTableModel:
     """snapshot から revision 内で不変なテーブル構造を 1 回だけ構築する。"""
 
-    snapshot = _snapshot_with_current_registry_meta(snapshot)
+    snapshot = _snapshot_with_catalog_meta(snapshot, catalog=catalog)
     raw_label_by_site: dict[tuple[str, str], str] = {}
     for key, (_meta, _state, _ordinal, label) in snapshot.items():
         op = key.op
-        if (
-            op not in primitive_registry
-            and op not in effect_registry
-            and op not in preset_registry
-            and op != LAYER_STYLE_OP
-        ):
+        if catalog.resolve(op) is None and op != LAYER_STYLE_OP:
             continue
         if label is None:
             continue
@@ -455,10 +446,10 @@ def _build_parameter_table_model(
             continue
         raw_label_by_site.setdefault((op, key.site_id), label_s)
 
-    runtime = store._runtime_ref()
+    runtime = store.runtime_view()
     primitive_header_by_group = primitive_header_display_names_from_snapshot(
         snapshot,
-        is_primitive_op=lambda op: op in primitive_registry or op in preset_registry,
+        is_primitive_op=lambda op: (catalog.is_primitive_parameter(op) or catalog.is_preset(op)),
         display_order_by_group=runtime.display_order_by_group,
     )
 
@@ -467,7 +458,7 @@ def _build_parameter_table_model(
         snapshot,
         step_info_by_site=step_info_by_site,
         display_order_by_group=runtime.display_order_by_group,
-        is_effect_op=lambda op: op in effect_registry,
+        is_effect_op=catalog.is_effect_parameter,
     )
     effect_step_ordinal_by_site = effect_step_ordinals_by_site(step_info_by_site)
 
@@ -481,48 +472,34 @@ def _build_parameter_table_model(
         op = row.op
         arg = row.arg
 
-        if op in primitive_registry:
-            known_args = primitive_known_args_by_op.get(op)
+        entry = catalog.resolve(op)
+        if entry is not None:
+            if entry.kind == "preset":
+                known_args = preset_known_args_by_op.get(op)
+                target_cache = preset_known_args_by_op
+            elif catalog.is_effect_parameter(op):
+                known_args = effect_known_args_by_op.get(op)
+                target_cache = effect_known_args_by_op
+            else:
+                known_args = primitive_known_args_by_op.get(op)
+                target_cache = primitive_known_args_by_op
             if known_args is None:
-                known_args = set(primitive_registry[op].meta)
-                primitive_known_args_by_op[op] = known_args
+                known_args = set(entry.schema.meta)
+                target_cache[op] = known_args
             if arg not in known_args:
-                pair = (op, arg)
-                if pair not in runtime.warned_unknown_args:
-                    runtime.warned_unknown_args.add(pair)
-                    unknown_args_new.add(pair)
-                continue
-        elif op in preset_registry:
-            known_args = preset_known_args_by_op.get(op)
-            if known_args is None:
-                known_args = set(preset_registry[op].meta)
-                preset_known_args_by_op[op] = known_args
-            if arg not in known_args:
-                pair = (op, arg)
-                if pair not in runtime.warned_unknown_args:
-                    runtime.warned_unknown_args.add(pair)
-                    unknown_args_new.add(pair)
-                continue
-        elif op in effect_registry:
-            known_args = effect_known_args_by_op.get(op)
-            if known_args is None:
-                known_args = set(effect_registry[op].meta)
-                effect_known_args_by_op[op] = known_args
-            if arg not in known_args:
-                pair = (op, arg)
-                if pair not in runtime.warned_unknown_args:
-                    runtime.warned_unknown_args.add(pair)
-                    unknown_args_new.add(pair)
+                unknown_args_new.add((op, arg))
                 continue
 
         filtered_rows.append(row)
 
-    if unknown_args_new:
-        pairs = ", ".join(f"{op}.{arg}" for op, arg in sorted(unknown_args_new))
+    newly_warned = store.record_unknown_argument_warnings(unknown_args_new)
+    if newly_warned:
+        pairs = ", ".join(f"{op}.{arg}" for op, arg in sorted(newly_warned))
         _logger.warning("未登録引数を無視します（次回保存で削除）: %s", pairs)
 
     rows = _order_rows_for_display(
         filtered_rows,
+        catalog=catalog,
         step_info_by_site=step_info_by_site,
         display_order_by_group=runtime.display_order_by_group,
     )
@@ -550,6 +527,7 @@ def _build_parameter_table_model(
 
     group_layout = group_layout_from_rows(
         rows,
+        catalog=catalog,
         primitive_header_by_group=primitive_header_by_group,
         layer_style_name_by_site_id=layer_style_name_by_site_id,
         effect_chain_header_by_id=effect_chain_header_by_id,
@@ -582,8 +560,7 @@ def _build_parameter_table_model(
                 if part
             )
     search_corpus_by_row = tuple(
-        parameter_static_search_corpus(row, search_labels[index])
-        for index, row in enumerate(rows)
+        parameter_static_search_corpus(row, search_labels[index]) for index, row in enumerate(rows)
     )
     mutable_row_indices_by_group: dict[tuple[str, str], list[int]] = {}
     for index, key in enumerate(keys):
@@ -594,20 +571,16 @@ def _build_parameter_table_model(
 
     return ParameterTableModel(
         cache_key=cache_key,
+        catalog=catalog,
         value_revision=int(store.value_revision),
         snapshot=snapshot,
         rows=tuple(rows),
         keys=keys,
         search_corpus_by_row=search_corpus_by_row,
         group_layout=group_layout,
-        row_index_by_key=MappingProxyType(
-            {key: index for index, key in enumerate(keys)}
-        ),
+        row_index_by_key=MappingProxyType({key: index for index, key in enumerate(keys)}),
         row_indices_by_group=MappingProxyType(
-            {
-                group: tuple(indices)
-                for group, indices in mutable_row_indices_by_group.items()
-            }
+            {group: tuple(indices) for group, indices in mutable_row_indices_by_group.items()}
         ),
         raw_label_by_site=MappingProxyType(raw_label_by_site),
         primitive_header_by_group=MappingProxyType(primitive_header_by_group),
@@ -629,7 +602,7 @@ def _refresh_parameter_table_model_values(
     rows: list[ParameterRow] | None = None
     for key in changed_keys:
         index = model.row_index_by_key.get(key)
-        state = store._get_state_ref(key)
+        state = store.get_state(key)
         if index is None or state is None:
             continue
         current = model.rows[index] if rows is None else rows[index]
@@ -652,35 +625,39 @@ def _refresh_parameter_table_model_values(
     )
 
 
-def _parameter_table_model_for_store(store: ParamStore) -> ParameterTableModel:
-    revision = int(store.table_revision)
-    selector_revision = (
-        revision,
-        int(primitive_registry.revision),
-        int(effect_registry.revision),
-    )
-    if _ENSURED_SELECTORS_BY_REVISION.get(store) != selector_revision:
-        ops = {key.op for key in store_snapshot(store)}
-        for op in ops:
-            ensure_selector_spec_registered(op)
-        _ENSURED_SELECTORS_BY_REVISION[store] = (
-            revision,
-            int(primitive_registry.revision),
-            int(effect_registry.revision),
-        )
-    if _ENSURED_OPS_BY_STORE_REVISION.get(store) != revision:
-        # GUI に実際に現れた op だけを遅延登録する。全 built-in の eager import は
-        # optional dependency を不要に読み、起動時間も増やすため行わない。
-        ops = {key.op for key in store_snapshot(store)}
-        for op in ops:
-            if op not in primitive_registry and op not in effect_registry:
-                ensure_builtin_primitive_registered(op)
-                ensure_builtin_effect_registered(op)
-        _ENSURED_OPS_BY_STORE_REVISION[store] = revision
+def _catalog_for_store(
+    store: ParamStore,
+    *,
+    catalog: ParameterGuiCatalog | None,
+) -> ParameterGuiCatalog:
+    """明示 catalog、または store lifetime に固定した default snapshot を返す。"""
+
+    selected = catalog
+    if selected is None:
+        selected = _DEFAULT_CATALOG_BY_STORE.get(store)
+        if selected is None:
+            selected = current_parameter_gui_catalog()
+            _DEFAULT_CATALOG_BY_STORE[store] = selected
+    if type(selected) is not ParameterGuiCatalog:
+        raise TypeError("catalog は exact ParameterGuiCatalog である必要があります")
+    return selected
+
+
+def _parameter_table_model_for_store(
+    store: ParamStore,
+    *,
+    catalog: ParameterGuiCatalog | None = None,
+) -> ParameterTableModel:
+    selected_catalog = _catalog_for_store(store, catalog=catalog)
     return _TABLE_MODEL_CACHE.get_or_build(
         store,
-        registry_revision=_registry_revision(),
-        builder=_build_parameter_table_model,
+        catalog=selected_catalog,
+        builder=lambda current_store, snapshot, cache_key: _build_parameter_table_model(
+            current_store,
+            snapshot,
+            cache_key,
+            catalog=selected_catalog,
+        ),
         refresher=_refresh_parameter_table_model_values,
     )
 
@@ -693,9 +670,8 @@ def clear_parameter_table_model_cache() -> None:
     _TABLE_VIEW_CACHE.clear()
     _BASE_VISIBILITY_CACHE.clear()
     _DYNAMIC_SEARCH_CORPUS_CACHE.clear()
+    _DEFAULT_CATALOG_BY_STORE.clear()
     _TABLE_VIEW_BUILD_COUNT = 0
-    _ENSURED_OPS_BY_STORE_REVISION.clear()
-    _ENSURED_SELECTORS_BY_REVISION.clear()
 
 
 def parameter_table_model_build_count() -> int:
@@ -714,18 +690,20 @@ def _visible_mask_for_model(
     store: ParamStore,
     rows: Sequence[ParameterRow],
     *,
+    catalog: ParameterGuiCatalog,
     show_inactive: bool,
     activity_mask: Sequence[bool] | None = None,
 ) -> list[bool]:
     """静的 rows に active/loaded などフレーム動的な可視性を合成する。"""
 
-    runtime = store._runtime_ref()
+    runtime = store.runtime_view()
     if bool(show_inactive):
         active_mask = [True] * len(rows)
     else:
         if activity_mask is None:
             activity_mask = active_mask_for_rows(
                 rows,
+                catalog=catalog,
                 show_inactive=False,
                 last_effective_by_key=runtime.last_effective_by_key,
             )
@@ -735,16 +713,8 @@ def _visible_mask_for_model(
     if not runtime.loaded_groups:
         return active_mask
 
-    loaded = {
-        (op, site_id)
-        for op, site_id in runtime.loaded_groups
-        if op != STYLE_OP
-    }
-    observed = {
-        (op, site_id)
-        for op, site_id in runtime.observed_groups
-        if op != STYLE_OP
-    }
+    loaded = {(op, site_id) for op, site_id in runtime.loaded_groups if op != STYLE_OP}
+    observed = {(op, site_id) for op, site_id in runtime.observed_groups if op != STYLE_OP}
     hidden_groups = loaded - observed
     if not hidden_groups:
         return active_mask
@@ -762,16 +732,14 @@ def _base_visible_mask_for_model(
 ) -> tuple[bool, ...]:
     """query/filter から独立した active/loaded mask を revision cache する。"""
 
-    runtime = store._runtime_ref()
+    runtime = store.runtime_view()
     # show-inactive でも loaded-but-not-observed group は隠すため visibility token
     # は常に必要。value/effective は active 判定を行う場合だけ key に含める。
     cache_key = _ParameterBaseVisibilityCacheKey(
         model_cache_key=model.cache_key,
         value_revision=(-1 if show_inactive else int(model.value_revision)),
         show_inactive_params=bool(show_inactive),
-        effective_revision=(
-            -1 if show_inactive else int(runtime.effective_revision)
-        ),
+        effective_revision=(-1 if show_inactive else int(runtime.effective_revision)),
         visibility_token=runtime.visibility_cache_token(),
     )
     cached = _BASE_VISIBILITY_CACHE.get(store)
@@ -782,6 +750,7 @@ def _base_visible_mask_for_model(
     if not show_inactive:
         activity_mask = active_mask_for_rows(
             model.rows,
+            catalog=model.catalog,
             show_inactive=False,
             last_effective_by_key=runtime.last_effective_by_key,
         )
@@ -789,6 +758,7 @@ def _base_visible_mask_for_model(
         _visible_mask_for_model(
             store,
             model.rows,
+            catalog=model.catalog,
             show_inactive=show_inactive,
             activity_mask=activity_mask,
         )
@@ -806,9 +776,7 @@ def _parameter_table_view_from_mask(
     """mask と静的 model layout を描画用 view へまとめる。"""
 
     normalized_mask = tuple(bool(visible) for visible in visible_mask)
-    visible_row_indices = tuple(
-        index for index, visible in enumerate(normalized_mask) if visible
-    )
+    visible_row_indices = tuple(index for index, visible in enumerate(normalized_mask) if visible)
     visible_steps_by_chain: dict[str, set[tuple[str, str]]] = {}
     for index in visible_row_indices:
         row = model.rows[index]
@@ -819,9 +787,7 @@ def _parameter_table_view_from_mask(
         visible_steps_by_chain.setdefault(step_info[0], set()).add(step_key)
     effect_chain_state_by_id = MappingProxyType(
         {
-            chain_id: state.for_visible_steps(
-                visible_steps_by_chain.get(chain_id, frozenset())
-            )
+            chain_id: state.for_visible_steps(visible_steps_by_chain.get(chain_id, frozenset()))
             for chain_id, state in model.effect_chain_state_by_id.items()
         }
     )
@@ -868,9 +834,7 @@ def _reuse_default_parameter_table_view(
         )
 
     value_changes = store.value_changes_since(previous_key.value_revision)
-    effective_changes = store._runtime_ref().effective_changes_since(
-        previous_key.effective_revision
-    )
+    effective_changes = store.effective_changes_since(previous_key.effective_revision)
     if value_changes is None or effective_changes is None:
         return None
     changed_keys = value_changes | effective_changes
@@ -910,6 +874,7 @@ def _changed_groups_keep_default_mask(
         current = _visible_mask_for_model(
             store,
             rows,
+            catalog=model.catalog,
             show_inactive=False,
         )
         if any(
@@ -926,7 +891,7 @@ def _dynamic_search_corpus_for_model(
 ) -> tuple[str, ...]:
     """source/MIDI 検索 overlay を revision 内で 1 回だけ構築する。"""
 
-    runtime = store._runtime_ref()
+    runtime = store.runtime_view()
     cache_key = _ParameterDynamicSearchCacheKey(
         model_cache_key=model.cache_key,
         value_revision=int(model.value_revision),
@@ -955,6 +920,7 @@ def _dynamic_search_corpus_for_model(
 def parameter_table_view_for_store(
     store: ParamStore,
     *,
+    catalog: ParameterGuiCatalog | None = None,
     show_inactive_params: bool,
     filter_state: ParameterFilterState | None = None,
     error_keys: AbstractSet[ParameterKey] = frozenset(),
@@ -964,15 +930,14 @@ def parameter_table_view_for_store(
 
     global _TABLE_VIEW_BUILD_COUNT
 
+    selected_catalog = _catalog_for_store(store, catalog=catalog)
     state = ParameterFilterState() if filter_state is None else filter_state
     favorites = (
-        favorite_parameter_key_set(store)
-        if favorite_keys is None
-        else frozenset(favorite_keys)
+        favorite_parameter_key_set(store) if favorite_keys is None else frozenset(favorite_keys)
     )
-    model = _parameter_table_model_for_store(store)
+    model = _parameter_table_model_for_store(store, catalog=selected_catalog)
     rows = model.rows
-    runtime = store._runtime_ref()
+    runtime = store.runtime_view()
     normalized_error_keys = frozenset(error_keys)
     cache_key = _ParameterTableViewCacheKey(
         model_cache_key=model.cache_key,
@@ -986,11 +951,7 @@ def parameter_table_view_for_store(
         favorite_keys=favorites,
     )
     cached = _TABLE_VIEW_CACHE.get(store)
-    if (
-        cached is not None
-        and cached[0] == cache_key
-        and cached[1].model is model
-    ):
+    if cached is not None and cached[0] == cache_key and cached[1].model is model:
         return cached[1]
     if cached is not None:
         reused = _reuse_default_parameter_table_view(
@@ -1015,6 +976,7 @@ def parameter_table_view_for_store(
     if state.activity != "all":
         activity_mask = active_mask_for_rows(
             rows,
+            catalog=model.catalog,
             show_inactive=False,
             last_effective_by_key=runtime.last_effective_by_key,
         )
@@ -1037,12 +999,8 @@ def parameter_table_view_for_store(
             and not state.error_only
             and not state.favorite_only
         )
-        static_query_only = (
-            query_only
-            and all(
-                not parameter_search_token_may_be_dynamic(token)
-                for token in query_tokens
-            )
+        static_query_only = query_only and all(
+            not parameter_search_token_may_be_dynamic(token) for token in query_tokens
         )
         if static_query_only:
             # 静的 substring だけの通常検索は、row/source object を合成せず
@@ -1059,10 +1017,7 @@ def parameter_table_view_for_store(
                 )
             else:
                 visible_mask = tuple(
-                    bool(
-                        base_visible
-                        and all(token in corpus for token in query_tokens)
-                    )
+                    bool(base_visible and all(token in corpus for token in query_tokens))
                     for base_visible, corpus in zip(
                         base_visible_mask,
                         model.search_corpus_by_row,
@@ -1077,13 +1032,7 @@ def parameter_table_view_for_store(
             if len(query_tokens) == 1:
                 token = query_tokens[0]
                 visible_mask = tuple(
-                    bool(
-                        base_visible
-                        and (
-                            token in static_corpus
-                            or token in dynamic_corpus
-                        )
-                    )
+                    bool(base_visible and (token in static_corpus or token in dynamic_corpus))
                     for base_visible, static_corpus, dynamic_corpus in zip(
                         base_visible_mask,
                         model.search_corpus_by_row,
@@ -1117,11 +1066,7 @@ def parameter_table_view_for_store(
                     strict=True,
                 )
             ):
-                active = (
-                    True
-                    if activity_mask is None
-                    else bool(activity_mask[index])
-                )
+                active = True if activity_mask is None else bool(activity_mask[index])
                 matches = True
                 if state.activity == "active" and not active:
                     matches = False
@@ -1169,14 +1114,14 @@ def parameter_table_view_for_store(
 
 def _apply_updated_rows_to_store(
     store: ParamStore,
-    snapshot: Mapping[ParameterKey, tuple[ParamMeta, object, int, str | None]],
+    snapshot: ParamSnapshot,
     rows_before: Sequence[ParameterRow],
     rows_after: Sequence[ParameterRow],
-) -> None:
-    """rows の変更を ParamStore に反映する。
+) -> bool:
+    """rows の変更を一つの core command として ParamStore に反映する。
 
-    - ui_min/ui_max の変更は meta に反映する
-    - ui_value/override/cc_key の変更は `update_state_from_ui` 経由で反映する
+    - ui_min/ui_max の変更は最終 meta command に反映する
+    - ui_value/override/cc_key/favorite は一つの batch command にまとめる
     """
 
     def _cc_set(
@@ -1198,6 +1143,7 @@ def _apply_updated_rows_to_store(
         return {v for v in cc_key if v is not None}
 
     reset_font_index_for: set[tuple[str, str]] = set()
+    commands: dict[ParameterKey, ParameterEdit] = {}
 
     for before, after in zip(rows_before, rows_after, strict=True):
         # renderer は未変更 row の identity を維持する。changed frame でも
@@ -1221,15 +1167,9 @@ def _apply_updated_rows_to_store(
                 ui_min=after.ui_min,
                 ui_max=after.ui_max,
             )
-            set_meta(store, key, effective_meta)
 
-        if after.favorite != before.favorite:
-            set_parameters_favorite(
-                store,
-                (key,),
-                favorite=bool(after.favorite),
-            )
-
+        ui_value = after.ui_value
+        override = bool(after.override)
         if (
             after.ui_value != before.ui_value
             or after.override != before.override
@@ -1244,28 +1184,20 @@ def _apply_updated_rows_to_store(
                 cc_removed = bool(removed) and not bool(added)
 
             baked_effective = (
-                store._runtime_ref().last_effective_by_key.get(key)
-                if cc_removed and not after.reset_to_code
-                else None
+                store.last_effective_value(key) if cc_removed and not after.reset_to_code else None
             )
             if baked_effective is not None:
-                update_state_from_ui(
-                    store,
-                    key,
-                    baked_effective,
-                    meta=effective_meta,
-                    override=True,
-                    cc_key=after.cc_key,
-                )
-            else:
-                update_state_from_ui(
-                    store,
-                    key,
-                    after.ui_value,
-                    meta=effective_meta,
-                    override=after.override,
-                    cc_key=after.cc_key,
-                )
+                ui_value = baked_effective
+                override = True
+
+        commands[key] = ParameterEdit(
+            key=key,
+            meta=effective_meta,
+            ui_value=ui_value,
+            override=override,
+            cc_key=after.cc_key,
+            favorite=bool(after.favorite),
+        )
 
         if (
             key.op == "text"
@@ -1284,14 +1216,36 @@ def _apply_updated_rows_to_store(
         entry = snapshot.get(font_index_key)
         if entry is None:
             continue
-        font_index_meta = entry[0]
-        update_state_from_ui(
-            store,
-            font_index_key,
-            0,
+        font_index_meta, font_index_state, _ordinal, _label = entry
+        commands[font_index_key] = ParameterEdit(
+            key=font_index_key,
             meta=font_index_meta,
+            ui_value=0,
             override=True,
+            cc_key=font_index_state.cc_key,
+            favorite=font_index_key in favorite_parameter_key_set(store),
         )
+
+    return bool(apply_parameter_edits(store, tuple(commands.values())))
+
+
+def apply_effect_order_command(
+    store: ParamStore,
+    command: EffectOrderCommand,
+) -> bool:
+    """renderer command を core の effect order operation へ渡す。"""
+
+    if command.kind == "reset":
+        return reset_effect_order(store, chain_id=command.chain_id)
+    if command.source is None or command.target is None or command.placement is None:
+        raise ValueError("move command requires source, target, and placement")
+    return move_effect_step(
+        store,
+        chain_id=command.chain_id,
+        source=command.source,
+        target=command.target,
+        placement=command.placement,
+    )
 
 
 def set_all_parameter_groups_collapsed(
@@ -1310,32 +1264,130 @@ def set_all_parameter_groups_collapsed(
         list(model.rows),
         group_layout=model.group_layout,
     )
-    headers = store._collapsed_headers_ref()
-    before = frozenset(headers)
-    store._observe_history_headers_before()
-    if collapsed:
-        headers.update(collapse_keys)
-    else:
-        headers.difference_update(collapse_keys)
-    if before == headers:
-        return False
-    store._touch(structure=False)
-    return True
+    return bool(store.set_all_collapsed(collapse_keys, collapsed=collapsed))
 
 
-def clear_all_midi_assignments(store: ParamStore) -> bool:
-    """すべてのパラメータの MIDI CC 割当（cc_key）を解除する。"""
+def clear_all_midi_assignments(
+    store: ParamStore,
+    *,
+    history: ParamStoreHistory | None = None,
+) -> bool:
+    """すべての MIDI CC 割当を、一つの履歴単位として解除する。"""
 
     snapshot = store_snapshot(store)
     rows_before = rows_from_snapshot(snapshot)
     if not any(row.cc_key is not None for row in rows_before):
         return False
 
-    rows_after = [
-        row if row.cc_key is None else replace(row, cc_key=None) for row in rows_before
-    ]
-    _apply_updated_rows_to_store(store, snapshot, rows_before, rows_after)
-    return True
+    rows_after = [row if row.cc_key is None else replace(row, cc_key=None) for row in rows_before]
+    transaction = (
+        history.transaction(source="clear_all_midi") if history is not None else nullcontext()
+    )
+    with transaction:
+        return _apply_updated_rows_to_store(store, snapshot, rows_before, rows_after)
+
+
+def _rows_for_table_view(
+    table_view: ParameterTableView,
+) -> tuple[tuple[ParameterRow, ...], tuple[ParameterRow, ...]]:
+    """renderer 用全行と、layout と同順の visible 行を返す。"""
+
+    model = table_view.model
+    render_rows = list(model.rows)
+    view_rows: list[ParameterRow] = []
+    for index in table_view.visible_row_indices:
+        row = model.rows[index]
+        favorite = model.keys[index] in table_view.favorite_keys
+        visible_row = row if bool(row.favorite) == favorite else replace(row, favorite=favorite)
+        render_rows[index] = visible_row
+        view_rows.append(visible_row)
+    return tuple(render_rows), tuple(view_rows)
+
+
+def commit_table_edits(
+    store: ParamStore,
+    *,
+    table_view: ParameterTableView,
+    edits: TableEdits,
+    history: ParamStoreHistory | None = None,
+) -> bool:
+    """renderer の immutable result を責務別の history 単位で commit する。"""
+
+    if not isinstance(edits, TableEdits):
+        raise TypeError("edits must be a TableEdits")
+    _render_rows, rows_before = _rows_for_table_view(table_view)
+    if len(rows_before) != len(edits.rows):
+        raise ValueError("TableEdits.rows does not match the rendered layout")
+
+    changed_any = False
+    changed_pairs = tuple(
+        (before, after)
+        for before, after in zip(rows_before, edits.rows, strict=True)
+        if before is not after and before != after
+    )
+    if changed_pairs:
+        changed_keys = tuple(
+            ParameterKey(row.op, row.site_id, row.arg) for row, _after in changed_pairs
+        )
+        midi_changed = any(before.cc_key != after.cc_key for before, after in changed_pairs)
+        discrete = midi_changed or len(changed_pairs) > 1
+        if history is not None and discrete:
+            history.break_coalescing()
+        source: object = (
+            ("parameter_midi", changed_keys)
+            if midi_changed
+            else (
+                ("parameter_table", changed_keys[0])
+                if len(changed_keys) == 1
+                else ("parameter_table_multi", changed_keys)
+            )
+        )
+        transaction = (
+            history.transaction(source=source, patch=True) if history is not None else nullcontext()
+        )
+        with transaction:
+            changed_any = _apply_updated_rows_to_store(
+                store,
+                table_view.model.snapshot,
+                rows_before,
+                edits.rows,
+            )
+        if history is not None and discrete:
+            history.break_coalescing()
+
+    collapsed_before = store.collapsed_headers()
+    if edits.collapsed_headers != collapsed_before:
+        if history is not None:
+            history.break_coalescing()
+        collapse_transaction = (
+            history.transaction(source="parameter_table_collapse", patch=True)
+            if history is not None
+            else nullcontext()
+        )
+        with collapse_transaction:
+            collapse_changed = store.replace_collapsed_headers(edits.collapsed_headers)
+        changed_any = collapse_changed or changed_any
+        if history is not None:
+            history.break_coalescing()
+
+    for command in edits.effect_order_commands:
+        if history is not None:
+            history.break_coalescing()
+        effect_transaction = (
+            history.transaction(
+                source=("effect_order", command.chain_id),
+                patch=False,
+            )
+            if history is not None
+            else nullcontext()
+        )
+        with effect_transaction:
+            effect_changed = apply_effect_order_command(store, command)
+        changed_any = effect_changed or changed_any
+        if history is not None:
+            history.break_coalescing()
+
+    return changed_any
 
 
 def render_store_parameter_table(
@@ -1346,53 +1398,35 @@ def render_store_parameter_table(
     midi_learn_state: MidiLearnState | None = None,
     midi_last_cc_change: tuple[int, int] | None = None,
     on_help_row: Callable[[ParameterRow, bool], None] | None = None,
-    on_effect_order_command: Callable[[EffectOrderCommand], None] | None = None,
-) -> bool:
-    """ParamStore を 4 列テーブルとして描画し、変更を store に反映する。"""
+    history: ParamStoreHistory | None = None,
+) -> TableCommitResult:
+    """store snapshot を描画し、返された edit を core command で commit する。"""
 
     model = table_view.model
-    rows_before = model.rows
-    visible_row_indices = table_view.visible_row_indices
-    view_rows: list[ParameterRow] = []
-    render_rows = list(rows_before)
-    for index in visible_row_indices:
-        row = rows_before[index]
-        favorite = model.keys[index] in table_view.favorite_keys
-        visible_row = (
-            row
-            if bool(row.favorite) == favorite
-            else replace(row, favorite=favorite)
-        )
-        render_rows[index] = visible_row
-        view_rows.append(visible_row)
+    render_rows, _view_rows = _rows_for_table_view(table_view)
 
-    runtime = store._runtime_ref()
-    collapsed_before = frozenset(store._collapsed_headers_ref())
-    changed, view_rows_after = render_parameter_table(
-        group_layout=table_view.group_layout,
-        model_rows=render_rows,
-        metric_scale=metric_scale,
-        step_info_by_site=model.step_info_by_site,
-        effect_chain_state_by_id=table_view.effect_chain_state_by_id,
-        last_effective_by_key=runtime.last_effective_by_key,
-        last_source_by_key=runtime.last_source_by_key,
-        raw_label_by_site=model.raw_label_by_site,
-        midi_learn_state=midi_learn_state,
-        midi_last_cc_change=midi_last_cc_change,
-        collapsed_headers=store._collapsed_headers_ref(),
+    runtime = store.runtime_view()
+    edits = render_parameter_table(
+        TableRenderInput(
+            group_layout=table_view.group_layout,
+            model_rows=render_rows,
+            catalog=model.catalog,
+            metric_scale=metric_scale,
+            step_info_by_site=model.step_info_by_site,
+            effect_chain_state_by_id=table_view.effect_chain_state_by_id,
+            last_effective_by_key=runtime.last_effective_by_key,
+            last_source_by_key=runtime.last_source_by_key,
+            raw_label_by_site=model.raw_label_by_site,
+            midi_learn_state=midi_learn_state,
+            midi_last_cc_change=midi_last_cc_change,
+            collapsed_headers=store.collapsed_headers(),
+        ),
         on_help_row=on_help_row,
-        on_effect_order_command=on_effect_order_command,
     )
-    collapsed_changed = collapsed_before != store._collapsed_headers_ref()
-    if collapsed_changed:
-        store._observe_history_headers_before(collapsed_before)
-        store._touch(structure=False)
-
-    if changed:
-        _apply_updated_rows_to_store(
-            store,
-            model.snapshot,
-            view_rows,
-            view_rows_after,
-        )
-    return bool(changed or collapsed_changed)
+    changed = commit_table_edits(
+        store,
+        table_view=table_view,
+        edits=edits,
+        history=history,
+    )
+    return TableCommitResult(changed=changed, edits=edits)

@@ -15,7 +15,7 @@ from typing import TextIO
 
 import numpy as np
 
-from grafix.core.atomic_write import atomic_text_writer
+from grafix.file_io import atomic_text_writer
 from grafix.core.gcode_params import GCodeParams
 from grafix.core.pipeline import RealizedLayer
 
@@ -26,15 +26,16 @@ from grafix.core.pipeline import RealizedLayer
 #
 # 1) 紙の安全領域（paper_margin_mm）を決める
 # 2) polyline を安全領域へクリップし、紙内に残る連続区間（stroke）へ分割する
-# 3) レイヤ内で stroke の順序を（任意で）並び替え、ペンアップ移動距離を減らす（optimize_travel）
-# 4) stroke 間の移動が十分短い場合、ペンアップを省略して描画で繋ぐ（bridge_draw_distance）
+# 3) 同じ元 polyline の clipping fragment だけを（任意で）並び替える（optimize_travel）
+# 4) 同じ元 polyline の fragment 間が十分短い場合だけ、描画で繋ぐ（bridge_draw_distance）
 #    - これは「移動距離短縮」ではなく「線を足す」トレードオフである点に注意
+#    - 異なる元 polyline の入力順・境界は常に保持する
 # 5) move ごとに (canvas -> machine) 変換 → 丸め → bed 範囲検証 → `G1 X.. Y..` を出す
 #
 # 決定性（同一入力→同一出力）のための工夫:
 # - 数値は常に固定小数フォーマット（_fmt_float）
 # - bed 検証は「実際に出力する値（丸め後）」に対して行う（_quantize_xy→_validate_bed_xy）
-# - 並び替えの距離比較は量子化（整数）し、タイブレーク規則を固定する（_order_strokes_in_layer）
+# - fragment の距離比較は量子化（整数）し、タイブレーク規則を固定する
 
 
 def _fmt_float(value: float, *, decimals: int) -> str:
@@ -344,49 +345,6 @@ class _Stroke:
     end_q: tuple[int, int]
 
 
-def _polyline_face_block_ids(offsets: np.ndarray) -> list[int]:
-    """各 polyline が属する face block id を返す（ヒューリスティック）。
-
-    Notes
-    -----
-    目的は `effects.fill` が出力する「face（外周+穴）ごとの境界→塗り線」のまとまりを崩さずに、
-    `optimize_travel` の並び替えを block 内に閉じること。
-
-    ここでの face block は以下の規則で作る（順序依存）:
-    - polyline の頂点数が 3 以上なら ring 候補（境界）とみなす
-    - ring 候補が「non-ring を見た後」に現れたら、新しい block を開始する
-
-    つまり `ring... ring... line... line... ring... ring... line...` のような並びを
-    `faceごとのブロック` として分割する。
-
-    `fill(remove_boundary=True)` のように ring が出ないケースでは、block は 1 つになる。
-    """
-
-    n_polylines = max(0, int(offsets.size) - 1)
-    if n_polylines <= 0:
-        return []
-
-    block_ids: list[int] = [0] * n_polylines
-    block_id = 0
-    saw_non_ring = False
-
-    for poly_idx in range(n_polylines):
-        start = int(offsets[poly_idx])
-        end = int(offsets[poly_idx + 1])
-        n_verts = int(end - start)
-        is_ring = n_verts >= 3
-
-        if poly_idx > 0 and is_ring and saw_non_ring:
-            block_id += 1
-            saw_non_ring = False
-
-        block_ids[poly_idx] = int(block_id)
-        if not is_ring:
-            saw_non_ring = True
-
-    return block_ids
-
-
 def _order_strokes_in_layer(
     strokes: list[_Stroke],
     *,
@@ -607,26 +565,24 @@ def _collect_layer_strokes(
     *,
     safe_rect: tuple[float, float, float, float],
     scale: int,
-) -> list[list[_Stroke]]:
-    """1 layer を clip し、face block ごとの stroke 列へ変換する。"""
+) -> list[tuple[int, list[_Stroke]]]:
+    """1 layerをclipし、元polylineごとのfragment列を入力順で返す。"""
 
     coords = np.asarray(layer.realized.coords, dtype=np.float64)
     offsets = np.asarray(layer.realized.offsets, dtype=np.int32)
-    block_ids = _polyline_face_block_ids(offsets)
-    block_count = max(block_ids) + 1 if block_ids else 0
-    strokes_by_block: list[list[_Stroke]] = [[] for _ in range(block_count)]
+    strokes_by_polyline: list[tuple[int, list[_Stroke]]] = []
 
     for poly_idx, (start, end) in enumerate(zip(offsets[:-1], offsets[1:])):
         start_i, end_i = int(start), int(end)
         if end_i - start_i < 2:
             continue
         polyline = np.ascontiguousarray(coords[start_i:end_i, :2], dtype=np.float64)
+        fragments: list[_Stroke] = []
         for seg_idx, points in enumerate(_clip_polyline_to_rect(polyline, safe_rect)):
             if len(points) < 2:
                 continue
             start_xy, end_xy = points[0], points[-1]
-            block_id = int(block_ids[poly_idx]) if block_ids else 0
-            strokes_by_block[block_id].append(
+            fragments.append(
                 _Stroke(
                     poly_idx=poly_idx,
                     seg_idx=seg_idx,
@@ -641,22 +597,30 @@ def _collect_layer_strokes(
                     ),
                 )
             )
-    return strokes_by_block
+        if fragments:
+            strokes_by_polyline.append((poly_idx, fragments))
+    return strokes_by_polyline
 
 
-def _order_stroke_blocks(
-    strokes_by_block: Sequence[list[_Stroke]],
+def _order_polyline_fragments(
+    strokes_by_polyline: Sequence[tuple[int, list[_Stroke]]],
     *,
     optimize_travel: bool,
     allow_reverse: bool,
-) -> list[list[tuple[_Stroke, bool]]]:
-    """face block 境界を維持したまま各 block の描画順を決める。"""
+) -> list[tuple[int, list[tuple[_Stroke, bool]]]]:
+    """元polyline順を保ち、各polyline内のclip fragmentだけを並べる。"""
 
     if not optimize_travel:
-        return [[(stroke, False) for stroke in block] for block in strokes_by_block]
+        return [
+            (poly_idx, [(stroke, False) for stroke in fragments])
+            for poly_idx, fragments in strokes_by_polyline
+        ]
     return [
-        _order_strokes_in_layer(block, allow_reverse=allow_reverse)
-        for block in strokes_by_block
+        (
+            poly_idx,
+            _order_strokes_in_layer(fragments, allow_reverse=allow_reverse),
+        )
+        for poly_idx, fragments in strokes_by_polyline
     ]
 
 
@@ -737,7 +701,7 @@ class _GCodeEmitter:
         self.write_line(f"G1 Z{_fmt_float(final_z, decimals=self.decimals)}")
 
 
-def _emit_stroke_block(
+def _emit_polyline_fragments(
     emitter: _GCodeEmitter,
     ordered: Sequence[tuple[_Stroke, bool]],
     *,
@@ -746,7 +710,7 @@ def _emit_stroke_block(
     travel_feed: int,
     draw_feed: int,
 ) -> None:
-    """順序確定済みの1 face block を emitter へ送る。"""
+    """順序確定済みの1元polylineのclip fragmentをemitterへ送る。"""
 
     current_end_q: tuple[int, int] | None = None
     for stroke, reversed_ in ordered:
@@ -832,19 +796,19 @@ def export_gcode(
 
         for layer_index, layer in enumerate(layers):
             emitter.write_line(f"; layer {layer_index} start")
-            strokes_by_block = _collect_layer_strokes(
+            strokes_by_polyline = _collect_layer_strokes(
                 layer,
                 safe_rect=safe_rect,
                 scale=scale,
             )
-            ordered_blocks = _order_stroke_blocks(
-                strokes_by_block,
+            ordered_polylines = _order_polyline_fragments(
+                strokes_by_polyline,
                 optimize_travel=bool(params.optimize_travel),
                 allow_reverse=bool(params.allow_reverse),
             )
-            for block_index, ordered in enumerate(ordered_blocks):
-                emitter.write_line(f"; face_block {block_index} start")
-                _emit_stroke_block(
+            for poly_idx, ordered in ordered_polylines:
+                emitter.write_line(f"; source_polyline {poly_idx} start")
+                _emit_polyline_fragments(
                     emitter,
                     ordered,
                     bridge_draw_distance=bridge_distance,
@@ -852,7 +816,7 @@ def export_gcode(
                     travel_feed=travel_feed,
                     draw_feed=draw_feed,
                 )
-                emitter.write_line(f"; face_block {block_index} end")
+                emitter.write_line(f"; source_polyline {poly_idx} end")
             emitter.write_line(f"; layer {layer_index} end")
 
         emitter.finish()

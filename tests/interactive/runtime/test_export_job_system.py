@@ -15,13 +15,18 @@ from typing import Any, cast
 import pytest
 import numpy as np
 
-from grafix.core.capture_manifest import capture_manifest_path_for
+from grafix.export.capture_publish import capture_manifest_path_for
+from grafix.core.evaluation_context import (
+    EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+    EvaluationFingerprint,
+)
 from grafix.core.export_format import ExportFormat
-from grafix.core.capture_provenance import CaptureProvenanceBuilder
+from grafix.export.capture_provenance import CaptureProvenanceBuilder
 from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer
 from grafix.core.parameters import ParamStore
 from grafix.core.pipeline import RealizedLayer
+from grafix.core.realize import GeometryCacheKey
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.runtime_config import runtime_config
 from grafix.core.runtime_limits import RuntimeLimits
@@ -89,7 +94,11 @@ def _sized_snapshot(byte_size: int) -> CaptureExportSnapshot:
     layer = RealizedLayer(
         layer=Layer(geometry=geometry, site_id="sized-layer"),
         realized=realized,
-        cache_key=(geometry.id, (0, 0)),
+        cache_key=GeometryCacheKey(
+            geometry_id=geometry.id,
+            evaluation=EvaluationFingerprint("0" * 64),
+            external_dependencies=EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+        ),
         color=(0.0, 0.0, 0.0),
         thickness=0.01,
     )
@@ -834,7 +843,7 @@ def test_default_backend_delegates_encode_and_publish_to_capture_service(
             calls.append(("encode", path))
             return (staged_path,)
 
-        def publish_staged(
+        def publish_staged_with_retry(
             self,
             frame: object,
             path: object,
@@ -845,6 +854,7 @@ def test_default_backend_delegates_encode_and_publish_to_capture_service(
             assert Path(cast(Any, path)) == output_path
             assert tuple(cast(Any, staged_paths)) == (staged_path,)
             assert kwargs == {
+                "initial_path": output_path,
                 "format": ExportFormat.GCODE,
                 "split_gcode_layers": False,
                 "output_size": None,

@@ -62,13 +62,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         _parser().error("--evaluation-timeoutは正の値である必要があります")
 
     from grafix.api.runner import run
+    from grafix.core.runtime_config import runtime_config_with_fallback
     from grafix.interactive.runtime.source_reload import (
         SourceReloadController,
         source_reload_context,
     )
 
     try:
-        with SourceReloadController(args.sketch) as controller:
+        effective_config, config_fallback = runtime_config_with_fallback(args.config)
+        with SourceReloadController(
+            args.sketch,
+            config=effective_config,
+        ) as controller:
             midi_port_name = (
                 None
                 if args.midi_port == "none"
@@ -82,7 +87,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             with watch_context:
                 run(
                     controller.draw,
-                    config_path=args.config,
+                    config=effective_config,
+                    config_fallback=config_fallback,
                     run_id=args.run_id,
                     parameter_gui=bool(args.parameter_gui),
                     parameter_persistence=bool(args.parameter_persistence),

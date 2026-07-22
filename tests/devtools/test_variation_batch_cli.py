@@ -7,6 +7,7 @@ import pytest
 
 from grafix import ExportFormat, RenderOptions
 from grafix.__main__ import main as grafix_main
+from grafix.core.runtime_config import RuntimeConfig, current_runtime_config
 from grafix.devtools import variation_batch
 
 
@@ -57,9 +58,20 @@ def test_cli_passes_headless_inputs_and_reports_partial_failure(
             ),
         )
 
-    monkeypatch.setattr(variation_batch, "_resolve_callable", lambda _spec: _draw)
     monkeypatch.setattr(variation_batch, "RenderSession", make_session)
     monkeypatch.setattr(variation_batch, "render_variation_batch", fake_batch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "paths:\n  output_dir: configured-output\n",
+        encoding="utf-8",
+    )
+    observed_configs: list[RuntimeConfig] = []
+
+    def resolve_callable(_spec: str):
+        observed_configs.append(current_runtime_config())
+        return _draw
+
+    monkeypatch.setattr(variation_batch, "_resolve_callable", resolve_callable)
 
     code = variation_batch.main(
         [
@@ -74,6 +86,8 @@ def test_cli_passes_headless_inputs_and_reports_partial_failure(
             "recovery",
             "--run-id",
             "take-a",
+            "--config",
+            str(config_path),
             "--name",
             "Quiet",
             "--name",
@@ -92,6 +106,10 @@ def test_cli_passes_headless_inputs_and_reports_partial_failure(
     assert sessions[0].draw is _draw
     assert sessions[0].kwargs["parameter_source"] == "recovery"
     assert sessions[0].kwargs["run_id"] == "take-a"
+    config = sessions[0].kwargs["config"]
+    assert isinstance(config, RuntimeConfig)
+    assert config.config_path == config_path.resolve()
+    assert observed_configs == [config]
     options = sessions[0].kwargs["options"]
     assert isinstance(options, RenderOptions)
     assert options.canvas_size == (120, 90)

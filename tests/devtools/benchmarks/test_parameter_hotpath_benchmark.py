@@ -4,9 +4,11 @@ import pytest
 
 from grafix.devtools.benchmarks.parameter_hotpath_benchmark import (
     make_parameter_hot_path_scenario,
+    parameter_snapshot_model_workload,
+    parameter_store_fixture,
     run_parameter_hot_path_scenario,
 )
-from grafix.devtools.benchmarks.runner import case_definitions
+from grafix.devtools.benchmarks.catalog import case_definitions
 
 
 @pytest.mark.parametrize(
@@ -40,24 +42,16 @@ def test_parameter_hotpath_scenario_has_typed_distribution_and_contracts(
     assert distribution.unit == "ms"
     assert distribution.distribution is not None
     assert distribution.distribution.count == 4
-    assert all(
-        contract.passed
-        for contract in result.contracts
-        if contract.severity == "hard"
-    )
+    assert all(contract.passed for contract in result.contracts if contract.severity == "hard")
 
 
 def test_parameter_hotpath_registry_scopes_reference_and_soak_cases() -> None:
-    definitions = {
-        definition.case_id: definition for definition in case_definitions()
-    }
+    definitions = {definition.case_id: definition for definition in case_definitions()}
 
     merge = definitions["runtime.parameter_merge.rows_1000.change_steady"]
     snapshot = definitions["runtime.parameter_snapshot.rows_10000.change_one"]
     layout = definitions["gui.parameter_layout.rows_10000"]
-    visibility = definitions[
-        "gui.parameter_visibility.rows_10000.mode_search"
-    ]
+    visibility = definitions["gui.parameter_visibility.rows_10000.mode_search"]
     favorites = definitions["gui.parameter_favorites.rows_10000"]
 
     assert merge.parameters == {
@@ -102,3 +96,15 @@ def test_parameter_hotpath_scenario_rejects_unknown_operation() -> None:
                 "samples": 4,
             }
         )
+
+
+def test_parameter_snapshot_model_reports_stable_model_cache() -> None:
+    store = parameter_store_fixture(rows=12)
+    model = parameter_snapshot_model_workload(store, frames=5)
+
+    assert model["output"]["rows"] == 12
+    assert model["output"]["snapshot_entries"] == 12
+    assert model["output"]["render_calls"] == 5
+    assert model["output"]["model_builds"] == 1
+    assert model["cache"]["hits"] == 4
+    assert model["cache"]["misses"] == 1

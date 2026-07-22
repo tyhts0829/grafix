@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from grafix.core.atomic_write import atomic_write_text
-from grafix.core.output_paths import output_path_for_draw
+from grafix.file_io import atomic_write_text
+from grafix.export.output_paths import output_path_for_draw
 from grafix.core.value_validation import finite_real
-from grafix.interactive.runtime.diagnostics import DiagnosticEvent
+from grafix.interactive.diagnostics import DiagnosticEvent
 from grafix.interactive.runtime.window_layout import WindowRect
 
 WORKSPACE_STATE_SCHEMA_VERSION = 1

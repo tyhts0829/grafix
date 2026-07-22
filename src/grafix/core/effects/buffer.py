@@ -6,10 +6,14 @@ from typing import Literal, cast
 
 import numpy as np
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
-from .util import canonical_planar_frame, close_curve, empty_geom
+from grafix.core.geometry_kernels.packed import empty_packed_geometry
+from grafix.core.geometry_kernels.planar import (
+    canonical_planar_frame,
+    close_curve,
+)
 
 buffer_meta = {
     "join": ParamMeta(
@@ -222,7 +226,7 @@ def buffer(
                 out_lines.append(original.astype(np.float32, copy=False))
 
     if not out_lines:
-        return (coords, offsets) if distance > 0.0 else empty_geom()
+        return (coords, offsets) if distance > 0.0 else empty_packed_geometry()
 
     out_coords = np.concatenate(out_lines, axis=0).astype(np.float32, copy=False)
     out_offsets = np.empty((len(out_lines) + 1,), dtype=np.int32)

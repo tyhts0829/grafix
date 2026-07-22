@@ -7,8 +7,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from grafix.core.parameters.history import ParamStoreHistory
 from grafix.core.parameters.identity import GroupKey
 from grafix.core.parameters.reconcile import ReconcileOrphan
+from grafix.core.parameters.reconcile_ops import (
+    list_reconcile_orphans,
+    manual_migrate_orphan,
+)
+from grafix.core.parameters.store import ParamStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +52,15 @@ class ReconcileMigrationRequest:
     new_group: GroupKey
 
 
+@dataclass(frozen=True, slots=True)
+class ReconcileMigrationResult:
+    """manual migration command の結果と最新 popup model。"""
+
+    changed: bool
+    model: ReconcileOrphanPanelModel
+    error: str | None = None
+
+
 def reconcile_reason_text(reason: object) -> str:
     """core reason code をユーザー向け説明へ変換する。"""
 
@@ -73,6 +88,33 @@ def reconcile_orphan_panel_model(
     ]
     views.sort(key=lambda view: view.new_group)
     return ReconcileOrphanPanelModel(orphans=tuple(views))
+
+
+def apply_reconcile_migration(
+    store: ParamStore,
+    request: ReconcileMigrationRequest,
+    *,
+    history: ParamStoreHistory | None = None,
+) -> ReconcileMigrationResult:
+    """選択済み 1:1 migration を実行し、最新 model と error を返す。"""
+
+    try:
+        manual_migrate_orphan(
+            store,
+            request.old_group,
+            request.new_group,
+            history=history,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return ReconcileMigrationResult(
+            changed=False,
+            model=reconcile_orphan_panel_model(list_reconcile_orphans(store)),
+            error=str(exc),
+        )
+    return ReconcileMigrationResult(
+        changed=True,
+        model=reconcile_orphan_panel_model(list_reconcile_orphans(store)),
+    )
 
 
 def format_parameter_group(group: GroupKey) -> str:
@@ -130,9 +172,11 @@ def render_reconcile_orphan_popup(
 
 
 __all__ = [
+    "ReconcileMigrationResult",
     "ReconcileMigrationRequest",
     "ReconcileOrphanPanelModel",
     "ReconcileOrphanView",
+    "apply_reconcile_migration",
     "format_parameter_group",
     "reconcile_orphan_panel_model",
     "reconcile_reason_text",

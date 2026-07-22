@@ -5,11 +5,9 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Mapping
-from typing import Any
-
 from grafix.api.effects import E
 from grafix.api.primitives import G
-from grafix.core.op_registry import OpCatalogEntry
+from grafix.core.operation_catalog import OperationCatalogEntry
 from grafix.core.parameters.meta import ParamMeta
 
 
@@ -42,7 +40,7 @@ def _print_mapping(title: str, values: Mapping[str, object]) -> None:
         print(f"  {name}: {value!r}")
 
 
-def _print_entry(entry: OpCatalogEntry[Any]) -> None:
+def _print_entry(entry: OperationCatalogEntry) -> None:
     print(f"name: {entry.name}")
     print(f"kind: {entry.kind}")
     print(f"n_inputs: {entry.n_inputs}")
@@ -67,14 +65,14 @@ def _print_entry(entry: OpCatalogEntry[Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI 引数を解釈し、registry 内の operation 情報を表示する。"""
+    """CLI 引数を解釈し、current catalog の operation 情報を表示する。"""
 
     if argv is None:
         argv = sys.argv[1:]
     args = _parse_args(argv)
 
     try:
-        entry: OpCatalogEntry[Any]
+        entry: OperationCatalogEntry
         if args.kind == "primitive":
             entry = G.describe(args.name)
         else:

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import grafix.interactive.midi.factory as factory
+from grafix.interactive.midi.midi_controller import CcSnapshotLoadResult
 
 
 class _StringSubclass(str):
@@ -34,6 +35,61 @@ def test_none_port_disables_midi() -> None:
     assert factory.create_midi_controller(
         port_name=None, mode="7bit", profile_name="main"
     ) is None
+
+
+def test_session_factory_owns_disabled_session(tmp_path: Path) -> None:
+    session = factory.create_midi_session(
+        port_name=None,
+        mode="7bit",
+        profile_name="main",
+        save_dir=tmp_path,
+        snapshot_path=tmp_path / "main.json",
+    )
+
+    assert session.state == "disabled"
+    assert session.can_reconnect is False
+    session.close()
+
+
+def test_session_factory_transfers_live_controller_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Controller:
+        snapshot_load_result = CcSnapshotLoadResult(
+            values=(),
+            status="missing",
+            source=tmp_path / "main.json",
+        )
+        port_name = "P1"
+
+        def save(self) -> None:
+            calls.append("save")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    controller = Controller()
+    monkeypatch.setattr(
+        factory,
+        "create_midi_controller",
+        lambda **_kwargs: controller,
+    )
+
+    session = factory.create_midi_session(
+        port_name="P1",
+        mode="7bit",
+        profile_name="main",
+        save_dir=tmp_path,
+        snapshot_path=tmp_path / "main.json",
+    )
+
+    assert session.state == "live"
+    assert session.controller is controller
+    session.close()
+    assert calls == ["save", "close"]
 
 
 @pytest.mark.parametrize("mode", [7, b"7bit", _StringSubclass("7bit")])

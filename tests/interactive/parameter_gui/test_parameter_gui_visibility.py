@@ -11,6 +11,7 @@ from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.view import ParameterRow
 from grafix.interactive.parameter_gui import store_bridge
 from grafix.interactive.parameter_gui.parameter_filter import ParameterFilterState
+from grafix.interactive.parameter_gui.table import TableEdits
 from grafix.interactive.parameter_gui.visibility import active_mask_for_rows
 
 
@@ -194,14 +195,18 @@ def test_render_store_parameter_table_filters_rows_passed_to_renderer(monkeypatc
 
     captured_args: list[str] = []
 
-    def _fake_render_parameter_table(*, group_layout, model_rows, **_kwargs):
+    def _fake_render_parameter_table(render_input, **_kwargs):
         rows = [
-            model_rows[item.row_index]
-            for block in group_layout
+            render_input.model_rows[item.row_index]
+            for block in render_input.group_layout
             for item in block.items
         ]
         captured_args[:] = [str(r.arg) for r in rows]
-        return False, list(rows)
+        return TableEdits(
+            rows=tuple(rows),
+            collapsed_headers=render_input.collapsed_headers,
+            midi_learn_state=render_input.midi_learn_state,
+        )
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", _fake_render_parameter_table)
 
@@ -256,14 +261,18 @@ def test_search_filter_composes_with_existing_show_inactive_visibility(
     state = ParameterFilterState(query="RATIO", activity="inactive")
     captured_args: list[str] = []
 
-    def fake_render(*, group_layout, model_rows, **_kwargs):
+    def fake_render(render_input, **_kwargs):
         rows = [
-            model_rows[item.row_index]
-            for block in group_layout
+            render_input.model_rows[item.row_index]
+            for block in render_input.group_layout
             for item in block.items
         ]
         captured_args[:] = [str(row.arg) for row in rows]
-        return False, list(rows)
+        return TableEdits(
+            rows=tuple(rows),
+            collapsed_headers=render_input.collapsed_headers,
+            midi_learn_state=render_input.midi_learn_state,
+        )
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
 

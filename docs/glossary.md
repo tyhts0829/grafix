@@ -9,11 +9,14 @@
 ## Core（データモデル/評価）
 
 - `Geometry`: 配列そのものではなく「幾何のレシピ」を表す DAG ノード。`src/grafix/core/geometry.py:Geometry`
-- `GeometryId`: 現行の固定 schema v2 による型付き canonical encoding `(op, inputs, args)` から計算される内容署名 ID。呼び出し側は schema を選択しない。`src/grafix/core/geometry.py:compute_geometry_id`
+- `GeometryId`: canonical `(op, EvaluationOpRef, input GeometryId, args)` から計算され、使用 operation version を推移的に含む内容署名 ID。`src/grafix/core/geometry.py:compute_geometry_id`
 - `RealizedGeometry`: `Geometry` を評価して得られる実体配列（`coords` + `offsets`）。`src/grafix/core/realized_geometry.py:RealizedGeometry`
 - `GeomTuple`: `(coords, offsets)` タプルで表す最小実体表現。`@primitive` / `@effect` のユーザー定義 I/O に使う。`src/grafix/core/realized_geometry.py:GeomTuple`
-- `RealizeSession`: `Geometry -> RealizedGeometry` の評価、byte-LRU、inflight 集約を所有する明示的な寿命単位。`src/grafix/core/realize.py:RealizeSession`
-- `GeometryCacheKey`: `GeometryId` と primitive/effect registry revision の組。CPU/GPU cache で共有する。`src/grafix/core/realize.py:GeometryCacheKey`
+- `EvaluationContext`: 一 catalog generation の operation catalog、quality、effective config を固定する immutable evaluation contract。`src/grafix/core/evaluation_context.py:EvaluationContext`
+- `RealizeCacheStore`: byte/entry 上限付き CPU LRU。通常は catalog generation 外の親 session/runtime が所有し、低水準 `RealizeSession` で省略した場合だけその session が所有する。`src/grafix/core/realize.py:RealizeCacheStore`
+- `EvaluationResources`: external-dependency provider memo と bounded font/glyph resource を所有する closeable generation resource。`src/grafix/core/evaluation_context.py:EvaluationResources`
+- `RealizeSession`: `Geometry -> RealizedGeometry` と inflight 集約を行う session。明示注入した `EvaluationResources` / `RealizeCacheStore` は借用し、省略した各 dependency だけを所有して close する。`EvaluationContext` は immutable value。`src/grafix/core/realize.py:RealizeSession`
+- `GeometryCacheKey`: `GeometryId`、evaluation fingerprint、external-dependency fingerprint、任意の uncached generation を持ち、CPU/inflight/GPU cache で共有する typed key。`src/grafix/core/realize.py:GeometryCacheKey`
 - `RealizedLayer`: 描画/出力用の「Layer + realize 済みジオメトリ + cache key + style」。`src/grafix/core/pipeline.py:RealizedLayer`
 
 ## Scene / Layer（描画単位）
@@ -22,12 +25,18 @@
 - `SceneItem`: `draw(t)` が返せる型（Geometry/Layer/それらの列など）を正規化するための入力表現。`src/grafix/core/scene.py`
 - `normalize_scene`: `SceneItem` を `Layer` 列へ正規化する関数。`src/grafix/core/scene.py:normalize_scene`
 
-## Registry / builtins（拡張ポイント）
+## Authoring / catalog / builtins（拡張ポイント）
 
-- `OpSpec`: evaluator、meta、defaults、引数順、arity を同じ世代として保持する frozen registry entry。`src/grafix/core/op_registry.py:OpSpec`
-- `primitive_registry` / `effect_registry`: op 名 → `OpSpec` の revision 付きレジストリ。`src/grafix/core/primitive_registry.py` / `src/grafix/core/effect_registry.py`
-- `@primitive` / `@effect`: `(coords, offsets)` タプル I/O の関数をレジストリへ登録するデコレータ。組み込み op は `meta=...` 必須。内部では `RealizedGeometry` に包む。`src/grafix/core/primitive_registry.py:primitive` / `src/grafix/core/effect_registry.py:effect`
-- built-in manifest: op 名から対象 module だけを lazy import する対応表。list/stub生成時だけ全件を読む。`src/grafix/core/builtins.py`
+- `ParameterOpSchema`: meta、defaults、引数順、UI 表示規則を evaluator から独立して保持する frozen schema。`src/grafix/core/operation_schema.py:ParameterOpSchema`
+- `OpDeclaration`: evaluator、schema、arity、cache/external-dependency contract と evaluation/schema fingerprint を持つ immutable authoring declaration。`src/grafix/core/operation_declaration.py:OpDeclaration`
+- `EvaluationOpRef`: DAG node が固定する operation kind/name/evaluation fingerprint。`src/grafix/core/operation_declaration.py:EvaluationOpRef`
+- `EffectStepRef`: 遅延 effect step が作成時に固定する evaluation ref と schema fingerprint。`src/grafix/core/operation_declaration.py:EffectStepRef`
+- `OperationCatalog`: 一 session/generation 内で変化しない operation entry snapshot。`src/grafix/core/operation_catalog.py:OperationCatalog`
+- `PresetCatalog`: 一 session/generation 内で変化しない preset declaration snapshot。`src/grafix/core/preset_catalog.py:PresetCatalog`
+- `RegistrationTarget`: decorator declaration を operation/preset builder へ渡す単一登録境界。`src/grafix/core/authoring_definitions.py:RegistrationTarget`
+- `DefaultAuthoringDefinitions`: 通常 module-scope decorator 用の process-level declaration store。evaluation はその snapshot だけを使う。`src/grafix/core/authoring_definitions.py:DefaultAuthoringDefinitions`
+- `@primitive` / `@effect`: canonical `(coords, offsets)` tuple I/O の callable から declaration を作る公開 decorator。`src/grafix/core/operation_authoring.py`
+- built-in manifest: builtin module/callable/evaluator ABI の唯一の locator。import 済み callable に付与された declaration を bootstrap が回収する。`src/grafix/core/builtins.py`
 
 ## parameters（GUI/CC と値解決・永続）
 
@@ -38,6 +47,9 @@
 - `site_id`: project-relative code location、または G/E/L/P の明示 `key=` から作る呼び出し箇所 ID。`src/grafix/core/parameters/key.py:make_site_id`
 - `ParamSnapshot`: `ParamStore` を revision 単位で読み取り用に固定した mapping。`src/grafix/core/parameters/snapshot_ops.py:ParamSnapshot`
 - `ParamStore.revision`: snapshot/GUI model/worker 同期を無効化する、snapshot に影響する永続状態の変更時だけ進む単調 revision。
+- `ParamRuntimeView`: GUI/application が private live container へ触れずに読む時点固定 runtime snapshot。生成時に mapping を浅く copy し、後続 mutation を観測しない。要素は canonical immutable value。`src/grafix/core/parameters/runtime.py:ParamRuntimeView`
+- `ParamStoreRollback`: variation batch などの一時評価で論理 state と counter を exact restore する owner-bound one-shot rollback scope。`src/grafix/core/parameters/store.py:ParamStoreRollback`
+- `ParameterEdit`: GUI の変更意図を表し、複数件を一つの core command として適用できる immutable edit。`src/grafix/core/parameters/edit_commands.py:ParameterEdit`
 - `parameter_context`: フレーム境界で `ParamSnapshot` と `FrameParamsBuffer`（観測バッファ）を固定し、終了時に store へマージする。`src/grafix/core/parameters/context.py:parameter_context`
 - `FrameParamsBuffer`: そのフレームで観測・解決した引数を貯めるバッファ。`src/grafix/core/parameters/frame_params.py:FrameParamsBuffer`
 - `resolve_params`: base/GUI/CC から effective 値を決め、観測を記録する関数。`src/grafix/core/parameters/resolver.py:resolve_params`
@@ -56,8 +68,18 @@
 
 ## Effect math / runtime
 
-- `PlanarFrame`: 3D の平面形状を決定的な2D座標へ写し、rank/residualも返す共通平面基底。`src/grafix/core/effects/util.py:PlanarFrame`
-- `GridSpec`: bbox、pitch、cell上限から確保前に格子解像度を決める値。`src/grafix/core/effects/util.py:GridSpec`
+- `PlanarFrame`: 3D の平面形状を決定的な2D座標へ写し、rank/residualも返す共通平面基底。`src/grafix/core/geometry_kernels/planar.py:PlanarFrame`
+- `GridSpec`: bbox、pitch、cell上限から確保前に格子解像度を決める値。`src/grafix/core/geometry_kernels/grid.py:GridSpec`
 - `ExportJobSystem`: PNG/G-code を bounded FIFO で処理し、満杯時は明示拒否する長寿命
   spawn worker。`src/grafix/interactive/runtime/export_job_system.py:ExportJobSystem`
-- `ParameterTableModel`: store/registry revision 内で不変なGUI行・順序・ヘッダを保持するcache単位。`src/grafix/interactive/parameter_gui/table_model.py:ParameterTableModel`
+- `CaptureQueue`: immutable capture intent、件数/aggregate geometry byte admission、worker poll/drain を所有する runtime owner。`src/grafix/interactive/runtime/capture_queue.py:CaptureQueue`
+- `ParameterGuiCatalog`: operation/preset catalog から evaluator を除いた session-local schema projection。`src/grafix/interactive/parameter_gui/catalog.py:ParameterGuiCatalog`
+- `ParameterTableModel`: store structure revision と immutable GUI catalog 内で不変な行・順序・header を保持する cache 単位。`src/grafix/interactive/parameter_gui/table_model.py:ParameterTableModel`
+
+## Benchmark harness
+
+- `CaseDefinition`: case metadata、setup/workload/postprocess、source identity 材料をまとめた immutable benchmark 定義。`src/grafix/devtools/benchmarks/definition.py:CaseDefinition`
+- benchmark catalog: provider の定義を収集し、重複拒否、stable ordering、suite/case selection を行う正規入口。`src/grafix/devtools/benchmarks/catalog.py`
+- benchmark metrics: exact checksum と typed metric、warm/cold aggregation の owner。`src/grafix/devtools/benchmarks/metrics.py`
+- benchmark executor: in-process/fresh-process 計測、calibration、timeout、child process group の kill/reap を所有し、catalog/workload を知らない。`src/grafix/devtools/benchmarks/executor.py`
+- benchmark runner: catalog と executor の composition および child entrypoint。公開 symbol は `run_case_isolated` のみ。`src/grafix/devtools/benchmarks/runner.py`

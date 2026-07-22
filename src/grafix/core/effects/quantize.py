@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import round_half_away_from_zero
+from grafix.core.geometry_kernels.grid import round_half_away_from_zero
 
 quantize_meta = {
     "step": ParamMeta(

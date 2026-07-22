@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from grafix.interactive.runtime.frame_clock import (
+from grafix.interactive.transport import (
     RecordingClock,
     TimeBookmark,
     TransportClock,

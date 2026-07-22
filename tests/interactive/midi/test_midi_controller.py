@@ -21,7 +21,7 @@ from grafix.interactive.midi.midi_controller import (
     maybe_load_frozen_cc_snapshot,
     save_cc_snapshot,
 )
-from grafix.interactive.runtime.diagnostics import DiagnosticCenter
+from grafix.interactive.diagnostics import DiagnosticCenter
 
 
 @dataclass(frozen=True, slots=True)

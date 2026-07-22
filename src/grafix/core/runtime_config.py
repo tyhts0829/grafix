@@ -1,22 +1,21 @@
 # どこで: `src/grafix/core/runtime_config.py`。
-# 何を: config.yaml による実行時設定（探索・ロード・キャッシュ）を提供する。
+# 何を: config.yaml による実行時設定（探索・ロード・検証）を提供する。
 # なぜ: PyPI 環境でも、外部リソースや出力先をユーザーが指定できるようにするため。
 
-"""実行時設定（`config.yaml`）の探索・ロード・キャッシュを担当する。
+"""実行時設定（`config.yaml`）の探索・ロードを担当する。
 
 このモジュールは、以下を提供する:
 
 - `config.yaml` を「同梱デフォルト → ユーザー設定（任意）」の順に適用して `RuntimeConfig` を構築
-- 探索パス（CWD / HOME）と、明示指定（`set_config_path()`）の両方に対応
+- 探索パス（CWD / HOME）と、loader への明示指定の両方に対応
 - merge 前の unknown key 検証と、値・range・MIDI mode の strict validation
 - ユーザー config 内の相対 path を config file の親基準に解決
-- 1 回ロードした結果をプロセス内でキャッシュ（設定を切り替える場合は `set_config_path()` で破棄）
 
 入出力 / 副作用
 ----------------
 - 入力: 同梱 `grafix/resource/default_config.yaml`、任意でユーザーの `config.yaml`
 - 出力: `RuntimeConfig`（不変データ）
-- 副作用: ファイル読み取り、YAML パース、モジュールグローバルへのキャッシュ保存
+- 副作用: ファイル読み取り、YAML パース
 
 実装メモ
 --------
@@ -31,6 +30,7 @@ import os
 import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from importlib import resources
 from numbers import Real
@@ -80,7 +80,7 @@ class RuntimeConfig:
     ----------
     config_path:
         実際に採用されたユーザー設定ファイルのパス。
-        明示指定（`set_config_path()`）または探索で見つかった 1 ファイルのどちらか。
+        loader への明示指定または探索で見つかった 1 ファイルのどちらか。
         ユーザー設定が無い場合は None（同梱デフォルトのみで動作）。
     output_dir:
         生成物（PNG 等）の出力先ディレクトリ。
@@ -177,73 +177,50 @@ class _ExportSection:
     gcode: GCodeParams
 
 
-# `set_config_path()` で指定される「明示 config」のパス。
-# ここが設定されている場合、探索で見つかった config よりも後に適用される。
-_EXPLICIT_CONFIG_PATH: Path | None = None
-# `runtime_config()` のプロセス内キャッシュ。設定を切り替える場合は破棄する。
-_CONFIG_CACHE: RuntimeConfig | None = None
-_CONFIG_REPORT_CACHE: RuntimeConfigReport | None = None
+_CURRENT_RUNTIME_CONFIG: ContextVar[RuntimeConfig | None] = ContextVar(
+    "grafix_current_runtime_config",
+    default=None,
+)
 
 
-def set_config_path(path: str | Path | None) -> None:
-    """以降の設定探索で使う明示 config パスを設定する。
+def _explicit_config_path(path: str | Path | None) -> Path | None:
+    """loader の明示 config path を検証・絶対化する。"""
 
-    Parameters
-    ----------
-    path:
-        `config.yaml` のパス。None の場合は明示指定を解除する。
-
-    Notes
-    -----
-    - `path` を None にすると明示指定を解除し、既定の探索に戻る。
-    - `path` は `~` を展開し、呼び出し時の CWD で絶対化して保持する。
-    - 設定が変わるため、`runtime_config()` のキャッシュを破棄する。
-    """
-
-    global _EXPLICIT_CONFIG_PATH, _CONFIG_CACHE, _CONFIG_REPORT_CACHE
     if path is None:
-        _EXPLICIT_CONFIG_PATH = None
-        _CONFIG_CACHE = None
-        _CONFIG_REPORT_CACHE = None
-        return
+        return None
     if type(path) is str:
-        p = Path(path)
+        candidate = Path(path)
     elif isinstance(path, Path):
-        p = path
+        candidate = path
     else:
         raise TypeError("config path は str、Path、None のいずれかである必要があります")
-    p = p.expanduser().resolve(strict=False)
-    _EXPLICIT_CONFIG_PATH = p
-    _CONFIG_CACHE = None
-    _CONFIG_REPORT_CACHE = None
+    return candidate.expanduser().resolve(strict=False)
 
 
 @contextmanager
-def runtime_config_scope(path: str | Path | None) -> Iterator[RuntimeConfig]:
-    """明示 config と cache を scope 内だけ切り替える。
+def bind_runtime_config(config: RuntimeConfig) -> Iterator[None]:
+    """評価中の内部 consumer に確定済み config を束縛する。
 
-    ``RenderSession`` のように評価期間全体で同じ effective config を使う呼び出し元向けの
-    process-global scope である。終了時は呼び出し前の明示 path と cache/report をそのまま
-    復元する。並列 session の調停は行わず、通常の context manager と同じ LIFO で使う。
-
-    Parameters
-    ----------
-    path:
-        scope 内で使う明示 config path。None は明示指定を解除した探索モード。
-
-    Yields
-    ------
-    RuntimeConfig
-        scope 開始時に一度だけロードし、その期間中 cache に固定する effective config。
+    ``runtime_config()`` の探索規則は変更しない。font/preset のように評価処理から
+    呼ばれる内部 consumer だけが :func:`current_runtime_config` を通じてこの値を参照する。
+    ``ContextVar`` の token は評価呼び出しの終了時に必ず復元されるため、session の
+    close 順や thread 間で config が干渉しない。
     """
 
-    global _EXPLICIT_CONFIG_PATH, _CONFIG_CACHE, _CONFIG_REPORT_CACHE
-    previous = (_EXPLICIT_CONFIG_PATH, _CONFIG_CACHE, _CONFIG_REPORT_CACHE)
+    if not isinstance(config, RuntimeConfig):
+        raise TypeError("config は RuntimeConfig である必要があります")
+    token = _CURRENT_RUNTIME_CONFIG.set(config)
     try:
-        set_config_path(path)
-        yield runtime_config()
+        yield
     finally:
-        _EXPLICIT_CONFIG_PATH, _CONFIG_CACHE, _CONFIG_REPORT_CACHE = previous
+        _CURRENT_RUNTIME_CONFIG.reset(token)
+
+
+def current_runtime_config() -> RuntimeConfig:
+    """現在の評価 config、未束縛なら default discovery の config を返す。"""
+
+    config = _CURRENT_RUNTIME_CONFIG.get()
+    return runtime_config() if config is None else config
 
 
 def _default_config_candidates() -> tuple[Path, ...]:
@@ -987,28 +964,24 @@ def _parse_midi_section(payload: dict[str, Any]) -> tuple[tuple[str, str], ...]:
     return tuple(_as_midi_inputs(midi.get("inputs")))
 
 
-def runtime_config() -> RuntimeConfig:
-    """実行時設定をロードして返す（キャッシュ）。
+def load_runtime_config_report(
+    config_path: str | Path | None = None,
+) -> RuntimeConfigReport:
+    """実行時設定をロードし、値ごとの出典とともに返す。
 
     読み込み元の優先順位（後勝ち）:
     1) 同梱 `grafix/resource/default_config.yaml`
     2) 探索で見つかった `config.yaml`（任意）
-    3) `set_config_path()` で明示指定された `config.yaml`（任意）
+    3) ``config_path`` で明示指定された `config.yaml`（任意）
 
     Notes
     -----
-    - 一度ロードした結果はモジュール内にキャッシュされる。
-      `set_config_path()` はキャッシュを破棄するため、次回呼び出しで再ロードされる。
+    - loader は process-global state を読み書きせず、呼び出しごとに設定を構築する。
     - ユーザー設定は mapping を再帰的にマージし、未指定の同梱既定値を維持する。
     - ユーザー設定の key tree は merge 前に検証され、unknown key は近似候補とともに拒否される。
     """
 
-    global _CONFIG_CACHE, _CONFIG_REPORT_CACHE
-    # キャッシュがあれば即返す。設定の切り替えは `set_config_path()` で行う。
-    if _CONFIG_CACHE is not None:
-        return _CONFIG_CACHE
-
-    explicit_path = _EXPLICIT_CONFIG_PATH
+    explicit_path = _explicit_config_path(config_path)
     if explicit_path is not None and not explicit_path.is_file():
         raise FileNotFoundError(f"config.yaml が見つかりません: {explicit_path}")
 
@@ -1042,7 +1015,12 @@ def runtime_config() -> RuntimeConfig:
                 True,
             )
         )
-    if explicit_path is not None:
+    # CWD/HOME 探索と明示 path が同じ file を指す場合は一度だけ読む。
+    # 同一 loader 内で二度読むと、その間の更新を混ぜた snapshot になり得る。
+    if explicit_path is not None and (
+        discovered_path is None
+        or explicit_path != discovered_path.resolve(strict=False)
+    ):
         explicit_payload = _load_yaml_config(explicit_path)
         explicit_source = str(explicit_path.resolve(strict=False))
         _validate_known_key_tree(
@@ -1117,22 +1095,33 @@ def runtime_config() -> RuntimeConfig:
             )
         )
 
-    _CONFIG_CACHE = cfg
-    _CONFIG_REPORT_CACHE = RuntimeConfigReport(
+    return RuntimeConfigReport(
         config=cfg,
         active_source=str(cfg.config_path) if cfg.config_path is not None else _PACKAGED_CONFIG_SOURCE,
         values=tuple(report_values),
     )
-    return cfg
+
+
+def load_runtime_config(config_path: str | Path | None = None) -> RuntimeConfig:
+    """明示 path または既定探索から不変な実行時設定を構築する。
+
+    ``config_path`` を指定した場合も、従来どおり同梱 default と探索 config の後に
+    明示 config を merge する。この関数は process-global path/cache を持たない。
+    """
+
+    return load_runtime_config_report(config_path).config
+
+
+def runtime_config() -> RuntimeConfig:
+    """既定の CWD/HOME 探索で実行時設定を構築する pure convenience。"""
+
+    return load_runtime_config()
 
 
 def runtime_config_report() -> RuntimeConfigReport:
-    """strict validation 後の config と leaf ごとの出典を返す（キャッシュ）。"""
+    """既定探索の strict config と leaf ごとの出典を返す convenience。"""
 
-    if _CONFIG_REPORT_CACHE is None:
-        runtime_config()
-    assert _CONFIG_REPORT_CACHE is not None
-    return _CONFIG_REPORT_CACHE
+    return load_runtime_config_report()
 
 
 def _packaged_runtime_config_report() -> RuntimeConfigReport:
@@ -1184,27 +1173,26 @@ def _packaged_runtime_config_report() -> RuntimeConfigReport:
     )
 
 
-def runtime_config_with_fallback() -> tuple[RuntimeConfig, RuntimeConfigFallback | None]:
+def runtime_config_with_fallback(
+    config_path: str | Path | None = None,
+) -> tuple[RuntimeConfig, RuntimeConfigFallback | None]:
     """strict user configを試し、失敗時だけ通知情報付きでdefaultへ退避する。
 
     CLI validationは :func:`runtime_config_report` を直接呼び、失敗を exit codeへ
     変換する。interactive runnerだけがこの明示fallbackを使用する。
-    fallback後は同一session内の全consumerが同じconfigを見るようcacheへ固定する。
+    fallback 結果も process-global state へ保存せず、呼び出し元が明示的に所有する。
     """
 
-    global _CONFIG_CACHE, _CONFIG_REPORT_CACHE
     try:
-        return runtime_config(), None
+        return load_runtime_config(config_path), None
     except (OSError, RuntimeError, ValueError) as exc:
-        source = _EXPLICIT_CONFIG_PATH
+        source = _explicit_config_path(config_path)
         if source is None:
             source = next(
                 (path for path in _default_config_candidates() if path.is_file()),
                 None,
             )
         report = _packaged_runtime_config_report()
-        _CONFIG_CACHE = report.config
-        _CONFIG_REPORT_CACHE = report
         return report.config, RuntimeConfigFallback(
             summary=f"{type(exc).__name__}: {exc}",
             details="".join(
@@ -1214,14 +1202,15 @@ def runtime_config_with_fallback() -> tuple[RuntimeConfig, RuntimeConfigFallback
         )
 
 
-def output_root_dir() -> Path:
+def output_root_dir(config: RuntimeConfig | None = None) -> Path:
     """出力ファイルを保存する既定ルートディレクトリを返す。
 
-    実体は `runtime_config().output_dir` の薄いショートカット。
-    探索/上書きルールは `runtime_config()` を参照。
+    ``config`` が無い場合だけ ``runtime_config()`` で既定探索する。
     """
 
-    cfg = runtime_config()
+    if config is not None and not isinstance(config, RuntimeConfig):
+        raise TypeError("config は RuntimeConfig または None である必要があります")
+    cfg = runtime_config() if config is None else config
     return Path(cfg.output_dir)
 
 
@@ -1230,10 +1219,12 @@ __all__ = [
     "RuntimeConfigReport",
     "RuntimeConfigFallback",
     "RuntimeConfigValue",
+    "bind_runtime_config",
+    "current_runtime_config",
+    "load_runtime_config",
+    "load_runtime_config_report",
     "output_root_dir",
     "runtime_config",
     "runtime_config_report",
-    "runtime_config_scope",
     "runtime_config_with_fallback",
-    "set_config_path",
 ]

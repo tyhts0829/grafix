@@ -1,405 +1,403 @@
 <!--
 どこで: `docs/architecture_visualization.md`。
-何を: `src/` 配下の実装を基に、Grafix の全体アーキテクチャを Mermaid 図で可視化する。
-なぜ: 理解の入口（読める図）と、依存規約の監視（矢印と例外の固定）に使うため。
+何を: 現行 `src/grafix/` の依存方向、snapshot、resource ownership、主要 flow の Mermaid 図。
+なぜ: 実装を読む前に、state と変更理由の境界を視覚的に確認できるようにするため。
 -->
 
-# Grafix アーキテクチャ可視化（Mermaid）
+# Grafix アーキテクチャ可視化
 
-## 目的
+## 1. レイヤと依存方向
 
-Grafix の全体アーキテクチャを、責務の分離・ディレクトリ構成・依存方向・実行時データフローの観点で、読みやすい図として可視化する。
-
-## スコープ
-
-- 対象: `src/` 配下の Python コード
-- 除外: primitive/effect の**個別実装詳細**
-  - `src/grafix/core/primitives/**` と `src/grafix/core/effects/**` の中身は追わない
-  - ただし「レジストリ登録/API ファサードとしての存在（概念）」は図に載せる
-- 重点: レイヤ境界（api/core/interactive/export）・依存方向・1フレームの処理フロー・ParamStore/CC の流れ
-
-## 表記ルール（図の読み方）
-
-- 実行時依存（呼び出し/データフロー）: `-->`
-- manifest による op 単位の遅延登録: `-.->`（注釈つき）
-- ノード名は原則「パッケージ名 + 役割」で表す（外部アクタ/FS は例外）
-
----
-
-## 抽出した主要コンポーネント一覧（責務 + 主要 I/O）
-
-| コンポーネント | 責務（1–2文） | 主要な入出力 |
-|---|---|---|
-| `grafix.api.runner / run()` | ParamStore/MIDI/GUI/描画ウィンドウを配線し、pyglet ループを起動する “実行導線”。 | In: `draw(t)`, 各種設定 → Out: ウィンドウ起動/ループ実行、ParamStore/MIDI/出力の永続化 |
-| `grafix.api.render / render()`・`grafix.api.export / export()` | headless で scene を immutable `Frame` へ評価し、suffix に対応する artifact と manifest を公開する。 | In: `draw(t)` / `Frame` → Out: `Frame` / `ExportResult` |
-| `grafix.api.primitives / G` | primitive を `Geometry` ノードとして生成するファサード。呼び出し箇所 `site_id` を安定化し、Param 解決/観測を起動する。 | In: kwargs → Out: `Geometry(op, args)` |
-| `grafix.api.effects / E` | effect チェーンを `Geometry` DAG として構築するファサード。step 単位の `site_id` と `chain_id` を作り Param 観測に渡す。 | In: kwargs + input `Geometry` → Out: `Geometry` DAG |
-| `grafix.api.layers / L` | `Geometry` を `Layer`（style付き）へ包む。Layer style 行の安定キー（site_id）も提供する。 | In: `Geometry`/list, style → Out: `list[Layer]` |
-| `grafix.api.preset / @preset` | “公開パラメータだけ GUI に出す” ための境界。関数本体は自動 mute し、内部の `G/E` 観測を遮断する。 | In: preset 関数 args → Out: 関数戻り値（内部は mute） |
-| `grafix.core.geometry / Geometry` | 不変な Geometry DAG ノード（内容署名 `id` を生成）。 | In: `op`, `inputs`, `params` → Out: `Geometry(id, ...)` |
-| `grafix.core.pipeline / realize_scene` | `draw(t)` の戻り値を Layer 列へ正規化し、style を解決し、Geometry を realize して描画/出力可能な `RealizedLayer[]` を返す共通パイプライン。 | In: `draw(t)`, `t`, defaults → Out: `list[RealizedLayer]` |
-| `grafix.core.realize / realize()` | Geometry を評価して `RealizedGeometry` を得る（キャッシュ+inflightで重複計算を抑制）。 | In: `Geometry` → Out: `RealizedGeometry(coords, offsets)` |
-| `grafix.core.*_registry` | primitive/effect/preset の “op→関数/meta/defaults/表示情報” を集約し、文字列規約への依存を局所化する。 | In: manifest による lazy 登録/参照 → Out: 実行関数や meta/defaults |
-| `grafix.core.parameters / ParamStore + context` | 1フレームの snapshot を固定し、parameter/label/effect-chain 観測結果をフレーム末尾で store にマージする。GUI・永続化・CC を統合する中核。 | In: ParamStore, cc_snapshot, `FrameParamRecord`, `FrameEffectChainRecord` → Out: snapshot/GUI 表示、永続 JSON |
-| `grafix.interactive.runtime.draw_window_system / DrawWindowSystem.draw_frame()` | 1フレームの “入力→時刻→scene 実行→GL 描画→録画/書き出し” を束ねる。 | In: `ParamStore`, `MidiController`, `draw(t)` → Out: 画面描画/録画/書き出し |
-| `grafix.interactive.runtime.scene_runner / SceneRunner.run()` | `parameter_context` 下で `draw(t)`（sync/mp）を実行し、`realize_scene` で `RealizedLayer[]` を得る。 | In: `t`, store, cc_snapshot → Out: `list[RealizedLayer]` |
-| `grafix.interactive.parameter_gui / ParameterGUI.draw_frame()` | ParamStore を snapshot→行モデル→UI として描画し、操作結果を store に反映する。 | In: UI イベント + store → Out: 更新された store |
-| `grafix.interactive.midi / MidiController` | MIDI CC を `dict[int,float] (0..1)` として供給/永続化し、Param 解決へ流す。 | In: MIDI入力 → Out: `cc_snapshot` |
-| `grafix.export.*` | 形式別 encode と、artifact/manifest の同一 generation publish を担うヘッドレス出力。 | In: `CaptureFrame` / `RealizedLayer[]` → Out: artifact + capture manifest |
-
----
-
-## 1) C4 風 Container 図（大枠の層と依存方向）
+矢印は compile/runtime dependency の許可方向を表す。user sketch への callback と、decorator が
+scoped registration target へ declaration を渡す流れだけはラベルで区別する。
 
 ```mermaid
 flowchart LR
-    user["User Sketch / draw(t)"]
-    api["grafix.api / facade (G,E,L,preset,run,render,export)"]
-    ir["grafix.interactive.runtime / window loop + systems"]
-    gui["grafix.interactive.parameter_gui / ParameterGUI"]
-    midi["grafix.interactive.midi / MidiController"]
-    pipe["grafix.core.pipeline / realize_scene"]
-    params["grafix.core.parameters / ParamStore + context"]
-    realize["grafix.core.realize / realize()"]
-    reg["grafix.core.*_registry / primitive+effect+preset"]
-    builtins["grafix.core.builtins / lazy manifest"]
-    exp["grafix.export / svg,image,gcode"]
-    fs[(Filesystem / output + config)]
+    sketch["User sketch / draw(t)"]
+    api["grafix.api<br/>G / E / L / P / run / render / export"]
+    core["grafix.core<br/>domain contracts"]
+    kernels["grafix.core.geometry_kernels<br/>pure numeric kernels"]
+    export["grafix.export<br/>encode / staging / publish"]
+    runtime["grafix.interactive.runtime<br/>composition / window loop"]
+    leaf["grafix.interactive leaf<br/>GL / MIDI / Parameter GUI"]
+    neutral["grafix.interactive<br/>diagnostics / transport / telemetry"]
+    tools["grafix.devtools<br/>CLI / stub / benchmark"]
 
-    user -->|"build SceneItem + call run()"| api
-    api -->|"wire systems"| ir
-    ir -->|"call draw(t)"| user
-
-    ir -->|"parameter_context(store, cc)"| params
-    ir -->|"realize_scene(...)"| pipe
-    pipe -->|"realize(Geometry)"| realize
-    realize -->|"lookup op -> func/meta"| reg
-
-    api -->|"ensure requested op"| builtins
-    realize -->|"ensure requested op"| builtins
-    builtins -->|"import one module"| reg
-
-    ir -->|"drive GUI window"| gui
-    gui -->|"read/write ParamStore"| params
-
-    ir -->|"poll + snapshot"| midi
-
-    api -->|"headless render"| pipe
-    api -->|"encode + publish"| exp
-
-    params -->|"load/save JSON"| fs
-    ir -->|"SVG/PNG/G-code/MP4 + manifests + MIDI JSON"| fs
-    exp -->|"write files"| fs
-    api -->|"config_path + output paths"| fs
+    sketch -->|"public DSL"| api
+    api --> core
+    api --> runtime
+    api --> export
+    runtime --> core
+    runtime --> export
+    runtime --> leaf
+    runtime --> neutral
+    leaf --> core
+    leaf --> neutral
+    core --> kernels
+    export --> core
+    tools --> api
+    tools --> core
+    tools --> export
+    runtime -.->|"invoke draw"| sketch
 ```
 
-この図はレイヤ境界（api/core/interactive/export）と依存方向を「入口」として理解するためのもの。`grafix.api` が公開導線（`run`, `render`, `export`）と制作 DSL（`G/E/L/@preset`）を集約し、`grafix.interactive.runtime` がフレームループとサブシステムを回す。`grafix.core.pipeline` が “Scene→RealizedLayer” の共通処理を担い、`grafix.core.parameters` が ParamStore と 1フレーム境界（snapshot 固定→マージ）を担う。
+禁止する逆依存:
 
-built-in primitive/effect は `grafix.core.builtins` の manifest で名前と module を対応付け、
-API namespace または `RealizeSession` が要求された op だけを import・登録する。全 built-in
-の import 副作用を起動条件にはしない。
+- `core -> api/export/interactive`
+- `export -> api/interactive`
+- `interactive -> api`
+- `interactive` の GL/MIDI/GUI leaf `-> interactive.runtime`
+- `core -> subprocess/fsync/publish/output-path policy`
 
-**根拠（主要矢印）**
+`tests/architecture/test_dependency_boundaries.py` が import と主要 private reach-through を検査する。
 
-- `User Sketch → grafix.api`: `src/grafix/__init__.py:7`, `src/grafix/api/__init__.py:18`
-- `grafix.api → grafix.interactive.runtime`: `src/grafix/api/__init__.py:21`, `src/grafix/api/runner.py:31`
-- `grafix.interactive.runtime → User Sketch`: `src/grafix/interactive/runtime/scene_runner.py:43`
-- `grafix.interactive.runtime → grafix.core.parameters`: `src/grafix/interactive/runtime/scene_runner.py:43`, `src/grafix/core/parameters/context.py:71`
-- `grafix.interactive.runtime → grafix.core.pipeline`: `src/grafix/interactive/runtime/scene_runner.py:55`, `src/grafix/core/pipeline.py:38`
-- `grafix.core.pipeline → grafix.core.realize`: `src/grafix/core/pipeline.py:104`, `src/grafix/core/realize.py:78`
-- `grafix.core.realize → grafix.core.*_registry`: `src/grafix/core/realize.py:69`, `src/grafix/core/realize.py:74`
-- `API / RealizeSession → built-in lazy registration`: `src/grafix/core/builtins.py`,
-  `src/grafix/api/primitives.py`, `src/grafix/api/effects.py`, `src/grafix/core/realize.py`
-- `GUI → ParamStore`: `src/grafix/interactive/parameter_gui/store_bridge.py:373`
-- `grafix.api.render → grafix.core.pipeline`: `src/grafix/api/render.py`
-- `grafix.api.export → grafix.export.capture`: `src/grafix/api/export.py`
-
----
-
-## 2) Component 図：core 内部（Geometry/DAG、Layer/Style、pipeline、parameters）
+## 2. Authoring から immutable catalog まで
 
 ```mermaid
 flowchart TB
-    draw["User draw(t) / returns SceneItem"]
+    builtin["Builtin manifest"]
+    module["Normal imported module"]
+    candidate["Config / source-reload candidate"]
+    decorators["@primitive / @effect / @preset"]
+    attached["Callable-attached immutable declaration"]
+    defaults["DefaultAuthoringDefinitions<br/>authoring convenience only"]
+    target["Scoped RegistrationTarget"]
+    snapshot["AuthoringDefinitionsSnapshot"]
+    opcat["OperationCatalog<br/>evaluator + evaluation fingerprint"]
+    presetcat["PresetCatalog<br/>preset declaration"]
+    guicat["ParameterGuiCatalog<br/>evaluator-free schema projection"]
+    session["RenderSession / SceneRunner generation"]
 
-    subgraph CORE["grafix.core (components)"]
-      direction TB
-
-      subgraph PIPE["Geometry/Scene Pipeline"]
-        direction TB
-        pipeline["grafix.core.pipeline / realize_scene"]
-        scene["grafix.core.scene / normalize_scene"]
-        layer["grafix.core.layer / Layer + resolve_layer_style"]
-        realize["grafix.core.realize / realize() + cache"]
-        realized["grafix.core.realized_geometry / RealizedGeometry"]
-        preg["grafix.core.primitive_registry / primitive_registry"]
-        ereg["grafix.core.effect_registry / effect_registry"]
-        builtins["grafix.core.builtins / op単位 lazy registration"]
-      end
-
-      subgraph PARAMS["Parameter System"]
-        direction TB
-        store["grafix.core.parameters.store / ParamStore"]
-        pctx["grafix.core.parameters.context / parameter_context + current_*"]
-        psnap["grafix.core.parameters.snapshot_ops / store_snapshot"]
-        pbuf["grafix.core.parameters.frame_params / FrameParamsBuffer"]
-        pres["grafix.core.parameters.resolver / resolve_params"]
-        pmerge["grafix.core.parameters / merge effect chains + labels + params"]
-        persist["grafix.core.parameters.persistence / load/save JSON"]
-      end
-
-      subgraph IO["Runtime Config / Paths"]
-        direction TB
-        runtimeCfg["grafix.core.runtime_config / runtime_config"]
-        paths["grafix.core.output_paths / output_path_for_draw"]
-      end
-    end
-
-    %% Pipeline execution
-    pipeline -->|"call draw(t)"| draw
-    draw -->|"SceneItem"| pipeline
-    pipeline -->|"normalize_scene(scene)"| scene
-    scene -->|"list[Layer]"| pipeline
-    pipeline -->|"resolve_layer_style"| layer
-    pipeline -->|"evaluate Layer.geometry"| realize
-    realize -->|"RealizedGeometry"| realized
-    realize -->|"lookup primitive op"| preg
-    realize -->|"lookup effect op"| ereg
-
-    %% Built-in registration is manifest-driven and lazy per op.
-    realize -->|"ensure op registered"| builtins
-    builtins -->|"import one built-in module"| preg
-    builtins -->|"import one built-in module"| ereg
-
-    %% Parameters (frame boundary)
-    pctx -->|"store_snapshot(store)"| psnap
-    pctx -->|"create"| pbuf
-    pres -->|"read current_*"| pctx
-    pres -->|"record(...)"| pbuf
-    pipeline -->|"current_param_store/current_frame_params"| pctx
-    pipeline -->|"record style rows (if in context)"| pbuf
-    pipeline -->|"get_state / override"| store
-    pctx -->|"finally: merge chains, labels, params"| pmerge
-    pmerge -->|"mutate"| store
-
-    %% Persistence / paths
-    persist -->|"load/save"| store
-    persist -->|"default path"| paths
-    paths -->|"output_dir + sketch_dir"| runtimeCfg
+    builtin --> decorators
+    module --> decorators
+    candidate --> decorators
+    decorators --> attached
+    module -->|"no scoped target"| defaults
+    candidate -->|"registration_scope"| target
+    builtin -->|"manifest bootstrap recovers attached declaration"| opcat
+    defaults --> snapshot
+    target --> snapshot
+    snapshot --> opcat
+    snapshot --> presetcat
+    opcat --> guicat
+    presetcat --> guicat
+    opcat --> session
+    presetcat --> session
 ```
 
-この図は core を「(A) シーン→実体化のパイプライン」と「(B) Parameter System」に分割し、実行時の呼び出しとデータの受け渡しを追えるようにしたもの。`realize_scene` は interactive/export の双方から呼ばれる共通関数で、`normalize_scene` により “ユーザーの戻り値の揺れ（Geometry/Layer/ネスト列）” を吸収し、各 Layer の Geometry を `realize()` で評価して `RealizedGeometry` へ落とす。
+重要な規則:
 
-Parameter System の中心は `parameter_context` のフレーム境界。フレーム冒頭で
-`store_snapshot(store)` により **読む専用 snapshot** を固定し、`resolve_params`
-（および Layer style 観測）が `FrameParamsBuffer` に parameter/label/effect-chain
-record を積む。フレーム末尾（context の finally）では
-`merge_frame_effect_chains`、`merge_frame_labels`、`merge_frame_params` を別入口として
-順に適用する。effect topology を parameter record から復元しない。
+- decorator は live evaluator registry を変更しない。
+- builtin declaration は default authoring store に入らず、manifest だけが bootstrap する。
+- candidate は隔離した target 内で全体を構築し、成功時だけ snapshot を採用する。
+- draw の外側の `P` は default authoring preset だけを参照し、config directory を暗黙 load しない。
+- session/generation は構築後に default store の変更を観測しない。
 
-**根拠（主要矢印）**
-
-- `realize_scene → draw(t)`: `src/grafix/core/pipeline.py:60`
-- `realize_scene → normalize_scene`: `src/grafix/core/pipeline.py:61`, `src/grafix/core/scene.py:18`
-- `realize_scene → resolve_layer_style`: `src/grafix/core/pipeline.py:67`, `src/grafix/core/layer.py:44`
-- `realize_scene → current_param_store/current_frame_params`: `src/grafix/core/pipeline.py:63`, `src/grafix/core/pipeline.py:77`
-- `realize_scene → realize(Geometry)`: `src/grafix/core/pipeline.py:104`, `src/grafix/core/realize.py:78`
-- `realize → primitive_registry/effect_registry`: `src/grafix/core/realize.py:69`, `src/grafix/core/realize.py:74`
-- `parameter_context → store_snapshot + buffer + merge`: `src/grafix/core/parameters/context.py`
-- `resolve_params → FrameParamsBuffer.record`: `src/grafix/core/parameters/resolver.py:128`, `src/grafix/core/parameters/resolver.py:187`
-- `merge_frame_effect_chains / merge_frame_labels / merge_frame_params → mutate ParamStore`:
-  `src/grafix/core/parameters/effect_order_ops.py`,
-  `src/grafix/core/parameters/labels_ops.py`,
-  `src/grafix/core/parameters/merge_ops.py`
-- `persistence → load/save JSON`: `src/grafix/core/parameters/persistence.py:34`, `src/grafix/core/parameters/persistence.py:51`
-- `output_path_for_draw → runtime_config`: `src/grafix/core/output_paths.py:66`, `src/grafix/core/runtime_config.py:139`
-
----
-
-## 3) Component 図：interactive 内部（runtime / gl renderer / parameter_gui / midi）
+## 3. Geometry identity と評価 cache
 
 ```mermaid
 flowchart LR
-    run["grafix.api.runner / run()"]
-    sketch["User Sketch / draw(t)"]
+    declaration["OpDeclaration"]
+    evalfp["EvaluationSpecFingerprint"]
+    schemafp["ParameterSchemaFingerprint"]
+    g["G operation lookup"]
+    estep["E step construction"]
+    opref["EvaluationOpRef"]
+    stepref["EffectStepRef"]
+    dag["Geometry DAG / GeometryId"]
+    context["EvaluationContext<br/>catalog + quality + config"]
+    ext["External dependency preflight"]
+    key["GeometryCacheKey"]
+    cache["RealizeCacheStore<br/>bounded CPU LRU"]
+    rs["RealizeSession<br/>inflight + transaction"]
+    realized["RealizedGeometry / RealizedLayer"]
+    gpu["DrawRenderer GPU cache"]
 
-    winLoop["grafix.interactive.runtime.window_loop / MultiWindowLoop"]
-    drawSys["grafix.interactive.runtime.draw_window_system / DrawWindowSystem.draw_frame"]
-    styleResolver["grafix.core.parameters.style_resolver / StyleResolver.resolve"]
-    sceneRunner["grafix.interactive.runtime.scene_runner / SceneRunner.run"]
-    mpDraw["grafix.interactive.runtime.mp_draw / MpDraw (worker)"]
-
-    renderer["grafix.interactive.gl.draw_renderer / DrawRenderer.render_layer"]
-    rec["grafix.interactive.runtime.recording_system / VideoRecordingSystem"]
-
-    guiSys["grafix.interactive.runtime.parameter_gui_system / ParameterGUIWindowSystem.draw_frame"]
-    gui["grafix.interactive.parameter_gui.gui / ParameterGUI.draw_frame"]
-    storeBridge["grafix.interactive.parameter_gui.store_bridge / render_store_parameter_table"]
-
-    midi["grafix.interactive.midi.midi_controller / MidiController"]
-
-    coreParams["grafix.core.parameters / ParamStore + context"]
-    corePipe["grafix.core.pipeline / realize_scene"]
-
-    capture["grafix.export.capture / CaptureService"]
-    exportJobs["grafix.interactive.runtime.export_job_system / ExportJobSystem"]
-
-    run -->|"construct systems + share ParamStore"| winLoop
-    run -->|"construct"| drawSys
-    run -->|"construct (optional)"| guiSys
-    run -->|"create (optional)"| midi
-
-    winLoop -->|"on_draw"| drawSys
-    winLoop -->|"on_draw"| guiSys
-
-    drawSys -->|"poll + snapshot"| midi
-    drawSys -->|"resolve global style"| styleResolver
-    styleResolver -->|"read state"| coreParams
-
-    drawSys -->|"run scene"| sceneRunner
-    sceneRunner -->|"parameter_context"| coreParams
-    sceneRunner -->|"call draw(t) [sync]"| sketch
-    sceneRunner -->|"submit/poll [mp]"| mpDraw
-    mpDraw -->|"call draw(t) in worker"| sketch
-
-    sceneRunner -->|"realize_scene(...)"| corePipe
-    corePipe -->|"RealizedLayer[]"| sceneRunner
-    sceneRunner -->|"return RealizedLayer[]"| drawSys
-
-    drawSys -->|"render_layer"| renderer
-    drawSys -->|"write_frame (optional)"| rec
-    drawSys -->|"SVG encode/publish"| capture
-    drawSys -->|"PNG/G-code bounded FIFO"| exportJobs
-    exportJobs -->|"encode/publish"| capture
-
-    guiSys -->|"draw_frame"| gui
-    gui -->|"render/update"| storeBridge
-    storeBridge -->|"store_snapshot_for_gui + update_state_from_ui"| coreParams
-    gui -->|"midi learn info"| midi
+    declaration --> evalfp
+    declaration --> schemafp
+    g --> opref
+    evalfp --> opref
+    estep --> stepref
+    evalfp --> stepref
+    schemafp --> stepref
+    opref --> dag
+    stepref --> dag
+    dag --> key
+    context --> key
+    ext -->|"ExternalDependenciesFingerprint"| key
+    key --> cache
+    context --> rs
+    cache --> rs
+    rs --> realized
+    key --> realized
+    realized --> gpu
 ```
 
-この図は interactive を「ループ駆動（MultiWindowLoop）」「描画系（DrawWindowSystem + SceneRunner + GL）」「編集系（ParameterGUI）」「入力系（MIDI）」に分解し、実行時の結線（誰が誰を呼ぶか）を固定するためのもの。描画ウィンドウと GUI ウィンドウは同一ループで回り、同一の `ParamStore` を共有する。GUI が store を更新し、次フレーム以降の `parameter_context` 参照に反映される。
+`GeometryId` は使用した operation ref を推移的に含む。realize は catalog の exact ref を検証し、
+同名別 version へ fallback しない。schema だけの変更や未使用 operation の変更は geometry cache
+identity に含めない。
 
-mp-draw を有効にした場合、worker は `draw(t)` を実行して
-“layers + parameter/label/effect-chain 観測レコード” を返すだけで、store の更新は
-main 側の `parameter_context` に寄る。built-in は API namespace または
-`RealizeSession` が `core.builtins` の manifest から必要な op だけを lazy import する。
+## 4. Session / generation の resource ownership
 
-**根拠（主要矢印）**
+### Headless composition
 
-- `run → MultiWindowLoop`: `src/grafix/api/runner.py:187`, `src/grafix/interactive/runtime/window_loop.py:55`
-- `MultiWindowLoop → on_draw`: `src/grafix/interactive/runtime/window_loop.py:70`
-- `DrawWindowSystem → MidiController`: `src/grafix/interactive/runtime/draw_window_system.py:145`
-- `DrawWindowSystem → StyleResolver`: `src/grafix/interactive/runtime/draw_window_system.py`,
-  `src/grafix/core/parameters/style_resolver.py`
-- `DrawWindowSystem → SceneRunner.run`: `src/grafix/interactive/runtime/draw_window_system.py:186`, `src/grafix/interactive/runtime/scene_runner.py:31`
-- `SceneRunner → parameter_context + realize_scene`: `src/grafix/interactive/runtime/scene_runner.py:43`, `src/grafix/interactive/runtime/scene_runner.py:55`
-- `DrawWindowSystem → DrawRenderer.render_layer`: `src/grafix/interactive/runtime/draw_window_system.py:202`, `src/grafix/interactive/gl/draw_renderer.py:52`
-- `DrawWindowSystem → CaptureService / ExportJobSystem`:
-  `src/grafix/interactive/runtime/draw_window_system.py`,
-  `src/grafix/export/capture.py`,
-  `src/grafix/interactive/runtime/export_job_system.py`
-- `ParameterGUI → store_snapshot_for_gui + update_state_from_ui`: `src/grafix/interactive/parameter_gui/gui.py:149`, `src/grafix/interactive/parameter_gui/store_bridge.py:373`, `src/grafix/interactive/parameter_gui/store_bridge.py:349`
+```mermaid
+flowchart TB
+    render["RenderSession"]
+    defs["AuthoringDefinitionsSnapshot"]
+    context["EvaluationContext(final)"]
+    store["ParamStore / StyleResolver"]
+    cache["RealizeCacheStore"]
+    resources["EvaluationResources<br/>FontResources / provider memo"]
+    child["RealizeSession<br/>explicit-dependency borrower"]
 
----
+    render --> defs
+    render --> context
+    render --> store
+    render --> cache
+    render --> resources
+    render --> child
+    context -.->|"borrowed"| child
+    cache -.->|"borrowed"| child
+    resources -.->|"borrowed"| child
+```
 
-## 4) Sequence 図：1 フレームの実行フロー（run→draw(t)→scene realize→render→param merge）
+close 順は `RealizeSession -> EvaluationResources -> RealizeCacheStore`。
+
+### Low-level RealizeSession
+
+```mermaid
+flowchart LR
+    ctor["RealizeSession constructor"]
+    omitted["Omitted resources / cache_store"]
+    injected["Explicit resources / cache_store"]
+    owned["Session-owned<br/>close resources then cache"]
+    borrowed["Borrowed<br/>caller remains owner"]
+    active["Active realization"]
+    deferred["Deferred owned cleanup<br/>by last caller"]
+
+    ctor --> omitted --> owned
+    ctor --> injected --> borrowed
+    owned --> active -->|"close requested"| deferred
+```
+
+`resources` と `cache_store` はそれぞれ独立に owned/borrowed を選ぶ。active caller がなければ
+owned cleanup は `close()` で直ちに行う。`EvaluationContext` は immutable value で close 対象ではない。
+constructor/body/close の `BaseException` でも後続 owned cleanup を試し、最初の error を保持する。
+
+### Interactive reload
+
+```mermaid
+flowchart TB
+    runner["SceneRunner"]
+    cache["Shared RealizeCacheStore"]
+    genA["Generation A"]
+    genB["Candidate generation B"]
+    ares["EvaluationResources A"]
+    asessions["draft / final RealizeSession A"]
+    bres["EvaluationResources B"]
+    bsessions["draft / final RealizeSession B"]
+
+    runner --> cache
+    runner --> genA
+    runner -.->|"build and validate"| genB
+    genA --> ares
+    genA --> asessions
+    genB --> bres
+    genB --> bsessions
+    cache -.->|"borrowed with typed keys"| asessions
+    cache -.->|"borrowed with typed keys"| bsessions
+    genB -->|"atomic adopt after success"| runner
+```
+
+新 generation の構築に失敗した場合は A を維持する。採用後に旧子 session、旧 resource を閉じ、
+共有 cache は `SceneRunner` 終了時だけ閉じる。
+
+## 5. Parameter の読み取りと更新
 
 ```mermaid
 sequenceDiagram
-    participant Sketch as User Sketch / draw(t)
-    participant Run as grafix.api.runner / run
-    participant Persist as grafix.core.parameters.persistence / load/save
-    participant WinLoop as grafix.interactive.runtime.window_loop / MultiWindowLoop
-    participant Draw as grafix.interactive.runtime.draw_window_system / DrawWindowSystem
-    participant Midi as grafix.interactive.midi / MidiController
-    participant StyleR as grafix.core.parameters.style_resolver / StyleResolver
-    participant SR as grafix.interactive.runtime.scene_runner / SceneRunner
-    participant Ctx as grafix.core.parameters.context / parameter_context
-    participant Store as grafix.core.parameters.store / ParamStore
-    participant MP as grafix.interactive.runtime.mp_draw / MpDraw
-    participant Pipe as grafix.core.pipeline / realize_scene
-    participant Rz as grafix.core.realize / realize
-    participant GL as grafix.interactive.gl.draw_renderer / DrawRenderer
-    participant GUI as grafix.interactive.parameter_gui.gui / ParameterGUI
+    participant App as "SceneRunner / RenderSession"
+    participant Ctx as "parameter_context"
+    participant Store as "ParamStore"
+    participant DSL as "G / E / P / Layer style"
+    participant Buffer as "FrameParamsBuffer"
+    participant GUI as "Parameter GUI renderer"
+    participant Bridge as "store_bridge / controllers"
 
-    Sketch->>Run: run(draw, ...)
-    Run->>Persist: load_param_store(path) [optional]
-    Persist-->>Run: ParamStore
-    Run->>WinLoop: MultiWindowLoop.run()
+    App->>Ctx: enter(store, cc snapshot)
+    Ctx->>Store: capture immutable ParamSnapshot
+    Ctx->>Buffer: create frame observation buffer
+    App->>DSL: draw(t)
+    DSL->>Ctx: read fixed snapshot
+    DSL->>Buffer: record parameter / label / topology
+    Ctx->>Store: merge successful frame records
+    Ctx-->>App: exit
 
-    Note over Ctx,Store: フレーム冒頭で snapshot を固定し<br/>フレーム末尾で record/label を store にマージ
+    Store->>Bridge: immutable query / ParameterTableView
+    Bridge->>GUI: TableRenderInput
+    GUI-->>Bridge: immutable TableEdits
+    Bridge->>Store: narrow command
+```
+
+通常 command:
+
+```mermaid
+flowchart LR
+    intent["Immutable edit intent"]
+    command["Core command"]
+    check["Validate + detect no-op"]
+    state["Logical state"]
+    rev["One revision/history/observer update"]
+
+    intent --> command --> check
+    check -->|"changed"| state --> rev
+    check -->|"no-op"| done["No state or revision change"]
+```
+
+一時 rollback:
+
+```mermaid
+flowchart LR
+    begin["begin_transient_rollback"]
+    token["Owner-bound opaque snapshot"]
+    temporary["Temporary variation edits / render"]
+    restore["Exact logical state + counters restore"]
+    invalidate["Invalidate derived caches"]
+    silent["No history / observer notification"]
+
+    begin --> token --> temporary --> restore --> invalidate --> silent
+```
+
+API/interactive が `ParamStore` の live/private container を取得する経路はない。
+`ParamRuntimeView` は生成時に runtime mapping を浅く copy した時点固定 snapshot であり、後続 frame の
+mutation を既存 view が観測しない。mapping 内の key/value/source は canonical immutable value である。
+
+## 6. Interactive の一 frame
+
+```mermaid
+sequenceDiagram
+    participant Loop as "MultiWindowLoop"
+    participant DWS as "DrawWindowSystem"
+    participant Transport as "TransportClock"
+    participant MIDI as "MidiSession"
+    participant SR as "SceneRunner"
+    participant Pipe as "realize_scene"
+    participant GL as "DrawRenderer"
+    participant Rec as "RecordingSession"
+    participant Capture as "CaptureQueue"
+    participant GUI as "ParameterGUIWindowSystem"
 
     loop every frame
-        par Draw Window
-            WinLoop->>Draw: on_draw calls draw_frame()
-            Draw->>Midi: poll_pending() + snapshot()
-            Draw->>StyleR: resolve()
-            StyleR->>Store: get_state(style keys)
-            Draw->>SR: run(t, store, cc_snapshot, defaults, recording)
-
-            SR->>Ctx: enter parameter_context(store, cc_snapshot)
-
-            alt mp-draw enabled and not recording
-                SR->>MP: submit(t, snapshot, cc_snapshot)
-                MP->>Sketch: draw(t) in worker
-                Sketch-->>MP: SceneItem
-                MP-->>SR: layers + records + labels
-                SR->>Ctx: current_frame_params().extend(records/labels)
-                SR->>Pipe: realize_scene(layers, t, defaults)
-            else sync
-                SR->>Sketch: draw(t)
-                Sketch-->>SR: SceneItem
-                SR->>Pipe: realize_scene(draw_fn, t, defaults)
-            end
-
-            Pipe->>Rz: realize(Geometry) [per Layer]
-            Rz-->>Pipe: RealizedGeometry
-            Pipe-->>SR: RealizedLayer[]
-
-            SR->>Ctx: exit (merge effect chains/labels/params)
-            SR-->>Draw: RealizedLayer[]
-            Draw->>GL: render_layer(...) [per Layer]
-        and Parameter GUI (optional)
-            WinLoop->>GUI: on_draw calls draw_frame()
-            GUI->>Store: store_snapshot_for_gui()
-            GUI->>Store: update_state_from_ui(...)
+        par Preview window
+            Loop->>DWS: draw_frame()
+            DWS->>Transport: sample time
+            DWS->>MIDI: poll and immutable snapshot
+            DWS->>SR: run(t, quality, ParamStore, MIDI)
+            SR->>Pipe: draw / normalize / style / realize
+            Pipe-->>SR: RealizedLayer tuple
+            SR-->>DWS: last-good or fresh scene
+            DWS->>GL: begin_frame + render layers
+            DWS->>Rec: optional RGB24 frame
+            DWS->>Capture: admit / poll export work
+        and Inspector window
+            Loop->>GUI: draw_frame()
+            GUI->>GUI: backend begin_frame -> panels -> render
         end
     end
 ```
 
-このシーケンス図は “1フレーム” を単位に、`run()` がループを起動し、描画側が `draw(t)` を実行して scene を `realize_scene` へ流し込み、GL で描画し、最後に `parameter_context` が観測結果を ParamStore へマージするまでを追う。GUI は同一フレーム内で store を編集できるが、描画側の値解決はフレーム冒頭の snapshot により決定的になる。
+`DrawWindowSystem` は順序と配線を担当し、capture path/publish、recording restore、workspace policy は
+それぞれ `CaptureQueue`、`RecordingSession`、`WorkspaceWindowController` が所有する。
 
-mp-draw 有効時でも store 更新は main の `parameter_context` の finally に寄る。worker は
-`layers + parameter/label/effect-chain records` を返すだけで、main は
-`current_frame_params()` に積み直し、effect chain、label、parameter の各 ops へ分けて
-merge する。
+## 7. Render と capture publish
 
-**根拠（主要矢印）**
+```mermaid
+flowchart LR
+    draw["draw(t) + config + parameter source"]
+    render["RenderSession<br/>final evaluation"]
+    frame["Immutable Frame"]
+    adapter["grafix.export API adapter"]
+    service["CaptureService"]
+    encoder["SVG / PNG / G-code encoder"]
+    staging["CaptureStaging"]
+    publish["Atomic no-clobber publish"]
+    files["Artifact family + capture manifest"]
 
-- `run → load/save ParamStore`: `src/grafix/api/runner.py:117`, `src/grafix/api/runner.py:197`, `src/grafix/core/parameters/persistence.py:34`
-- `MultiWindowLoop が on_draw を駆動`: `src/grafix/interactive/runtime/window_loop.py:70`
-- `DrawWindowSystem が cc_snapshot を作る`: `src/grafix/interactive/runtime/draw_window_system.py:145`, `src/grafix/interactive/runtime/draw_window_system.py:186`
-- `SceneRunner が parameter_context を開始`: `src/grafix/interactive/runtime/scene_runner.py:43`, `src/grafix/core/parameters/context.py:71`
-- `mp-draw が snapshot を worker に渡す`: `src/grafix/interactive/runtime/scene_runner.py:57`, `src/grafix/interactive/runtime/mp_draw.py:39`
-- `mp-draw 結果を frame_params に積む`: `src/grafix/interactive/runtime/scene_runner.py:69`
-- `realize_scene → realize`: `src/grafix/core/pipeline.py:104`, `src/grafix/core/realize.py:78`
-- `parameter_context 終了時に merge`: `src/grafix/core/parameters/context.py`
-- `render_layer`: `src/grafix/interactive/runtime/draw_window_system.py:202`, `src/grafix/interactive/gl/draw_renderer.py:52`
-- `GUI が snapshot_for_gui + update_state_from_ui`: `src/grafix/interactive/parameter_gui/store_bridge.py:373`, `src/grafix/interactive/parameter_gui/store_bridge.py:318`
+    draw --> render --> frame
+    frame --> adapter --> service
+    service --> encoder --> staging --> publish --> files
+```
 
----
+`RenderSession.render()` はファイル I/O を行わない。publish は完成済み private staging を使い、
+late collision では再 encode せず別 version を試す。失敗時は今回の generation だけを rollback する。
 
-## アーキテクチャ規約（依存ルール）案
+## 8. G-code の semantic boundary
 
-- `grafix.core` はヘッドレス純コアとし、`grafix.interactive`（pyglet/GL/imgui/MIDI）へ依存しない。
-- `grafix.export` は `grafix.core` にのみ依存し、`grafix.interactive` へ依存しない。
-  低レベル encoder は `RealizedLayer[]`、`CaptureService` は layers/canvas/background/time/
-  provenance を持つ構造的 `CaptureFrame` を入力にする。
-- `grafix.interactive` は `grafix.core` と `grafix.export` へ依存してよいが、逆依存（core/export → interactive）は禁止。
-- `grafix.api` は唯一のファサード層とし、ユーザーに必要な導線
-  （`run`, `render`, `export`, `G/E/L/@preset`）を集約する。GUI 依存は遅延 import で
-  隔離する。
-- built-in primitive/effect の登録は `grafix.core.builtins` の manifest へ集約し、
-  API namespace と `RealizeSession` が必要な op だけを lazy import する。
-- ParamStore の更新は原則 `*_ops.py` 経由に集約し、`ParamStore` の内部参照を interactive/api から直接 mutate しない（例外は `grafix.core.parameters` 内部に限定）。
+```mermaid
+flowchart LR
+    source["Input polyline in original order"]
+    clip["Clipping"]
+    fragments["Fragments tagged by source polyline"]
+    local["Reorder / reverse / bridge within one source only"]
+    emit["Deterministic G-code"]
+
+    source --> clip --> fragments --> local --> emit
+```
+
+異なる input polyline 間は並べ替え、向き反転、pen-down bridge の対象にしない。頂点数や閉曲線
+らしさから face/group を推測しない。
+
+## 9. Benchmark harness の一方向 DAG
+
+矢印は compile dependency の向き（依存元から依存先）を表す。
+
+```mermaid
+flowchart TB
+    schema["schema.py<br/>immutable result / JSON contract"]
+    definition["definition.py<br/>CaseDefinition / source identity"]
+    metrics["metrics.py<br/>checksum / typed aggregation"]
+    workloads["workload providers<br/>setup / workload / postprocess"]
+    catalog["catalog.py<br/>collect / validate / stable select"]
+    executor["executor.py<br/>measure / calibrate / child lifecycle"]
+    runner["runner.py<br/>composition / child entrypoint"]
+
+    definition --> schema
+    metrics --> schema
+    workloads --> definition
+    workloads --> metrics
+    workloads --> schema
+    catalog --> definition
+    catalog --> workloads
+    executor --> definition
+    executor --> metrics
+    executor --> schema
+    runner --> catalog
+    runner --> executor
+    runner --> definition
+    runner --> schema
+```
+
+`runner.py` の公開 symbol は `run_case_isolated` だけである。親側は definition と executor を配線し、
+child entrypoint は catalog で case ID を解決して executor へ渡す。executor は catalog/workload を
+知らず、workload は catalog/executor/runner を知らない。workload layer 内で許可する依存は
+`interactive_scenario -> parameter_hotpath / renderer` と `parameter_edit -> parameter_hotpath` の
+public helperだけで、private provider symbol参照をarchitecture testが拒否する。旧runner symbolの
+re-export shimはない。
+
+## 10. 主な source of truth
+
+| 概念 | 正本 |
+|---|---|
+| operation authoring | `core/operation_authoring.py`, `core/operation_declaration.py` |
+| registration/snapshot | `core/authoring_definitions.py`, `core/authoring_loader.py` |
+| operation/preset catalog | `core/operation_catalog.py`, `core/preset_catalog.py` |
+| evaluation/cache/resource | `core/evaluation_context.py`, `core/realize.py`, `core/font_resources.py` |
+| parameters | `core/parameters/` |
+| scene pipeline | `core/pipeline.py` |
+| interactive composition | `api/runner.py`, `interactive/runtime/` |
+| GUI schema projection | `interactive/parameter_gui/catalog.py` |
+| capture lifecycle | `export/capture.py`, `export/capture_staging.py`, `export/capture_publish.py` |
+| numeric kernels | `core/geometry_kernels/` |
+| benchmark definition/catalog/metrics/execution | `devtools/benchmarks/definition.py`, `catalog.py`, `metrics.py`, `executor.py` |
+| benchmark workload/composition | `devtools/benchmarks/*_benchmark.py`, `devtools/benchmarks/runner.py` |

@@ -8,8 +8,11 @@ from typing import Any, Protocol, cast
 import pytest
 
 from grafix.core.parameters import ParameterKey
+from grafix.core.operation_catalog import OperationCatalog
 from grafix.core.parameters.style import STYLE_OP, STYLE_SITE_ID
+from grafix.core.preset_catalog import PresetCatalog
 from grafix.core.runtime_config import RuntimeConfig
+from grafix.interactive.parameter_gui.catalog import ParameterGuiCatalog
 from grafix.interactive.runtime import parameter_gui_system as gui_system_module
 from grafix.interactive.runtime.parameter_gui_system import ParameterGUIWindowSystem
 
@@ -18,6 +21,10 @@ class _Gui:
     def __init__(self, *, active: bool) -> None:
         self.parameter_edit_active = bool(active)
         self.draw_count = 0
+        self.catalogs: list[ParameterGuiCatalog] = []
+
+    def replace_catalog(self, catalog: ParameterGuiCatalog) -> None:
+        self.catalogs.append(catalog)
 
     def draw_frame(self) -> None:
         self.draw_count += 1
@@ -61,6 +68,7 @@ class _GuiSystemFactory(Protocol):
         gui: _Gui,
         store: _Store | None = None,
         autosave: _Autosave | None = None,
+        catalog_provider: Callable[[], ParameterGuiCatalog] | None = None,
         on_parameter_revision_created: Callable[[int, int, str], None] | None = None,
     ) -> ParameterGUIWindowSystem: ...
 
@@ -88,6 +96,7 @@ def gui_system_factory(
         gui: _Gui,
         store: _Store | None = None,
         autosave: _Autosave | None = None,
+        catalog_provider: Callable[[], ParameterGuiCatalog] | None = None,
         on_parameter_revision_created: Callable[[int, int, str], None] | None = None,
     ) -> ParameterGUIWindowSystem:
         selected_store = _Store() if store is None else store
@@ -100,6 +109,7 @@ def gui_system_factory(
             effective_config=effective_config,
             store=cast(Any, selected_store),
             autosave=cast(Any, autosave),
+            catalog_provider=catalog_provider,
             on_parameter_revision_created=on_parameter_revision_created,
         )
         systems.append(system)
@@ -194,6 +204,63 @@ def test_gui_system_rejects_invalid_scale_before_window_creation(
     assert window_calls == []
 
 
+def test_gui_system_rejects_invalid_catalog_provider_before_window_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    effective_runtime_config: RuntimeConfig,
+) -> None:
+    window_calls: list[object] = []
+    monkeypatch.setattr(
+        gui_system_module,
+        "create_parameter_gui_window",
+        lambda **values: window_calls.append(values),
+    )
+
+    with pytest.raises(TypeError, match="catalog_provider"):
+        ParameterGUIWindowSystem(
+            effective_config=effective_runtime_config,
+            store=cast(Any, _Store()),
+            catalog_provider=cast(Any, object()),
+        )
+
+    assert window_calls == []
+
+
+def test_gui_system_transfers_window_ownership_once_to_parameter_gui(
+    monkeypatch: pytest.MonkeyPatch,
+    effective_runtime_config: RuntimeConfig,
+) -> None:
+    calls: list[str] = []
+
+    class Window:
+        def switch_to(self) -> None:
+            calls.append("switch")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    window = Window()
+    monkeypatch.setattr(
+        gui_system_module,
+        "create_parameter_gui_window",
+        lambda **_kwargs: window,
+    )
+
+    def fail_initialize(self: object, *_args: object, **_kwargs: object) -> None:
+        raise LookupError("GUI construction failed")
+
+    monkeypatch.setattr(gui_system_module.ParameterGUI, "_initialize", fail_initialize)
+    catalog = ParameterGuiCatalog.capture(OperationCatalog({}), PresetCatalog({}))
+
+    with pytest.raises(LookupError, match="GUI construction failed"):
+        ParameterGUIWindowSystem(
+            effective_config=effective_runtime_config,
+            store=cast(Any, _Store()),
+            catalog=catalog,
+        )
+
+    assert calls == ["switch", "close"]
+
+
 def test_gui_system_suspends_autosave_while_an_item_is_active(
     gui_system_factory: _GuiSystemFactory,
 ) -> None:
@@ -205,6 +272,25 @@ def test_gui_system_suspends_autosave_while_an_item_is_active(
 
     assert gui.draw_count == 1
     assert autosave.suspended_values == [True]
+
+
+def test_gui_system_adopts_catalog_generation_before_drawing(
+    gui_system_factory: _GuiSystemFactory,
+) -> None:
+    gui = _Gui(active=False)
+    catalog = ParameterGuiCatalog.capture(
+        OperationCatalog({}),
+        PresetCatalog({}),
+    )
+    system = gui_system_factory(
+        gui=gui,
+        catalog_provider=lambda: catalog,
+    )
+
+    system.draw_frame()
+
+    assert gui.catalogs == [catalog]
+    assert gui.draw_count == 1
 
 
 def test_gui_system_reports_revision_from_start_of_edit_frame(

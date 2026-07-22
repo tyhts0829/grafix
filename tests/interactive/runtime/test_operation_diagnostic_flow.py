@@ -12,7 +12,8 @@ from grafix.core.operation_diagnostics import (
     emit_operation_diagnostic,
 )
 from grafix.core.parameters import ParamStore
-from grafix.interactive.runtime.diagnostics import DiagnosticCenter
+from grafix.core.runtime_config import runtime_config
+from grafix.interactive.diagnostics import DiagnosticCenter
 from grafix.interactive.runtime.mp_draw import DrawResult, MpDraw
 from grafix.interactive.runtime.perf import PerfCollector
 from grafix.interactive.runtime.scene_runner import SceneRunner
@@ -39,6 +40,7 @@ def test_sync_scene_runner_publishes_to_common_diagnostic_center() -> None:
         perf=PerfCollector(enabled=False),
         n_worker=0,
         diagnostic_center=center,
+        effective_config=runtime_config(),
     )
     try:
         runner.run(
@@ -62,7 +64,11 @@ def test_sync_scene_runner_publishes_to_common_diagnostic_center() -> None:
 
 
 def test_mp_draw_result_carries_worker_diagnostics_separately() -> None:
-    mp_draw = MpDraw(_diagnostic_draw, n_worker=1)
+    mp_draw = MpDraw(
+        _diagnostic_draw,
+        n_worker=1,
+        effective_config=runtime_config(),
+    )
     try:
         mp_draw.submit(
             t=0.0,
@@ -140,6 +146,7 @@ def test_scene_runner_merges_worker_payload_before_center_publish() -> None:
         perf=PerfCollector(enabled=False),
         n_worker=0,
         diagnostic_center=center,
+        effective_config=runtime_config(),
     )
     runner._mp_draw = cast(Any, _WorkerResult(worker_result))
     try:

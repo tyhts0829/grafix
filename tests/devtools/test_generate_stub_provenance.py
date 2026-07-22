@@ -4,26 +4,22 @@ from dataclasses import replace
 
 import pytest
 
-import grafix.core.primitive_registry as primitive_registry_module
-from grafix.core.builtins import ensure_builtin_ops_registered
-from grafix.core.op_registry import OpRegistry
-from grafix.core.primitive_registry import PrimitiveFunc
+from grafix.core.builtins import builtin_operation_catalog
+from grafix.core.operation_catalog import OperationCatalogBuilder
 from grafix.devtools.generate_stub import _resolve_impl_callable
 
 
 def test_resolve_impl_callable_rejects_missing_provenance_without_name_fallback(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ensure_builtin_ops_registered()
-    registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
-    registry.register(
-        "line",
+    source = builtin_operation_catalog()
+    builder = OperationCatalogBuilder(source)
+    builder.register(
         replace(
-            primitive_registry_module.primitive_registry["line"],
-            provenance="",
+            source.resolve("primitive", "line").declaration,
+            provenance="invalid",
         ),
+        overwrite=True,
     )
-    monkeypatch.setattr(primitive_registry_module, "primitive_registry", registry)
 
     with pytest.raises(ValueError, match="provenance"):
-        _resolve_impl_callable("primitive", "line")
+        _resolve_impl_callable("primitive", "line", catalog=builder.freeze())

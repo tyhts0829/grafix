@@ -6,6 +6,7 @@ import pytest
 
 from grafix.core.parameters import (
     FrameParamRecord,
+    KnownOperationSchemaSnapshot,
     ParamMeta,
     ParamStore,
     ParameterKey,
@@ -30,6 +31,8 @@ from grafix.interactive.runtime.parameter_recovery import (
     param_store_load_diagnostic_events,
     recovered_session_diagnostic,
 )
+
+_KNOWN_OPERATIONS = KnownOperationSchemaSnapshot({"circle": frozenset({"radius"})})
 
 
 def _store(value: float) -> tuple[ParamStore, ParameterKey]:
@@ -90,12 +93,13 @@ def test_recovery_session_rejects_implicit_path_coercion() -> None:
         ParamStoreRecoverySession(
             ParamStore(),
             "params.json",  # type: ignore[arg-type]
+            _KNOWN_OPERATIONS,
         )
 
 
 def test_keep_promotes_recovered_state_and_removes_journal(tmp_path: Path) -> None:
     primary_path, recovery_path, store, key = _recovered_session(tmp_path)
-    session = ParamStoreRecoverySession(store, primary_path)
+    session = ParamStoreRecoverySession(store, primary_path, _KNOWN_OPERATIONS)
 
     session.keep()
 
@@ -109,7 +113,7 @@ def test_keep_promotes_recovered_state_and_removes_journal(tmp_path: Path) -> No
 def test_discard_restores_primary_in_place_and_removes_journal(tmp_path: Path) -> None:
     primary_path, recovery_path, store, key = _recovered_session(tmp_path)
     identity = id(store)
-    session = ParamStoreRecoverySession(store, primary_path)
+    session = ParamStoreRecoverySession(store, primary_path, _KNOWN_OPERATIONS)
 
     diagnostics = session.discard()
 
@@ -147,7 +151,11 @@ def test_discard_exactly_restores_primary_lock_and_favorite_state(
     assert bool(locked_parameter_keys(loaded)) is recovery_marked
     assert bool(favorite_parameter_keys(loaded)) is recovery_marked
 
-    ParamStoreRecoverySession(loaded, primary_path).discard()
+    ParamStoreRecoverySession(
+        loaded,
+        primary_path,
+        _KNOWN_OPERATIONS,
+    ).discard()
 
     assert bool(locked_parameter_keys(loaded)) is primary_marked
     assert bool(favorite_parameter_keys(loaded)) is primary_marked
@@ -157,7 +165,7 @@ def test_discard_exactly_restores_primary_lock_and_favorite_state(
 
 def test_compare_returns_copyable_unified_diff(tmp_path: Path) -> None:
     primary_path, _recovery_path, store, _key = _recovered_session(tmp_path)
-    session = ParamStoreRecoverySession(store, primary_path)
+    session = ParamStoreRecoverySession(store, primary_path, _KNOWN_OPERATIONS)
 
     event = session.compare_diagnostic()
 

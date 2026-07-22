@@ -7,17 +7,13 @@ from pathlib import Path
 import pytest
 
 from grafix.__main__ import _delegated_args, main as grafix_main
-from grafix.core.runtime_config import set_config_path
 from grafix.devtools import config_cli
 
 
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    set_config_path(None)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
-    yield
-    set_config_path(None)
 
 
 def test_config_validate_returns_zero_for_valid_config(tmp_path: Path, capsys) -> None:

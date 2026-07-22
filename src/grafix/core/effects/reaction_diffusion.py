@@ -2,23 +2,32 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 from numba import get_num_threads, njit, prange  # type: ignore[attr-defined, import-untyped]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.preview_quality import current_preview_quality
 from grafix.core.realized_geometry import GeomTuple
 
-from .util import (
+from grafix.core.geometry_kernels.grid import (
     DEFAULT_MAX_GRID_CELLS,
     GridSpec,
-    PlanarFrame,
-    empty_geom,
-    marching_squares_loops,
+    plan_grid_from_bbox,
+)
+from grafix.core.geometry_kernels.marching import marching_squares_loops
+from grafix.core.geometry_kernels.packed import (
+    empty_packed_geometry,
     pack_polylines,
+)
+from grafix.core.geometry_kernels.planar import (
+    PlanarFrame,
     planarity_threshold,
+)
+from grafix.core.geometry_kernels.raster import (
     scanline_evenodd_mask,
     squared_euclidean_distance_transform,
 )
@@ -30,6 +39,36 @@ DRAFT_MAX_CELL_STEPS = 14_000_000
 _PARALLEL_MIN_GRID_CELLS = 65_536
 _PARALLEL_MIN_STEPS = 8
 _BOUNDARY_CHOICES = ("noflux", "dirichlet")
+
+
+def _grid_spec_from_bbox(
+    mins: np.ndarray,
+    maxs: np.ndarray,
+    *,
+    pitch: float,
+    padding: float,
+    max_cells: int,
+    overflow: Literal["reject", "coarsen"],
+) -> GridSpec | None:
+    plan = plan_grid_from_bbox(
+        mins,
+        maxs,
+        pitch=pitch,
+        padding=padding,
+        max_cells=max_cells,
+        overflow=overflow,
+    )
+    diagnostic = plan.diagnostic
+    if diagnostic is not None:
+        emit_operation_diagnostic(
+            op="GridSpec.from_bbox",
+            original_value=diagnostic.original_value,
+            effective_value=diagnostic.effective_value,
+            reason=diagnostic.reason,
+            severity=diagnostic.severity,
+        )
+    return plan.spec
+
 
 reaction_diffusion_meta = {
     "grid_pitch": ParamMeta(
@@ -490,19 +529,19 @@ def reaction_diffusion(
 
     mask_coords, mask_offsets = mask
     if mask_coords.shape[0] == 0:
-        return empty_geom()
+        return empty_packed_geometry()
 
     pitch = grid_pitch
 
     frame = PlanarFrame.from_points(mask_coords, mask_offsets)
     if not frame.is_planar(planarity_threshold(mask_coords)):
-        return empty_geom()
+        return empty_packed_geometry()
 
     aligned_mask = frame.to_local(mask_coords)
 
     packed = _pack_mask_rings_xy(aligned_mask, mask_offsets)
     if packed is None:
-        return empty_geom()
+        return empty_packed_geometry()
     ring_vertices, ring_offsets, ring_mins, ring_maxs = packed
 
     mins = np.min(ring_vertices, axis=0)
@@ -522,7 +561,7 @@ def reaction_diffusion(
         )
     else:
         draft_cell_limit = DRAFT_MAX_GRID_POINTS
-    grid = GridSpec.from_bbox(
+    grid = _grid_spec_from_bbox(
         mins,
         maxs,
         pitch=pitch,
@@ -531,7 +570,7 @@ def reaction_diffusion(
         overflow=("coarsen" if quality == "draft" else "reject"),
     )
     if grid is None:
-        return empty_geom()
+        return empty_packed_geometry()
     xs, ys = grid.coordinates()
     nx = grid.nx
     ny = grid.ny
@@ -559,7 +598,7 @@ def reaction_diffusion(
         ring_maxs=ring_maxs,
     )
     if int(np.sum(domain_mask)) == 0:
-        return empty_geom()
+        return empty_packed_geometry()
 
     rng = np.random.default_rng(seed)
     u0 = np.ones((ny, nx), dtype=np.float32)

@@ -7,7 +7,7 @@ import pytest
 
 from grafix.__main__ import main as grafix_main
 from grafix.devtools.benchmarks import cli
-from grafix.devtools.benchmarks.runner import case_definitions
+from grafix.devtools.benchmarks.catalog import case_definitions
 from grafix.devtools.benchmarks.schema import (
     CaseResult,
     Sample,
@@ -120,20 +120,14 @@ def test_cli_writes_self_sampling_scenario_with_effective_case_policy(
         )
         == 0
     )
-    payload = json.loads(
-        (tmp_path / "runs" / "self-sampling.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    payload = json.loads((tmp_path / "runs" / "self-sampling.json").read_text(encoding="utf-8"))
     assert payload["meta"]["samples"] == 3
     assert payload["meta"]["warmup"] == 2
     case = payload["cases"][0]
     assert case["spec"]["self_sampling"] is True
     assert len(case["samples"]) == 1
     latency = next(
-        metric
-        for metric in case["metrics"]
-        if metric["name"] == "ux01.input_to_present"
+        metric for metric in case["metrics"] if metric["name"] == "ux01.input_to_present"
     )
     assert latency["distribution"]["count"] == 12
 
@@ -251,11 +245,7 @@ def test_run_cli_returns_nonzero_for_hard_contract_failure(
         )
         == 1
     )
-    payload = json.loads(
-        (tmp_path / "runs" / "contract-failure.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    payload = json.loads((tmp_path / "runs" / "contract-failure.json").read_text(encoding="utf-8"))
     assert payload["cases"][0]["status"] == "contract-failure"
     assert payload["cases"][0]["contracts"][0]["severity"] == "hard"
     assert cli.main(["report", "--out", str(tmp_path)]) == 1

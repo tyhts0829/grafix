@@ -10,22 +10,26 @@ from hashlib import blake2b
 from math import isfinite
 from struct import Struct
 from types import NotImplementedType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence, cast
+
+from grafix.core.operation_declaration import CachePolicy, EvaluationOpRef
 
 GeometryId = str
 _GeometryRecord = tuple[
     GeometryId,
     str,
+    EvaluationOpRef | None,
+    CachePolicy,
     tuple[GeometryId, ...],
     tuple[tuple[str, Any], ...],
 ]
 
-_GEOMETRY_SIGNATURE_SCHEMA_VERSION = 2
+_GEOMETRY_SIGNATURE_SCHEMA_VERSION = 3
 _UINT64 = Struct(">Q")
 _FLOAT64 = Struct(">d")
 _PACK_UINT64 = _UINT64.pack
 _PACK_FLOAT64 = _FLOAT64.pack
-_REPR_PERSON = b"grafix.geom.v2r"
+_REPR_PERSON = b"grafix.geom.v3r"
 _TAG_FLOAT = ord("f")
 _TAG_INT = ord("i")
 _TAG_NONE = ord("n")
@@ -186,6 +190,7 @@ def _same_canonical_value(left: Any, right: Any) -> bool:
 
 def compute_geometry_id(
     op: str,
+    operation: EvaluationOpRef | None,
     inputs: Sequence["Geometry"],
     args: tuple[tuple[str, Any], ...],
 ) -> GeometryId:
@@ -195,6 +200,8 @@ def compute_geometry_id(
     ----------
     op : str
         演算子名。
+    operation : EvaluationOpRef or None
+        primitive/effect node が固定した exact evaluation version。内部 ``concat`` は None。
     inputs : Sequence[Geometry]
         子ノード列。
     args : tuple[tuple[str, Any], ...]
@@ -204,9 +211,19 @@ def compute_geometry_id(
     GeometryId
         内容署名に基づく ID。
     """
+    operation_signature = (
+        None
+        if operation is None
+        else (
+            operation.kind,
+            operation.name,
+            operation.fingerprint.digest,
+        )
+    )
     signature = (
         _GEOMETRY_SIGNATURE_SCHEMA_VERSION,
         op,
+        operation_signature,
         tuple(g.id for g in inputs),
         args,
     )
@@ -229,22 +246,32 @@ class Geometry:
     ----------
     op : str
         演算子名。primitive/effect/combine を区別せず保存する。
+    operation : EvaluationOpRef or None
+        node 作成時に catalog から解決した operation kind/name/evaluation fingerprint。
+        内部 ``concat`` は None。
     inputs : tuple[Geometry, ...]
         子ノード列。primitive の場合は空タプル。
     args : tuple[tuple[str, Any], ...]
         正規化済み引数の (名前, 値) タプル列。
+    cache_policy : {"content", "none"}
+        declaration から固定した評価 cache policy。
 
     Notes
     -----
     外部入力は :meth:`create` で正規化し、core 内で検証済みの引数だけを
-    :meth:`_from_canonical_args` へ渡す。どちらも ``id`` は ``op``、
-    ``inputs``、``args`` の正規化済み内容から必ず計算する。
+    :meth:`_from_canonical_args` へ渡す。どちらも ``id`` は ``op``、exact
+    ``operation`` reference、``inputs``、``args`` の正規化済み内容から必ず計算する。
     """
 
     id: GeometryId
     op: str
+    operation: EvaluationOpRef | None
     inputs: tuple["Geometry", ...]
     args: tuple[tuple[str, Any], ...]
+    cache_policy: CachePolicy
+    cacheable: bool
+    fully_bound: bool
+    operation_refs: tuple[EvaluationOpRef, ...]
 
     def __eq__(self, other: object) -> bool | NotImplementedType:
         """内容署名だけを比較し、深い recipe でも再帰しない。"""
@@ -264,7 +291,8 @@ class Geometry:
         input_ids = tuple(item.id for item in self.inputs)
         return (
             f"Geometry(id={self.id!r}, op={self.op!r}, "
-            f"input_ids={input_ids!r}, args={self.args!r})"
+            f"operation={self.operation!r}, input_ids={input_ids!r}, "
+            f"args={self.args!r})"
         )
 
     def __reduce__(self) -> tuple[object, tuple[object, ...]]:
@@ -280,6 +308,8 @@ class Geometry:
                     (
                         geometry.id,
                         geometry.op,
+                        geometry.operation,
+                        geometry.cache_policy,
                         tuple(item.id for item in geometry.inputs),
                         geometry.args,
                     )
@@ -319,10 +349,30 @@ class Geometry:
         """
         inputs_tuple = () if inputs is None else tuple(inputs)
         normalized_args = normalize_args({} if params is None else params)
+        operation: EvaluationOpRef | None = None
+        cache_policy: CachePolicy = "content"
+        if op != "concat":
+            # 低水準 create でも、その時点で利用可能な immutable entry があれば
+            # exact ref を固定する。未知 op は構造テスト/serialization 用の unbound
+            # recipe として作れるが、RealizeSession は評価前に明示的に拒否する。
+            from grafix.core.operation_catalog import current_operation_catalog
+
+            kind: Literal["primitive", "effect"] = (
+                "effect" if inputs_tuple else "primitive"
+            )
+            try:
+                entry = current_operation_catalog().resolve(kind, op)
+            except KeyError:
+                pass
+            else:
+                operation = entry.ref
+                cache_policy = entry.cache_policy
         return cls._from_canonical_args(
             op=op,
+            operation=operation,
             inputs=inputs_tuple,
             args=normalized_args,
+            cache_policy=cache_policy,
         )
 
     @classmethod
@@ -330,8 +380,10 @@ class Geometry:
         cls,
         *,
         op: str,
+        operation: EvaluationOpRef | None,
         inputs: tuple["Geometry", ...],
         args: tuple[tuple[str, Any], ...],
+        cache_policy: CachePolicy,
     ) -> "Geometry":
         """core が検証・正規化済みの recipe から Geometry を一度で生成する。"""
 
@@ -339,6 +391,15 @@ class Geometry:
             raise TypeError("Geometry op は exact str である必要がある")
         if not op:
             raise ValueError("Geometry op は空にできない")
+        if operation is not None and type(operation) is not EvaluationOpRef:
+            raise TypeError("Geometry operation は exact EvaluationOpRef または None です")
+        if op == "concat":
+            if operation is not None:
+                raise ValueError("concat Geometry は operation ref を持ちません")
+        elif operation is not None:
+            expected_kind = "effect" if inputs else "primitive"
+            if operation.kind != expected_kind or operation.name != op:
+                raise ValueError("Geometry op/input と operation ref が一致しません")
         if type(inputs) is not tuple or any(
             type(item) is not Geometry for item in inputs
         ):
@@ -353,16 +414,49 @@ class Geometry:
         names = tuple(name for name, _value in args)
         if names != tuple(sorted(names)) or len(set(names)) != len(names):
             raise ValueError("Geometry args は名前順かつ重複なしである必要があります")
+        if cache_policy not in {"content", "none"}:
+            raise ValueError("Geometry cache_policy は 'content' または 'none' です")
+        cache_policy = cast(CachePolicy, cache_policy)
+        if operation is None and cache_policy != "content":
+            raise ValueError("unbound/concat Geometry の cache_policy は 'content' です")
         geometry_id = compute_geometry_id(
             op=op,
+            operation=operation,
             inputs=inputs,
             args=args,
+        )
+        operation_refs = {
+            ref
+            for item in inputs
+            for ref in item.operation_refs
+        }
+        if operation is not None:
+            operation_refs.add(operation)
+        sorted_refs = tuple(
+            sorted(
+                operation_refs,
+                key=lambda ref: (ref.kind, ref.name, ref.fingerprint.digest),
+            )
         )
         result = object.__new__(cls)
         object.__setattr__(result, "id", geometry_id)
         object.__setattr__(result, "op", op)
+        object.__setattr__(result, "operation", operation)
         object.__setattr__(result, "inputs", inputs)
         object.__setattr__(result, "args", args)
+        object.__setattr__(result, "cache_policy", cache_policy)
+        object.__setattr__(
+            result,
+            "cacheable",
+            cache_policy == "content" and all(item.cacheable for item in inputs),
+        )
+        object.__setattr__(
+            result,
+            "fully_bound",
+            (op == "concat" or operation is not None)
+            and all(item.fully_bound for item in inputs),
+        )
+        object.__setattr__(result, "operation_refs", sorted_refs)
         return result
 
     @staticmethod
@@ -371,7 +465,13 @@ class Geometry:
 
         if len(geometries) == 1:
             return geometries[0]
-        return Geometry.create(op="concat", inputs=geometries, params={})
+        return Geometry._from_canonical_args(
+            op="concat",
+            operation=None,
+            inputs=geometries,
+            args=(),
+            cache_policy="content",
+        )
 
     @staticmethod
     def _flatten_concat_inputs(
@@ -497,17 +597,25 @@ def _restore_geometry_dag(
 
     geometries: dict[GeometryId, Geometry] = {}
     for record_index, record in enumerate(records):
-        if type(record) is not tuple or len(record) != 4:
+        if type(record) is not tuple or len(record) != 6:
             raise ValueError(
-                f"Geometry pickle record[{record_index}] は4要素tupleである必要がある"
+                f"Geometry pickle record[{record_index}] は6要素tupleである必要がある"
             )
-        geometry_id, op, input_ids, args = record
+        geometry_id, op, operation, cache_policy, input_ids, args = record
         if type(geometry_id) is not str or not geometry_id:
             raise ValueError(f"Geometry pickle record[{record_index}] の id が不正です")
         if geometry_id in geometries:
             raise ValueError(f"Geometry pickle に重複 id があります: {geometry_id!r}")
         if type(op) is not str or not op:
             raise ValueError(f"Geometry pickle record[{record_index}] の op が不正です")
+        if operation is not None and type(operation) is not EvaluationOpRef:
+            raise ValueError(
+                f"Geometry pickle record[{record_index}] の operation が不正です"
+            )
+        if cache_policy not in {"content", "none"}:
+            raise ValueError(
+                f"Geometry pickle record[{record_index}] の cache_policy が不正です"
+            )
         if type(input_ids) is not tuple or any(
             type(input_id) is not str or not input_id for input_id in input_ids
         ):
@@ -538,10 +646,12 @@ def _restore_geometry_dag(
                 )
             params[name] = value
 
-        rebuilt = Geometry.create(
+        rebuilt = Geometry._from_canonical_args(
             op=op,
+            operation=operation,
             inputs=tuple(geometries[input_id] for input_id in input_ids),
-            params=params,
+            args=normalize_args(params),
+            cache_policy=cast(CachePolicy, cache_policy),
         )
         if not _same_canonical_value(rebuilt.args, args):
             raise ValueError(

@@ -103,7 +103,9 @@ def test_font_resolution_uses_fixed_config_after_ambient_config_changes(
     parameter_gui._font_sync_key = None
     parameter_gui._window = window
     parameter_gui._imgui = imgui
-    parameter_gui._renderer = renderer
+    parameter_gui._backend = SimpleNamespace(
+        refresh_font_texture=renderer.refresh_font_texture
+    )
 
     parameter_gui._sync_font_for_window()
     parameter_gui._sync_font_for_window()
@@ -167,7 +169,10 @@ def test_favorite_star_glyphs_are_merged_from_bundled_font(
     parameter_gui._font_sync_key = None
     parameter_gui._window = SimpleNamespace(scale=1.0)
     parameter_gui._imgui = imgui
-    parameter_gui._renderer = _Renderer()
+    renderer = _Renderer()
+    parameter_gui._backend = SimpleNamespace(
+        refresh_font_texture=renderer.refresh_font_texture
+    )
 
     parameter_gui._sync_font_for_window()
 
@@ -213,7 +218,10 @@ def test_japanese_fallback_font_merge_failure_is_not_silenced(
     parameter_gui._font_sync_key = None
     parameter_gui._window = SimpleNamespace(scale=1.0)
     parameter_gui._imgui = imgui
-    parameter_gui._renderer = _Renderer()
+    renderer = _Renderer()
+    parameter_gui._backend = SimpleNamespace(
+        refresh_font_texture=renderer.refresh_font_texture
+    )
 
     with pytest.raises(RuntimeError, match="font merge failed"):
         parameter_gui._sync_font_for_window()

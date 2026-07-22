@@ -12,11 +12,15 @@ import numpy as np
 from numba import njit, types  # type: ignore[attr-defined, import-untyped]
 from numba.typed import List  # type: ignore[attr-defined]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import PlanarFrame, pack_polylines, planarity_threshold
+from grafix.core.geometry_kernels.packed import pack_polylines
+from grafix.core.geometry_kernels.planar import (
+    PlanarFrame,
+    planarity_threshold,
+)
 
 weave_meta = {
     "num_candidate_lines": ParamMeta(

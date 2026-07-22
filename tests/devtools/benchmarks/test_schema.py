@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from grafix.devtools.benchmarks.environment import make_case_spec
+from grafix.devtools.benchmarks.definition import make_case_spec
 from grafix.devtools.benchmarks.schema import (
     BenchmarkRun,
     BenchmarkSchemaError,
@@ -129,9 +129,7 @@ def test_stats_keep_raw_units_and_only_emit_tail_for_enough_samples() -> None:
     assert short.p95_ns is None
     assert short.p99_ns is None
 
-    long = summarize_samples(
-        [Sample(elapsed_ns=index * 2, iterations=2) for index in range(1, 21)]
-    )
+    long = summarize_samples([Sample(elapsed_ns=index * 2, iterations=2) for index in range(1, 21)])
     assert long.n == 20
     assert long.median_ns == 10.5
     assert long.p95_ns is not None
@@ -321,9 +319,7 @@ def test_identity_trees_detach_nested_aliases_and_serialize_as_json() -> None:
         "one",
         {"enabled": True},
     ]
-    payload["cases"][0]["spec"]["parameters"]["nested"]["items"][1][
-        "state"
-    ] = "serialized mutation"
+    payload["cases"][0]["spec"]["parameters"]["nested"]["items"][1]["state"] = "serialized mutation"
     assert leaf["state"] == "initial"
 
 
@@ -345,9 +341,7 @@ def test_identity_trees_detach_nested_aliases_and_serialize_as_json() -> None:
             "unsupported value",
         ),
         (
-            lambda payload: payload["cases"][0].__setitem__(
-                "peak_rss_delta_bytes", -1
-            ),
+            lambda payload: payload["cases"][0].__setitem__("peak_rss_delta_bytes", -1),
             "non-negative",
         ),
     ],
@@ -414,9 +408,7 @@ def test_schema_rejects_invalid_typed_metric_and_contract_result() -> None:
                     benchmark_run_to_dict(
                         replace(
                             run,
-                            cases=(
-                                replace(run.cases[0], metrics=(bad_metric,)),
-                            ),
+                            cases=(replace(run.cases[0], metrics=(bad_metric,)),),
                         )
                     )
                 )
@@ -458,11 +450,7 @@ def test_failed_hard_contract_requires_contract_failure_status() -> None:
     result = replace(run.cases[0], contracts=(failed,))
     with pytest.raises(BenchmarkSchemaError, match="contract-failure status"):
         benchmark_run_from_dict(
-            json.loads(
-                json.dumps(
-                    benchmark_run_to_dict(replace(run, cases=(result,)))
-                )
-            )
+            json.loads(json.dumps(benchmark_run_to_dict(replace(run, cases=(result,)))))
         )
 
     failed_result = replace(
@@ -470,19 +458,13 @@ def test_failed_hard_contract_requires_contract_failure_status() -> None:
         status="contract-failure",
         error="failed hard contracts: hard.limit",
     )
-    payload = json.loads(
-        json.dumps(
-            benchmark_run_to_dict(replace(run, cases=(failed_result,)))
-        )
-    )
+    payload = json.loads(json.dumps(benchmark_run_to_dict(replace(run, cases=(failed_result,)))))
     assert benchmark_run_from_dict(payload).cases[0] == failed_result
 
 
 def test_distribution_metric_keeps_raw_samples_and_validates_summary() -> None:
     run = _run()
-    distribution = summarize_distribution(
-        tuple(float(index) for index in range(20))
-    )
+    distribution = summarize_distribution(tuple(float(index) for index in range(20)))
     metric = Metric(
         name="input_to_present_ms",
         kind="distribution",

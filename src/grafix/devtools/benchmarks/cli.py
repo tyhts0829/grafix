@@ -11,18 +11,18 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from grafix.core.atomic_write import atomic_write_text
+from grafix.file_io import atomic_write_text
 from grafix.devtools.benchmarks.compare import compare_run_files
 from grafix.devtools.benchmarks.environment import (
     collect_environment_fingerprint,
     collect_source_identity,
 )
 from grafix.devtools.benchmarks.report import write_report
-from grafix.devtools.benchmarks.runner import (
+from grafix.devtools.benchmarks.catalog import (
     case_definitions,
-    run_case_isolated,
     select_case_definitions,
 )
+from grafix.devtools.benchmarks.runner import run_case_isolated
 from grafix.devtools.benchmarks.schema import (
     BenchmarkRun,
     RunMeta,

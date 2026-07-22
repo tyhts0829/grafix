@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from grafix.interactive.parameter_gui.diagnostics_panel import render_diagnostics_panel
-from grafix.interactive.runtime.diagnostics import (
+from grafix.interactive.diagnostics import (
     DiagnosticAction,
     DiagnosticCenter,
     DiagnosticEvent,

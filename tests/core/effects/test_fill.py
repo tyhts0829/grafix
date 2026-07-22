@@ -14,8 +14,8 @@ from grafix.core.effects.fill import (
     _scanline_endpoints_njit,
     fill as fill_effect,
 )
-from grafix.core.effects.util import PlanarFrame
-from grafix.core.primitive_registry import primitive
+from grafix.core.geometry_kernels.planar import PlanarFrame
+from grafix.core.operation_authoring import primitive
 from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 

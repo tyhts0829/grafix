@@ -114,7 +114,7 @@ def test_real_pyimgui_can_render_toolbar_children_and_closed_midi_popup(
 ) -> None:
     imgui = pytest.importorskip("imgui")
     gui = cast(Any, initialized_parameter_gui)
-    context = gui._context
+    context = gui._backend._context
     imgui.set_current_context(context)
     try:
         io = imgui.get_io()
@@ -130,8 +130,8 @@ def test_real_pyimgui_can_render_toolbar_children_and_closed_midi_popup(
         gui._snapshot_slots = None
         gui._midi_session = None
         gui._store = ParamStore()
-        gui._show_inactive_params = False
-        gui._midi_learn_state = SimpleNamespace(active_target=None, active_component=None)
+        gui._session.show_inactive_parameters = False
+        gui._session.midi_learn = SimpleNamespace(active_target=None, active_component=None)
 
         assert gui._render_toolbar_area(content_width=768.0, monitor_snapshot=None) is False
         assert gui._render_parameter_table_toolbar() is False

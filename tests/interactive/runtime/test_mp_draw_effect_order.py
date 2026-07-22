@@ -5,9 +5,10 @@ import time
 import pytest
 
 from grafix.api.effects import EffectBuilder, _make_effect_operation_step
-from grafix.core.builtins import ensure_builtin_effect_registered
+from grafix.core.builtins import builtin_operation_catalog
 from grafix.core.geometry import Geometry
 from grafix.core.parameters.effects import EffectStepKey
+from grafix.core.runtime_config import runtime_config
 from grafix.interactive.runtime.mp_draw import DrawResult, MpDraw
 
 
@@ -16,17 +17,16 @@ _CHAIN_ID = "mp-effect-order-chain"
 _ROTATE_KEY: EffectStepKey = ("rotate", "mp-effect-order-rotate")
 _TRANSLATE_KEY: EffectStepKey = ("translate", "mp-effect-order-translate")
 
-ensure_builtin_effect_registered("rotate")
-ensure_builtin_effect_registered("translate")
+_OPERATIONS = builtin_operation_catalog()
 _BUILDER = EffectBuilder(
     steps=(
         _make_effect_operation_step(
-            op="rotate",
+            declaration=_OPERATIONS.resolve("effect", "rotate").declaration,
             params={"rotation": (0.0, 0.0, 20.0)},
             site_id=_ROTATE_KEY[1],
         ),
         _make_effect_operation_step(
-            op="translate",
+            declaration=_OPERATIONS.resolve("effect", "translate").declaration,
             params={"delta": (2.0, 3.0, 4.0)},
             site_id=_TRANSLATE_KEY[1],
         ),
@@ -64,7 +64,11 @@ def test_effect_order_snapshot_reaches_worker_and_controls_dag(
             _ROTATE_KEY,
         )
     }
-    mp_draw = MpDraw(_effect_order_draw, n_worker=n_worker)
+    mp_draw = MpDraw(
+        _effect_order_draw,
+        n_worker=n_worker,
+        effective_config=runtime_config(),
+    )
     try:
         mp_draw.submit(
             t=0.0,
@@ -104,7 +108,11 @@ def test_effect_order_snapshot_reaches_worker_and_controls_dag(
 
 
 def test_failed_worker_result_discards_partial_effect_topology() -> None:
-    mp_draw = MpDraw(_effect_order_then_fail, n_worker=1)
+    mp_draw = MpDraw(
+        _effect_order_then_fail,
+        n_worker=1,
+        effective_config=runtime_config(),
+    )
     try:
         mp_draw.submit(
             t=0.0,

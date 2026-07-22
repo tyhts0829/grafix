@@ -8,23 +8,25 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
-# prune_ops が effect registry を参照するため、parameters package を先に初期化する。
 from ._param_resolution import resolve_api_params, set_api_label
 from ._operation_selector import (
     FrozenParamsByTarget,
     freeze_params_by_target,
     resolve_effect_selection,
     validate_effect_selector_n_inputs,
+)
+from grafix.core.geometry import Geometry
+from grafix.core.operation_catalog import (
+    OperationCatalog,
+    OperationCatalogEntry,
+    current_operation_catalog,
+)
+from grafix.core.operation_declaration import EffectStepRef, OpDeclaration
+from grafix.core.operation_selector import (
+    SelectorSpec,
+    selector_spec as build_selector_spec,
     validate_effect_selector_target,
 )
-from grafix.core.builtins import (
-    ensure_builtin_effect_registered,
-    ensure_builtin_effects_registered,
-)
-from grafix.core.effect_registry import EffectFunc
-from grafix.core.geometry import Geometry
-from grafix.core.op_registry import OpCatalogEntry, OpSpec
-from grafix.core.operation_selector import effect_selector_op
 from grafix.core.parameters import (
     caller_site_id,
     current_effect_order_snapshot,
@@ -38,9 +40,6 @@ from grafix.core.parameters.effects import (
 from grafix.core.parameters.identity import identity_string
 from grafix.core.value_validation import exact_bool
 
-# parameters package の初期化後に読み、prune_ops 経由の循環 import を避ける。
-import grafix.core.effect_registry as effect_registry_module
-
 from ._op_validation import validate_operation_kwargs
 from ._unset import _UNSET_TARGET, _UnsetTarget
 
@@ -49,9 +48,27 @@ from ._unset import _UNSET_TARGET, _UnsetTarget
 class _EffectOperationStep:
     """通常 effect の canonical immutable step。"""
 
-    op: str
+    declaration: OpDeclaration
     args: tuple[tuple[str, Any], ...]
     site_id: str
+
+    @property
+    def op(self) -> str:
+        """step 作成時に固定した operation 名。"""
+
+        return self.declaration.name
+
+    @property
+    def ref(self) -> EffectStepRef:
+        """step 作成時に固定した evaluation/schema 参照。"""
+
+        return self.declaration.effect_step_ref
+
+    @property
+    def n_inputs(self) -> int:
+        """step 作成時に固定した入力数。"""
+
+        return self.declaration.n_inputs
 
     @property
     def parameter_op(self) -> str:
@@ -69,12 +86,14 @@ class _EffectSelectorStep:
     n_inputs: int
     params_by_target: FrozenParamsByTarget
     site_id: str
+    selector: SelectorSpec
+    catalog: OperationCatalog
 
     @property
     def parameter_op(self) -> str:
         """Parameter topology で使う selector operation 名。"""
 
-        return effect_selector_op(self.n_inputs)
+        return self.selector.op
 
 
 _EffectStep = _EffectOperationStep | _EffectSelectorStep
@@ -89,18 +108,22 @@ class _LoweredEffectStep:
     args: tuple[tuple[str, Any], ...]
     site_id: str
     n_inputs: int
+    ref: EffectStepRef
+    cache_policy: Literal["content", "none"]
 
 
 def _make_effect_operation_step(
     *,
-    op: str,
+    declaration: OpDeclaration,
     params: dict[str, Any],
     site_id: str,
 ) -> _EffectOperationStep:
     """検証済み通常 effect 引数を immutable step に固定する。"""
 
     step = object.__new__(_EffectOperationStep)
-    object.__setattr__(step, "op", identity_string(op, name="effect step op"))
+    if type(declaration) is not OpDeclaration or declaration.kind != "effect":
+        raise TypeError("effect step には exact effect OpDeclaration が必要です")
+    object.__setattr__(step, "declaration", declaration)
     object.__setattr__(step, "args", tuple(sorted(params.items())))
     object.__setattr__(
         step,
@@ -117,31 +140,40 @@ def _make_effect_selector_step(
     n_inputs: int,
     params_by_target: Mapping[str, Mapping[str, Any]] | None,
     site_id: str,
+    catalog: OperationCatalog | None = None,
 ) -> _EffectSelectorStep:
     """公開 selector 引数を検証済み immutable step へ変換する。"""
 
+    target_explicit_b = exact_bool(
+        target_explicit,
+        name="effect selector target_explicit",
+    )
     count = validate_effect_selector_n_inputs(n_inputs)
+    selected_catalog = current_operation_catalog() if catalog is None else catalog
     target_s = validate_effect_selector_target(
         identity_string(target, name="effect selector target"),
         n_inputs=count,
+        catalog=selected_catalog,
     )
+    selector = build_selector_spec(selected_catalog, kind="effect", n_inputs=count)
     frozen_params = freeze_params_by_target(
         params_by_target,
         kind="effect",
         n_inputs=count,
+        catalog=selected_catalog,
+        selector=selector,
     )
     step = object.__new__(_EffectSelectorStep)
     object.__setattr__(step, "target", target_s)
     object.__setattr__(
         step,
         "target_explicit",
-        exact_bool(
-            target_explicit,
-            name="effect selector target_explicit",
-        ),
+        target_explicit_b,
     )
     object.__setattr__(step, "n_inputs", count)
     object.__setattr__(step, "params_by_target", frozen_params)
+    object.__setattr__(step, "selector", selector)
+    object.__setattr__(step, "catalog", selected_catalog)
     object.__setattr__(
         step,
         "site_id",
@@ -152,48 +184,55 @@ def _make_effect_selector_step(
 
 def _lower_effect_step(
     step: _EffectStep,
-    *,
-    operation_spec: OpSpec[EffectFunc] | None,
 ) -> _LoweredEffectStep:
     """通常/selector step を一つの immutable DAG 引数形へ lower する。"""
 
     if isinstance(step, _EffectSelectorStep):
+        catalog = step.catalog
         selected = resolve_effect_selection(
             target=step.target,
             target_explicit=step.target_explicit,
             n_inputs=step.n_inputs,
             params_by_target=step.params_by_target,
             site_id=step.site_id,
+            catalog=catalog,
+            selector=step.selector,
         )
+        declaration = catalog.resolve("effect", selected.target).declaration
         return _LoweredEffectStep(
             parameter_op=step.parameter_op,
             op=selected.target,
             args=tuple(sorted(selected.params.items())),
             site_id=step.site_id,
             n_inputs=step.n_inputs,
+            ref=declaration.effect_step_ref,
+            cache_policy=declaration.cache_policy,
         )
 
-    if operation_spec is None:
-        raise RuntimeError("通常 effect step の current spec がありません")
-    spec = operation_spec
+    # 通常 effect は factory lookup 時の exact immutable declaration を保持する。
+    # 後から同名 declaration が登録されても、旧 schema の引数を新 evaluator へ
+    # 混ぜず、Geometry には作成時の evaluation ref を固定する。
+    declaration = step.declaration
     current_params = validate_operation_kwargs(
         op=step.op,
-        spec=spec,
+        spec=declaration,
         params=dict(step.args),
     )
     resolved = resolve_api_params(
         op=step.op,
         site_id=step.site_id,
         user_params=current_params,
-        defaults=spec.defaults,
-        meta=spec.meta,
+        defaults=declaration.schema.defaults,
+        meta=declaration.schema.meta,
     )
     return _LoweredEffectStep(
         parameter_op=step.parameter_op,
         op=step.op,
         args=tuple(sorted(resolved.items())),
         site_id=step.site_id,
-        n_inputs=spec.n_inputs,
+        n_inputs=declaration.n_inputs,
+        ref=step.ref,
+        cache_policy=declaration.cache_policy,
     )
 
 
@@ -237,6 +276,34 @@ class EffectBuilder:
                 identity_string(self.label_name, name="effect label"),
             )
 
+    def __hash__(self) -> int:
+        """catalog object identity に依存しない immutable step hash を返す。"""
+
+        step_keys: list[object] = []
+        for step in self.steps:
+            if isinstance(step, _EffectOperationStep):
+                step_keys.append(
+                    (
+                        "operation",
+                        step.ref,
+                        step.args,
+                        step.site_id,
+                    )
+                )
+            else:
+                step_keys.append(
+                    (
+                        "selector",
+                        step.selector.fingerprint,
+                        step.target,
+                        step.target_explicit,
+                        step.n_inputs,
+                        step.params_by_target,
+                        step.site_id,
+                    )
+                )
+        return hash((tuple(step_keys), self.chain_id, self.label_name))
+
     def __call__(self, geometry: Geometry, *more_geometries: Geometry) -> Geometry:
         """保持している effect 列を Geometry に適用する。
 
@@ -254,17 +321,12 @@ class EffectBuilder:
         """
         # effect チェーンは「入力 Geometry に対して、steps を順番に wrap していく」だけの処理。
         # ここでは実体変換は行わず、あくまで Geometry DAG（レシピ）を構築する。
-        registry = effect_registry_module.effect_registry
         code_topology: list[EffectStepTopology] = []
-        operation_specs: list[OpSpec[EffectFunc] | None] = []
         for code_index, step in enumerate(self.steps):
             if isinstance(step, _EffectOperationStep):
-                operation_spec = registry[step.op]
-                n_inputs = operation_spec.n_inputs
-            else:
-                operation_spec = None
                 n_inputs = step.n_inputs
-            operation_specs.append(operation_spec)
+            else:
+                n_inputs = step.n_inputs
             code_topology.append(
                 EffectStepTopology(
                     op=step.parameter_op,
@@ -303,10 +365,7 @@ class EffectBuilder:
         result = geometry
         for step_index, topology_step in enumerate(effective_topology):
             step = self.steps[topology_step.code_index]
-            lowered = _lower_effect_step(
-                step,
-                operation_spec=operation_specs[topology_step.code_index],
-            )
+            lowered = _lower_effect_step(step)
             set_api_label(
                 op=lowered.parameter_op,
                 site_id=lowered.site_id,
@@ -331,8 +390,10 @@ class EffectBuilder:
                 inputs = (result,)
             result = Geometry._from_canonical_args(
                 op=lowered.op,
+                operation=lowered.ref.operation,
                 inputs=inputs,
                 args=lowered.args,
+                cache_policy=lowered.cache_policy,
             )
         return result
 
@@ -357,9 +418,10 @@ class EffectBuilder:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        if name not in effect_registry_module.effect_registry:
-            ensure_builtin_effect_registered(name)
-        if name not in effect_registry_module.effect_registry:
+        catalog = current_operation_catalog()
+        try:
+            declaration = catalog.resolve("effect", name).declaration
+        except KeyError:
             raise AttributeError(f"未登録の effect: {name!r}")
 
         def factory(**params: Any) -> "EffectBuilder":
@@ -379,8 +441,11 @@ class EffectBuilder:
             key = params.pop("key", None)
             instance_key = params.pop("instance_key", None)
             shared = params.pop("shared", False)
-            spec = effect_registry_module.effect_registry[name]
-            params = validate_operation_kwargs(op=name, spec=spec, params=params)
+            params = validate_operation_kwargs(
+                op=name,
+                spec=declaration,
+                params=params,
+            )
             site_id = caller_site_id(
                 skip=1,
                 key=key,
@@ -389,7 +454,7 @@ class EffectBuilder:
             )
             new_steps = self.steps + (
                 _make_effect_operation_step(
-                    op=name,
+                    declaration=declaration,
                     params=params,
                     site_id=site_id,
                 ),
@@ -452,12 +517,14 @@ class EffectBuilder:
             if target_explicit
             else "rotate"
         )
+        catalog = current_operation_catalog()
         step = _make_effect_selector_step(
             target=target_name,
             target_explicit=target_explicit,
             n_inputs=count,
             params_by_target=params_by_target,
             site_id=site_id,
+            catalog=catalog,
         )
         return EffectBuilder(
             steps=(*self.steps, step),
@@ -476,19 +543,18 @@ class EffectNamespace:
         例: E.scale(scale=(2.0, 2.0, 2.0))(g) -> Geometry(op="scale", inputs=(g,), params=...)
     """
 
-    def catalog(self) -> tuple[OpCatalogEntry[EffectFunc], ...]:
+    def catalog(self) -> tuple[OperationCatalogEntry, ...]:
         """登録済み effect の catalog を名前順で返す。
 
         Returns
         -------
-        tuple[OpCatalogEntry[EffectFunc], ...]
+        tuple[OperationCatalogEntry, ...]
             名前、説明、引数、source を含む immutable entry の列。
         """
 
-        ensure_builtin_effects_registered()
-        return effect_registry_module.effect_registry.catalog()
+        return current_operation_catalog().public_entries(kind="effect")
 
-    def describe(self, name: str) -> OpCatalogEntry[EffectFunc]:
+    def describe(self, name: str) -> OperationCatalogEntry:
         """effect の catalog entry を名前で取得する。
 
         Parameters
@@ -498,8 +564,8 @@ class EffectNamespace:
 
         Returns
         -------
-        OpCatalogEntry[EffectFunc]
-            registry の :class:`~grafix.core.op_registry.OpSpec` を参照する entry。
+        OperationCatalogEntry
+            immutable catalog の declaration entry。
 
         Raises
         ------
@@ -508,11 +574,11 @@ class EffectNamespace:
         """
 
         name_s = identity_string(name, name="effect name")
-        if name_s not in effect_registry_module.effect_registry:
-            ensure_builtin_effect_registered(name_s)
-        if name_s not in effect_registry_module.effect_registry:
+        catalog = current_operation_catalog()
+        try:
+            return catalog.resolve("effect", name_s)
+        except KeyError:
             raise KeyError(f"未登録の effect: {name_s!r}")
-        return effect_registry_module.effect_registry.describe(name_s)
 
     def select(
         self,
@@ -559,12 +625,14 @@ class EffectNamespace:
             if target_explicit
             else "rotate"
         )
+        catalog = current_operation_catalog()
         step = _make_effect_selector_step(
             target=target_name,
             target_explicit=target_explicit,
             n_inputs=n_inputs,
             params_by_target=params_by_target,
             site_id=site_id,
+            catalog=catalog,
         )
         return EffectBuilder(
             steps=(step,),
@@ -593,9 +661,10 @@ class EffectNamespace:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        if name not in effect_registry_module.effect_registry:
-            ensure_builtin_effect_registered(name)
-        if name not in effect_registry_module.effect_registry:
+        catalog = current_operation_catalog()
+        try:
+            declaration = catalog.resolve("effect", name).declaration
+        except KeyError:
             raise AttributeError(f"未登録の effect: {name!r}")
 
         def factory(**params: Any) -> EffectBuilder:
@@ -615,8 +684,11 @@ class EffectNamespace:
             key = params.pop("key", None)
             instance_key = params.pop("instance_key", None)
             shared = params.pop("shared", False)
-            spec = effect_registry_module.effect_registry[name]
-            params = validate_operation_kwargs(op=name, spec=spec, params=params)
+            params = validate_operation_kwargs(
+                op=name,
+                spec=declaration,
+                params=params,
+            )
             site_id = caller_site_id(
                 skip=1,
                 key=key,
@@ -626,7 +698,7 @@ class EffectNamespace:
             return EffectBuilder(
                 steps=(
                     _make_effect_operation_step(
-                        op=name,
+                        declaration=declaration,
                         params=params,
                         site_id=site_id,
                     ),

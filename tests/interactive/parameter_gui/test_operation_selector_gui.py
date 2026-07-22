@@ -13,8 +13,9 @@ from grafix.api._operation_selector import (
     PRIMITIVE_SELECTOR_OP,
     effect_selector_op,
 )
-from grafix.core.effect_registry import effect, effect_registry
 from grafix.core.geometry import Geometry
+from grafix.core.operation_authoring import effect, primitive
+from grafix.core.operation_catalog import OperationCatalogBuilder, current_operation_catalog
 from grafix.core.operation_selector import (
     decode_selector_param_key,
     selector_kind,
@@ -27,10 +28,14 @@ from grafix.core.parameters.codec import (
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.snapshot_ops import store_snapshot
 from grafix.core.parameters.ui_ops import update_state_from_ui
-from grafix.core.primitive_registry import primitive, primitive_registry
+from grafix.core.preset_catalog import current_preset_catalog
 from grafix.core.realized_geometry import GeomTuple
 from grafix.interactive.parameter_gui.group_blocks import (
     GroupBlockLayout,
+)
+from grafix.interactive.parameter_gui.catalog import (
+    ParameterGuiCatalog,
+    current_parameter_gui_catalog,
 )
 from grafix.interactive.parameter_gui.grouping import GroupType
 from grafix.interactive.parameter_gui.help_pane import parameter_help_content
@@ -124,9 +129,11 @@ def _selector_view_and_block(
     store: ParamStore,
     *,
     kind: SelectorKind,
+    catalog: ParameterGuiCatalog | None = None,
 ) -> tuple[ParameterTableView, GroupBlockLayout]:
     view = parameter_table_view_for_store(
         store,
+        catalog=catalog,
         show_inactive_params=False,
     )
     selector_blocks = [
@@ -473,58 +480,36 @@ def test_omitted_target_is_implicit_and_survives_normal_roundtrip() -> None:
     assert all(state is not None and state.override is False for state in explicit_states)
 
 
-def test_table_registers_worker_only_selector_specs_in_main_registry() -> None:
+def test_table_projects_selector_schema_without_mutating_catalog() -> None:
     primitive_store = ParamStore()
     effect_store = ParamStore()
     _draw_primitive_selector(primitive_store)
     _draw_effect_selector(effect_store)
-    primitive_specs = dict(primitive_registry.items())
-    effect_specs = dict(effect_registry.items())
-    primitive_registry.replace_all(
-        {
-            name: spec
-            for name, spec in primitive_specs.items()
-            if name != PRIMITIVE_SELECTOR_OP
-        }
-    )
+    catalog = current_parameter_gui_catalog()
+    before = catalog.entries()
     effect_op = effect_selector_op(1)
-    effect_registry.replace_all(
-        {
-            name: spec
-            for name, spec in effect_specs.items()
-            if name != effect_op
-        }
+
+    _view, primitive_block = _selector_view_and_block(
+        primitive_store,
+        kind="primitive",
+        catalog=catalog,
+    )
+    _view, effect_block = _selector_view_and_block(
+        effect_store,
+        kind="effect",
+        catalog=catalog,
     )
 
-    try:
-        assert PRIMITIVE_SELECTOR_OP not in primitive_registry
-        assert effect_op not in effect_registry
-
-        _view, primitive_block = _selector_view_and_block(
-            primitive_store,
-            kind="primitive",
-        )
-        _view, effect_block = _selector_view_and_block(
-            effect_store,
-            kind="effect",
-        )
-
-        assert PRIMITIVE_SELECTOR_OP in primitive_registry
-        assert effect_op in effect_registry
-        assert primitive_block.header == "select"
-        assert "Radius" in {
-            item.visible_label for item in primitive_block.items
-        }
-        assert "Width" not in {
-            item.visible_label for item in primitive_block.items
-        }
-        assert effect_block.group_id[0] is GroupType.EFFECT_CHAIN
-        assert "Pivot" not in {
-            item.visible_label for item in effect_block.items
-        }
-    finally:
-        primitive_registry.replace_all(primitive_specs)
-        effect_registry.replace_all(effect_specs)
+    assert catalog.entries() == before
+    primitive_selector = catalog.resolve(PRIMITIVE_SELECTOR_OP)
+    effect_selector = catalog.resolve(effect_op)
+    assert primitive_selector is not None and primitive_selector.kind == "selector"
+    assert effect_selector is not None and effect_selector.kind == "selector"
+    assert primitive_block.header == "select"
+    assert "Radius" in {item.visible_label for item in primitive_block.items}
+    assert "Width" not in {item.visible_label for item in primitive_block.items}
+    assert effect_block.group_id[0] is GroupType.EFFECT_CHAIN
+    assert "Pivot" not in {item.visible_label for item in effect_block.items}
 
 
 def test_table_keeps_stale_selector_group_when_arity_catalog_disappears() -> None:
@@ -544,30 +529,31 @@ def test_table_keeps_stale_selector_group_when_arity_catalog_disappears() -> Non
     assert selected.op == "selector_test_ternary_effect"
 
     selector_op = effect_selector_op(3)
-    effect_specs = dict(effect_registry.items())
-    effect_registry.replace_all(
-        {
-            name: spec
-            for name, spec in effect_specs.items()
-            if name not in {selector_op, "selector_test_ternary_effect"}
-        }
+    reduced_builder = OperationCatalogBuilder()
+    for entry in current_operation_catalog().entries():
+        if not (
+            entry.kind == "effect"
+            and entry.name == "selector_test_ternary_effect"
+        ):
+            reduced_builder.register(entry.declaration)
+    reduced_catalog = ParameterGuiCatalog.capture(
+        reduced_builder.freeze(),
+        current_preset_catalog(),
     )
-    try:
-        view = parameter_table_view_for_store(
-            store,
-            show_inactive_params=False,
-        )
-        target_row = next(
-            row
-            for row in view.model.rows
-            if row.op == selector_op and row.arg == "target"
-        )
-        assert target_row.ui_value == "selector_test_ternary_effect"
-    finally:
-        effect_registry.replace_all(effect_specs)
+    view = parameter_table_view_for_store(
+        store,
+        catalog=reduced_catalog,
+        show_inactive_params=False,
+    )
+    target_row = next(
+        row
+        for row in view.model.rows
+        if row.op == selector_op and row.arg == "target"
+    )
+    assert target_row.ui_value == "selector_test_ternary_effect"
 
 
-def test_gui_exposes_current_target_choice_meta_after_operation_overwrite() -> None:
+def test_gui_store_keeps_catalog_snapshot_after_operation_overwrite() -> None:
     def selector_test_choice_reload_v1(
         *,
         mode: str = "a",
@@ -614,33 +600,26 @@ def test_gui_exposes_current_target_choice_meta_after_operation_overwrite() -> N
         show_inactive_params=False,
     )
     mode_row = next(row for row in view.model.rows if row.arg == mode_key.arg)
-    assert tuple(mode_row.choices or ()) == ("c", "d")
-    with pytest.raises(ValueError, match="unavailable"):
-        with parameter_context(store):
-            G.select(
-                target="selector_test_choice_reload",
-                params_by_target={"selector_test_choice_reload": {"mode": "c"}},
-                key="selector-choice-reload",
-            )
+    assert tuple(mode_row.choices or ()) == ("a", "b")
 
-    current_meta = view.model.snapshot[mode_key][0]
-    ok, error = update_state_from_ui(
-        store,
-        mode_key,
-        "d",
-        meta=current_meta,
-        override=True,
-    )
-    assert ok is True
-    assert error is None
-
-    with parameter_context(store):
-        recovered = G.select(
+    new_store = ParamStore()
+    with parameter_context(new_store):
+        G.select(
             target="selector_test_choice_reload",
             params_by_target={"selector_test_choice_reload": {"mode": "c"}},
-            key="selector-choice-reload",
+            key="selector-choice-reload-new-session",
         )
-    assert dict(recovered.args)["mode"] == "d"
+    new_view = parameter_table_view_for_store(
+        new_store,
+        show_inactive_params=False,
+    )
+    new_mode_row = next(
+        row
+        for row in new_view.model.rows
+        if decode_selector_param_key(row.arg)
+        == ("selector_test_choice_reload", "mode")
+    )
+    assert tuple(new_mode_row.choices or ()) == ("c", "d")
 
 
 def test_gui_uses_current_default_for_incompatible_target_kind_change() -> None:

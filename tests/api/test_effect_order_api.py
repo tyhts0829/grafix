@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
-
-import numpy as np
 import pytest
 
-from grafix import E, G
+from grafix import E
 from grafix.api._operation_selector import effect_selector_op
 from grafix.api.effects import EffectBuilder
-from grafix.core.effect_registry import effect, effect_registry
+from grafix.core.authoring_definitions import RegistrationTarget, registration_scope
+from grafix.core.operation_authoring import effect
 from grafix.core.geometry import Geometry
+from grafix.core.operation_catalog import bind_operation_catalog
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.effect_order_ops import set_effect_order
 from grafix.core.parameters.effects import EffectStepKey
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.store import ParamStore
-from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -214,47 +212,53 @@ def test_selector_target_change_preserves_its_order_identity() -> None:
     assert dict(recipe[0].args)["scale"] == (2.0, 3.0, 1.0)
 
 
-def test_effect_builder_uses_current_spec_arity_for_topology_and_dag() -> None:
-    original_specs = dict(effect_registry.items())
-    try:
+def test_effect_builder_keeps_step_creation_arity_for_topology_and_dag() -> None:
+    target = RegistrationTarget()
+    with registration_scope(target):
+
         @effect
         def effect_builder_current_arity(first: GeomTuple) -> GeomTuple:
             return first
 
+    catalog_a = target.snapshot().operations
+    with bind_operation_catalog(catalog_a):
         builder = E.effect_builder_current_arity(key="current-arity")
 
-        def replacement(
-            first: GeomTuple,
-            _second: GeomTuple,
-        ) -> GeomTuple:
-            return first
+    def replacement(
+        first: GeomTuple,
+        _second: GeomTuple,
+    ) -> GeomTuple:
+        return first
 
-        replacement.__name__ = "effect_builder_current_arity"
+    replacement.__name__ = "effect_builder_current_arity"
+    with registration_scope(target):
         effect(overwrite=True, n_inputs=2)(replacement)
+    catalog_b = target.snapshot().operations
 
-        first = G.line(length=2.0, key="current-arity-first")
-        second = G.line(length=3.0, key="current-arity-second")
-        store = ParamStore()
+    first = Geometry.create(op="source-first")
+    second = Geometry.create(op="source-second")
+    store = ParamStore()
+    with bind_operation_catalog(catalog_b):
+        with pytest.raises(TypeError, match="1 個"):
+            builder(first, second)
         with parameter_context(store):
-            geometry = builder(first, second)
+            geometry = builder(first)
 
-        assert geometry.inputs == (first, second)
-        topology = store.effect_chain_topologies()[builder.chain_id]
-        assert len(topology) == 1
-        assert topology[0].n_inputs == 2
-        np.testing.assert_array_equal(realize(geometry).coords, realize(first).coords)
-    finally:
-        effect_registry.replace_all(original_specs)
+    assert geometry.inputs == (first,)
+    topology = store.effect_chain_topologies()[builder.chain_id]
+    assert len(topology) == 1
+    assert topology[0].n_inputs == 1
 
 
 @pytest.mark.parametrize("recording", [False, True])
 @pytest.mark.parametrize("selector", [False, True])
-def test_deferred_effect_builder_revalidates_params_against_current_spec(
+def test_deferred_effect_builder_keeps_exact_schema_after_overwrite(
     recording: bool,
     selector: bool,
 ) -> None:
-    original_specs = dict(effect_registry.items())
-    try:
+    target = RegistrationTarget()
+    with registration_scope(target):
+
         @effect(meta={"x": ParamMeta(kind="int")})
         def effect_builder_current_meta(
             g: GeomTuple,
@@ -264,6 +268,8 @@ def test_deferred_effect_builder_revalidates_params_against_current_spec(
             _ = x
             return g
 
+    catalog_a = target.snapshot().operations
+    with bind_operation_catalog(catalog_a):
         builder = (
             E.select(
                 target="effect_builder_current_meta",
@@ -274,23 +280,27 @@ def test_deferred_effect_builder_revalidates_params_against_current_spec(
             else E.effect_builder_current_meta(x=2, key="current-meta-normal")
         )
 
-        def replacement(
-            g: GeomTuple,
-            *,
-            x: bool = False,
-        ) -> GeomTuple:
-            _ = x
-            return g
+    def replacement(
+        g: GeomTuple,
+        *,
+        x: bool = False,
+    ) -> GeomTuple:
+        _ = x
+        return g
 
-
-        replacement.__name__ = "effect_builder_current_meta"
+    replacement.__name__ = "effect_builder_current_meta"
+    with registration_scope(target):
         effect(
             overwrite=True,
             meta={"x": ParamMeta(kind="bool")},
         )(replacement)
+    catalog_b = target.snapshot().operations
 
-        context = parameter_context(ParamStore()) if recording else nullcontext()
-        with context, pytest.raises(TypeError, match="x"):
-            builder(G.line(key="current-meta-source"))
-    finally:
-        effect_registry.replace_all(original_specs)
+    source = Geometry.create(op="current-meta-source")
+    with bind_operation_catalog(catalog_b):
+        if recording:
+            with parameter_context(ParamStore()):
+                geometry = builder(source)
+        else:
+            geometry = builder(source)
+    assert dict(geometry.args)["x"] == 2

@@ -5,7 +5,8 @@ from __future__ import annotations
 import statistics
 import time
 from functools import partial
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 from grafix.api import E, G
 from grafix.core.geometry import Geometry
@@ -14,6 +15,20 @@ from grafix.core.parameters.context import parameter_context_from_snapshot
 from grafix.core.parameters.snapshot_ops import ParamSnapshot, store_snapshot
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.scene import normalize_scene
+from grafix.core.runtime_config import runtime_config
+from grafix.devtools.benchmarks.definition import CaseDefinition, define_case
+from grafix.devtools.benchmarks.metrics import (
+    counter_metric,
+    gauge_metric,
+    percentile_summary_metrics,
+    summary_metrics,
+)
+from grafix.devtools.benchmarks.schema import (
+    BenchmarkOutput,
+    ContractResult,
+    Metric,
+    evaluate_contract,
+)
 from grafix.interactive.runtime.mp_draw import MpDraw
 
 _RESULT_TIMEOUT_S = 30.0
@@ -22,6 +37,47 @@ _SLIDER_MAX_STALE_FRAMES_TARGET = 2
 _SLIDER_REVISION_LAG_P95_TARGET = 2.0
 _SLIDER_INPUT_RESULT_P95_MS_TARGET = 50.0
 _SLIDER_FINAL_REVISION_MS_TARGET = 100.0
+
+
+def case_definitions() -> tuple[CaseDefinition, ...]:
+    """Multiprocessing draw benchmark cases を返す。"""
+
+    return (
+        define_case(
+            "mp.draw.light",
+            "MpDraw light sync / worker",
+            category="mp",
+            suite="mp",
+            fixture="normalized_scene",
+            parameters={"repeats": 1, "steady_frames": 8, "heavy_iterations": 1_000},
+            tags=("multiprocessing", "draw-normalize"),
+            selectable_suites=("mp",),
+            setup=setup_passthrough,
+            workload=workload_mp_draw,
+            support_source_files=(Path(__file__),),
+            self_sampling=True,
+        ),
+        define_case(
+            "mp.draw.slider_churn",
+            "MpDraw 1-worker slider revision churn",
+            category="mp",
+            suite="mp",
+            fixture="light_translate_scale_slider",
+            parameters={"frames": 120, "frame_interval_s": 1.0 / 60.0},
+            tags=("multiprocessing", "slider", "revision-churn", "input-to-result"),
+            selectable_suites=("mp",),
+            setup=setup_passthrough,
+            workload=workload_mp_slider_churn,
+            support_source_files=(Path(__file__),),
+            self_sampling=True,
+        ),
+    )
+
+
+def setup_passthrough(parameters: dict[str, Any], _seed: int) -> object:
+    """JSON parameter をそのまま workload state にする。"""
+
+    return parameters
 
 
 def light_draw(_t: float) -> Geometry:
@@ -110,14 +166,10 @@ def run_mp_slider_churn_benchmarks(
         }
 
     ratios = [
-        float(mode["fresh_result_ratio"])
-        for case in cases.values()
-        for mode in case.values()
+        float(mode["fresh_result_ratio"]) for case in cases.values() for mode in case.values()
     ]
     progress_contract_met = all(
-        bool(mode["progress_contract_met"])
-        for case in cases.values()
-        for mode in case.values()
+        bool(mode["progress_contract_met"]) for case in cases.values() for mode in case.values()
     )
     return {
         "id": "mp_draw_slider_churn",
@@ -125,19 +177,13 @@ def run_mp_slider_churn_benchmarks(
         "category": "mp",
         "status": "ok" if progress_contract_met else "regression",
         "mean_ms": statistics.fmean(
-            float(mode["elapsed_ms"])
-            for case in cases.values()
-            for mode in case.values()
+            float(mode["elapsed_ms"]) for case in cases.values() for mode in case.values()
         ),
         "median_ms": statistics.median(
-            float(mode["elapsed_ms"])
-            for case in cases.values()
-            for mode in case.values()
+            float(mode["elapsed_ms"]) for case in cases.values() for mode in case.values()
         ),
         "p95_ms": max(
-            float(mode["elapsed_ms"])
-            for case in cases.values()
-            for mode in case.values()
+            float(mode["elapsed_ms"]) for case in cases.values() for mode in case.values()
         ),
         "n": len(ratios),
         "output": {
@@ -147,16 +193,10 @@ def run_mp_slider_churn_benchmarks(
             "measurement_scope": "draw + normalize_scene (realize excluded)",
             "interactive_targets": {
                 "fresh_result_ratio_min": _SLIDER_FRESH_RESULT_TARGET,
-                "max_consecutive_stale_frames": (
-                    _SLIDER_MAX_STALE_FRAMES_TARGET
-                ),
+                "max_consecutive_stale_frames": (_SLIDER_MAX_STALE_FRAMES_TARGET),
                 "revision_lag_p95_max": _SLIDER_REVISION_LAG_P95_TARGET,
-                "input_to_result_p95_ms_max": (
-                    _SLIDER_INPUT_RESULT_P95_MS_TARGET
-                ),
-                "final_revision_latency_ms_max": (
-                    _SLIDER_FINAL_REVISION_MS_TARGET
-                ),
+                "input_to_result_p95_ms_max": (_SLIDER_INPUT_RESULT_P95_MS_TARGET),
+                "final_revision_latency_ms_max": (_SLIDER_FINAL_REVISION_MS_TARGET),
             },
             "progress_contract_met": progress_contract_met,
         },
@@ -176,11 +216,7 @@ def _measure_slider_sequence(
     store = ParamStore()
     with parameter_context(store):
         normalize_scene(draw(0.0))
-    key = next(
-        key
-        for key in store_snapshot(store)
-        if key.op == op and key.arg == arg
-    )
+    key = next(key for key in store_snapshot(store) if key.op == op and key.arg == arg)
     meta = store.get_meta(key)
     if meta is None:
         raise RuntimeError(f"slider benchmark metadata is missing: {op}.{arg}")
@@ -193,7 +229,7 @@ def _measure_slider_sequence(
     consecutive_stale = 0
     max_consecutive_stale = 0
 
-    mp_draw = MpDraw(draw, n_worker=1)
+    mp_draw = MpDraw(draw, n_worker=1, effective_config=runtime_config())
     started_at = time.monotonic()
     final_snapshot: ParamSnapshot = store_snapshot(store)
     final_revision = int(store.revision)
@@ -218,9 +254,7 @@ def _measure_slider_sequence(
                     override=True,
                 )
                 if not ok:
-                    raise RuntimeError(
-                        f"slider benchmark update failed: {op}.{arg}: {error}"
-                    )
+                    raise RuntimeError(f"slider benchmark update failed: {op}.{arg}: {error}")
 
             final_snapshot = store_snapshot(store)
             final_revision = int(store.revision)
@@ -238,26 +272,18 @@ def _measure_slider_sequence(
             result = mp_draw.poll_latest()
             if result is None:
                 consecutive_stale += 1
-                max_consecutive_stale = max(
-                    max_consecutive_stale, consecutive_stale
-                )
+                max_consecutive_stale = max(max_consecutive_stale, consecutive_stale)
             else:
                 consecutive_stale = 0
                 fresh_frames += 1
                 result_revision = int(result.snapshot_revision)
                 received_revisions.append(result_revision)
-                revision_lags.append(
-                    float(max(0, final_revision - result_revision))
-                )
+                revision_lags.append(float(max(0, final_revision - result_revision)))
                 created_at = frame_submitted_at.get(int(result.frame_id))
                 if created_at is not None:
-                    input_to_result_ms.append(
-                        max(0.0, (time.monotonic() - created_at) * 1_000.0)
-                    )
+                    input_to_result_ms.append(max(0.0, (time.monotonic() - created_at) * 1_000.0))
 
-            sleep_s = float(frame_interval_s) - (
-                time.monotonic() - frame_started_at
-            )
+            sleep_s = float(frame_interval_s) - (time.monotonic() - frame_started_at)
             if sleep_s > 0.0:
                 time.sleep(sleep_s)
 
@@ -284,12 +310,8 @@ def _measure_slider_sequence(
         if final_result is None:
             raise TimeoutError("mp-draw slider final revision timeout")
 
-        final_checksum = tuple(
-            str(layer.geometry.id) for layer in final_result.layers
-        )
-        final_latency_ms = max(
-            0.0, (time.monotonic() - final_created_at) * 1_000.0
-        )
+        final_checksum = tuple(str(layer.geometry.id) for layer in final_result.layers)
+        final_latency_ms = max(0.0, (time.monotonic() - final_created_at) * 1_000.0)
         monotonic_revisions = received_revisions == sorted(received_revisions)
         fresh_result_ratio = float(fresh_frames) / float(max(1, frames))
         revision_lag = _summarize_distribution(revision_lags)
@@ -308,8 +330,7 @@ def _measure_slider_sequence(
             fresh_result_ratio >= _SLIDER_FRESH_RESULT_TARGET
             and max_consecutive_stale <= _SLIDER_MAX_STALE_FRAMES_TARGET
             and float(revision_lag["p95"]) <= _SLIDER_REVISION_LAG_P95_TARGET
-            and float(input_to_result["p95"])
-            <= _SLIDER_INPUT_RESULT_P95_MS_TARGET
+            and float(input_to_result["p95"]) <= _SLIDER_INPUT_RESULT_P95_MS_TARGET
             and final_latency_ms <= _SLIDER_FINAL_REVISION_MS_TARGET
             and progress_contract_met
         )
@@ -320,9 +341,7 @@ def _measure_slider_sequence(
             "revision_lag": revision_lag,
             "input_to_result_ms": input_to_result,
             "final_revision_latency_ms": final_latency_ms,
-            "first_result_revision": (
-                None if not received_revisions else received_revisions[0]
-            ),
+            "first_result_revision": (None if not received_revisions else received_revisions[0]),
             "last_result_revision": int(final_result.snapshot_revision),
             "final_input_revision": final_revision,
             "result_revisions_monotonic": monotonic_revisions,
@@ -339,9 +358,7 @@ def _measure_slider_sequence(
             "rejected_tasks": mp_draw.rejected_task_count,
             "progress_contract_met": progress_contract_met,
             "interactive_target_met": interactive_target_met,
-            "elapsed_ms": max(
-                0.0, (time.monotonic() - started_at) * 1_000.0
-            ),
+            "elapsed_ms": max(0.0, (time.monotonic() - started_at) * 1_000.0),
         }
     finally:
         mp_draw.close()
@@ -374,9 +391,7 @@ def run_mp_draw_benchmarks(
             partial(heavy_draw, iterations=int(heavy_iterations)),
         ),
     ):
-        sync_samples = [
-            _measure_sync(draw, steady_frames=frame_count) for _ in range(repeat_count)
-        ]
+        sync_samples = [_measure_sync(draw, steady_frames=frame_count) for _ in range(repeat_count)]
         mp_samples = [
             _measure_mp(
                 draw,
@@ -447,8 +462,13 @@ def _measure_mp(
     n_worker: int,
     steady_frames: int,
 ) -> dict[str, float | int]:
+    effective_config = runtime_config()
     startup_started = time.perf_counter_ns()
-    mp_draw = MpDraw(draw, n_worker=int(n_worker))
+    mp_draw = MpDraw(
+        draw,
+        n_worker=int(n_worker),
+        effective_config=effective_config,
+    )
     startup_ns = time.perf_counter_ns() - startup_started
     try:
         first_started = time.perf_counter_ns()
@@ -470,10 +490,7 @@ def _measure_mp(
         while mp_draw.completed_result_count - baseline < int(steady_frames):
             mp_draw.poll_latest()
             completed = mp_draw.completed_result_count - baseline
-            while (
-                submitted < int(steady_frames)
-                and submitted - completed < int(n_worker)
-            ):
+            while submitted < int(steady_frames) and submitted - completed < int(n_worker):
                 mp_draw.submit(
                     t=float(submitted + 1),
                     snapshot_revision=0,
@@ -514,13 +531,9 @@ def _wait_for_completed(mp_draw: MpDraw, *, target: int) -> None:
 def _summarize_mode(samples: list[dict[str, float | int]]) -> dict[str, Any]:
     return {
         "startup_ms": _summarize([float(sample["startup_ms"]) for sample in samples]),
-        "first_result_ms": _summarize(
-            [float(sample["first_result_ms"]) for sample in samples]
-        ),
+        "first_result_ms": _summarize([float(sample["first_result_ms"]) for sample in samples]),
         "steady_ms": _summarize([float(sample["steady_ms"]) for sample in samples]),
-        "steady_latest_fps": _summarize(
-            [float(sample["steady_latest_fps"]) for sample in samples]
-        ),
+        "steady_latest_fps": _summarize([float(sample["steady_latest_fps"]) for sample in samples]),
         "samples": samples,
     }
 
@@ -565,7 +578,283 @@ def _summarize_distribution(values: list[float]) -> dict[str, float | int]:
     }
 
 
+def workload_mp_draw(state: object) -> BenchmarkOutput:
+    payload = run_mp_draw_benchmarks(
+        repeats=int(state["repeats"]),  # type: ignore[index]
+        steady_frames=int(state["steady_frames"]),  # type: ignore[index]
+        heavy_iterations=int(state["heavy_iterations"]),  # type: ignore[index]
+        n_worker=2,
+    )
+    output = cast(dict[str, Any], payload["output"])
+    metrics: list[Metric] = [
+        gauge_metric(
+            "mean_ms",
+            float(payload["mean_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        gauge_metric(
+            "median_ms",
+            float(payload["median_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        gauge_metric(
+            "p95_ms",
+            float(payload["p95_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        counter_metric(
+            "samples",
+            int(payload["n"]),
+            unit="count",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        counter_metric(
+            "steady_frames",
+            int(output["steady_frames"]),
+            unit="count",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        counter_metric(
+            "heavy_iterations",
+            int(output["heavy_iterations"]),
+            unit="count",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        counter_metric(
+            "n_worker",
+            int(output["n_worker"]),
+            unit="count",
+            phase="measure",
+            scope="mp_draw",
+        ),
+        gauge_metric(
+            "measurement_scope",
+            str(output["measurement_scope"]),
+            unit="text",
+            phase="measure",
+            scope="mp_draw",
+        ),
+    ]
+    for case_id, case in cast(dict[str, Any], payload["cases"]).items():
+        metrics.append(
+            gauge_metric(
+                f"cases.{case_id}.mp_to_sync_steady_ratio",
+                float(case["mp_to_sync_steady_ratio"]),
+                unit="ratio",
+                phase="measure",
+                scope="mp_draw",
+            )
+        )
+        for mode_name in ("sync_n1", f"mp_n{int(output['n_worker'])}"):
+            mode = cast(dict[str, Any], case[mode_name])
+            for summary_name, unit in (
+                ("startup_ms", "ms"),
+                ("first_result_ms", "ms"),
+                ("steady_ms", "ms"),
+                ("steady_latest_fps", "frames_per_second"),
+            ):
+                metrics.extend(
+                    summary_metrics(
+                        f"cases.{case_id}.{mode_name}.{summary_name}",
+                        cast(dict[str, Any], mode[summary_name]),
+                        unit=unit,
+                        phase="measure",
+                        scope="mp_draw",
+                    )
+                )
+    return BenchmarkOutput(value=output, metrics=tuple(metrics))
+
+
+def workload_mp_slider_churn(state: object) -> BenchmarkOutput:
+    parameters = cast(dict[str, Any], state)
+    payload = run_mp_slider_churn_benchmarks(
+        frames=int(parameters["frames"]),
+        frame_interval_s=float(parameters["frame_interval_s"]),
+    )
+    contracts: list[ContractResult] = []
+    metrics: list[Metric] = [
+        gauge_metric(
+            "mean_ms",
+            float(payload["mean_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_slider",
+        ),
+        gauge_metric(
+            "median_ms",
+            float(payload["median_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_slider",
+        ),
+        gauge_metric(
+            "p95_ms",
+            float(payload["p95_ms"]),
+            unit="ms",
+            phase="measure",
+            scope="mp_slider",
+        ),
+        counter_metric(
+            "samples",
+            int(payload["n"]),
+            unit="count",
+            phase="measure",
+            scope="mp_slider",
+        ),
+    ]
+    for case_id, modes in cast(dict[str, Any], payload["cases"]).items():
+        for mode_name, mode in cast(dict[str, Any], modes).items():
+            prefix = f"{case_id}.{mode_name}"
+            metric_prefix = f"cases.{prefix}"
+            phase = "drag" if mode_name == "changing" else "settle"
+            contracts.append(
+                evaluate_contract(
+                    contract_id=f"mp.slider.{prefix}.progress",
+                    severity="hard",
+                    actual=bool(mode["progress_contract_met"]),
+                    comparator="eq",
+                    limit=True,
+                    reason=("revision、checksum、queue progress の invariant を満たす"),
+                )
+            )
+            contracts.append(
+                evaluate_contract(
+                    contract_id=f"mp.slider.{prefix}.interactive_target",
+                    severity="hard",
+                    actual=bool(mode["interactive_target_met"]),
+                    comparator="eq",
+                    limit=True,
+                    reason="slider の interactive latency target を満たす",
+                )
+            )
+            for name, unit in (
+                ("fresh_result_ratio", "ratio"),
+                ("final_revision_latency_ms", "ms"),
+                ("elapsed_ms", "ms"),
+            ):
+                metrics.append(
+                    gauge_metric(
+                        f"{metric_prefix}.{name}",
+                        float(mode[name]),
+                        unit=unit,
+                        phase=phase,
+                        scope="mp_slider",
+                    )
+                )
+            for name in (
+                "fresh_results_during_drag",
+                "max_consecutive_stale_frames",
+                "last_result_revision",
+                "final_input_revision",
+                "snapshot_broadcasts",
+                "snapshot_payload_copies",
+                "snapshot_acks",
+                "submitted_tasks",
+                "enqueued_tasks",
+                "dropped_tasks",
+                "completed_results",
+                "rejected_tasks",
+            ):
+                metrics.append(
+                    counter_metric(
+                        f"{metric_prefix}.{name}",
+                        int(mode[name]),
+                        unit="count",
+                        phase=phase,
+                        scope="mp_slider",
+                    )
+                )
+            for name in (
+                "result_revisions_monotonic",
+                "checksum_matches_sync",
+                "progress_contract_met",
+                "interactive_target_met",
+            ):
+                metrics.append(
+                    gauge_metric(
+                        f"{metric_prefix}.{name}",
+                        bool(mode[name]),
+                        unit="boolean",
+                        phase=phase,
+                        scope="mp_slider",
+                    )
+                )
+            metrics.extend(
+                percentile_summary_metrics(
+                    f"{metric_prefix}.revision_lag",
+                    cast(dict[str, Any], mode["revision_lag"]),
+                    unit="revisions",
+                    phase=phase,
+                    scope="mp_slider",
+                )
+            )
+            metrics.extend(
+                percentile_summary_metrics(
+                    f"{metric_prefix}.input_to_result_ms",
+                    cast(dict[str, Any], mode["input_to_result_ms"]),
+                    unit="ms",
+                    phase=phase,
+                    scope="mp_slider",
+                )
+            )
+    output = cast(dict[str, Any], payload["output"])
+    metrics.extend(
+        (
+            counter_metric(
+                "frames",
+                int(output["frames"]),
+                unit="count",
+                phase="measure",
+                scope="mp_slider",
+            ),
+            gauge_metric(
+                "frame_interval_s",
+                float(output["frame_interval_s"]),
+                unit="s",
+                phase="measure",
+                scope="mp_slider",
+            ),
+            counter_metric(
+                "n_worker",
+                int(output["n_worker"]),
+                unit="count",
+                phase="measure",
+                scope="mp_slider",
+            ),
+            gauge_metric(
+                "measurement_scope",
+                str(output["measurement_scope"]),
+                unit="text",
+                phase="measure",
+                scope="mp_slider",
+            ),
+            gauge_metric(
+                "progress_contract_met",
+                bool(output["progress_contract_met"]),
+                unit="boolean",
+                phase="measure",
+                scope="mp_slider",
+            ),
+        )
+    )
+    return BenchmarkOutput(
+        value=output,
+        metrics=tuple(metrics),
+        contracts=tuple(contracts),
+    )
+
+
 __all__ = [
+    "case_definitions",
     "heavy_draw",
     "light_draw",
     "light_scale_draw",

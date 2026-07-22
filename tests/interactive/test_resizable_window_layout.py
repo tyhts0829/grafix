@@ -13,6 +13,8 @@ from grafix.interactive.gl import draw_renderer as draw_renderer_module
 from grafix.interactive.gl.draw_renderer import DrawRenderer, _aspect_fit_viewport
 from grafix.interactive.parameter_gui import gui as gui_module
 from grafix.interactive.parameter_gui import pyglet_backend
+from grafix.interactive.parameter_gui.midi_learn import MidiLearnState
+from grafix.interactive.parameter_gui.parameter_filter import ParameterFilterState
 from grafix.interactive.parameter_gui.store_bridge import (
     parameter_table_view_for_store,
 )
@@ -132,43 +134,44 @@ def test_parameter_gui_draw_keeps_requested_logical_width_on_retina(
     gui._closed = False
     gui._prev_time = time.monotonic()
     gui._imgui = cast(Any, imgui)
-    gui._context = object()
     gui._custom_font_path = None
     gui._window = window
-    gui._renderer = renderer
+    gui._backend = SimpleNamespace(
+        activate_context=lambda: None,
+        begin_frame=lambda _dt: imgui.new_frame(),
+        render=lambda: (
+            imgui.render(),
+            window.clear(),
+            renderer.render(imgui.get_draw_data()),
+        ),
+    )
     gui._monitor = None
     gui._transport = None
     gui._history = None
     gui._snapshot_slots = None
     gui._midi_session = None
-    gui._range_edit_mode = None
-    gui._range_edit_session = None
     gui._store = ParamStore()
-    gui._parameter_filter_state = gui_module.ParameterFilterState()
-    gui._parameter_error_keys = frozenset()
-    gui._favorite_parameter_keys = frozenset()
-    gui._parameter_table_view = None
-    gui._midi_learn_state = cast(
-        Any,
-        SimpleNamespace(
-            active_target=None,
-            active_component=None,
-        ),
-    )
-    gui._show_inactive_params = False
+    gui._session.filter_state = ParameterFilterState()
+    gui._session.error_keys = frozenset()
+    gui._session.favorite_keys = frozenset()
+    gui._session.table_view = None
+    gui._session.midi_learn = MidiLearnState()
+    gui._session.show_inactive_parameters = False
     gui._title = "Parameters"
 
-    monkeypatch.setattr(gui_module, "_sync_imgui_io_for_window", lambda *_a, **_k: None)
     monkeypatch.setattr(
         gui_module,
         "render_store_parameter_table",
-        lambda *_a, **_k: False,
+        lambda *_a, **_k: SimpleNamespace(
+            changed=False,
+            midi_learn_state=gui._session.midi_learn,
+        ),
     )
     monkeypatch.setattr(gui, "_render_toolbar_area", lambda **_kwargs: False)
     monkeypatch.setattr(gui, "_render_midi_clear_notice", lambda: False)
 
     def render_parameter_table_toolbar() -> bool:
-        gui._parameter_table_view = parameter_table_view_for_store(
+        gui._session.table_view = parameter_table_view_for_store(
             gui._store,
             show_inactive_params=False,
         )
@@ -236,6 +239,33 @@ def test_parameter_gui_window_is_resizable_and_keeps_requested_size(
     assert captured["minimum_size"] == (760, 480)
 
 
+def test_parameter_gui_window_factory_closes_window_when_minimum_size_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[object] = []
+
+    class CreatedWindow:
+        def set_minimum_size(self, _width: int, _height: int) -> None:
+            raise RuntimeError("minimum size failed")
+
+    sentinel = CreatedWindow()
+    fake_pyglet = SimpleNamespace(
+        gl=SimpleNamespace(Config=lambda **_kwargs: object()),
+        window=SimpleNamespace(Window=lambda **_kwargs: sentinel),
+    )
+    monkeypatch.setitem(sys.modules, "pyglet", fake_pyglet)
+    monkeypatch.setattr(
+        pyglet_backend,
+        "close_pyglet_window",
+        lambda window: closed.append(window),
+    )
+
+    with pytest.raises(RuntimeError, match="minimum size failed"):
+        pyglet_backend.create_parameter_gui_window(width=840, height=720)
+
+    assert closed == [sentinel]
+
+
 def test_draw_window_is_resizable(monkeypatch: pytest.MonkeyPatch) -> None:
     # pyglet.gl import 時の shadow context を headless test で作らない。
     pyglet.options["shadow_window"] = False
@@ -278,6 +308,41 @@ def test_draw_window_is_resizable(monkeypatch: pytest.MonkeyPatch) -> None:
         "config": "gl-config",
     }
     assert captured["minimum_size"] == (320, 320)
+
+
+def test_draw_window_factory_closes_window_when_minimum_size_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pyglet.gl import 時の shadow context を headless test で作らない。
+    pyglet.options["shadow_window"] = False
+    from grafix.interactive import draw_window as draw_window_module
+
+    closed: list[object] = []
+
+    class CreatedWindow:
+        def set_minimum_size(self, _width: int, _height: int) -> None:
+            raise RuntimeError("minimum size failed")
+
+    sentinel = CreatedWindow()
+    monkeypatch.setattr(draw_window_module, "Config", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        draw_window_module,
+        "pyglet",
+        SimpleNamespace(window=SimpleNamespace(Window=lambda **_kwargs: sentinel)),
+    )
+    monkeypatch.setattr(
+        draw_window_module,
+        "close_pyglet_window",
+        lambda window: closed.append(window),
+    )
+
+    with pytest.raises(RuntimeError, match="minimum size failed"):
+        draw_window_module.create_draw_window(
+            RenderOptions(canvas_size=(320, 240)),
+            render_scale=1.5,
+        )
+
+    assert closed == [sentinel]
 
 
 @pytest.mark.parametrize(

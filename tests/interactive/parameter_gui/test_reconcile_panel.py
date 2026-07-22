@@ -179,9 +179,9 @@ def _gui_for_store(
     gui_state._store = store
     gui_state._history = history
     gui_state._imgui = imgui
-    gui_state._reconcile_error = None
-    gui_state._parameter_table_view = None
-    gui_state._favorite_parameter_keys = frozenset()
+    gui_state._session.reconcile_error = None
+    gui_state._session.table_view = None
+    gui_state._session.favorite_keys = frozenset()
     return gui_state, imgui, history
 
 
@@ -200,7 +200,7 @@ def test_gui_requires_click_then_refreshes_list_and_records_undo(
     migrated = store.get_state(new_key)
     assert migrated is not None and migrated.ui_value == 8.5
     assert list_reconcile_orphans(store) == ()
-    assert gui._reconcile_orphan_model.orphan_count == 0
+    assert gui._session.reconcile_model.orphan_count == 0
     assert imgui.popup_open is False
     assert history.undo_depth == 1
     assert history.undo() is True

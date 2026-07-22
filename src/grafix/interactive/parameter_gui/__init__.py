@@ -6,10 +6,12 @@ from __future__ import annotations
 
 from .gui import ParameterGUI
 from .pyglet_backend import create_parameter_gui_window
-from .table import render_parameter_table
+from .table import TableEdits, TableRenderInput, render_parameter_table
 
 __all__ = [
     "ParameterGUI",
+    "TableEdits",
+    "TableRenderInput",
     "create_parameter_gui_window",
     "render_parameter_table",
 ]

@@ -3,7 +3,7 @@ from grafix.interactive.parameter_gui.labeling import (
     effect_chain_header_display_names_from_snapshot,
     effect_step_ordinals_by_site,
 )
-from grafix.core.effect_registry import effect_registry
+from grafix.interactive.parameter_gui.catalog import current_parameter_gui_catalog
 from grafix.core.parameters import ParamStore, ParameterKey, parameter_context
 from grafix.core.parameters.invariants import assert_invariants
 from grafix.core.parameters.snapshot_ops import store_snapshot
@@ -48,7 +48,7 @@ def test_effect_chain_header_and_step_ordinals():
         snap,
         step_info_by_site=step_info_by_site,
         display_order_by_group=display_order_by_group,
-        is_effect_op=lambda op: op in effect_registry,
+        is_effect_op=current_parameter_gui_catalog().is_effect_parameter,
     )
     assert chain_header_by_id == {chain_id: "xf"}
 
@@ -93,7 +93,7 @@ def test_effect_chain_header_numbers_unnamed_chains_by_display_order():
             ("scale", scale_site): 2,
             ("translate", translate_site): 3,
         },
-        is_effect_op=lambda op: op in effect_registry,
+        is_effect_op=current_parameter_gui_catalog().is_effect_parameter,
     )
     assert set(chain_header_by_id.values()) == {"xf", "effect#1", "effect#2"}
     assert chain_header_by_id[scale_chain_id] == "xf"

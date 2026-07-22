@@ -60,10 +60,13 @@ python -m grafix run sketch.py --watch
 python -m grafix run sketch.py --midi-port none  # exact token to disable MIDI
 ```
 
-Grafix polls the source mtime without an extra watcher dependency. It loads changed
-operations, presets, and `draw(t)` into staging registries, validates them, and only then
-swaps the callable and worker generation. A syntax/load error keeps the last-good code,
-frame, parameters, and worker alive; the Inspector shows the traceback with Retry/Open.
+Grafix polls the source files without an extra watcher dependency. It snapshots the changed
+`draw(t)` module and its local relative-import helpers, builds operations and presets in an
+isolated candidate authoring catalog, and only then swaps the callable, catalog, and worker
+generation. A syntax/load error keeps the last-good code, frame, parameters, catalog, and
+worker alive; the Inspector shows the traceback with Retry/Open. Use relative imports for
+sketch-local helpers (for example, `from .shapes import make_shape`) so the whole reachable
+source generation can be watched and isolated.
 
 ## Core API
 
@@ -238,7 +241,7 @@ reports written/dropped/duplicated/error counts and the stop/abort reason.
 
 ## Extending
 
-You can register your own primitives and effects via decorators:
+You can declare your own primitives and effects via decorators:
 
 ```python
 import numpy as np
@@ -285,7 +288,17 @@ Notes:
 - For user-defined ops, `meta` is optional. If omitted, parameters are not shown in the Parameter GUI.
 - For user-defined ops, each `description` is also optional, but adding one makes the
   argument's purpose available to Parameter GUI Help and generated stubs.
-- User-defined modules need to be imported once to register the ops.
+- Importing a normal user module records immutable declarations. `run()` and
+  `RenderSession` take one operation/preset snapshot at construction, so import custom
+  modules before creating the session that should use them.
+- `overwrite=True` replaces only the named declaration for future snapshots. Existing
+  sessions and Geometry DAGs keep their exact operation version; Grafix never silently
+  redirects an old DAG to a newer evaluator.
+- The default `cache_policy="content"` is for deterministic operations whose result is
+  described by code, defaults, closure values, and arguments. If an operation intentionally
+  reads dynamic process state that cannot be fingerprinted, declare
+  `cache_policy="none", version="your-stable-version"`; the explicit version is required
+  and the resulting DAG bypasses content caches.
 
 ## Presets (reusable components)
 
@@ -342,6 +355,13 @@ For IDE completion of `P.<name>(...)`, regenerate stubs after adding/changing pr
 python -m grafix stub
 ```
 
+Preset lookup is snapshot-based. A normally imported `@preset` is available to future
+sessions (and to `P` outside a draw call). Presets from `paths.preset_module_dirs` are
+loaded only while `run()`, `RenderSession`, or a corresponding CLI command builds its
+session catalog. Calling `P` outside such a session does not implicitly scan config
+directories. Candidate import failure or a duplicate name aborts that candidate without
+changing another session or the process-level authoring declarations.
+
 ## Configuration (`config.yaml`)
 
 A `config.yaml` lets you locate external fonts and choose where Grafix writes runtime outputs (`.svg`, `.png`, `.mp4`, `.gcode`).
@@ -379,6 +399,13 @@ remain recoverable: an invalid user config falls back to the packaged defaults a
 an explicit Inspector diagnostic with the source and traceback. The validation CLI stays
 strict and exits non-zero instead of applying that fallback.
 
+Config loading is pure: each call parses, merges, and validates a new immutable
+`RuntimeConfig`; there is no process-wide mutable config path or config cache. `run()` and
+`RenderSession` resolve one effective config at construction and pass that same value to
+font lookup, preset loading, evaluation, output paths, workers, and capture. Two sessions
+with different configs can coexist in one process, and closing either session does not
+change the other. Pass either `config_path=` or an already loaded `config=`, never both.
+
 Paths support `~` and environment variables like `$HOME`. Relative paths in a user
 config are resolved from that config file's directory. Therefore paths in
 `./.grafix/config.yaml` normally start with `../` when they point into the project root.
@@ -407,13 +434,24 @@ Overlay is recursive for mapping values. For example, overriding only
 `export.gcode.travel_feed` keeps the packaged defaults under `export.png` and the other
 G-code fields.
 
-To autoload user presets from a directory:
+G-code export treats the input polyline order as a semantic boundary.
+`optimize_travel` may reorder or reverse only the clipping fragments produced from one
+source polyline; it never reorders different source polylines. Likewise,
+`bridge_draw_distance` never adds a drawn bridge across a source-polyline boundary.
+
+To load user definitions into each session catalog from a directory:
 
 ```yaml
 paths:
   preset_module_dirs:
     - "../sketch/presets"
 ```
+
+Python source modules under these directories are loaded into a session-local candidate
+namespace. They may declare presets, primitives, and effects and may use package-relative
+imports. The candidate is published only after all entry modules load successfully; it is
+not a live global registry and it is not retained in `sys.modules` as the canonical module
+name.
 
 Useful project/operation CLI entry points:
 
@@ -497,6 +535,32 @@ result = export(frame, "data/output/art.svg")
 print(result.path, result.manifest_path)
 ```
 
+`render()` creates and closes a session for one frame. For multiple times, keep one
+`RenderSession` open so the immutable config/catalog snapshot, bounded geometry cache, and
+font resources are reused and then closed deterministically:
+
+```python
+from grafix import RenderOptions, RenderSession, export
+
+with RenderSession(
+    draw,
+    options=RenderOptions(canvas_size=(300, 300)),
+    parameter_source="code",
+    config_path=".grafix/config.yaml",
+) as session:
+    for index, t in enumerate((0.0, 1.0, 2.0)):
+        frame = session.render(t)
+        export(frame, f"data/output/frame-{index}.svg")
+```
+
+`RenderSession.render()` always evaluates at final quality and performs no file I/O;
+`export()` owns encoding, private staging, no-clobber publication, and the sibling capture
+manifest. The same immutable `Frame` may therefore be exported to multiple formats.
+
+`RenderSession` owns its evaluation resources and cache store and injects them into a borrowing
+`RealizeSession`. At the lower-level API, each omitted `resources` or `cache_store` dependency is
+owned and closed by `RealizeSession`; explicitly supplied dependencies remain caller-owned.
+
 ## Troubleshooting
 
 - `resvg が見つかりません`: install `resvg` and ensure it is on `PATH` (macOS: `brew install resvg`)
@@ -521,4 +585,10 @@ PYTHONPATH=src python -m grafix benchmark run --suite all --profile long
 PYTHONPATH=src python -m grafix benchmark report
 ```
 
-See: `architecture.md` and `docs/developer_guide.md`.
+The CLI is the normal benchmark entry point. Harness extensions use the canonical
+`grafix.devtools.benchmarks.definition`, `.catalog`, `.metrics`, and `.executor` modules;
+`.runner` intentionally exports only `run_case_isolated`. See `docs/developer_guide.md` before
+adding a workload provider.
+
+See: `architecture.md`, `docs/developer_guide.md`, and
+`docs/migration_2026-07-22.md` for the catalog/session migration.

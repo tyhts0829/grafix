@@ -123,10 +123,10 @@ def test_non_finite_float_is_rejected(value: float) -> None:
         _geometry(value)
 
 
-def test_geometry_signature_is_fixed_to_canonical_v2() -> None:
+def test_geometry_signature_is_fixed_to_operation_lineage_v3() -> None:
     geometry = Geometry.create("signature-test", params={"value": 1})
 
-    assert geometry.id == "cab9e82cb486258a9ac6892af871ce82"
+    assert geometry.id == "51036f27975a9dd497c26d2effd914e9"
 
 
 def test_equal_id_implies_identical_typed_runtime_arguments() -> None:
@@ -169,8 +169,17 @@ def _pickle_records(
 def test_pickle_restore_recomputes_and_verifies_geometry_id() -> None:
     geometry = Geometry.create("pickle-source", params={"value": 1})
     records, root_id = _pickle_records(geometry)
-    geometry_id, _op, input_ids, args = records[0]
-    forged = ((geometry_id, "different-op", input_ids, args),)
+    geometry_id, _op, operation, cache_policy, input_ids, args = records[0]
+    forged = (
+        (
+            geometry_id,
+            "different-op",
+            operation,
+            cache_policy,
+            input_ids,
+            args,
+        ),
+    )
 
     with pytest.raises(ValueError, match="id が内容と一致"):
         _restore_geometry_dag(forged, root_id)  # type: ignore[arg-type]
@@ -183,8 +192,17 @@ def test_pickle_restore_rejects_duplicate_record_and_argument_ids() -> None:
     with pytest.raises(ValueError, match="重複 id"):
         _restore_geometry_dag((*records, records[0]), root_id)  # type: ignore[arg-type]
 
-    geometry_id, op, input_ids, args = records[0]
-    duplicated_arg = ((geometry_id, op, input_ids, (*args, args[0])),)
+    geometry_id, op, operation, cache_policy, input_ids, args = records[0]
+    duplicated_arg = (
+        (
+            geometry_id,
+            op,
+            operation,
+            cache_policy,
+            input_ids,
+            (*args, args[0]),
+        ),
+    )
     with pytest.raises(ValueError, match="重複 arg"):
         _restore_geometry_dag(duplicated_arg, root_id)  # type: ignore[arg-type]
 
@@ -192,11 +210,20 @@ def test_pickle_restore_rejects_duplicate_record_and_argument_ids() -> None:
 def test_pickle_restore_rejects_unknown_input_and_root_ids() -> None:
     geometry = Geometry.create("pickle-source")
     records, root_id = _pickle_records(geometry)
-    geometry_id, op, _input_ids, args = records[0]
+    geometry_id, op, operation, cache_policy, _input_ids, args = records[0]
 
     with pytest.raises(ValueError, match="未知の input id"):
         _restore_geometry_dag(
-            ((geometry_id, op, ("missing-input",), args),),
+            (
+                (
+                    geometry_id,
+                    op,
+                    operation,
+                    cache_policy,
+                    ("missing-input",),
+                    args,
+                ),
+            ),
             root_id,
         )  # type: ignore[arg-type]
 

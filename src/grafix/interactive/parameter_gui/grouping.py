@@ -11,8 +11,8 @@ from enum import Enum
 from grafix.core.parameters.layer_style import LAYER_STYLE_OP
 from grafix.core.parameters.style import STYLE_OP
 from grafix.core.parameters.view import ParameterRow
-from grafix.core.preset_registry import preset_registry
 
+from .catalog import ParameterGuiCatalog, current_parameter_gui_catalog
 from .labeling import format_contextual_row_label, humanize_identifier
 
 
@@ -41,6 +41,7 @@ class GroupInfo:
 def group_info_for_row(
     row: ParameterRow,
     *,
+    catalog: ParameterGuiCatalog | None = None,
     primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
     layer_style_name_by_site_id: Mapping[str, str] | None = None,
     effect_chain_header_by_id: Mapping[str, str] | None = None,
@@ -49,6 +50,9 @@ def group_info_for_row(
 ) -> GroupInfo:
     """行から group/header/visible_label を決定して返す。"""
 
+    selected_catalog = current_parameter_gui_catalog() if catalog is None else catalog
+    if type(selected_catalog) is not ParameterGuiCatalog:
+        raise TypeError("catalog は exact ParameterGuiCatalog である必要があります")
     display_arg = row.display_name or row.arg
 
     # --- Style（global + layer_style） ---
@@ -95,7 +99,7 @@ def group_info_for_row(
         )
 
     # --- Preset（(op, ordinal) でグループ化） ---
-    if row.op in preset_registry:
+    if selected_catalog.is_preset(row.op):
         group_key = (row.op, int(row.ordinal))
         header = (
             None if primitive_header_by_group is None else primitive_header_by_group.get(group_key)

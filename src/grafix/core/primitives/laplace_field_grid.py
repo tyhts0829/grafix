@@ -11,11 +11,9 @@ import math
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import (
-    GeomTuple,
-    lines_to_geom_tuple,
-)
+from grafix.core.operation_authoring import primitive
+from grafix.core.geometry_kernels.packed import pack_polylines
+from grafix.core.realized_geometry import GeomTuple
 
 laplace_field_grid_meta = {
     "preset": ParamMeta(
@@ -507,7 +505,7 @@ def laplace_field_grid(
                 z = np.complex128(a_f) * np.exp(np.complex128(1j) * theta)
                 base_mask = np.isfinite(z.real) & np.isfinite(z.imag)
                 emit_line_from_z(z, base_mask=base_mask)
-            return lines_to_geom_tuple(lines_out)
+            return pack_polylines(lines_out)
 
         radius_min = a_f * (1.0 + gap_f)
 
@@ -593,4 +591,4 @@ def laplace_field_grid(
     else:
         raise ValueError(f"laplace_field_grid の preset が不明: {preset_s!r}")
 
-    return lines_to_geom_tuple(lines_out)
+    return pack_polylines(lines_out)

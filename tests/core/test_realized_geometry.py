@@ -3,12 +3,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from grafix.core.geometry_kernels.packed import (
+    empty_packed_geometry,
+    pack_polylines,
+)
 from grafix.core.realized_geometry import (
     RealizedGeometry,
     concat_geom_tuples,
     concat_realized_geometries,
-    empty_geom_tuple,
-    lines_to_geom_tuple,
     realized_geometry_from_tuple,
 )
 
@@ -331,9 +333,9 @@ def test_concat_no_geometries_returns_canonical_empty_geometry() -> None:
     assert result.offsets.tolist() == [0]
 
 
-def test_empty_geom_tuple_returns_fresh_standard_buffers() -> None:
-    first_coords, first_offsets = empty_geom_tuple()
-    second_coords, second_offsets = empty_geom_tuple()
+def test_empty_packed_geometry_returns_fresh_standard_buffers() -> None:
+    first_coords, first_offsets = empty_packed_geometry()
+    second_coords, second_offsets = empty_packed_geometry()
 
     assert first_coords.shape == (0, 3)
     assert first_coords.dtype == np.float32
@@ -343,14 +345,14 @@ def test_empty_geom_tuple_returns_fresh_standard_buffers() -> None:
     assert first_offsets is not second_offsets
 
 
-def test_lines_to_geom_tuple_preserves_order_dtypes_and_empty_lines() -> None:
+def test_pack_polylines_preserves_order_dtypes_and_empty_lines() -> None:
     lines = [
         np.asarray([[0, 1, 2], [3, 4, 5]], dtype=np.float64),
         np.empty((0, 3), dtype=np.float32),
         np.asarray([[6, 7, 8]], dtype=np.float32),
     ]
 
-    coords, offsets = lines_to_geom_tuple(lines)
+    coords, offsets = pack_polylines(lines)
 
     assert coords.dtype == np.float32
     assert coords.flags.c_contiguous
@@ -365,8 +367,8 @@ def test_lines_to_geom_tuple_preserves_order_dtypes_and_empty_lines() -> None:
     )
 
 
-def test_lines_to_geom_tuple_keeps_each_all_empty_line_in_offsets() -> None:
-    coords, offsets = lines_to_geom_tuple(
+def test_pack_polylines_keeps_each_all_empty_line_in_offsets() -> None:
+    coords, offsets = pack_polylines(
         [
             np.empty((0, 3), dtype=np.float64),
             np.empty((0, 3), dtype=np.float32),

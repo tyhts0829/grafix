@@ -5,11 +5,11 @@ from __future__ import annotations
 import numpy as np
 from numba import njit  # type: ignore[import-untyped, attr-defined]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import pack_polylines
+from grafix.core.geometry_kernels.packed import pack_polylines
 
 trim_meta = {
     "start_param": ParamMeta(

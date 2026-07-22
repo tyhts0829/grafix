@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import ast
-import importlib
 from pathlib import Path
 
-import pytest
-
+from grafix.api.preset import preset
+from grafix.core.authoring_definitions import RegistrationTarget, registration_scope
 from grafix.core.builtins import (
-    _BUILTIN_EFFECT_MODULES,
-    _BUILTIN_PRIMITIVE_MODULES,
-    ensure_builtin_ops_registered,
+    builtin_operation_catalog,
+    builtin_operation_manifest,
 )
-from grafix.core.effect_registry import effect_registry
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.layer_style import (
     LAYER_STYLE_COLOR_META,
@@ -31,8 +28,6 @@ from grafix.core.parameters.style import (
     style_key,
 )
 from grafix.core.parameters.style_ops import ensure_style_entries
-from grafix.core.preset_registry import PresetRegistry
-from grafix.core.primitive_registry import primitive_registry
 from grafix.devtools.generate_stub import _parse_numpy_doc
 
 _CODE_OWNED_OPERATION_ARGS = {
@@ -51,28 +46,19 @@ def _has_description(meta: ParamMeta | None) -> bool:
 def test_builtin_operation_parameter_descriptions_are_complete() -> None:
     """組み込み operation の全公開引数が metadata または docstring に説明を持つ。"""
 
-    ensure_builtin_ops_registered()
-    registry_specs = (
-        (
-            "primitive",
-            primitive_registry,
-            "grafix.core.primitives.",
-            frozenset(_BUILTIN_PRIMITIVE_MODULES),
-        ),
-        (
-            "effect",
-            effect_registry,
-            "grafix.core.effects.",
-            frozenset(_BUILTIN_EFFECT_MODULES),
-        ),
-    )
+    catalog = builtin_operation_catalog()
+    manifest = builtin_operation_manifest()
 
     missing: list[str] = []
-    for kind, registry, provenance_prefix, manifest_names in registry_specs:
+    for kind in ("primitive", "effect"):
+        provenance_prefix = f"grafix.core.{kind}s."
+        manifest_names = {
+            item.name for item in manifest if item.kind == kind
+        }
         first_party_specs = {
-            operation: spec
-            for operation, spec in registry.items()
-            if spec.provenance.startswith(provenance_prefix)
+            entry.name: entry
+            for entry in catalog.entries(kind=kind)
+            if entry.provenance.startswith(provenance_prefix)
         }
         if set(first_party_specs) != set(manifest_names):
             missing_names = sorted(set(manifest_names) - set(first_party_specs))
@@ -96,7 +82,7 @@ def test_builtin_operation_parameter_descriptions_are_complete() -> None:
                 )
 
             expected_meta = {"activate", *(accepted_args - set(code_owned))}
-            actual_meta = set(spec.meta)
+            actual_meta = set(spec.schema.meta)
             if actual_meta != expected_meta:
                 missing.append(
                     f"{operation} metadata mismatch "
@@ -106,7 +92,7 @@ def test_builtin_operation_parameter_descriptions_are_complete() -> None:
 
             if not spec.description.strip():
                 missing.append(f"{operation} (operation description)")
-            for arg, meta in spec.meta.items():
+            for arg, meta in spec.schema.meta.items():
                 if not _has_description(meta):
                     missing.append(f"{operation}.{arg}")
 
@@ -154,31 +140,26 @@ def test_layer_style_parameter_descriptions_are_complete() -> None:
     assert not missing, "Description が空の operation.arg: " + ", ".join(missing)
 
 
-def test_preset_activate_description_is_injected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_preset_activate_description_is_injected() -> None:
     """preset の共通 activate metadata も空でない説明を持つ。"""
 
-    preset_module = importlib.import_module("grafix.api.preset")
-    preset_registry_module = importlib.import_module("grafix.core.preset_registry")
-    isolated = PresetRegistry()
-    monkeypatch.setattr(preset_registry_module, "preset_registry", isolated)
+    target = RegistrationTarget()
+    with registration_scope(target):
 
-    @preset_module.preset(
-        meta={
-            "value": {
-                "kind": "float",
-                "description": "Description 注入確認用の公開値。",
+        @preset(
+            meta={
+                "value": {
+                    "kind": "float",
+                    "description": "Description 注入確認用の公開値。",
+                }
             }
-        }
-    )
-    def description_probe(value: float = 1.0) -> object:
-        return value
+        )
+        def description_probe(value: float = 1.0) -> object:
+            return value
 
-    assert isolated.revision == 1
-    assert isolated["preset.description_probe"].func is description_probe
-    spec = dict(isolated.items())["preset.description_probe"]
-    assert _has_description(spec.meta.get("activate")), (
+    declaration = target.snapshot().presets["description_probe"]
+    assert declaration.func is description_probe
+    assert _has_description(declaration.schema.meta.get("activate")), (
         "Description が空の operation.arg: preset.description_probe.activate"
     )
 

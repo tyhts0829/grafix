@@ -11,7 +11,12 @@ import pytest
 from grafix.core.geometry import Geometry
 from grafix.core.gcode_params import GCodeParams as CoreGCodeParams
 from grafix.core.layer import Layer
+from grafix.core.evaluation_context import (
+    EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+    EvaluationFingerprint,
+)
 from grafix.core.pipeline import RealizedLayer
+from grafix.core.realize import GeometryCacheKey
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.export.gcode import GCodeParams, export_gcode
 
@@ -30,7 +35,11 @@ def _realized_layer(
     return RealizedLayer(
         layer=layer,
         realized=realized,
-        cache_key=(geometry.id, (0, 0)),
+        cache_key=GeometryCacheKey(
+            geometry_id=geometry.id,
+            evaluation=EvaluationFingerprint("0" * 64),
+            external_dependencies=EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+        ),
         color=(0.0, 0.0, 0.0),
         thickness=0.001,
     )
@@ -73,22 +82,6 @@ def _travel_distance(text: str, *, z_up: float, z_down: float) -> float:
             travel += hypot(xy[0] - current_xy[0], xy[1] - current_xy[1])
         current_xy = xy
     return float(travel)
-
-
-def _pen_up_xy_targets(text: str, *, z_up: float, z_down: float) -> list[tuple[float, float]]:
-    pen_is_down = True
-    out: list[tuple[float, float]] = []
-    for line in text.splitlines():
-        if line.startswith("G1 Z"):
-            z_txt = line.split("Z", 1)[1].strip().split()[0]
-            pen_is_down = _pen_is_down_from_z(float(z_txt), z_up=z_up, z_down=z_down)
-            continue
-        xy = _parse_xy(line)
-        if xy is None:
-            continue
-        if not pen_is_down:
-            out.append(xy)
-    return out
 
 
 def test_gcode_params_is_the_public_reexport_of_the_core_type() -> None:
@@ -274,18 +267,24 @@ def test_export_gcode_raises_if_output_outside_bed(tmp_path) -> None:
         export_gcode(layers, out_path, canvas_size=(10.0, 10.0), params=params)
 
 
-def test_export_gcode_optimize_travel_reorders_strokes_to_reduce_travel_distance(tmp_path) -> None:
+def test_export_gcode_optimize_travel_reorders_clipped_fragments_only(tmp_path) -> None:
     layers = [
         _realized_layer(
             coords=[
                 [0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0],
-                [100.0, 0.0, 0.0],
-                [100.0, 1.0, 0.0],
-                [1.0, 1.0, 0.0],
+                [-10.0, 1.0, 0.0],
+                [-10.0, 110.0, 0.0],
+                [90.0, 110.0, 0.0],
+                [90.0, 2.0, 0.0],
+                [90.0, 1.0, 0.0],
+                [110.0, 1.0, 0.0],
+                [110.0, 110.0, 0.0],
+                [1.0, 110.0, 0.0],
+                [1.0, 3.0, 0.0],
                 [1.0, 2.0, 0.0],
             ],
-            offsets=[0, 2, 4, 6],
+            offsets=[0, 12],
         )
     ]
     params_no_opt = GCodeParams(
@@ -304,10 +303,10 @@ def test_export_gcode_optimize_travel_reorders_strokes_to_reduce_travel_distance
     )
 
     a = tmp_path / "baseline.gcode"
-    export_gcode(layers, a, canvas_size=(200.0, 200.0), params=params_no_opt)
+    export_gcode(layers, a, canvas_size=(100.0, 100.0), params=params_no_opt)
 
     b = tmp_path / "optimized.gcode"
-    export_gcode(layers, b, canvas_size=(200.0, 200.0), params=params_opt)
+    export_gcode(layers, b, canvas_size=(100.0, 100.0), params=params_opt)
 
     travel_a = _travel_distance(
         a.read_text(encoding="utf-8"), z_up=params_no_opt.z_up, z_down=params_no_opt.z_down
@@ -318,39 +317,52 @@ def test_export_gcode_optimize_travel_reorders_strokes_to_reduce_travel_distance
     assert travel_b < travel_a
 
 
-def test_export_gcode_optimize_travel_can_reverse_stroke_direction(tmp_path) -> None:
+def test_export_gcode_optimize_travel_can_reverse_clipped_fragment(tmp_path) -> None:
     layers = [
         _realized_layer(
             coords=[
                 [0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0],
-                [10.0, 1.0, 0.0],
-                [1.0, 1.0, 0.0],
+                [-10.0, 1.0, 0.0],
+                [-10.0, 110.0, 0.0],
+                [90.0, 110.0, 0.0],
+                [90.0, 2.0, 0.0],
+                [90.0, 1.0, 0.0],
+                [110.0, 1.0, 0.0],
+                [110.0, 110.0, 0.0],
+                [1.0, 110.0, 0.0],
+                [1.0, 3.0, 0.0],
+                [1.0, 2.0, 0.0],
             ],
-            offsets=[0, 2, 4],
+            offsets=[0, 12],
         )
     ]
     params = GCodeParams(origin=(0.0, 0.0), y_down=False, paper_margin_mm=0.0, decimals=3)
 
     out_path = tmp_path / "out.gcode"
-    export_gcode(layers, out_path, canvas_size=(20.0, 20.0), params=params)
+    export_gcode(layers, out_path, canvas_size=(100.0, 100.0), params=params)
     text = out_path.read_text(encoding="utf-8")
 
-    targets = _pen_up_xy_targets(text, z_up=params.z_up, z_down=params.z_down)
-    assert len(targets) >= 2
-    assert targets[1] == (1.0, 1.0)
+    stroke_comments = [
+        line for line in text.splitlines() if line.startswith("; stroke polyline")
+    ]
+    assert stroke_comments[1].endswith("seg 2 reversed")
 
 
-def test_export_gcode_draw_bridge_skips_pen_up_when_move_is_short(tmp_path) -> None:
+def test_export_gcode_draw_bridge_skips_pen_up_between_fragments_of_one_polyline(
+    tmp_path,
+) -> None:
     layers = [
         _realized_layer(
             coords=[
                 [1.0, 1.0, 0.0],
-                [2.0, 1.0, 0.0],
-                [2.1, 1.0, 0.0],
-                [3.1, 1.0, 0.0],
+                [10.0, 1.0, 0.0],
+                [11.0, 1.0, 0.0],
+                [11.0, 1.1, 0.0],
+                [10.0, 1.1, 0.0],
+                [2.0, 1.1, 0.0],
             ],
-            offsets=[0, 2, 4],
+            offsets=[0, 6],
         )
     ]
     params = GCodeParams(
@@ -366,8 +378,8 @@ def test_export_gcode_draw_bridge_skips_pen_up_when_move_is_short(tmp_path) -> N
     export_gcode(layers, out_path, canvas_size=(10.0, 10.0), params=params)
     lines = out_path.read_text(encoding="utf-8").splitlines()
 
-    i_end_first = lines.index("G1 X2.000 Y1.000")
-    i_start_second = lines.index("G1 X2.100 Y1.000")
+    i_end_first = lines.index("G1 X10.000 Y1.000")
+    i_start_second = lines.index("G1 X10.000 Y1.100")
     assert i_end_first < i_start_second
 
     travel_feed = f"G1 F{int(round(float(params.travel_feed)))}"
@@ -422,7 +434,76 @@ def _stroke_poly_indices(text: str) -> list[int]:
     return out
 
 
-def test_export_gcode_optimize_travel_is_applied_per_face_block(tmp_path) -> None:
+def test_export_gcode_keeps_input_polyline_order_when_optimization_is_enabled(
+    tmp_path,
+) -> None:
+    """元 polyline 間の順序を形状や移動距離から推測して変更しない。"""
+
+    layers = [
+        _realized_layer(
+            coords=[
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [100.0, 0.0, 0.0],
+                [100.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 2.0, 0.0],
+            ],
+            offsets=[0, 2, 4, 6],
+        )
+    ]
+    params = GCodeParams(
+        origin=(0.0, 0.0),
+        y_down=False,
+        paper_margin_mm=0.0,
+        decimals=3,
+        optimize_travel=True,
+        allow_reverse=True,
+    )
+
+    out_path = tmp_path / "input-order.gcode"
+    export_gcode(layers, out_path, canvas_size=(200.0, 200.0), params=params)
+
+    assert _stroke_poly_indices(out_path.read_text(encoding="utf-8")) == [0, 1, 2]
+
+
+def test_export_gcode_draw_bridge_never_crosses_input_polyline_boundary(
+    tmp_path,
+) -> None:
+    """bridge距離が大きくても、別の元polylineへ描線を追加しない。"""
+
+    layers = [
+        _realized_layer(
+            coords=[
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [2.1, 1.0, 0.0],
+                [3.1, 1.0, 0.0],
+            ],
+            offsets=[0, 2, 4],
+        )
+    ]
+    params = GCodeParams(
+        origin=(0.0, 0.0),
+        y_down=False,
+        paper_margin_mm=0.0,
+        decimals=3,
+        optimize_travel=True,
+        bridge_draw_distance=1e6,
+    )
+
+    out_path = tmp_path / "no-cross-polyline-bridge.gcode"
+    export_gcode(layers, out_path, canvas_size=(10.0, 10.0), params=params)
+    lines = out_path.read_text(encoding="utf-8").splitlines()
+    first_end = lines.index("G1 X2.000 Y1.000")
+    second_start = lines.index("G1 X2.100 Y1.000")
+
+    assert "G1 Z3.000" in lines[first_end + 1 : second_start]
+
+
+def test_export_gcode_keeps_mixed_open_and_closed_polylines_in_input_order(
+    tmp_path,
+) -> None:
     layers = [
         _realized_layer(
             coords=[
@@ -467,16 +548,80 @@ def test_export_gcode_optimize_travel_is_applied_per_face_block(tmp_path) -> Non
     poly_idxs = _stroke_poly_indices(text)
     assert poly_idxs
 
-    # face A: poly 0-2, face B: poly 3-5
-    seen_b = False
-    for poly_i in poly_idxs:
-        if poly_i >= 3:
-            seen_b = True
-        if seen_b:
-            assert poly_i >= 3
+    assert poly_idxs == [0, 1, 2, 3, 4, 5]
 
 
-def test_export_gcode_draw_bridge_does_not_cross_face_blocks(tmp_path) -> None:
+@pytest.mark.parametrize("remove_boundary", [False, True])
+def test_export_gcode_keeps_multiple_face_and_hole_source_order(
+    tmp_path,
+    *,
+    remove_boundary: bool,
+) -> None:
+    """fill相当の境界有無にかかわらず、exporterはfaceを推測しない。"""
+
+    fill_lines = [
+        [[2.0, 5.0, 0.0], [18.0, 5.0, 0.0]],
+        [[32.0, 5.0, 0.0], [48.0, 5.0, 0.0]],
+    ]
+    boundaries = [
+        [
+            [0.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0],
+            [20.0, 20.0, 0.0],
+            [0.0, 20.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        [
+            [7.0, 7.0, 0.0],
+            [13.0, 7.0, 0.0],
+            [13.0, 13.0, 0.0],
+            [7.0, 13.0, 0.0],
+            [7.0, 7.0, 0.0],
+        ],
+        [
+            [30.0, 0.0, 0.0],
+            [50.0, 0.0, 0.0],
+            [50.0, 20.0, 0.0],
+            [30.0, 20.0, 0.0],
+            [30.0, 0.0, 0.0],
+        ],
+    ]
+    polylines = fill_lines if remove_boundary else [
+        boundaries[0],
+        boundaries[1],
+        fill_lines[0],
+        boundaries[2],
+        fill_lines[1],
+    ]
+    coords = [point for polyline in polylines for point in polyline]
+    offsets = [0]
+    for polyline in polylines:
+        offsets.append(offsets[-1] + len(polyline))
+
+    params = GCodeParams(
+        origin=(0.0, 0.0),
+        y_down=False,
+        paper_margin_mm=0.0,
+        decimals=3,
+        optimize_travel=True,
+        allow_reverse=True,
+    )
+    out_path = tmp_path / f"fill-remove-boundary-{remove_boundary}.gcode"
+    export_gcode(
+        [_realized_layer(coords=coords, offsets=offsets)],
+        out_path,
+        canvas_size=(60.0, 30.0),
+        params=params,
+    )
+
+    assert _stroke_poly_indices(out_path.read_text(encoding="utf-8")) == list(
+        range(len(polylines))
+    )
+
+
+def test_export_gcode_draw_bridge_does_not_cross_mixed_polyline_boundaries(
+    tmp_path,
+) -> None:
     layers = [
         _realized_layer(
             coords=[
@@ -501,7 +646,7 @@ def test_export_gcode_draw_bridge_does_not_cross_face_blocks(tmp_path) -> None:
         )
     ]
 
-    # bridge_draw_distance を極端に大きくしても、face_block 境界ではブリッジしない。
+    # bridge_draw_distance を極端に大きくしても、元polyline境界ではブリッジしない。
     params = GCodeParams(
         origin=(0.0, 0.0),
         y_down=False,
@@ -516,15 +661,15 @@ def test_export_gcode_draw_bridge_does_not_cross_face_blocks(tmp_path) -> None:
     export_gcode(layers, out_path, canvas_size=(100.0, 100.0), params=params)
     lines = out_path.read_text(encoding="utf-8").splitlines()
 
-    assert "; face_block 0 start" in lines
-    assert "; face_block 1 start" in lines
+    assert "; source_polyline 0 start" in lines
+    assert "; source_polyline 1 start" in lines
 
     pen_is_down = True
     want_check = False
     checked = False
 
     for line in lines:
-        if line == "; face_block 1 start":
+        if line == "; source_polyline 1 start":
             want_check = True
             continue
 

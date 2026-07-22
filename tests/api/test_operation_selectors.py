@@ -8,17 +8,19 @@ import pytest
 from grafix import E, G
 from grafix.api._operation_selector import (
     PRIMITIVE_SELECTOR_OP,
-    effect_selector_op,
     resolve_effect_selection,
     resolve_primitive_selection,
 )
 from grafix.api.effects import _make_effect_selector_step
-from grafix.core.effect_registry import effect, effect_registry
+from grafix.core.operation_authoring import effect, primitive
+from grafix.core.operation_catalog import (
+    OperationCatalogBuilder,
+    bind_operation_catalog,
+    current_operation_catalog,
+)
+from grafix.core.operation_selector import ensure_primitive_selector_spec
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.primitive_registry import primitive, primitive_registry
-from grafix.core.realize import RealizeSession
 from grafix.core.realized_geometry import GeomTuple
-from grafix.interactive.runtime.perf import PerfCollector
 
 
 @primitive
@@ -40,7 +42,7 @@ def selector_test_custom_effect(g: GeomTuple, *, amount: float) -> GeomTuple:
 _selector_test_live_calls = 0
 
 
-@primitive(cache_policy="none")
+@primitive(cache_policy="none", version="1")
 def selector_test_live_primitive() -> GeomTuple:
     """selector が target の uncached 契約を保つことを検証する。"""
 
@@ -259,7 +261,7 @@ def test_e_select_reports_target_and_arity_when_no_candidates_exist() -> None:
     assert "利用可能な候補" in message
 
 
-def test_e_select_reports_public_error_if_catalog_disappears_before_apply() -> None:
+def test_e_select_keeps_catalog_snapshot_if_current_catalog_changes_before_apply() -> None:
     @effect(n_inputs=3)
     def selector_test_delayed_removed_effect(
         first: GeomTuple,
@@ -268,29 +270,21 @@ def test_e_select_reports_public_error_if_catalog_disappears_before_apply() -> N
     ) -> GeomTuple:
         return first
 
-    builder = E.select(
-        target="selector_test_delayed_removed_effect",
-        n_inputs=3,
-    )
-    selector_op = effect_selector_op(3)
-    effect_specs = dict(effect_registry.items())
-    effect_registry.replace_all(
-        {
-            name: spec
-            for name, spec in effect_specs.items()
-            if name not in {selector_op, "selector_test_delayed_removed_effect"}
-        }
-    )
-    try:
+    original = current_operation_catalog()
+    with bind_operation_catalog(original):
+        builder = E.select(
+            target="selector_test_delayed_removed_effect",
+            n_inputs=3,
+        )
+    reduced_builder = OperationCatalogBuilder()
+    for entry in original.entries():
+        if entry.name != "selector_test_delayed_removed_effect":
+            reduced_builder.register(entry.declaration)
+    with bind_operation_catalog(reduced_builder.freeze()):
         inputs = tuple(G.line(key=f"delayed-removed-{index}") for index in range(3))
-        with pytest.raises(ValueError) as exc_info:
-            builder(*inputs)
-        message = str(exc_info.value)
-        assert "selector_test_delayed_removed_effect" in message
-        assert "n_inputs=3" in message
-        assert "利用可能な候補" in message
-    finally:
-        effect_registry.replace_all(effect_specs)
+        geometry = builder(*inputs)
+    assert geometry.op == "selector_test_delayed_removed_effect"
+    assert geometry.inputs == inputs
 
 
 def test_e_select_rejects_wrong_number_of_geometry_inputs() -> None:
@@ -423,20 +417,10 @@ def test_private_selector_specs_are_not_exposed_in_public_catalogs() -> None:
     E.select(target="rotate", n_inputs=1)
     E.select(target="boolean", n_inputs=2)
 
-    private_primitives = {
-        name: primitive_registry[name] for name in primitive_registry if name.startswith("_")
-    }
-    private_effects = {
-        name: effect_registry[name] for name in effect_registry if name.startswith("_")
-    }
-    assert private_primitives
-    assert {0} <= {spec.n_inputs for spec in private_primitives.values()}
-    assert {1, 2} <= {spec.n_inputs for spec in private_effects.values()}
-
     primitive_catalog_names = {entry.name for entry in G.catalog()}
     effect_catalog_names = {entry.name for entry in E.catalog()}
-    assert primitive_catalog_names.isdisjoint(private_primitives)
-    assert effect_catalog_names.isdisjoint(private_effects)
+    operation_catalog = current_operation_catalog()
+    assert all(not entry.name.startswith("_") for entry in operation_catalog.entries())
     assert "select" not in primitive_catalog_names
     assert "select" not in effect_catalog_names
 
@@ -469,37 +453,20 @@ def test_e_select_copies_params_by_target_before_builder_application() -> None:
     assert dict(geometry.args)["rotation"] == (0.0, 0.0, 45.0)
 
 
-def test_select_preserves_target_cache_policy_and_profiler_identity() -> None:
-    global _selector_test_live_calls
-    _selector_test_live_calls = 0
+def test_select_preserves_target_identity_without_fake_evaluator_entry() -> None:
     live = G.select(target="selector_test_live_primitive")
-
-    with RealizeSession() as session:
-        first = session.realize(live)
-        second = session.realize(live)
-        stats = session.stats()
-
-    assert _selector_test_live_calls == 2
-    assert first is not second
-    assert stats.hits == 0
-    assert stats.entries == 0
-
-    profiler = PerfCollector(enabled=True, console_output=False)
     selected_circle = G.select(target="circle")
-    with RealizeSession(profiler=profiler) as session:
-        with profiler.frame():
-            session.realize(selected_circle)
 
-    operation_names = {entry.name for entry in profiler.snapshot().operations}
-    assert "circle" in operation_names
-    assert PRIMITIVE_SELECTOR_OP not in operation_names
+    catalog = current_operation_catalog()
+    assert live.op == "selector_test_live_primitive"
+    assert catalog.resolve("primitive", live.op).cache_policy == "none"
+    assert selected_circle.op == "circle"
+    assert ("primitive", PRIMITIVE_SELECTOR_OP) not in catalog
 
 
 def test_selector_spec_refreshes_only_after_public_catalog_change() -> None:
-    G.select(target="circle")
-    steady_revision = primitive_registry.revision
-    G.select(target="circle")
-    assert primitive_registry.revision == steady_revision
+    before = ensure_primitive_selector_spec()
+    assert ensure_primitive_selector_spec() is before
 
     @primitive(meta={"size": ParamMeta(kind="float")})
     def selector_test_late_primitive(
@@ -509,21 +476,20 @@ def test_selector_spec_refreshes_only_after_public_catalog_change() -> None:
         _ = size
         raise AssertionError("Geometry recipe の構築時に評価してはならない")
 
-    public_revision = primitive_registry.revision
     selected = G.select(
         target="selector_test_late_primitive",
         params_by_target={"selector_test_late_primitive": {"size": 2.0}},
     )
-    refreshed_revision = primitive_registry.revision
+    after = ensure_primitive_selector_spec()
 
     assert selected.op == "selector_test_late_primitive"
-    assert refreshed_revision == public_revision + 1
+    assert after.fingerprint != before.fingerprint
     assert "selector_test_late_primitive" in (
-        primitive_registry[PRIMITIVE_SELECTOR_OP].meta["target"].choices or ()
+        after.schema.meta["target"].choices or ()
     )
 
     G.select(target="selector_test_late_primitive")
-    assert primitive_registry.revision == refreshed_revision
+    assert ensure_primitive_selector_spec() is after
 
 
 def test_select_rejects_private_target_and_invalid_target_choice() -> None:

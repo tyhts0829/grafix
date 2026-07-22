@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Iterable, Literal
@@ -115,6 +116,24 @@ class ParamStoreLoadDiagnostic:
     summary: str
     details: str = ""
     backup_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ParamRuntimeView:
+    """outer layer が参照する ParamStore runtime の read-only view。"""
+
+    loaded_groups: frozenset[GroupKey]
+    observed_groups: frozenset[GroupKey]
+    display_order_by_group: Mapping[GroupKey, int]
+    last_effective_by_key: Mapping[ParameterKey, object]
+    last_source_by_key: Mapping[ParameterKey, ValueSource]
+    effective_revision: int
+    visibility_revision: int
+
+    def visibility_cache_token(self) -> tuple[int]:
+        """可視性 cache 用の immutable revision token を返す。"""
+
+        return (self.visibility_revision,)
 
 
 @dataclass(slots=True, kw_only=True)
@@ -229,6 +248,7 @@ class ParamStoreRuntime:
 
 __all__ = [
     "LoadProvenance",
+    "ParamRuntimeView",
     "ParamStoreLoadDiagnostic",
     "ParamStoreRuntime",
 ]

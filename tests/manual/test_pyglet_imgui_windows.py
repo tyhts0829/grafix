@@ -10,9 +10,16 @@ import sys
 import time
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "src"))
+
+from grafix.core.lifecycle import CleanupErrors  # noqa: E402
+from grafix.interactive.pyglet_window_lifecycle import (  # noqa: E402
+    activate_pyglet_window_context,
+    close_pyglet_window,
+)
 
 
 def _import_gui_modules() -> tuple[ModuleType, ModuleType]:
@@ -40,7 +47,7 @@ def _require_display(pyglet_mod: ModuleType) -> None:
     except Exception as exc:
         raise SystemExit(f"ディスプレイが取得できないため終了: {exc}")
     else:
-        test_window.close()
+        close_pyglet_window(test_window)
 
 
 def main() -> None:
@@ -50,60 +57,67 @@ def main() -> None:
     pyglet_mod.options["vsync"] = True
     _require_display(pyglet_mod)
 
-    gui_context = imgui_mod.create_context()
-    imgui_mod.style_colors_dark()
-    imgui_mod.set_current_context(gui_context)
-    # iniファイル抑止（pyimgui 2.0 では set_ini_filename が無いので属性を安全に触らない）
-
-    gl_cfg = pyglet_mod.gl.Config(double_buffer=True, sample_buffers=1, samples=4)
-    draw_window = pyglet_mod.window.Window(
-        width=560,
-        height=420,
-        caption="draw window",
-        resizable=False,
-        vsync=True,
-        config=gl_cfg,
-    )
-    draw_window.clearcolor = (0.96, 0.97, 1.0, 1.0)
-    gui_window = pyglet_mod.window.Window(
-        width=640,
-        height=480,
-        caption="parameter gui",
-        resizable=False,
-        vsync=True,
-        config=gl_cfg,
-    )
-    gui_window.clearcolor = (0.97, 0.97, 0.97, 1.0)
-
-    from grafix.interactive.parameter_gui.pyglet_backend import (
-        create_imgui_pyglet_renderer,
-    )
-
-    renderer = create_imgui_pyglet_renderer(gui_window)
-    renderer.refresh_font_texture()
-
-    batch = pyglet_mod.graphics.Batch()
-    circle = pyglet_mod.shapes.Circle(
-        x=draw_window.width // 2,
-        y=draw_window.height // 2,
-        radius=60.0,
-        color=(64, 160, 255),
-        batch=batch,
-    )
-
-    running = True
-    frames = 0
-    radius = circle.radius
-    prev_time = time.monotonic()
-
-    def stop_loop(*_: object) -> None:
-        nonlocal running
-        running = False
-
-    draw_window.push_handlers(on_close=stop_loop)
-    gui_window.push_handlers(on_close=stop_loop)
-
+    gui_context: Any | None = None
+    draw_window: Any | None = None
+    gui_window: Any | None = None
+    renderer: Any | None = None
+    batch: Any | None = None
+    circle: Any | None = None
+    root_error: BaseException | None = None
     try:
+        gui_context = imgui_mod.create_context()
+        imgui_mod.style_colors_dark()
+        imgui_mod.set_current_context(gui_context)
+        # iniファイル抑止（pyimgui 2.0 では set_ini_filename が無いので属性を安全に触らない）
+
+        gl_cfg = pyglet_mod.gl.Config(double_buffer=True, sample_buffers=1, samples=4)
+        draw_window = pyglet_mod.window.Window(
+            width=560,
+            height=420,
+            caption="draw window",
+            resizable=False,
+            vsync=True,
+            config=gl_cfg,
+        )
+        draw_window.clearcolor = (0.96, 0.97, 1.0, 1.0)
+        gui_window = pyglet_mod.window.Window(
+            width=640,
+            height=480,
+            caption="parameter gui",
+            resizable=False,
+            vsync=True,
+            config=gl_cfg,
+        )
+        gui_window.clearcolor = (0.97, 0.97, 0.97, 1.0)
+
+        from imgui.integrations.pyglet import PygletProgrammablePipelineRenderer
+
+        renderer = PygletProgrammablePipelineRenderer(gui_window)
+        renderer.refresh_font_texture()
+
+        # Batch/Shape のVAOはcontext間で共有されないため、描画先context上で生成する。
+        draw_window.switch_to()
+        batch = pyglet_mod.graphics.Batch()
+        circle = pyglet_mod.shapes.Circle(
+            x=draw_window.width // 2,
+            y=draw_window.height // 2,
+            radius=60.0,
+            color=(64, 160, 255),
+            batch=batch,
+        )
+
+        running = True
+        frames = 0
+        radius = circle.radius
+        prev_time = time.monotonic()
+
+        def stop_loop(*_: object) -> None:
+            nonlocal running
+            running = False
+
+        draw_window.push_handlers(on_close=stop_loop)
+        gui_window.push_handlers(on_close=stop_loop)
+
         while running:
             now = time.monotonic()
             dt = now - prev_time
@@ -164,11 +178,46 @@ def main() -> None:
 
             frames += 1
             time.sleep(1 / 60)
+    except BaseException as error:
+        root_error = error
     finally:
-        renderer.shutdown()
-        imgui_mod.destroy_context(gui_context)
-        draw_window.close()
-        gui_window.close()
+        errors = CleanupErrors(initial_error=root_error)
+        draw_context_active = False
+        if draw_window is not None and (circle is not None or batch is not None):
+            try:
+                draw_context_active = activate_pyglet_window_context(draw_window)
+            except BaseException as error:
+                errors.record(error, "activate manual draw context")
+        if circle is not None and draw_context_active:
+            errors.attempt(circle.delete, "close manual draw shape")
+        # Shape/Batchの参照もdraw contextが生存中に切り、所有GL objectを回収する。
+        circle = None
+        batch = None
+
+        gui_context_active = False
+        if renderer is not None and gui_window is not None:
+            try:
+                gui_context_active = activate_pyglet_window_context(gui_window)
+            except BaseException as error:
+                errors.record(error, "activate manual ImGui context")
+        if renderer is not None and gui_context_active:
+            errors.attempt(renderer.shutdown, "close manual ImGui renderer")
+        if gui_context is not None:
+            errors.attempt(
+                lambda: imgui_mod.destroy_context(gui_context),
+                "close manual ImGui context",
+            )
+        if draw_window is not None:
+            errors.attempt(
+                lambda: close_pyglet_window(draw_window),
+                "close manual draw window",
+            )
+        if gui_window is not None:
+            errors.attempt(
+                lambda: close_pyglet_window(gui_window),
+                "close manual GUI window",
+            )
+        errors.raise_if_any()
 
 
 if __name__ == "__main__":

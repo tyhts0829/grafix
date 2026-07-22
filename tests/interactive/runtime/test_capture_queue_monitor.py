@@ -11,7 +11,8 @@ from grafix.interactive.parameter_gui.monitor_bar import (
     render_monitor_alerts,
     render_monitor_status,
 )
-from grafix.interactive.runtime.monitor import MonitorSnapshot, RuntimeMonitor
+from grafix.interactive.runtime.monitor import RuntimeMonitor
+from grafix.interactive.telemetry import MonitorSnapshot
 
 
 class _Imgui:

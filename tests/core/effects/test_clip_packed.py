@@ -14,7 +14,8 @@ from grafix.core.effects.clip import (
     _to_int_path_open,
     _to_int_path_ring,
 )
-from grafix.core.effects.util import PlanarFrame, pack_polylines
+from grafix.core.geometry_kernels.packed import pack_polylines
+from grafix.core.geometry_kernels.planar import PlanarFrame
 from grafix.core.realized_geometry import GeomTuple
 
 

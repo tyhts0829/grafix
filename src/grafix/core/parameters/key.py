@@ -90,7 +90,12 @@ def make_site_id(
         raise RuntimeError("parameter site frame could not be resolved")
 
     code = frame.f_code
-    module_name = str(frame.f_globals.get("__name__", ""))
+    source_owner = frame.f_globals.get("__grafix_source_owner__")
+    module_name = (
+        source_owner
+        if type(source_owner) is str and source_owner
+        else str(frame.f_globals.get("__name__", ""))
+    )
     if key is not None:
         semantic_site_id = (
             f"{_code_file_id(code, module_name)}|"

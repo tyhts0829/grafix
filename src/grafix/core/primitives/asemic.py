@@ -15,14 +15,15 @@ from functools import lru_cache
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.primitive_registry import primitive
+from grafix.core.operation_authoring import primitive
 from grafix.core.primitives._text_layout import (
     aligned_line_origin_em,
     bounding_box_polylines_em,
     measure_line_width_em,
     wrap_line_by_width_em,
 )
-from grafix.core.realized_geometry import GeomTuple, empty_geom_tuple
+from grafix.core.geometry_kernels.packed import empty_packed_geometry
+from grafix.core.realized_geometry import GeomTuple
 
 _NUMPY_RNG_MAX_NODES = 32
 _MAX_CACHED_BEZIER_SAMPLES = 64
@@ -338,7 +339,7 @@ def _polylines_to_realized(
         p.astype(np.float32, copy=False) for p in polylines if int(p.shape[0]) >= 2
     ]
     if not filtered:
-        return empty_geom_tuple()
+        return empty_packed_geometry()
 
     coords = np.concatenate(filtered, axis=0).astype(np.float32, copy=False)
 

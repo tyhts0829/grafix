@@ -1,5 +1,9 @@
 # Compatibility-shim removal migration notes (2026-07-20)
 
+> **後続変更:** operation/preset registry、evaluation cache、resource ownership は
+> 2026-07-22 に immutable catalog/session contract へ置き換えた。本書中の旧 registry
+> 記述を現行実装へ適用せず、`docs/migration_2026-07-22.md` を優先する。
+
 この変更は、旧 API・旧 schema・移行用分岐を残さず正規契約へ統一する破壊的変更である。
 既存の sketch、tool、保存ファイルを更新するときは、以下を確認する。
 

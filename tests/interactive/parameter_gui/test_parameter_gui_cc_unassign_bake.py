@@ -198,7 +198,7 @@ def test_code_to_ui_render_store_undo_redo_keeps_midi(monkeypatch) -> None:
     rows_before = rows_from_snapshot(snapshot)
 
     monkeypatch.setitem(sys.modules, "imgui", _SourceSwitchImGui())
-    changed, rendered = render_parameter_row_4cols(rows_before[0])
+    changed, rendered, _learn_state = render_parameter_row_4cols(rows_before[0])
 
     assert changed is True
     assert rendered.override is True

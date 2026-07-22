@@ -3,10 +3,8 @@ from __future__ import annotations
 import numpy as np
 
 from grafix.devtools.benchmarks.cases import build_default_cases
-from grafix.devtools.benchmarks.runner import (
-    case_definitions,
-    run_case_isolated,
-)
+from grafix.devtools.benchmarks.catalog import case_definitions
+from grafix.devtools.benchmarks.runner import run_case_isolated
 from grafix.devtools.benchmarks.schema import Metric
 
 

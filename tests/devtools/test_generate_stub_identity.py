@@ -77,19 +77,19 @@ def test_generated_stub_exposes_operation_catalogs_with_exact_types() -> None:
         stub,
         protocol="_G",
         method="catalog",
-    ) == "def catalog(self) -> tuple[OpCatalogEntry[PrimitiveFunc], ...]:"
+    ) == "def catalog(self) -> tuple[OperationCatalogEntry, ...]:"
     assert _protocol_method_signature(
         stub,
         protocol="_G",
         method="describe",
-    ) == "def describe(self, name: str) -> OpCatalogEntry[PrimitiveFunc]:"
+    ) == "def describe(self, name: str) -> OperationCatalogEntry:"
     assert _protocol_method_signature(
         stub,
         protocol="_E",
         method="catalog",
-    ) == "def catalog(self) -> tuple[OpCatalogEntry[EffectFunc], ...]:"
+    ) == "def catalog(self) -> tuple[OperationCatalogEntry, ...]:"
     assert _protocol_method_signature(
         stub,
         protocol="_E",
         method="describe",
-    ) == "def describe(self, name: str) -> OpCatalogEntry[EffectFunc]:"
+    ) == "def describe(self, name: str) -> OperationCatalogEntry:"

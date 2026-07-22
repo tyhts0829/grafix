@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.primitive_registry import primitive
+from grafix.core.operation_authoring import primitive
 from grafix.core.realized_geometry import GeomTuple
 
 from ._shape_utils import segment_count, xy_polyline

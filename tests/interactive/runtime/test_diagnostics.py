@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from grafix.interactive.runtime.diagnostics import (
+from grafix.interactive.diagnostics import (
     DiagnosticAction,
     DiagnosticCenter,
     DiagnosticEvent,

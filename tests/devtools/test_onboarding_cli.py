@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from grafix.__main__ import main as grafix_main
-from grafix.core.runtime_config import runtime_config, set_config_path
+from grafix.core.runtime_config import load_runtime_config
 from grafix.devtools.onboarding import init_project, list_examples
 
 
@@ -37,7 +37,7 @@ def test_init_creates_minimal_project_without_clobbering_existing_files(
     assert sketch_path.read_text(encoding="utf-8") == "# keep me\n"
 
 
-def test_init_config_paths_resolve_from_dot_grafix_and_autoload_presets(
+def test_init_config_paths_resolve_and_build_explicit_authoring_catalog(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -58,30 +58,30 @@ def test_init_config_paths_resolve_from_dot_grafix_and_autoload_presets(
     )
 
     config_path = project / ".grafix/config.yaml"
-    set_config_path(config_path)
-    try:
-        config = runtime_config()
-        assert config.output_dir == project / "data/output"
-        assert config.sketch_dir == project / "sketch"
-        assert config.preset_module_dirs == (project / "sketch/presets",)
-    finally:
-        set_config_path(None)
+    config = load_runtime_config(config_path)
+    assert config.output_dir == project / "data/output"
+    assert config.sketch_dir == project / "sketch"
+    assert config.preset_module_dirs == (project / "sketch/presets",)
 
     repo_root = Path(__file__).resolve().parents[2]
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = str(repo_root / "src")
-    completed = subprocess.run(
+    command = "\n".join(
         [
-            sys.executable,
-            "-c",
-            (
-                "from grafix.core.runtime_config import set_config_path; "
-                f"set_config_path({str(config_path)!r}); "
-                "from grafix import P; "
-                "print(type(P.onboarding_path_probe()).__name__)"
-            ),
-        ],
+            "from grafix import P",
+            "from grafix.core.authoring_loader import load_config_authoring_definitions",
+            "from grafix.core.operation_catalog import bind_operation_catalog",
+            "from grafix.core.preset_catalog import bind_preset_catalog",
+            "from grafix.core.runtime_config import load_runtime_config",
+            f"config = load_runtime_config({str(config_path)!r})",
+            "definitions = load_config_authoring_definitions(config)",
+            "with bind_operation_catalog(definitions.operations), bind_preset_catalog(definitions.presets):",
+            "    print(type(P.onboarding_path_probe()).__name__)",
+        ]
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", command],
         cwd=project,
         env=env,
         check=False,

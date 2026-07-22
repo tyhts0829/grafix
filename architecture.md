@@ -1,433 +1,369 @@
 <!--
 どこで: `architecture.md`。
-何を: `src/` 配下の実装を基に、Grafix のアーキテクチャ（責務境界・依存方向・実行フロー）を整理した設計メモ。
-なぜ: 機能追加やリファクタのときに「どこを触るべきか」「どこに依存させないか」を迷わないため。
+何を: `src/grafix/` の現行実装に対応する責務境界、依存方向、状態・resource の所有権。
+なぜ: 機能追加やリファクタで、変更理由の異なる責務を再び混ぜないため。
 -->
 
 # Grafix アーキテクチャ
 
-## 1. 目的と中心アイデア
-
-Grafix は「線（ポリライン列）を **生成** し、effect を **チェーン** して **変形** し、リアルタイムに **プレビュー** する」ための小さなツールキット。
-
-中心アイデアは次の 3 つ。
-
-1) **Geometry は“配列そのもの”ではなくレシピ（DAG ノード）**
-`src/grafix/core/geometry.py` の `Geometry` は `(op, inputs, args)` を持つ不変ノードで、`id` は内容署名（content signature）。
-`draw(t)` は配列ではなく Geometry レシピを返す。
-
-2) **実体配列は session-owned な realize で遅延生成する**
-`src/grafix/core/realize.py` の `RealizeSession` が `Geometry -> RealizedGeometry` の評価、同時計算の集約、byte 上限付き LRU を所有する。cache key は `GeometryId` と primitive/effect registry revision の組であり、実装の差し替え後に古い結果を再利用しない。
-`RealizedGeometry` は `coords(float32, Nx3)` と `offsets(int32, M+1)` を持ち、配列は writeable=False で固定される（`src/grafix/core/realized_geometry.py`）。
-
-3) **描画スタイル（色・線幅）は Geometry から分離し Layer に載せる**
-`src/grafix/core/layer.py` の `Layer` が `Geometry + (color/thickness)` を束ねる。
-同じ Geometry を色違いで描いても Geometry キャッシュを共有できる。
-
-加えて、Parameter GUI は「実行中に発見した引数」を ParamStore に蓄積し、GUI/CC から値を上書きして **次フレーム以降の Geometry 生成** に反映する（配列を後から書き換えない）。
-
-## 2. パッケージ構造（責務の分割）
-
-`src/` 配下は概ね次の責務で分割されている。
-
-- `src/grafix/api/`（公開 API / ファサード）
-  - `G`（primitive 生成）、`E`（effect チェーン）、`L`（Layer 化）、`run`（プレビュー起動）
-  - 内部の core/export/interactive を直接触らせないための入口
-- `src/grafix/core/`（ドメインコア）
-  - `Geometry`（レシピ DAG）と署名生成、`RealizedGeometry`（配列表現）
-  - immutable `OpSpec` / `PresetSpec` レジストリ、
-    `RealizeSession`（評価 + bounded cache + inflight 排除）
-- `src/grafix/core/primitives/`（組み込み primitive 実装）
-  - `@primitive` デコレータでレジストリ登録される “実体生成関数” 群
-- `src/grafix/core/effects/`（組み込み effect 実装）
-  - `@effect` デコレータでレジストリ登録される “実体変換関数” 群
-- `src/grafix/core/parameters/`（パラメータ解決・ストア）
-  - `parameter_context`（フレーム単位の snapshot 固定）
-  - `resolve_params`（base/GUI/CC の統合 + 量子化 + 観測レコード化）
-  - `ParamStore`（状態・メタ・ラベル・表示順序の永続）
-- `src/grafix/export/`（ヘッドレス出力）
-  - SVG/PNG/G-code などの encoder と、transactional publish を担う `CaptureService`
-- `src/grafix/api/render.py`（headless render 契約）
-  - immutable `RenderOptions` / `Frame` と、長寿命 `RenderSession`
-- `src/grafix/interactive/`（ランタイム / ウィンドウ / GUI / GL）
-  - `runtime/`：複数ウィンドウを 1 ループで回す・各サブシステムを分離
-  - `parameter_gui/`：pyimgui + pyglet で `ParamStore` を編集する GUI
-  - `gl/`：ModernGL を使った実描画（インデックス生成・シェーダ・VBO/IBO 管理）
-
-## 3. 依存方向（レイヤ）と “呼び出し” の流れ
-
-依存は「外側 → 内側」を基本にし、逆流はレジストリ登録（副作用 import）に限定する。
-
-```
-user sketch (main.py の draw(t))
-  |
-  v
-src/grafix/api            : G/E/L/run（書き味の層）
-  |  Geometry.create() を呼ぶ / resolve_params() を呼ぶ
-  v
-src/grafix/core           : Geometry / realize / registries（ドメイン核）
-  ^\
-  | \__ src/grafix/core/primitives, src/grafix/core/effects : @primitive/@effect で登録（実装の“プラグイン”）
-  |
-  +--> src/grafix/core/parameters : ParamStore / parameter_context / resolve_params（入力解決）
-  |
-  v
-src/grafix/core/pipeline   : Scene 正規化 / Layer style 解決 / realize（出力・描画の共通パイプライン）
-  |\
-  | \__ src/grafix/export        : RealizedLayer -> ファイル（ヘッドレス出力）
-  |
-  v
-src/grafix/interactive     : pyglet + ModernGL + Parameter GUI（対話プレビュー）
-        |
-        +--> src/grafix/interactive/parameter_gui : ParamStore 編集 UI（pyimgui）
-```
-
-重要な「呼び出し順」は次。
-
-1. `src/grafix/api/runner.py:run()` が `ParamStore` とウィンドウサブシステムを作る
-2. `src/grafix/interactive/runtime/window_loop.py:MultiWindowLoop.run()` がフレームループを回す
-3. 毎フレーム `DrawWindowSystem.draw_frame()` が
-   - Style（背景色/線幅/線色）を `ParamStore` から解決し
-   - `parameter_context(store)` の中で、所有する `RealizeSession` を渡して `realize_scene(draw, t, defaults)` を呼ぶ
-4. `realize_scene()`（`src/grafix/core/pipeline.py`）が
-   - `normalize_scene(draw(t))`（`src/grafix/core/scene.py`）で Layer 列にし
-   - Layer ごとに Layer style（line_thickness/line_color）を GUI 値で上書きし
-   - session で `geometry` を評価し、配列と registry revision 付き cache key を得る
-5. `DrawWindowSystem` が
-   - `DrawRenderer.render_layer(...)`（`src/grafix/interactive/gl/draw_renderer.py`）へ描画依頼する
-   - renderer が geometry 単位の byte-LRU 内で index 生成・mesh upload・resource 解放を一括管理する
-
-GUI ウィンドウは同じループで `ParameterGUIWindowSystem.draw_frame()` が呼ばれ、`ParamStore` を更新する。
-ただし draw 側は `parameter_context` の snapshot で “そのフレームの読み取り” が固定されるため、同一フレーム中に GUI が動いても `resolve_params` の結果はぶれない。
-
-## 4. コアデータモデル
-
-### 4.1 Geometry（レシピ DAG ノード）
-
-- 実装: `src/grafix/core/geometry.py`
-- 主な責務:
-  - `params` を内容署名に入れられる形へ正規化（`normalize_args()`）
-  - 固定 schema v2 domain の `(op, inputs.id, args)` から `GeometryId` を計算
-    （`compute_geometry_id()`）。呼び出し側は schema を選択しない
-  - `Geometry.create()` で「不変ノード」を生成する
-
-`Geometry` は「何をするか」を表すだけで、実体配列（頂点配列）を持たない。
-
-### 4.2 RealizedGeometry（評価結果）
-
-- 実装: `src/grafix/core/realized_geometry.py`
-- 形:
-  - `coords: np.ndarray` … `(N,3)` float32
-  - `offsets: np.ndarray` … `(M+1,)` int32（各ポリラインの開始 index。`offsets[0]=0`, `offsets[-1]=N`）
-- 性質:
-  - exact ndarray、C-contiguous、shape/dtype、有限座標、offset 整合性を検証する
-  - `(N,2)` や異なる dtype は変換せず拒否する
-  - mutable な caller 配列を共有せず immutable bytes-backed snapshot を保持し、
-    `writeable=True` への再変更も許さない（既存 snapshot は安全に再利用する）
-
-### 4.3 Layer（Geometry とスタイルの分離）
-
-- 実装: `src/grafix/core/layer.py`
-- 形:
-  - `Layer(geometry, site_id, color?, thickness?, name?)`
-  - `LayerStyleDefaults(color, thickness)` … None 欠損を埋める既定値
-- 重要点:
-  - `site_id` は Layer style（GUI の line_color/line_thickness 行）のキーに使う
-  - `resolve_layer_style()` は thickness が正でない場合に例外
-
-### 4.4 Parameter 系（識別・状態・メタ）
-
-- `src/grafix/core/parameters/key.py`
-  - `ParameterKey(op, site_id, arg)` … GUI 行の一意キー
-  - 自動 `site_id` は project-relative path と code location から生成する
-  - G/E/L の `key=`、または `P(key=...).foo(...)` を使うと、コード移動に依存しない
-    明示 site ID になる
-- `src/grafix/core/parameters/meta.py`
-  - `ParamMeta(kind, ui_min, ui_max, choices)` … UI/検証の最低限メタ
-- `src/grafix/core/parameters/state.py`
-  - `ParamState(override, ui_value, cc_key)` … GUI 状態（値・上書きフラグ・CC 割当）
-- `src/grafix/core/parameters/store.py`
-  - `ParamStore` … 永続ストア（state/meta/label/ordinal/chain 情報）
-  - snapshot に影響する永続状態の変更時だけ進む `revision` を持ち、同一 revision の snapshot 構築を再利用する
-
-## 5. レジストリ（primitive / effect / preset）と拡張ポイント
-
-### 5.1 仕組み
-
-`src/grafix/core/primitive_registry.py` と `src/grafix/core/effect_registry.py` は、
-live な op 名 → frozen `OpSpec` registry を持つ。`OpSpec` は evaluator、meta、
-canonical immutable defaults、parameter 順、arity を同じ世代として扱い、明示 replace
-時だけ registry revision を進める。組み込み spec は live registry と別の append-only catalog
-にも記録し、live registry の置換後も import 済み module の同じ spec を再登録できる。
-
-`src/grafix/core/preset_registry.py` も同じ所有原則に従い、canonical な
-`preset.<name>` → immutable `PresetSpec` を一つの dict で保持する。`PresetSpec` は
-callable、表示名、meta、parameter 順、UI visibility を同じ世代として扱う。
-`@preset` は一回だけ登録し、`P.<name>` は同じ spec から callable を取得するため、
-GUI metadata と実行関数が別 revision になることはない。
-
-- primitive 関数の契約（レジストリ側）:
-  `func(args: tuple[tuple[str, Any], ...]) -> RealizedGeometry`
-- effect 関数の契約（レジストリ側）:
-  `func(inputs: Sequence[RealizedGeometry], args: tuple[tuple[str, Any], ...]) -> RealizedGeometry`
-
-- primitive 関数の契約（デコレータで書く側）:
-  `f(...)-> (coords, offsets)`（float32/C-contiguous/finite の `coords(N,3)` と
-  int32/C-contiguous の `offsets(M+1,)`）
-- effect 関数の契約（デコレータで書く側）:
-  `f(g1, ..., gk, *, ...)-> (coords, offsets)`（`g` と戻り値は同じ canonical tuple、
-  `k` は `n_inputs`）
-
-`@primitive` / `@effect` デコレータは “ユーザーが書く tuple I/O 関数” を “レジストリ契約の wrapper（内部は RealizedGeometry）” に変換して登録する。
-
-### 5.2 組み込み primitive/effect の登録
-
-組み込み module 自体は **import 時の副作用** で登録されるが、root import では全 module を読み込まない。
-
-- `src/grafix/core/builtins.py` の明示 `op -> module` manifest を参照する
-- `G.<op>` / `E.<op>` または realize 時の未登録 op lookup が、対象 module だけを読み込む
-- import 済み module は append-only builtin catalog から欠落 spec を live registry へ戻す
-- list/stub generation のみ全 built-in を明示的に読み込む
-
-この方式により、公開 API の内容を維持しながら cold import と worker spawn を軽くする。
-
-source reload は primitive / effect / preset の三つの core registry を candidate 側へ
-差し替えて隔離し、検証と worker swap が成功した場合だけ live registry を一括更新する。
-API module は registry object のコピーを保持せず core module を参照するため、
-reload 時に API 側の global を追加で差し替えない。
-
-### 5.3 新しい primitive/effect を追加する方法（最短）
-
-1. `src/grafix/core/primitives/` か `src/grafix/core/effects/` に新モジュールを追加
-2. `@primitive(meta=...)` または `@effect(meta=...)` で関数を登録
-3. 必要時に import されるようにする（どちらか）
-   - `src/grafix/core/builtins.py` の manifest へ追加する（組み込み lazy load）
-   - あるいはスケッチ側でそのモジュールを import する（必要時だけ有効化）
-
-## 6. realize（評価）とキャッシュ
-
-実装: `src/grafix/core/realize.py`
-
-`RealizeSession.realize(Geometry)` は次の手順で評価する。
-
-1. DAG が参照する built-in だけを lazy load し、registry revision を確定する
-2. `(GeometryId, registry revision)` の byte-LRU を参照し、ヒットなら返す
-3. miss の場合、同じ session の inflight coordinator で同一 key の同時計算を 1 回に潰す
-4. leader スレッドが `_evaluate_geometry_node()` で評価する
-   - `op == "concat"` は inputs を realize して `concat_realized_geometries` で連結
-   - inputs が空なら primitive（`primitive_registry[op]`）
-   - それ以外は effect（`effect_registry[op]`）
-5. 上限内の結果だけを LRU へ保存し、待機者へ通知して返す
-
-通常例外は `RealizeError` で文脈を付けるが、`KeyboardInterrupt` / `SystemExit` は元の型で再送出する。interactive runtime、headless Export、pipeline の長寿命利用者が session を所有し、終了時に明示 close する。
-
-## 7. パラメータ解決（GUI/CC との統合）
-
-### 7.1 parameter_context（フレーム境界で固定するもの）
-
-実装: `src/grafix/core/parameters/context.py`
-
-`parameter_context(store, cc_snapshot)` は contextvars で次を固定する。
-
-- `param_snapshot` … `store_snapshot(store)`（revision 単位で再利用する読み取りビュー）
-- `frame_params` … `FrameParamsBuffer()`（この draw で観測した引数の収集先）
-- `cc_snapshot` … 今フレームの CC 値辞書（現状 run 経路では None）
-- `store` … ラベル設定等のために参照（`current_param_store()`）
-
-`finally` で `merge_frame_params(store, frame_params.records)` を呼ぶため、**そのフレームで呼ばれた引数が次フレーム以降 GUI に出る**。
-
-### 7.2 resolve_params（base/GUI/CC の統合と量子化）
-
-実装: `src/grafix/core/parameters/resolver.py`
-
-`resolve_params(op, params, meta, site_id, ...)` は引数ごとに次を行う。
-
-- `ParameterKey(op, site_id, arg)` を作る
-- snapshot に状態があればそれを使用（meta/state/ordinal/label）
-- 無ければ `meta.get(arg)` がある引数のみ GUI 対象として扱う（meta が無い引数は観測しない）
-- `MIDI > UI > CODE` で effective を選び、MIDI未採用時は全kind（boolを含む）が
-  明示 `override` に従って UI/CODE を選ぶ
-- sourceを `code | ui | midi_live | midi_frozen` として観測recordまで保持する
-- 量子化（既定 `DEFAULT_QUANT_STEP=1e-3`）を **ここだけ** で行い、署名に入る値と実計算値を一致させる
-- `FrameParamsBuffer` に `FrameParamRecord` を積む（base/effective/source/explicit を記録）。
-  effect topology は別の `FrameEffectChainRecord` として記録する
-
-### 7.3 初期 override ポリシー（“省略引数は GUI で動かしやすく”）
-
-実装: `src/grafix/core/parameters/merge_ops.py:merge_frame_params()`
-
-`FrameParamRecord.explicit`（ユーザーが kwargs を明示したか）を使い、
-
-- 明示 kwargs（explicit=True）: `initial_override=False`（コードの base を優先）
-- 省略 kwargs（explicit=False）: `initial_override=True`（GUI 値を優先）
-
-という初期状態を作る（既に state がある場合は上書きしない）。
-
-### 7.4 Style / Layer style の扱い（特殊キー）
-
-Geometry の引数解決（`resolve_params`）とは別に、描画見た目のための “Style 行” を `ParamStore` に持つ。
-
-- Global style: `src/grafix/core/parameters/style.py`
-  - `STYLE_OP="__style__"`, `STYLE_SITE_ID="__global__"`
-  - `background_color`, `global_thickness`, `global_line_color`
-  - `DrawWindowSystem` がフレーム冒頭に `store.get_state()` で直接参照して適用する
-- Layer style: `src/grafix/core/parameters/layer_style.py`
-  - `LAYER_STYLE_OP="__layer_style__"`
-  - `line_thickness`, `line_color`
-  - `realize_scene()`（`src/grafix/core/pipeline.py`）が Layer ごとにエントリを確保し、override=True の場合だけ上書きして描画する
-
-## 8. Parameter GUI（pyimgui）アーキテクチャ
-
-GUI は「描画（imgui）」「データ変換（純粋関数）」「store 反映」を分離している。
-
-- 入口（ライフサイクル）: `src/grafix/interactive/parameter_gui/gui.py`
-  - ImGui context を生成し、毎フレーム `render_store_parameter_table(store)` を呼ぶ
-- backend（pyglet 依存）: `src/grafix/interactive/parameter_gui/pyglet_backend.py`
-  - window 生成、IO 同期、renderer 作成
-- store ↔ rows ↔ UI の橋渡し: `src/grafix/interactive/parameter_gui/store_bridge.py`
-  1) `ParamStore.revision` と primitive/effect/preset registry revision を cache key にする
-  2) revision 変更時だけ `ParameterTableModel`（行・順序・ヘッダ）を構築する
-  3) effective value、MIDI、active/loaded visibility を描画直前に合成する
-  4) `render_parameter_table(rows)`（imgui 描画）を呼び、更新後 rows を受け取る
-  5) 差分があれば `update_state_from_ui()` / `set_meta()` で store に反映
-- “純粋なロジック” を集約:
-  - `src/grafix/core/parameters/view.py` … 値正規化・rows 生成・state 反映 API（imgui 非依存）
-  - `src/grafix/interactive/parameter_gui/grouping.py` / `group_blocks.py` / `labeling.py` … 表示名・ブロック化
-  - `src/grafix/interactive/parameter_gui/rules.py` … kind/op ごとの列表示ルール
-  - `src/grafix/interactive/parameter_gui/widgets.py` … kind→widget の対応（imgui 呼び出しはここに寄せる）
-
-## 9. 描画（ModernGL）パイプライン
-
-### 9.1 シーン正規化 → realize → 描画
-
-実装: `src/grafix/core/pipeline.py` と `src/grafix/interactive/runtime/draw_window_system.py`
-
-interactive の 1 フレーム描画は、概ね次の順で行う。
-
-1) `DrawWindowSystem` が style（背景色/グローバル線幅/線色）を `ParamStore` から解決
-2) `parameter_context(store)` の中で `realize_scene(draw, t, defaults)` を呼ぶ
-   - `normalize_scene(draw(t))`（`src/grafix/core/scene.py`）
-   - `resolve_layer_style(layer, defaults)`（`src/grafix/core/layer.py`）
-   - layer_style（line_thickness/line_color）の GUI override
-   - 所有する `RealizeSession` で geometry を評価
-3) 各 `RealizedLayer` について
-   - registry revision 付き cache key で `DrawRenderer.render_layer(...)`
-   - renderer 内の統合 byte-LRU が index、統計、GPU mesh を再利用
-
-### 9.2 GPU レンダラーの構成
-
-- `src/grafix/interactive/gl/draw_renderer.py:DrawRenderer`
-  - pyglet window の GL context 上で ModernGL context を生成
-  - `Shader.create_shader()` でプログラム作成
-  - `LineMesh` に頂点/インデックスを upload して `ctx.LINES` で描画
-- `src/grafix/interactive/gl/shader.py`
-  - vertex: 2D（xy）を `projection` で NDC に変換
-  - geometry: line（2頂点）を太さ付き四角形（triangle_strip 4頂点）に展開
-  - fragment: 単色
-- `src/grafix/interactive/gl/utils.py:build_projection`
-  - `canvas_size` に基づく正射影行列を生成（y 軸は画面座標系に合わせて反転）
-- `src/grafix/interactive/gl/index_buffer.py:build_line_indices_and_stats`
-  - renderer cache miss 時だけ `offsets` から `GL_LINE_STRIP` + primitive restart の index 列を生成する
-
-## 10. ランタイム（複数ウィンドウの統合ループ）
-
-実装: `src/grafix/interactive/runtime/window_loop.py`
-
-`MultiWindowLoop` は pyglet の複数 window を 1 ループで回す。
-
-- 各 window について `dispatch_events()` → `draw_frame()` → `flip()` を 1 回ずつ実行する
-- 目的:
-  - flip の呼び出し箇所を 1 箇所に集約し、点滅や更新競合を避ける
-  - GUI と描画を同一 FPS で同期させやすくする
-
-`src/grafix/api/runner.py` はこのループの “配線” に徹し、
-
-- 描画: `DrawWindowSystem`（`src/grafix/interactive/runtime/draw_window_system.py`）
-- GUI: `ParameterGUIWindowSystem`（`src/grafix/interactive/runtime/parameter_gui_system.py`）
-
-のサブシステムとして組み立てる。
-
-終了処理の順序と resource の所有権は各 subsystem が持つ。一方、
-「全 step を試し、最初の `BaseException` を最後に送出する」という例外集約だけは
-`src/grafix/core/lifecycle.py` の `CleanupErrors` を共有する。runner と
-`DrawWindowSystem` は secondary error を記録し、`ParameterGUI` と
-`ExportJobSystem` は記録しないという既存の観測契約も、owner 側の指定として残す。
-worker の join/terminate/kill や GL context の切替順はこの helper へ抽象化しない。
-
-mp-draw は frame task に ParamStore snapshot 本体を載せず revision だけを渡す。revision が変わった時だけ、worker ごとの bounded control queue へ snapshot を latest-wins で配信し、全 worker の適用 ack 後にその revision の task を実行する。
-
-interactive の PNG/G-code は `ExportJobSystem` が共通の長寿命 spawn worker で処理する。
-親はin-flight 1件と、件数/aggregate geometry byteで制限したpending FIFOを保持し、window
-systemはimmutable frame snapshotのadmissionと結果表示に限定される。
-
-## 11. 診断・render・capture の責務境界
-
-### 11.1 `DiagnosticCenter`
-
-`src/grafix/interactive/runtime/diagnostics.py` の `DiagnosticCenter` は、frame、reload、
-export、save/recovery、config、operation/resource の失敗を同じ bounded event stream へ
-集約する。イベントは immutable で、dedupe key、発生回数、severity、source、型付き action
-を持つ。各 subsystem は例外を GUI 形式へ描画せず `DiagnosticEvent` を publish し、
-Inspector の diagnostics panel が Copy/Open/Retry/Dismiss を表示する。
-
-責務外なのは、Geometry の結果変更や暗黙 retry である。診断は失敗を可視化するが、
-作品の評価契約は変更しない。
-
-### 11.2 `RenderSession`
-
-`src/grafix/api/render.py` の `RenderSession` は headless 評価期間を所有する。
-
-- draw callable、ParamStore と明示的な parameter load mode
-- effective runtime config と `RenderOptions`
-- `StyleResolver` / `RealizeSession` の cache 寿命
-- capture manifest に渡す session/frame provenance snapshot
-
-`render(t) -> Frame` はファイル I/O を行わない。単発の公開 `render()` も内部で同じ
-session 契約を使い、interactive preview の draft context に影響されず final 品質で評価する。
-
-### 11.3 `CaptureService`
-
-`src/grafix/export/capture.py` の `CaptureService` は、完成済み layer、canvas、背景色、
-時刻、provenance だけを持つ構造的な `CaptureFrame` を受け取り、suffixで SVG/PNG/G-code
-encoderを選択する。private stagingでencodeした後、artifactとmanifestを同じgeneration
-としてno-clobber publishする。late collision時は別versionへ進み、失敗時は今回generation
-だけをrollbackする。PNGの中間SVGもprivateであり、public siblingを触らない。
-
-公開 `grafix.export()` は `api` 側の adapter である。公開 `Frame` の型検証と
-`ExportResult` の生成、`Frame.metadata` に固定された PNG scale / G-code config の適用は
-この adapter が担う。したがって `export` package は公開 API 型を import しない。
-interactive 側は preview 用 `FrameExportSnapshot` から provenance 必須の
-`CaptureExportSnapshot` を capture 境界で構築して渡し、thumbnail のためだけに公開
-`Frame` を再構築しない。
-
-`ExportJobSystem` はqueue/worker/deadlineだけを所有し、形式判定・manifest・publishを
-重複実装しない。workerへ渡すprovenanceはmain processで固定済みのimmutable snapshotで、
-workerがgit/config/sourceを再探索してはならない。
-
-依存方向は次のとおり。
+## 1. 中心となる設計
+
+Grafix は、線の生成と変形を **不変な Geometry DAG** として記述し、必要な時点で
+`RealizedGeometry` へ評価する creative-coding toolkit である。
+
+設計の中心は次の五点にある。
+
+1. `Geometry` は配列ではなく、operation、入力、引数、operation version を持つレシピである。
+2. evaluator、parameter schema、preset は session/generation ごとの immutable catalog に固定する。
+3. quality、effective config、operation、外部 asset を cache identity に明示する。
+4. cache と外部 resource は lifetime を持つ owner が保持する。composition 内の子 session は
+   明示注入された dependency を借用し、standalone session は省略された dependency だけを所有する。
+5. coordinator は call order と配線だけを持ち、state mutation、encode、publish、window policy を
+   それぞれの owner へ委譲する。
+
+描画 style は Geometry から分離し、`Layer` が Geometry と色・線幅を束ねる。同じ Geometry を
+異なる style で描いても CPU の geometry cache を共有できる。
+
+## 2. レイヤと依存方向
+
+| レイヤ | 主な責務 |
+|---|---|
+| `grafix.api` | 公開 DSL (`G` / `E` / `L` / `P`)、`run`、`render`、`export` の facade / composition root |
+| `grafix.core` | Geometry、catalog、評価、parameters、runtime config の domain contract |
+| `grafix.core.geometry_kernels` | packed geometry、平面、grid、raster、marching、resample の数値 kernel |
+| `grafix.export` | 形式別 encode、出力 path、staging、no-clobber publish、provenance collection |
+| `grafix.interactive` | diagnostics / transport / telemetry の中立 contract と GL / MIDI / GUI の leaf 実装 |
+| `grafix.interactive.runtime` | window loop と interactive subsystem の composition |
+| `grafix.devtools` | CLI、stub、diagnostics、benchmark tooling |
+
+依存規則は次のとおり。
 
 ```text
-draw + parameter source + config
-             |
-             v
-        RenderSession --render(t)--> immutable Frame
-                                      |
-                                      v public API adapter
-                              CaptureFrame protocol
-                                      |
-                                      v
-                               CaptureService <--- CaptureExportSnapshot
-                               encode -> stage
-                               -> publish artifact + manifest
-
-interactive errors -----------------> DiagnosticCenter -> Inspector
+user sketch
+    |
+    v
+grafix.api -----------------------> grafix.interactive.runtime
+    |                                        |
+    |                                        +--> grafix.interactive leaf
+    |                                        +--> grafix.export
+    v                                        |
+grafix.core <--------------------------------+
+    ^
+    |
+grafix.export
 ```
 
-## 12. 外部依存と実行上の注意
+- `core` は `api`、`export`、`interactive` に依存しない。また Git subprocess、fsync、
+  capture publish、出力 path policy を持たない。
+- `export` は `api` と `interactive` に依存しない。
+- `interactive` は `api` に依存しない。
+- `interactive/gl`、`interactive/midi`、`interactive/parameter_gui` は composition layer の
+  `interactive.runtime` に逆依存しない。
+- `api` が外側の実装を組み立て、公開型と内部 protocol の変換を担当する。
 
-Grafix は “core は Python だけで完結” を基本としつつ、いくつかの機能は外部コマンドに依存する。
+これらは `tests/architecture/test_dependency_boundaries.py` で検査する。
 
-- PNG export は `resvg`、動画録画は `ffmpeg` を外部コマンドとして要求する（見つからなければ実行時に例外）
-- interactive PNG/G-code export は bounded な長寿命 worker へ渡すため、完了は非同期に通知される
+## 3. Authoring declaration と immutable catalog
 
-このファイルは **現状の `src/` 実装** に合わせて記述しているため、README/spec と齟齬がある場合は `src/` を正として読み替える。
+### 3.1 declaration の単一路
+
+`@primitive`、`@effect`、`@preset` は live evaluator registry を変更しない。各 decorator は
+次の immutable declaration を作り、`RegistrationTarget.register()` へ渡す。
+
+- `OpDeclaration`: evaluator、`ParameterOpSchema`、arity、cache contract、二種類の fingerprint
+- `PresetDeclaration`: callable、invoker、`ParameterOpSchema`
+- `ParameterOpSchema`: meta、default、parameter order、`ui_visible`
+
+scoped target がある source/config candidate では、その target だけに登録する。通常の Python
+module import では `DefaultAuthoringDefinitions` に declaration を記録する。これは module-scope
+decorator の使い勝手を支える唯一の process-level authoring store であり、評価中の catalog、
+cache、resource は保持しない。session は短い lock 内で得た snapshot だけを所有する。
+
+同じ target 内の同名 declaration は拒否する。operation の `overwrite=True` は対象 name だけを
+置換するが、preset の上書きは許可しない。旧 registry、互換 alias、dual-write は存在しない。
+
+### 3.2 builtin と custom declaration
+
+組み込み operation は `core/builtins.py` の静的 manifest が所有する。組み込み decorator は
+declaration を callable に付与するだけで default authoring store へ登録せず、bootstrap が
+manifest の module/attribute から回収する。このため direct import、bootstrap、stub generation の
+順序で catalog の意味が変わらない。
+
+通常 import された custom module の declaration は default authoring snapshot に含まれる。
+config の `paths.preset_module_dirs` と source reload は、隔離した candidate namespace と scoped
+target で operation/preset をまとめて構築し、全体が成功したときだけ新 snapshot を採用する。
+失敗した candidate は default definitions と last-good generation を変更しない。
+
+### 3.3 catalog の選択規則
+
+- draw の外側の `G` / `E`: builtin catalog + default authoring operation snapshot
+- draw の外側の `P`: default authoring preset snapshot のみ
+- `RenderSession` / interactive generation: 構築時に選んだ
+  `AuthoringDefinitionsSnapshot(operations, presets)`
+- draw/evaluator 呼び出し中: その generation の catalog を短時間だけ `ContextVar` に束縛
+
+config directory の preset を draw の外側の `P` が暗黙に読み込むことはない。config-scoped
+preset/operation は `run()`、`RenderSession`、対応する CLI が session snapshot を作るときにだけ
+有効になる。同名 preset を別 session がそれぞれ所有でき、衝突は一つの candidate catalog 内に
+限定される。
+
+GUI は evaluator を保持しない `ParameterGuiCatalog` へ schema を射影する。selector も
+`ParameterOpSchema` だけを合成し、架空の evaluator を evaluation catalog へ登録しない。
+
+## 4. Geometry DAG と operation identity
+
+`core/geometry.py` の `Geometry` は次を持つ frozen node である。
+
+- `op` と canonical な `args`
+- `inputs` の immutable tuple
+- primitive/effect の exact version を示す `EvaluationOpRef`
+- cache policy と、子を含む参照 operation 集合
+- recipe から計算した `GeometryId`
+
+`G.<name>(...)` は node 作成時に `EvaluationOpRef(kind, name,
+evaluation_fingerprint)` を固定する。`E.<name>(...)` は step 作成時に `EffectStepRef` として
+evaluation fingerprint と schema fingerprint の両方を固定し、適用時にも同じ entry で
+parameter 解決と node 化を行う。後から同名 declaration が置換されても、旧 schema と新 evaluator
+を混ぜない。
+
+`GeometryId` は operation ref、入力 GeometryId、canonical args を推移的に含む。realization 前に
+全 ref を session catalog と照合し、一致しなければ `CatalogMismatchError` とする。同名の最新
+operation への暗黙 fallback は行わない。
+
+operation の identity は process counter、object id、absolute path、import 順ではなく canonical
+declaration signature から決定する。
+
+- `EvaluationSpecFingerprint`: evaluator、arity、cache/external-dependency contract
+- `ParameterSchemaFingerprint`: GUI/selector 用 schema
+
+schema だけの変更は geometry cache を失効させず、使用していない operation の変更も別 DAG の
+identityへ波及しない。`cache_policy="none"` の動的 operation は明示 `version` が必須で、CPU/GPU
+content cache を迂回する。
+
+## 5. 評価 context、cache、resource ownership
+
+### 5.1 typed cache identity
+
+`EvaluationContext` は一 generation の `OperationCatalog`、quality (`draft` / `final`)、effective
+`RuntimeConfig` を固定し、`EvaluationFingerprint` を計算する。変更され得る font file などは
+context へ埋め込まず、lookup 時点の `ExternalDependenciesFingerprint` として分離する。
+
+CPU cache、inflight、`RealizedLayer`、GPU cache は同じ `GeometryCacheKey` を使う。
+
+```text
+GeometryCacheKey =
+    GeometryId
+  + EvaluationFingerprint(quality, effective config)
+  + ExternalDependenciesFingerprint
+  + uncached generation (cache_policy="none" のみ)
+```
+
+これにより draft/final、config A/B、operation A/B、font A/B を同一 process/cache store 上で
+安全に区別する。
+
+### 5.2 owner と close 順
+
+`RealizeCacheStore` は byte/entry 上限を持つ LRU である。`RealizeSession` の ownership は
+dependency ごとに constructor 引数で決まる。
+
+- 明示注入された `EvaluationResources` / `RealizeCacheStore` は borrowed であり、session は閉じない。
+- 省略された `resources` / `cache_store` は session-owned であり、`close()` が
+  `EvaluationResources -> RealizeCacheStore` の順に閉じる。
+- `EvaluationContext` は immutable value であり close 対象ではない。
+- 実行中の realization がある状態で `close()` された場合、最後の caller が終了するまで owned
+  dependency の close を遅延する。
+
+constructor、context manager body、close のいずれで `BaseException` が発生しても、owned dependency
+は後続 cleanup まで試し、最初の error を保持する。
+
+headless の `RenderSession` は次を所有する。
+
+```text
+RenderSession
+  ├─ AuthoringDefinitionsSnapshot / EvaluationContext(final)
+  ├─ ParamStore / StyleResolver
+  ├─ RealizeCacheStore
+  ├─ EvaluationResources
+  └─ RealizeSession (explicit dependency borrower)
+```
+
+親 owner の終了順は `RealizeSession -> EvaluationResources -> RealizeCacheStore` である。interactive の
+`SceneRunner` は generation をまたぐ一つの `RealizeCacheStore` を所有し、各 generation は
+一つの `EvaluationResources` と draft/final の `RealizeSession` を持つ。reload では新 generation
+を完成させてから交換し、旧子 session と resource を閉じる。cache store は `SceneRunner` 終了時
+だけ閉じる。
+
+### 5.3 external asset と font
+
+external-dependency preflight は cache lookup の直前に fingerprint と評価用 lease を同じ bytes
+から作る。evaluator はその lease だけを使い、preflight 後に path を再解決・再 open しない。
+
+text primitive では `FontAssetFingerprint` が canonical path、face index、file stat、content
+digest を含む。`EvaluationResources.fonts` 配下の `FontResources` / `TextRenderer` が TTFont と
+glyph outline の bounded LRU を所有し、eviction、`clear()`、`close()` で解放する。同じ session
+中に font file が置換された場合も、次の lookup が新 fingerprint と geometry を正式に観測する。
+
+## 6. Parameter domain と更新規則
+
+### 6.1 frame snapshot
+
+`parameter_context(store, cc_snapshot)` は一 frame の読み取り境界である。
+
+1. `ParamStore` から immutable `ParamSnapshot` を固定する。
+2. `G` / `E` / `P` / Layer style が base、UI、MIDI を解決し、`FrameParamsBuffer` に観測を積む。
+3. context 終了時に effect topology、label、parameter record を store へ merge する。
+
+値の優先順位は `MIDI > UI > CODE`。量子化は resolver で一度だけ行い、DAG signature と実計算に
+同じ値を使う。明示 kwargs は初期状態で code を、省略 kwargs は GUI 値を優先する。
+
+### 6.2 query、command、rollback
+
+`ParamStore` が論理 state、revision、history integration を所有する。API/interactive は private
+container を読まず、`ParamRuntimeView`、`frozenset`、copy された mapping などの immutable query
+を使う。`ParamRuntimeView` は作成時に三つの runtime mapping を浅く copy して固定するため、後続
+frame の store mutation を既存 view が観測しない。key/value/source は canonical immutable value
+なので deep copy は行わない。変更は `ParameterEdit` / `apply_parameter_edits()`、collapse、variation、
+effect order、MIDI などの狭い command を通す。
+
+- no-op command は revision/history/observer を進めない。
+- 一つの command の複数変更は revision/history/observer を一回に集約する。
+- GUI table は `TableRenderInput -> TableEdits` の pure boundary とし、renderer は store を変更しない。
+- `store_bridge` と controller が edit intent を command として commit する。
+
+variation batch の一時評価は `ParamStore.begin_transient_rollback()` だけを使う。
+`ParamStoreRollback` は owner-bound、one-shot、opaque であり、正常・例外終了の双方で開始時の
+論理 state、revision/runtime counter、change log を exact restore する。rollback は observer や
+history event を発生させず、scope 中または開始前の derived cache は再利用しない。
+
+parameter の prune/final save は operation/preset module を探索せず、application 境界から渡された
+known-operation schema snapshot を使う。direct writer と session finalization は別責務である。
+
+## 7. 共通 scene pipeline と headless render
+
+`core/pipeline.py:realize_scene()` は interactive と headless が共有する境界である。
+
+1. generation の operation/preset/config/quality を draw 区間だけ束縛する。
+2. `draw(t)` の `SceneItem` を `normalize_scene()` で Layer 列へする。
+3. global/Layer style を解決する。
+4. scene aggregate transaction 内で各 Geometry を評価する。
+5. resource limit を満たした場合だけ新 cache entry を commitし、`RealizedLayer` を返す。
+
+`RenderSession` は config、authoring definitions、ParamStore、final quality の evaluation context、
+cache/resource を構築時に固定する。`render(t)` は immutable `Frame` を返すだけで filesystem I/O を
+行わない。複数 frame では一つの `RenderSession` を使って cache/resource を再利用し、単発の
+`grafix.render()` は内部で session を作って必ず閉じる。
+
+`grafix.export(frame, path)` は公開 `Frame` を export-side `CaptureFrame` contract へ変換し、
+encode/publish を実行する。render と保存を分けるため、同じ frame を複数形式へ安全に出力できる。
+
+## 8. Interactive composition
+
+`api.runner.run()` は effective config と authoring definitions を一度確定し、同じ snapshot を
+`ParameterSession`、`DrawWindowSystem`、`SceneRunner`、GUI catalog へ渡す。主な owner は次の通り。
+
+- `ParameterSession`: load/recovery、history、autosave、known-operation schema、終了時 persist
+- `WorkspaceWindowController`: 二 window の配置、visibility、workspace persistence
+- `DrawWindowSystem`: renderer、SceneRunner、input/reload と frame call order の配線
+- `SceneRunner`: sync/mp draw、generation、draft/final evaluation、last-good scene
+- `CaptureQueue`: immutable capture intent、件数/geometry-byte admission、worker drain
+- `RecordingSession`: transport pause/restore、window size、video staging/publish lifecycle
+- `ParameterGUI`: backend frame と panel/controller の順序
+- `VariationController` / `RangeEditController` / `ParameterGuiSessionState`: GUI domain mutation
+
+`MultiWindowLoop` が preview と Inspector を一つの event loop で駆動する。GUI 変更は次 frame の
+parameter snapshot に反映され、実行中 frame の値は変えない。
+
+`PygletImguiBackend` は ImGui context、renderer、font texture と
+`sync IO -> new_frame -> render` の順序を所有する。`DrawRenderer` は ModernGL context、framebuffer、
+viewport、RGB readback と GPU cache を所有し、runtime が `.ctx` へ到達することはない。
+
+diagnostics、transport、telemetry の immutable/Protocol contract は `interactive/` 直下に置き、
+GL/MIDI/GUI leaf が runtime concrete class に依存しない。
+
+source reload は entry source と、静的な package-relative import で到達する local helper の bytes
+だけを candidate generation として隔離実行し、draw signature、declaration snapshot、worker startup
+の成功後にだけ交換する。到達しない `.py` は監視せず、同じ directory の helper を absolute import
+することも許さない。失敗時は last-good callable、catalog、worker、frame、ParamStore を維持する。
+
+## 9. Capture / export infrastructure
+
+core に残すのは immutable provenance/manifest value と codec だけである。source/Git/package の
+収集、output path policy、staging、fsync、publish/rollback は `export` が所有する。
+
+`CaptureService` は完成した frame snapshot を形式別 encoder へ渡す。`CaptureStaging` が private
+sibling directory と work path を所有し、`publish_capture_generation()` が artifact、manifest、
+layer-split G-code family を一 generation として no-clobber publish する。allocation 後の late
+collision は完成済み staging を再 encode せず、別 version path で bounded retry する。失敗時は
+今回の inode だけを rollback する。
+
+interactive の PNG/G-code は `ExportJobSystem` の長寿命 spawn worker を使う。親 process の
+`CaptureQueue` が in-flight 1 件と bounded FIFO/aggregate geometry byte を管理し、満杯時は明示的に
+拒否する。provenance は keypress 時点の frame とともに親で固定し、worker は Git/config/source を
+再探索しない。
+
+### G-code の stroke-order contract
+
+G-code encoder は clipping 前の input polyline 順を semantic boundary として保持する。
+
+- 頂点数、閉曲線らしさ、producer 順から face/group を推測しない。
+- `optimize_travel` は一つの input polyline から clipping で生じた fragment の順序・向きだけを
+  最適化する。
+- `bridge_draw_distance` は異なる input polyline 間に pen-down bridge を追加しない。
+
+cross-polyline optimization が必要なら、意味を持つ export-side grouping artifact を別途設計する。
+core Geometry へ推測 metadata を追加して補わない。
+
+## 10. Geometry kernel
+
+effect 間で共有する数値処理は `core/geometry_kernels/` に領域別に置く。
+
+- `packed.py`: canonical empty representation と `pack_polylines`
+- `planar.py`: 平面基底/PCA/ring
+- `grid.py`: bbox と resource budget からの grid planning
+- `raster.py` / `marching.py`: raster/SDF/contour
+- `resample.py`: polyline resampling/filter support
+
+kernel は effect に依存せず、import graph は acyclic である。diagnostic emission は effect 側に置く。
+旧 `effects/util.py` と packed helper の重複実装/re-export shim は存在しない。
+
+## 11. Benchmark harness の依存方向
+
+benchmark harness は `src/grafix/devtools/benchmarks/` 内で case 定義、収集、計測、workload、実行入口を
+分離する。次の矢印は左の module が右の module に依存する向きであり、逆依存と循環を許さない。
+
+```text
+definition ------------------------------> schema
+metrics ---------------------------------> schema
+workload providers ----------------------> definition / metrics / schema
+catalog ---------------------------------> definition / workload providers
+executor --------------------------------> definition / metrics / schema
+runner ----------------------------------> catalog / executor / definition / schema
+```
+
+- `definition.py`: immutable `CaseDefinition`、source fingerprint、case 定義 helper
+- `metrics.py`: exact checksum、typed metric、warm/cold aggregation
+- workload provider: 対象 subsystem の setup/workload/postprocess。catalog/runner/executor を知らない
+- `catalog.py`: provider 収集、重複拒否、stable ordering、suite/case selection
+- `executor.py`: in-process/fresh-process measurement、calibration、timeout、child kill/reap
+- `runner.py`: catalog と executor の composition、および child entrypoint だけ
+
+workload layer 内の再利用は public helper に限定する。現行の許可辺は
+`interactive_scenario_benchmark -> parameter_hotpath_benchmark / renderer_benchmark` と
+`parameter_edit_benchmark -> parameter_hotpath_benchmark` だけであり、private symbol 参照を禁止する。
+`runner.py` の公開 surface は `run_case_isolated` だけである。親は definition を executor へ渡して
+fresh child を起動し、child は catalog から case ID を解決して executor へ戻す。workload、metrics、
+process supervision の実装を runner に置かず、旧 private symbol の re-export shim も置かない。
+`tests/architecture/test_benchmark_dependency_boundaries.py` が非循環性、禁止依存、runner の公開 surface
+と composition-only の大きさを検査する。
+
+## 12. 変更時の判断基準
+
+- semantic state を process-global cache/service locator に置かず、snapshot と owner を明示する。
+- mutable builder を draw/evaluation へ渡さない。
+- catalog mismatch や invalid config を「最新値」への fallback で隠さない。
+- coordinator へ path allocation、encode、domain mutation、platform policy を戻さない。
+- compatibility wrapper、deprecated alias、旧 import path の re-export shimを追加しない。
+- 公開 API の破壊的変更では source、tests、stub、README、migration note を同じ change set で更新する。
+
+図による overview は `docs/architecture_visualization.md`、利用者向けの更新手順は
+`docs/migration_2026-07-22.md` を参照する。

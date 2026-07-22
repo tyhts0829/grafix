@@ -11,7 +11,7 @@
 
 - グループ単位の削除: `(op, site_id)` をキーとする一連の parameter 群
   （例: ある primitive / effect が存在していたが、今回の実行では観測されなかった等）
-- 引数単位の削除: 登録済み op に対して、registry に存在しない `arg` を持つ parameter 群
+- 引数単位の削除: application から渡された既知 schema に存在しない `arg` を持つ parameter 群
 
 I/O・副作用
 ----------
@@ -21,7 +21,7 @@ I/O・副作用
 読む順番（主要フロー）
 ----------------------
 1. `prune_stale_loaded_groups`: 実行終了時に「ロードされたが観測されなかった」グループを削除
-2. `prune_unknown_args_in_known_ops`: registry と照合して、既知 op の未知 arg を削除
+2. `prune_unknown_args_in_known_ops`: 固定済み schema snapshot と照合して未知 arg を削除
 3. `prune_groups`: 実際の削除処理（labels/ordinals/effects/collapsed など関連状態も同期）
 """
 
@@ -29,15 +29,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from grafix.core.effect_registry import effect_registry
-from grafix.core.primitive_registry import primitive_registry
-
 from .collapsed_header import (
     effect_chain_collapsed_header_key,
     group_collapsed_header_keys,
 )
 from .identity import GroupKey
 from .key import ParameterKey
+from .known_operations import KnownOperationSchemaSnapshot
 from .reconcile_ops import reconcile_loaded_groups_for_runtime
 from .store import ParamStore
 
@@ -72,14 +70,10 @@ def prune_stale_loaded_groups(store: ParamStore) -> None:
         # STYLE は "常に存在する/特別扱い" の前提で、stale 判定から除外する。
         # （STYLE を削除すると、UI 体験や既定スタイルに悪影響が出る可能性がある）
         loaded_targets = {
-            (op, site_id)
-            for op, site_id in runtime.loaded_groups
-            if op not in {STYLE_OP}
+            (op, site_id) for op, site_id in runtime.loaded_groups if op not in {STYLE_OP}
         }
         observed_targets = {
-            (op, site_id)
-            for op, site_id in runtime.observed_groups
-            if op not in {STYLE_OP}
+            (op, site_id) for op, site_id in runtime.observed_groups if op not in {STYLE_OP}
         }
 
         prune_groups(
@@ -96,13 +90,18 @@ def prune_stale_loaded_groups(store: ParamStore) -> None:
         store._touch()
 
 
-def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
-    """登録済み primitive/effect の未登録引数（arg）をストアから削除する。
+def prune_unknown_args_in_known_ops(
+    store: ParamStore,
+    known_operations: KnownOperationSchemaSnapshot,
+) -> list[ParameterKey]:
+    """既知 operation の schema にない引数をストアから削除する。
 
     Parameters
     ----------
     store : ParamStore
         対象の `ParamStore`。
+    known_operations : KnownOperationSchemaSnapshot
+        session が固定した既知 operation schema。
 
     Returns
     -------
@@ -113,13 +112,15 @@ def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
     -----
     - `op` が未登録（primitive/effect どちらでもない）のものは削除しない。
       （プラグイン未ロード等の可能性があるため）
-    - 判定は registry の meta keys を基準にする（`param_order` は並び専用）。
+    - 判定は渡された snapshot の argument 集合だけを基準にする。
     """
 
-    removed: list[ParameterKey] = []
+    if type(known_operations) is not KnownOperationSchemaSnapshot:
+        raise TypeError(
+            "known_operations は exact KnownOperationSchemaSnapshot である必要があります"
+        )
 
-    primitive_known_args_by_op: dict[str, set[str]] = {}
-    effect_known_args_by_op: dict[str, set[str]] = {}
+    removed: list[ParameterKey] = []
 
     favorites = set(store._favorite_keys_snapshot())
     locked = store._locked_keys_ref()
@@ -135,26 +136,11 @@ def prune_unknown_args_in_known_ops(store: ParamStore) -> list[ParameterKey]:
         op = key.op
         arg = key.arg
 
-        if op in primitive_registry:
-            # registry の meta は op ごとに一定なので、1 回引いたらキャッシュする。
-            known_args = primitive_known_args_by_op.get(op)
-            if known_args is None:
-                known_args = set(primitive_registry[op].meta)
-                primitive_known_args_by_op[op] = known_args
-            if arg in known_args:
-                continue
-
-        elif op in effect_registry:
-            # primitive と同様に、effect 側も op ごとに meta keys をキャッシュする。
-            known_args = effect_known_args_by_op.get(op)
-            if known_args is None:
-                known_args = set(effect_registry[op].meta)
-                effect_known_args_by_op[op] = known_args
-            if arg in known_args:
-                continue
-
-        else:
+        known_args = known_operations.args_for(op)
+        if known_args is None:
             # op が未登録なら、削除せず残す（プラグイン未ロード等の可能性がある）。
+            continue
+        if arg in known_args:
             continue
 
         # op は登録済みだが arg は未知、というケースなのでストアから消す。
@@ -202,8 +188,7 @@ def prune_groups(
         for group in groups
     ):
         raise TypeError(
-            "groups_to_remove must contain non-empty "
-            "(op, site_id) tuple[str, str] values"
+            "groups_to_remove must contain non-empty (op, site_id) tuple[str, str] values"
         )
     if not groups:
         return
@@ -250,9 +235,7 @@ def prune_groups(
             site_id,
             preserve_observed_topology=preserve_observed_effect_topology,
         )
-        collapsed.difference_update(
-            group_collapsed_header_keys((op, site_id))
-        )
+        collapsed.difference_update(group_collapsed_header_keys((op, site_id)))
         runtime.loaded_groups.discard((op, site_id))
         runtime.observed_groups.discard((op, site_id))
 
@@ -265,9 +248,7 @@ def prune_groups(
     chain_ids_after = set(effects.chain_ordinals().keys())
     # 消えた chain に対応する collapsed 状態も取り除き、UI 側にゴミが残らないようにする。
     for removed_chain_id in chain_ids_before - chain_ids_after:
-        collapsed.discard(
-            effect_chain_collapsed_header_key(removed_chain_id)
-        )
+        collapsed.discard(effect_chain_collapsed_header_key(removed_chain_id))
 
     store._touch()
 

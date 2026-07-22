@@ -87,10 +87,6 @@ def test_pause_policy_drops_error_frame_without_advancing_clock(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    class Screen:
-        def read(self, **_kwargs: object) -> bytes:
-            return b"rgb"
-
     monkeypatch.setattr(recording_module, "VideoRecorder", _FakeRecorder)
     system = VideoRecordingSystem(fps=20.0)
     system.start(
@@ -99,7 +95,7 @@ def test_pause_policy_drops_error_frame_without_advancing_clock(
         output_path=tmp_path / "base.mp4",
     )
 
-    system.write_frame(Screen())
+    system.write_frame(b"rgb")
     assert system.t() == pytest.approx(1.55)
     system.pause_frame("ValueError: broken scene")
     assert system.t() == pytest.approx(1.55)

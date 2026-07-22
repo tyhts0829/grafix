@@ -7,6 +7,8 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, MutableSet
 from copy import deepcopy
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from .collapsed_header import CollapsedHeaderKey
@@ -15,11 +17,91 @@ from .key import ParameterKey
 from .labels import ParamLabels
 from .meta import ParamMeta
 from .ordinals import GroupOrdinals
-from .runtime import LoadProvenance, ParamStoreLoadDiagnostic, ParamStoreRuntime
+from .runtime import (
+    LoadProvenance,
+    ParamRuntimeView,
+    ParamStoreLoadDiagnostic,
+    ParamStoreRuntime,
+)
 from .state import ParamState
 
 if TYPE_CHECKING:
     from .variations import Variation
+
+
+@dataclass(frozen=True, slots=True)
+class _TransientParamStoreState:
+    """Transient rollback が所有する ParamStore の論理状態。"""
+
+    states: dict[ParameterKey, ParamState]
+    meta: dict[ParameterKey, ParamMeta]
+    explicit_by_key: dict[ParameterKey, bool]
+    labels: ParamLabels
+    ordinals: GroupOrdinals
+    effects: EffectChainIndex
+    collapsed_headers: set[CollapsedHeaderKey]
+    locked_keys: set[ParameterKey]
+    favorite_keys: set[ParameterKey]
+    variations: dict[str, Variation]
+    runtime: ParamStoreRuntime
+    revision: int
+    table_revision: int
+    value_revision: int
+    style_revision: int
+    favorite_revision: int
+    value_change_log: deque[tuple[int, tuple[ParameterKey, ...]]]
+
+
+@dataclass(slots=True)
+class _PendingStoreMutation:
+    """一つの core command 内でまとめる revision 更新。"""
+
+    owner: object
+    touched: bool = False
+    structure: bool = False
+    value_keys: list[ParameterKey] = field(default_factory=list)
+    favorites: bool = False
+
+
+class ParamStoreRollback:
+    """一つの ParamStore に属する one-shot transient rollback scope。"""
+
+    __slots__ = ("_active", "_state", "_store", "_used")
+
+    def __init__(self, store: ParamStore) -> None:
+        self._store = store
+        self._state: _TransientParamStoreState | None = None
+        self._active = False
+        self._used = False
+
+    def __enter__(self) -> ParamStoreRollback:
+        """開始時の論理状態を退避し、この scope を有効にする。"""
+
+        if self._used:
+            raise RuntimeError("ParamStoreRollback is one-shot")
+        self._used = True
+        store = self._store
+        store._begin_transient_rollback(self)
+        try:
+            self._state = store._capture_transient_state()
+        except BaseException:
+            store._end_transient_rollback(self)
+            raise
+        self._active = True
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        """終了理由にかかわらず開始時の論理状態へ戻す。"""
+
+        if not self._active:
+            raise RuntimeError("ParamStoreRollback is not active")
+        store = self._store
+        try:
+            store._restore_transient_rollback(self)
+        finally:
+            store._end_transient_rollback(self)
+            self._active = False
+            self._state = None
 
 
 class _FavoriteKeySet(MutableSet[ParameterKey]):
@@ -95,6 +177,9 @@ class ParamStore:
         self._history_headers_observer: (
             Callable[[frozenset[CollapsedHeaderKey] | None], None] | None
         ) = None
+        self._history_transaction_owner: object | None = None
+        self._active_transient_rollback: ParamStoreRollback | None = None
+        self._pending_mutation: _PendingStoreMutation | None = None
         self._snapshot_cache_revision = -1
         self._snapshot_cache_value_revision = -1
         self._snapshot_cache_rebuilt_entries = 0
@@ -105,6 +190,12 @@ class ParamStore:
         """snapshot/model に影響する永続状態の変更時だけ増える単調 revision。"""
 
         return self._revision
+
+    @property
+    def effective_revision(self) -> int:
+        """直近 frame の effective/source snapshot が変わるたびに増える revision。"""
+
+        return self._runtime.effective_revision
 
     @property
     def table_revision(self) -> int:
@@ -163,7 +254,8 @@ class ParamStore:
         if source is self:
             raise ValueError("source must be a different ParamStore")
         if (
-            self._history_key_observer is not None
+            self._history_transaction_owner is not None
+            or self._history_key_observer is not None
             or self._history_headers_observer is not None
         ):
             raise RuntimeError("cannot replace ParamStore during a history transaction")
@@ -237,6 +329,23 @@ class ParamStore:
         runtime._effective_changed_keys = ()
         runtime._visibility_tracker.revision = next_visibility_revision
 
+    def begin_transient_rollback(self) -> ParamStoreRollback:
+        """終了時に現在の論理状態へ正確に戻す one-shot scope を返す。
+
+        Returns
+        -------
+        ParamStoreRollback
+            正常終了・例外終了の双方で開始時の状態へ戻す context manager。
+
+        Notes
+        -----
+        この scope は variation batch のような一時評価用であり、Undo/Redo
+        history には記録しない。scope と active history transaction は相互に
+        nest できない。
+        """
+
+        return ParamStoreRollback(self)
+
     @property
     def load_provenance(self) -> LoadProvenance:
         """現在のデータを復元した load 経路を返す。"""
@@ -248,6 +357,129 @@ class ParamStore:
         """load 中の recovery/quarantine 診断を返す。"""
 
         return self._runtime.load_diagnostics
+
+    def runtime_view(self) -> ParamRuntimeView:
+        """GUI が必要とする runtime 情報の read-only view を返す。"""
+
+        runtime = self._runtime
+        # key/value は FrameParamRecord 境界で canonical immutable value に
+        # 固定済みなので、mapping 自体の浅い snapshot だけを所有すればよい。
+        return ParamRuntimeView(
+            loaded_groups=frozenset(runtime.loaded_groups),
+            observed_groups=frozenset(runtime.observed_groups),
+            display_order_by_group=MappingProxyType(
+                dict(runtime.display_order_by_group)
+            ),
+            last_effective_by_key=MappingProxyType(
+                dict(runtime.last_effective_by_key)
+            ),
+            last_source_by_key=MappingProxyType(
+                dict(runtime.last_source_by_key)
+            ),
+            effective_revision=int(runtime.effective_revision),
+            visibility_revision=int(runtime.visibility_revision),
+        )
+
+    def effective_changes_since(
+        self,
+        revision: int,
+    ) -> frozenset[ParameterKey] | None:
+        """指定 runtime revision 以降の effective/source 変更 key を返す。"""
+
+        return self._runtime.effective_changes_since(revision)
+
+    def last_effective_value(self, key: ParameterKey) -> object | None:
+        """直近 frame の effective value を返す。未観測なら ``None``。"""
+
+        return self._runtime.last_effective_by_key.get(key)
+
+    def record_unknown_argument_warnings(
+        self,
+        pairs: Iterable[tuple[str, str]],
+    ) -> frozenset[tuple[str, str]]:
+        """未警告の operation/argument 組を記録し、新規分だけ返す。"""
+
+        warned = self._runtime.warned_unknown_args
+        new_pairs = frozenset(pairs) - warned
+        warned.update(new_pairs)
+        return new_pairs
+
+    def accept_loaded_state(self) -> bool:
+        """recovery 済み runtime 診断を primary として受理する。"""
+
+        runtime = self._runtime
+        if runtime.load_provenance == "primary" and not runtime.load_diagnostics:
+            return False
+        runtime.load_provenance = "primary"
+        runtime.load_diagnostics = ()
+        return True
+
+    def collapsed_headers(self) -> frozenset[CollapsedHeaderKey]:
+        """現在の折りたたみ header の immutable snapshot を返す。"""
+
+        return frozenset(self._collapsed_headers)
+
+    def set_collapsed(
+        self,
+        header: CollapsedHeaderKey,
+        *,
+        collapsed: bool,
+    ) -> bool:
+        """一つの header の折りたたみ状態を変更する。"""
+
+        return bool(self.set_all_collapsed((header,), collapsed=collapsed))
+
+    def set_all_collapsed(
+        self,
+        headers: Iterable[CollapsedHeaderKey],
+        *,
+        collapsed: bool,
+    ) -> tuple[CollapsedHeaderKey, ...]:
+        """複数 header を一括変更し、実際に変わった header を返す。"""
+
+        if type(collapsed) is not bool:
+            raise TypeError("collapsed must be an exact bool")
+        ordered = tuple(dict.fromkeys(headers))
+        if not all(isinstance(header, CollapsedHeaderKey) for header in ordered):
+            raise TypeError("headers must contain only CollapsedHeaderKey values")
+        current = self._collapsed_headers
+        changed = tuple(
+            header
+            for header in ordered
+            if (header in current) != collapsed
+        )
+        if not changed:
+            return ()
+        before = frozenset(current)
+        self._observe_history_headers_before(before)
+        if collapsed:
+            current.update(changed)
+        else:
+            current.difference_update(changed)
+        self._touch(structure=False)
+        return changed
+
+    def replace_collapsed_headers(
+        self,
+        headers: Iterable[CollapsedHeaderKey],
+    ) -> bool:
+        """折りたたみ header 全体を一度の command として置換する。"""
+
+        normalized = set(headers)
+        if not all(isinstance(header, CollapsedHeaderKey) for header in normalized):
+            raise TypeError("headers must contain only CollapsedHeaderKey values")
+        before = frozenset(self._collapsed_headers)
+        if normalized == self._collapsed_headers:
+            return False
+        self._observe_history_headers_before(before)
+        self._collapsed_headers = normalized
+        self._touch(structure=False)
+        return True
+
+    def variation_count(self) -> int:
+        """保存済み named variation の件数を返す。"""
+
+        return len(self._variations)
 
     def get_state(self, key: ParameterKey) -> ParamState | None:
         """登録済みの ParamState を返す。未登録なら None。"""
@@ -406,7 +638,37 @@ class ParamStore:
         """
 
         changed_keys = tuple(dict.fromkeys(value_keys))
+        pending = self._pending_mutation
+        if pending is not None:
+            pending.touched = True
+            pending.structure = pending.structure or bool(structure)
+            pending.value_keys.extend(changed_keys)
+            return
+        self._commit_mutation(
+            touched=True,
+            structure=bool(structure),
+            value_keys=changed_keys,
+            favorites=False,
+        )
+
+    def _commit_mutation(
+        self,
+        *,
+        touched: bool,
+        structure: bool,
+        value_keys: Iterable[ParameterKey],
+        favorites: bool,
+    ) -> None:
+        """集約済み mutation を revision/cache へ一度だけ反映する。"""
+
+        changed_keys = tuple(dict.fromkeys(value_keys))
+        if not touched and not favorites:
+            return
         self._revision += 1
+        if favorites:
+            self._favorite_revision += 1
+            self._favorite_snapshot_revision = -1
+
         if structure:
             self._table_revision += 1
             # 構造変更には style parameter の追加・削除や復元も含まれる。
@@ -440,16 +702,38 @@ class ParamStore:
     def _touch_favorites(self) -> None:
         """favorite overlay と永続保存だけを無効化する。"""
 
-        self._revision += 1
-        self._favorite_revision += 1
-        self._favorite_snapshot_revision = -1
-        # favorite は ParamSnapshot entry に含まれない。既存 snapshot の identity
-        # を保ち、Parameter GUI 側の favorite revision だけを無効化する。
-        if (
-            self._snapshot_cache is not None
-            and self._snapshot_cache_value_revision == self._value_revision
-        ):
-            self._snapshot_cache_revision = self._revision
+        pending = self._pending_mutation
+        if pending is not None:
+            pending.favorites = True
+            self._favorite_snapshot_revision = -1
+            return
+        self._commit_mutation(
+            touched=False,
+            structure=False,
+            value_keys=(),
+            favorites=True,
+        )
+
+    def _begin_mutation_batch(self, owner: object) -> None:
+        """core command 用の revision 集約を開始する。"""
+
+        if self._pending_mutation is not None:
+            raise RuntimeError("ParamStore mutation batch is already active")
+        self._pending_mutation = _PendingStoreMutation(owner=owner)
+
+    def _end_mutation_batch(self, owner: object) -> None:
+        """core command の mutation を一度の revision 更新として確定する。"""
+
+        pending = self._pending_mutation
+        if pending is None or pending.owner is not owner:
+            raise RuntimeError("ParamStore mutation batch owner does not match")
+        self._pending_mutation = None
+        self._commit_mutation(
+            touched=pending.touched,
+            structure=pending.structure,
+            value_keys=pending.value_keys,
+            favorites=pending.favorites,
+        )
 
     def value_changes_since(
         self,
@@ -473,6 +757,146 @@ class ParamStore:
                 break
             changed.update(keys)
         return frozenset(changed)
+
+    def _capture_transient_state(self) -> _TransientParamStoreState:
+        """observer/cache を除く論理状態と counter の独立 copy を返す。"""
+
+        (
+            states,
+            meta,
+            explicit_by_key,
+            labels,
+            ordinals,
+            effects,
+            collapsed_headers,
+            locked_keys,
+            favorite_keys,
+            variations,
+            runtime,
+            value_change_log,
+        ) = deepcopy(
+            (
+                self._states,
+                self._meta,
+                self._explicit_by_key,
+                self._labels,
+                self._ordinals,
+                self._effects,
+                self._collapsed_headers,
+                self._locked_keys,
+                self._favorite_keys_data,
+                self._variations,
+                self._runtime,
+                self._value_change_log,
+            )
+        )
+        return _TransientParamStoreState(
+            states=states,
+            meta=meta,
+            explicit_by_key=explicit_by_key,
+            labels=labels,
+            ordinals=ordinals,
+            effects=effects,
+            collapsed_headers=collapsed_headers,
+            locked_keys=locked_keys,
+            favorite_keys=favorite_keys,
+            variations=variations,
+            runtime=runtime,
+            revision=self._revision,
+            table_revision=self._table_revision,
+            value_revision=self._value_revision,
+            style_revision=self._style_revision,
+            favorite_revision=self._favorite_revision,
+            value_change_log=value_change_log,
+        )
+
+    def _begin_transient_rollback(self, rollback: ParamStoreRollback) -> None:
+        """rollback の owner/nesting を検証し、active scope として登録する。"""
+
+        if rollback._store is not self:
+            raise ValueError("rollback belongs to a different ParamStore")
+        if self._history_transaction_owner is not None:
+            raise RuntimeError(
+                "cannot begin transient rollback during a history transaction"
+            )
+        if (
+            self._history_key_observer is not None
+            or self._history_headers_observer is not None
+        ):
+            raise RuntimeError(
+                "cannot begin transient rollback during a history transaction"
+            )
+        if self._active_transient_rollback is not None:
+            raise RuntimeError("transient rollback is already active")
+        self._active_transient_rollback = rollback
+
+    def _restore_transient_rollback(self, rollback: ParamStoreRollback) -> None:
+        """owner の active rollback が保持する論理状態を直接復元する。"""
+
+        if type(rollback) is not ParamStoreRollback:
+            raise TypeError("rollback must be a ParamStoreRollback")
+        if rollback._store is not self:
+            raise ValueError("rollback belongs to a different ParamStore")
+        if self._active_transient_rollback is not rollback or not rollback._active:
+            raise RuntimeError("rollback is not active for this ParamStore")
+        state = rollback._state
+        if state is None:
+            raise RuntimeError("rollback has no captured state")
+
+        self._states = state.states
+        self._meta = state.meta
+        self._explicit_by_key = state.explicit_by_key
+        self._labels = state.labels
+        self._ordinals = state.ordinals
+        self._effects = state.effects
+        self._collapsed_headers = state.collapsed_headers
+        self._locked_keys = state.locked_keys
+        self._favorite_keys_data = state.favorite_keys
+        self._variations = state.variations
+        self._runtime = state.runtime
+        self._revision = state.revision
+        self._table_revision = state.table_revision
+        self._value_revision = state.value_revision
+        self._style_revision = state.style_revision
+        self._favorite_revision = state.favorite_revision
+        self._value_change_log = state.value_change_log
+
+        # snapshot/favorite cache は scope 内で構築された値も開始前の値も再利用しない。
+        # 復元した mutable state から次回 query 時に必ず再構築する。
+        self._favorite_snapshot_revision = -1
+        self._favorite_snapshot = frozenset()
+        self._favorite_tuple = ()
+        self._snapshot_cache_revision = -1
+        self._snapshot_cache_value_revision = -1
+        self._snapshot_cache_rebuilt_entries = 0
+        self._snapshot_cache = None
+
+    def _end_transient_rollback(self, rollback: ParamStoreRollback) -> None:
+        """owner の active rollback marker を解除する。"""
+
+        if rollback._store is not self:
+            raise ValueError("rollback belongs to a different ParamStore")
+        if self._active_transient_rollback is not rollback:
+            raise RuntimeError("rollback is not active for this ParamStore")
+        self._active_transient_rollback = None
+
+    def _begin_history_transaction(self, owner: object) -> None:
+        """history transaction owner を登録し、不正 nesting を拒否する。"""
+
+        if self._active_transient_rollback is not None:
+            raise RuntimeError(
+                "cannot begin history transaction during a transient rollback"
+            )
+        if self._history_transaction_owner is not None:
+            raise RuntimeError("history transaction is already active")
+        self._history_transaction_owner = owner
+
+    def _end_history_transaction(self, owner: object) -> None:
+        """一致する history transaction owner の登録を解除する。"""
+
+        if self._history_transaction_owner is not owner:
+            raise RuntimeError("history transaction owner does not match")
+        self._history_transaction_owner = None
 
     def _begin_history_patch_capture(
         self,
@@ -531,4 +955,4 @@ class ParamStore:
         self._snapshot_cache_rebuilt_entries = int(rebuilt_entries)
 
 
-__all__ = ["ParamStore"]
+__all__ = ["ParamStore", "ParamStoreRollback"]

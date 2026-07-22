@@ -6,8 +6,10 @@ import hashlib
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from grafix.devtools.benchmarks.definition import CaseDefinition, define_case
 from grafix.devtools.benchmarks.schema import (
     BenchmarkOutput,
     ContractResult,
@@ -18,6 +20,49 @@ from grafix.devtools.benchmarks.schema import (
 from grafix.interactive.runtime.perf import PerfCollector
 
 _SCOPE = "runtime-perf-causal-backlog"
+
+
+def case_definitions() -> tuple[CaseDefinition, ...]:
+    """PerfCollector causal backlog の scaling cases を返す。"""
+
+    return tuple(
+        define_case(
+            f"runtime.perf.causal_backlog.pending_{pending}",
+            f"PerfCollector causal backlog ({pending:,} pending)",
+            category="runtime",
+            suite="parameters",
+            fixture="ordered_causal_revisions",
+            parameters={"pending": pending, "samples": 24},
+            tags=("PERF-04", "causal-backlog", "exact-checksum"),
+            selectable_suites=selectable_suites,
+            setup=setup_perf_backlog_scenario,
+            workload=workload_perf_backlog_scenario,
+            support_source_files=(Path(__file__),),
+            self_sampling=True,
+        )
+        for pending, selectable_suites in (
+            (100, ("parameters",)),
+            (1_000, ("parameters",)),
+            (4_096, ("parameters", "soak")),
+        )
+    )
+
+
+def setup_perf_backlog_scenario(
+    parameters: dict[str, Any],
+    _seed: int,
+) -> object:
+    """Perf backlog scenario を構築する。"""
+
+    return make_perf_backlog_scenario(parameters)
+
+
+def workload_perf_backlog_scenario(state: object) -> BenchmarkOutput:
+    """Perf backlog scenario を一回実行する。"""
+
+    if not isinstance(state, PerfBacklogScenario):
+        raise TypeError("perf backlog scenario state is invalid")
+    return run_perf_backlog_scenario(state)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,9 +131,7 @@ def run_perf_backlog_scenario(
 
     future_distribution = summarize_distribution(future_ms)
     future_p95 = (
-        future_distribution.p95
-        if future_distribution.p95 is not None
-        else future_distribution.max
+        future_distribution.p95 if future_distribution.p95 is not None else future_distribution.max
     )
     assert future_p95 is not None
     future_bounds = _revision_bounds(future._input_created_ns)
@@ -144,12 +187,8 @@ def run_perf_backlog_scenario(
             "future_remaining": future_remaining,
             "prefix_remaining": prefix_remaining,
             "all_remaining": all_remaining,
-            "future_bounds": (
-                None if future_bounds is None else list(future_bounds)
-            ),
-            "prefix_bounds": (
-                None if prefix_bounds is None else list(prefix_bounds)
-            ),
+            "future_bounds": (None if future_bounds is None else list(future_bounds)),
+            "prefix_bounds": (None if prefix_bounds is None else list(prefix_bounds)),
             "latency_counts": [
                 future_latency_count,
                 prefix_latency_count,
@@ -274,6 +313,7 @@ def _contract(
 
 
 __all__ = [
+    "case_definitions",
     "PerfBacklogScenario",
     "make_perf_backlog_scenario",
     "run_perf_backlog_scenario",

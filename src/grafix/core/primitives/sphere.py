@@ -13,7 +13,7 @@ import numpy as np
 
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.primitive_registry import primitive
+from grafix.core.operation_authoring import primitive
 from grafix.core.realized_geometry import GeomTuple
 
 _RADIUS = 0.5

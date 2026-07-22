@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
 import numpy as np
 
+from grafix.core.authoring_definitions import AuthoringDefinitionsSnapshot
+from grafix.core.authoring_loader import authoring_definitions_for_draw
 from grafix.core.builtins import (
     ensure_builtin_effect_registered,
     ensure_builtin_primitive_registered,
 )
+from grafix.core.evaluation_context import EvaluationContext
 from grafix.core.geometry import Geometry
 from grafix.core.layer import LayerStyleDefaults
 from grafix.core.parameters.context import current_param_snapshot
@@ -21,7 +25,12 @@ from grafix.core.parameters.history import ParamStoreHistory
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.realize import RealizeSession
-from grafix.devtools.benchmarks import system_benchmark
+from grafix.core.runtime_config import RuntimeConfig, runtime_config
+from grafix.devtools.benchmarks import renderer_benchmark
+from grafix.devtools.benchmarks.definition import CaseDefinition, define_case
+from grafix.devtools.benchmarks.parameter_hotpath_benchmark import (
+    parameter_store_fixture,
+)
 from grafix.devtools.benchmarks.schema import (
     BenchmarkOutput,
     Metric,
@@ -30,6 +39,7 @@ from grafix.devtools.benchmarks.schema import (
 )
 from grafix.interactive.gl import draw_renderer as renderer_module
 from grafix.interactive.gl.index_buffer import build_line_indices_and_stats
+from grafix.interactive.parameter_gui.catalog import ParameterGuiCatalog
 from grafix.interactive.parameter_gui.store_bridge import (
     clear_parameter_table_model_cache,
     parameter_table_model_build_count,
@@ -50,9 +60,115 @@ _BASE_LINE = Geometry.create(
 )
 
 
+def case_definitions() -> tuple[CaseDefinition, ...]:
+    """UX-01 hosted slider benchmark cases を返す。"""
+
+    def slider_case(
+        case_id: str,
+        label: str,
+        *,
+        parameters: dict[str, object],
+        tags: tuple[str, ...],
+        selectable_suites: tuple[str, ...],
+    ) -> CaseDefinition:
+        return define_case(
+            case_id,
+            label,
+            category="interactive",
+            suite="interactive",
+            fixture="parameter_store_light_scale_slider",
+            parameters=parameters,
+            tags=tags,
+            selectable_suites=selectable_suites,
+            setup=setup_interactive_slider_scenario,
+            workload=workload_interactive_slider_scenario,
+            support_source_files=(
+                Path(__file__),
+                Path(__file__).with_name("parameter_hotpath_benchmark.py"),
+                Path(__file__).with_name("renderer_benchmark.py"),
+            ),
+            self_sampling=True,
+        )
+
+    return (
+        slider_case(
+            "interactive.slider.input_to_present.rows_32.workers_0",
+            "UX-01 hosted slider input-to-present / sync",
+            parameters={
+                "rows": 32,
+                "workers": 0,
+                "warmup_frames": 3,
+                "drag_frames": 12,
+                "settle_frames": 4,
+                "frame_interval_s": 0.0,
+                "settle_timeout_s": 1.0,
+                "latency_guardrail_ms": 16.667,
+            },
+            tags=("UX-01", "input-to-present", "fake-gui", "fake-gl", "sync"),
+            selectable_suites=("smoke", "interactive"),
+        ),
+        slider_case(
+            "interactive.slider.input_to_present.rows_1000.workers_0",
+            "UX-01 hosted slider input-to-present / 1,000 rows",
+            parameters={
+                "rows": 1_000,
+                "workers": 0,
+                "warmup_frames": 2,
+                "drag_frames": 8,
+                "settle_frames": 3,
+                "frame_interval_s": 0.0,
+                "settle_timeout_s": 1.0,
+                "latency_guardrail_ms": 16.667,
+            },
+            tags=(
+                "UX-01",
+                "input-to-present",
+                "fake-gui",
+                "fake-gl",
+                "large-parameter-table",
+                "sync",
+            ),
+            selectable_suites=("interactive",),
+        ),
+        slider_case(
+            "interactive.slider.input_to_present.rows_32.workers_1",
+            "UX-01 hosted slider input-to-present / 1 worker",
+            parameters={
+                "rows": 32,
+                "workers": 1,
+                "warmup_frames": 4,
+                "drag_frames": 12,
+                "settle_frames": 6,
+                "frame_interval_s": 1.0 / 60.0,
+                "settle_timeout_s": 2.0,
+                "latency_guardrail_ms": 50.0,
+            },
+            tags=("UX-01", "input-to-present", "fake-gui", "fake-gl", "multiprocessing"),
+            selectable_suites=("interactive",),
+        ),
+    )
+
+
+def setup_interactive_slider_scenario(
+    parameters: dict[str, Any],
+    _seed: int,
+) -> object:
+    """Hosted slider scenario を構築する。"""
+
+    return make_interactive_slider_scenario(parameters)
+
+
+def workload_interactive_slider_scenario(state: object) -> BenchmarkOutput:
+    """Hosted slider scenario を一回実行する。"""
+
+    if not isinstance(state, InteractiveSliderScenario):
+        raise TypeError("interactive slider scenario state is invalid")
+    return run_interactive_slider_scenario(state)
+
+
 @dataclass(frozen=True, slots=True)
 class InteractiveSliderScenario:
-    """1 回の deterministic hosted scenario 設定。"""
+    """1 回の deterministic hosted scenario と固定済み composition。"""
 
     rows: int
     workers: int
@@ -63,6 +179,9 @@ class InteractiveSliderScenario:
     settle_timeout_s: float
     latency_guardrail_ms: float
     expected_mesh_checksum: str
+    effective_config: RuntimeConfig = field(repr=False, compare=False)
+    definitions: AuthoringDefinitionsSnapshot = field(repr=False, compare=False)
+    gui_catalog: ParameterGuiCatalog = field(repr=False, compare=False)
 
 
 @dataclass(slots=True)
@@ -98,39 +217,64 @@ def interactive_slider_draw(_t: float) -> Geometry:
 def make_interactive_slider_scenario(
     parameters: dict[str, Any],
 ) -> InteractiveSliderScenario:
-    """runner の JSON-compatible parameters を検証済み設定へ変換する。"""
+    """parameter と measurement 外で固定する composition を構築する。"""
 
     ensure_builtin_primitive_registered("line")
     ensure_builtin_effect_registered("scale")
     drag_frames = int(parameters["drag_frames"])
-    scenario = InteractiveSliderScenario(
-        rows=int(parameters["rows"]),
-        workers=int(parameters["workers"]),
-        warmup_frames=int(parameters["warmup_frames"]),
+    rows = int(parameters["rows"])
+    workers = int(parameters["workers"])
+    warmup_frames = int(parameters["warmup_frames"])
+    settle_frames = int(parameters["settle_frames"])
+    frame_interval_s = float(parameters["frame_interval_s"])
+    settle_timeout_s = float(parameters["settle_timeout_s"])
+    latency_guardrail_ms = float(parameters["latency_guardrail_ms"])
+    if rows < 1:
+        raise ValueError("rows は 1 以上である必要があります")
+    if workers < 0:
+        raise ValueError("workers は 0 以上である必要があります")
+    if (
+        min(
+            warmup_frames,
+            drag_frames,
+            settle_frames,
+        )
+        < 1
+    ):
+        raise ValueError("各 phase の frame 数は 1 以上である必要があります")
+    if frame_interval_s < 0.0 or settle_timeout_s <= 0.0:
+        raise ValueError("frame interval/timeout が不正です")
+    if latency_guardrail_ms <= 0.0:
+        raise ValueError("latency guardrail は正である必要があります")
+
+    # UX measurement は slider edit 後の hot path が対象。pure config discovery と
+    # candidate load は application composition と同じく setup で一度だけ確定する。
+    effective_config = runtime_config()
+    definitions = authoring_definitions_for_draw(
+        interactive_slider_draw,
+        config=effective_config,
+    )
+    return InteractiveSliderScenario(
+        rows=rows,
+        workers=workers,
+        warmup_frames=warmup_frames,
         drag_frames=drag_frames,
-        settle_frames=int(parameters["settle_frames"]),
-        frame_interval_s=float(parameters["frame_interval_s"]),
-        settle_timeout_s=float(parameters["settle_timeout_s"]),
-        latency_guardrail_ms=float(parameters["latency_guardrail_ms"]),
+        settle_frames=settle_frames,
+        frame_interval_s=frame_interval_s,
+        settle_timeout_s=settle_timeout_s,
+        latency_guardrail_ms=latency_guardrail_ms,
         expected_mesh_checksum=_expected_mesh_checksum(
-            2.0 + float(drag_frames) * 0.05
+            2.0 + float(drag_frames) * 0.05,
+            config=effective_config,
+            definitions=definitions,
+        ),
+        effective_config=effective_config,
+        definitions=definitions,
+        gui_catalog=ParameterGuiCatalog.capture(
+            definitions.operations,
+            definitions.presets,
         ),
     )
-    if scenario.rows < 1:
-        raise ValueError("rows は 1 以上である必要があります")
-    if scenario.workers < 0:
-        raise ValueError("workers は 0 以上である必要があります")
-    if min(
-        scenario.warmup_frames,
-        scenario.drag_frames,
-        scenario.settle_frames,
-    ) < 1:
-        raise ValueError("各 phase の frame 数は 1 以上である必要があります")
-    if scenario.frame_interval_s < 0.0 or scenario.settle_timeout_s <= 0.0:
-        raise ValueError("frame interval/timeout が不正です")
-    if scenario.latency_guardrail_ms <= 0.0:
-        raise ValueError("latency guardrail は正である必要があります")
-    return scenario
 
 
 def run_interactive_slider_scenario(
@@ -147,7 +291,7 @@ def run_interactive_slider_scenario(
     ensure_builtin_effect_registered("scale")
     clear_parameter_table_model_cache()
 
-    store = system_benchmark._parameter_store(rows=scenario.rows)
+    store = parameter_store_fixture(rows=scenario.rows)
     target_meta = store.get_meta(_SLIDER_KEY)
     if target_meta is None:
         raise RuntimeError("UX-01 slider parameter metadata is missing")
@@ -158,9 +302,11 @@ def run_interactive_slider_scenario(
         interactive_slider_draw,
         perf=perf,
         n_worker=scenario.workers,
+        effective_config=scenario.effective_config,
+        definitions=scenario.definitions,
     )
-    renderer = system_benchmark._fake_renderer()
-    system_benchmark._BenchmarkFakeMesh.instances.clear()
+    renderer = renderer_benchmark.fake_renderer()
+    renderer_benchmark.BenchmarkFakeMesh.instances.clear()
 
     baseline_value = 2.0
     final_value = 2.0 + float(scenario.drag_frames) * 0.05
@@ -209,12 +355,11 @@ def run_interactive_slider_scenario(
         gui_started = time.perf_counter_ns()
         view = parameter_table_view_for_store(
             store,
+            catalog=scenario.gui_catalog,
             show_inactive_params=True,
         )
         visible_rows = int(sum(view.visible_mask))
-        phase_samples.fake_gui_ms.append(
-            _elapsed_ms(gui_started, time.perf_counter_ns())
-        )
+        phase_samples.fake_gui_ms.append(_elapsed_ms(gui_started, time.perf_counter_ns()))
 
         scene_started = time.perf_counter_ns()
         layers = runner.run(
@@ -226,9 +371,7 @@ def run_interactive_slider_scenario(
             transport_epoch=0,
             quality="draft",
         )
-        phase_samples.scene_runner_ms.append(
-            _elapsed_ms(scene_started, time.perf_counter_ns())
-        )
+        phase_samples.scene_runner_ms.append(_elapsed_ms(scene_started, time.perf_counter_ns()))
 
         mesh_started = time.perf_counter_ns()
         presented_revision = runner.last_realized_snapshot_revision
@@ -249,7 +392,7 @@ def run_interactive_slider_scenario(
                 if mesh is None:
                     continue
                 benchmark_mesh = cast(
-                    system_benchmark._BenchmarkFakeMesh,
+                    renderer_benchmark.BenchmarkFakeMesh,
                     mesh,
                 )
                 vertices = benchmark_mesh.last_vertices
@@ -268,10 +411,7 @@ def run_interactive_slider_scenario(
         lag = current_revision - int(presented_revision)
         if phase != "warmup":
             revision_lags.append(lag)
-        fresh_present_frames += int(
-            phase != "warmup"
-            and runner.last_evaluation_succeeded is True
-        )
+        fresh_present_frames += int(phase != "warmup" and runner.last_evaluation_succeeded is True)
         last_presented_revision = int(presented_revision)
         if current_checksum is not None:
             last_mesh_checksum = current_checksum
@@ -290,7 +430,7 @@ def run_interactive_slider_scenario(
         with patch.object(
             renderer_module,
             "LineMesh",
-            system_benchmark._BenchmarkFakeMesh,
+            renderer_benchmark.BenchmarkFakeMesh,
         ):
             for _ in range(scenario.warmup_frames):
                 present_frame("warmup")
@@ -342,9 +482,7 @@ def run_interactive_slider_scenario(
         runner.close()
         perf.close()
 
-    final_presented_revision = (
-        -1 if last_presented_revision is None else last_presented_revision
-    )
+    final_presented_revision = -1 if last_presented_revision is None else last_presented_revision
     final_input_delta = final_input_revision - start_revision
     final_presented_delta = final_presented_revision - start_revision
     fresh_ratio = (
@@ -545,9 +683,19 @@ def run_interactive_slider_scenario(
     )
 
 
-def _expected_mesh_checksum(scale_x: float) -> str:
+def _expected_mesh_checksum(
+    scale_x: float,
+    *,
+    config: RuntimeConfig,
+    definitions: AuthoringDefinitionsSnapshot,
+) -> str:
     geometry = _scaled_line(float(scale_x))
-    with RealizeSession() as session:
+    context = EvaluationContext(
+        catalog=definitions.operations,
+        quality="final",
+        config=config,
+    )
+    with RealizeSession(context=context) as session:
         realized = session.realize(geometry)
     indices, _stats = build_line_indices_and_stats(realized.offsets)
     return _mesh_checksum(realized.coords, indices)
@@ -624,6 +772,7 @@ def _counter(name: str, value: int) -> Metric:
 
 
 __all__ = [
+    "case_definitions",
     "InteractiveSliderScenario",
     "interactive_slider_draw",
     "make_interactive_slider_scenario",

@@ -7,8 +7,7 @@ from pathlib import Path
 import pytest
 
 from grafix.api import E, G
-from grafix.core.effect_registry import effect_registry
-from grafix.core.primitive_registry import primitive_registry
+from grafix.core.operation_declaration import OpDeclaration
 
 
 def test_g_describe_exposes_primitive_spec_metadata() -> None:
@@ -26,7 +25,8 @@ def test_g_describe_exposes_primitive_spec_metadata() -> None:
     assert entry.source is not None
     assert Path(entry.source).name == "line.py"
     assert entry.provenance == "grafix.core.primitives.line:line"
-    assert entry.spec is primitive_registry["line"]
+    assert isinstance(entry.declaration, OpDeclaration)
+    assert not hasattr(entry, "spec")
 
 
 def test_e_describe_excludes_geometry_inputs_from_effect_args() -> None:
@@ -44,7 +44,8 @@ def test_e_describe_excludes_geometry_inputs_from_effect_args() -> None:
     assert entry.source is not None
     assert Path(entry.source).name == "scale.py"
     assert entry.provenance == "grafix.core.effects.scale:scale"
-    assert entry.spec is effect_registry["scale"]
+    assert isinstance(entry.declaration, OpDeclaration)
+    assert not hasattr(entry, "spec")
 
 
 def test_catalog_loads_all_builtins_and_is_sorted() -> None:

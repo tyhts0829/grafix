@@ -4,10 +4,8 @@ from grafix.devtools.benchmarks.parameter_edit_benchmark import (
     make_parameter_edit_scenario,
     run_parameter_edit_scenario,
 )
-from grafix.devtools.benchmarks.runner import (
-    case_definitions,
-    run_case_isolated,
-)
+from grafix.devtools.benchmarks.catalog import case_definitions
+from grafix.devtools.benchmarks.runner import run_case_isolated
 
 
 def _parameters(*, rows: int = 100, changed_frames: int = 4) -> dict[str, int]:
@@ -18,9 +16,7 @@ def _parameters(*, rows: int = 100, changed_frames: int = 4) -> dict[str, int]:
 
 
 def test_single_key_changed_frame_reports_split_timing_and_hard_contracts() -> None:
-    result = run_parameter_edit_scenario(
-        make_parameter_edit_scenario(_parameters())
-    )
+    result = run_parameter_edit_scenario(make_parameter_edit_scenario(_parameters()))
 
     assert result.value == {
         "scope": "core+parameter-table-model(no-imgui)",
@@ -35,11 +31,7 @@ def test_single_key_changed_frame_reports_split_timing_and_hard_contracts() -> N
         "rss_or_allocations_measured": False,
     }
     assert result.contracts
-    assert all(
-        contract.passed
-        for contract in result.contracts
-        if contract.severity == "hard"
-    )
+    assert all(contract.passed for contract in result.contracts if contract.severity == "hard")
 
     metrics = {metric.name: metric for metric in result.metrics}
     for name in (
@@ -57,18 +49,10 @@ def test_single_key_changed_frame_reports_split_timing_and_hard_contracts() -> N
         assert metric.distribution is not None
         assert metric.distribution.count == 4
 
-    assert (
-        metrics["param_edit.changed_frame.full_memento_captures"].value
-        == 0
-    )
+    assert metrics["param_edit.changed_frame.full_memento_captures"].value == 0
     assert metrics["param_edit.changed_frame.table_model_builds"].value == 0
     assert metrics["param_edit.changed_frame.max_changed_keys"].value == 1
-    assert (
-        metrics[
-            "param_edit.changed_frame.max_changed_row_identities"
-        ].value
-        == 1
-    )
+    assert metrics["param_edit.changed_frame.max_changed_row_identities"].value == 1
     assert metrics["param_edit.changed_frame.revision_delta"].value == 4
     assert metrics["param_edit.changed_frame.table_revision_delta"].value == 0
     assert metrics["param_edit.changed_frame.value_revision_delta"].value == 4
@@ -86,9 +70,7 @@ def test_parameter_edit_scenario_is_reusable_after_undo_redo() -> None:
 
 
 def test_registry_scopes_parameter_edit_cases_for_smoke_gui_and_soak() -> None:
-    definitions = {
-        definition.case_id: definition for definition in case_definitions()
-    }
+    definitions = {definition.case_id: definition for definition in case_definitions()}
     small = definitions["gui.parameter_edit.rows_100"]
     medium = definitions["gui.parameter_edit.rows_1000"]
     large = definitions["gui.parameter_edit.rows_10000"]
@@ -99,10 +81,7 @@ def test_registry_scopes_parameter_edit_cases_for_smoke_gui_and_soak() -> None:
     assert medium.selectable_suites == ("gui",)
     assert large.parameters == {"rows": 10_000, "changed_frames": 6}
     assert large.selectable_suites == ("soak",)
-    assert all(
-        "PARAM-01" in definition.tags
-        for definition in (small, medium, large)
-    )
+    assert all("PARAM-01" in definition.tags for definition in (small, medium, large))
 
 
 def test_formal_case_returns_typed_metrics_and_passes_contracts() -> None:

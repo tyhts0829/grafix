@@ -15,12 +15,12 @@ from shapely.geometry import (  # type: ignore[import-untyped]
 from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
 from shapely.ops import voronoi_diagram  # type: ignore[import-untyped]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.parameters.meta import ParamMeta
-from .util import (
+from grafix.core.geometry_kernels.packed import pack_polylines
+from grafix.core.geometry_kernels.planar import (
     canonical_planar_frame,
-    pack_polylines,
     planarity_threshold,
 )
 

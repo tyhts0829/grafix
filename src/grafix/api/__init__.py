@@ -25,8 +25,7 @@ from .variation_batch import (
     VariationRenderResult,
     render_variation_batch,
 )
-from grafix.core.effect_registry import effect
-from grafix.core.primitive_registry import primitive
+from grafix.core.operation_authoring import effect, primitive
 from grafix.core.resource_budget import ResourceBudget, ResourceLimitError
 from grafix.core.runtime_limits import RuntimeLimitProfiles, RuntimeLimits
 

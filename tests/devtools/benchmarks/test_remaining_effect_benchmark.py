@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 
 from grafix.core import builtins
-from grafix.core.effect_registry import effect_registry
 from grafix.core.preview_quality import current_preview_quality
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.devtools.benchmarks import (
@@ -15,12 +14,12 @@ from grafix.devtools.benchmarks.remaining_effect_benchmark import (
     remaining_effect_benchmark_cases,
     target_remaining_effect_names,
 )
-from grafix.devtools.benchmarks.runner import (
+from grafix.devtools.benchmarks.catalog import (
     case_definitions,
-    geometry_checksum,
-    run_case_isolated,
     select_case_definitions,
 )
+from grafix.devtools.benchmarks.metrics import geometry_checksum
+from grafix.devtools.benchmarks.runner import run_case_isolated
 from grafix.devtools.benchmarks.schema import Metric
 
 _EXCLUDED = {"fill", "subdivide", "scale", "rotate", "translate"}
@@ -36,7 +35,7 @@ _COMMON_METRICS = {
     "actual_work",
     "diagnostics",
     "effect_source_sha256",
-    "util_source_sha256",
+    "geometry_kernels_source_sha256",
 }
 _EXPECTED_LAYOUT_KEYS = {
     "coords_dtype",
@@ -74,9 +73,8 @@ def test_remaining_effect_case_arguments_are_owned_and_read_only() -> None:
 
 
 def test_remaining_effect_suite_covers_exact_builtin_target_set() -> None:
-    builtins.ensure_builtin_effects_registered()
     expected = {
-        name for name in effect_registry if builtins.ensure_builtin_effect_registered(name)
+        entry.name for entry in builtins.builtin_operation_catalog().entries(kind="effect")
     } - _EXCLUDED
     definitions = select_case_definitions(suites=("effects-remaining",))
 
@@ -318,7 +316,7 @@ def test_remaining_effect_direct_cases_pass_frozen_hard_contracts(
     assert _COMMON_METRICS <= set(metrics)
     assert metrics["actual_work"].value is True
     assert len(str(metrics["effect_source_sha256"].value)) == 64
-    assert len(str(metrics["util_source_sha256"].value)) == 64
+    assert len(str(metrics["geometry_kernels_source_sha256"].value)) == 64
     if case_id == "effect.remaining.reaction_diffusion.draft.rings_medium":
         assert metrics["work.steps.requested"].value == 800
         assert metrics["work.steps.effective"].value == 600

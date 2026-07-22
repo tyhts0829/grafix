@@ -4,12 +4,12 @@
 なぜ: `G`/`E` が動的名前空間のため、静的解析が公開 API を把握できる形を用意するため。
 
 主な流れ（読む順）:
-- `generate_stubs_str()` が各 registry を初期化し、primitive/effect/preset の一覧を集計する。
+- `generate_stubs_str()` が immutable catalog snapshot から primitive/effect/preset を集計する。
 - 集計した名前から `_render_*_protocol()` で `Protocol` ベースの API（`G/E/L/P`）を文字列として生成する。
 - `main()` が project の `typings/grafix/api/__init__.pyi` へ書き出す。
 
 副作用:
-- `generate_stubs_str()` は registry 初期化と preset 自動ロードのために import を行う。
+- `generate_stubs_str()` は provenance 解決に必要な module import だけを行う。
 - `main()` は `__init__.pyi` をファイル出力する。
 
 補足:
@@ -29,11 +29,20 @@ import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, assert_never
+from typing import TYPE_CHECKING, Any, assert_never, cast
 
-from grafix.core.atomic_write import atomic_write_text
+from grafix.file_io import atomic_write_text
+from grafix.core.operation_catalog import (
+    OperationCatalog,
+    current_operation_catalog,
+)
+from grafix.core.operation_declaration import OpKind
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.validation import ParamKind
+from grafix.core.preset_catalog import PresetCatalog
+
+if TYPE_CHECKING:
+    from grafix.core.runtime_config import RuntimeConfig
 
 DEFAULT_PROJECT_STUB_PATH = Path("typings/grafix/api/__init__.pyi")
 
@@ -67,14 +76,12 @@ _RESOLVABLE_TYPE_IDENTS = {
     # stub imports / aliases
     "Any",
     "Callable",
-    "EffectFunc",
     "Geometry",
     "Layer",
-    "OpCatalogEntry",
+    "OperationCatalogEntry",
     "Path",
     "Literal",
     "Mapping",
-    "PrimitiveFunc",
     "SceneItem",
     "Sequence",
     "Vec3",
@@ -239,9 +246,7 @@ def _meta_hint(meta: ParamMeta | None) -> str | None:
     if meta.choices is not None:
         choices = tuple(meta.choices)
         preview = ", ".join(map(repr, choices[:6]))
-        parts.append(
-            f"choices {{ {preview}{' …' if len(choices) > 6 else ''} }}"
-        )
+        parts.append(f"choices {{ {preview}{' …' if len(choices) > 6 else ''} }}")
 
     return ", ".join(parts) if parts else None
 
@@ -345,7 +350,7 @@ def _operation_param_order(spec: Any) -> list[str]:
     accepted = [name for name in spec.accepted_args if _is_valid_identifier(name)]
     wrapper_owned = [
         name
-        for name in spec.param_order
+        for name in spec.schema.param_order
         if name not in spec.accepted_args and _is_valid_identifier(name)
     ]
     return list(dict.fromkeys((*wrapper_owned, *accepted)))
@@ -401,38 +406,33 @@ def _type_str_for_preset_param(
     return type_str_norm
 
 
-def _resolve_impl_callable(kind: str, name: str) -> Any:
-    """registry の ``module:qualname`` provenance から実装 callable を解決する。"""
+def _resolve_impl_callable(
+    kind: str,
+    name: str,
+    *,
+    catalog: OperationCatalog | None = None,
+) -> Any:
+    """catalog entry の ``module:qualname`` provenance から実装 callable を解決する。"""
 
-    operation_spec: Any
-    if kind == "primitive":
-        from grafix.core.primitive_registry import primitive_registry
-
-        operation_spec = primitive_registry[name]
-    elif kind == "effect":
-        from grafix.core.effect_registry import effect_registry
-
-        operation_spec = effect_registry[name]
-    else:
+    if kind not in {"primitive", "effect"}:
         raise ValueError(f"unknown kind: {kind!r}")
+    selected_catalog = current_operation_catalog() if catalog is None else catalog
+    if type(selected_catalog) is not OperationCatalog:
+        raise TypeError("catalog は exact OperationCatalog である必要があります")
+    operation_spec = selected_catalog.resolve(cast(OpKind, kind), name)
 
     provenance = str(operation_spec.provenance)
     module_name, separator, qualname = provenance.partition(":")
     if not separator or not module_name or not qualname or "<locals>" in qualname:
-        raise ValueError(
-            f"{kind} {name!r} の provenance が不正です: {provenance!r}"
-        )
+        raise ValueError(f"{kind} {name!r} の provenance が不正です: {provenance!r}")
 
     try:
         value: Any = importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
         missing_module = str(exc.name)
-        if module_name == missing_module or module_name.startswith(
-            f"{missing_module}."
-        ):
+        if module_name == missing_module or module_name.startswith(f"{missing_module}."):
             raise ValueError(
-                f"{kind} {name!r} の provenance module が存在しません: "
-                f"{provenance!r}"
+                f"{kind} {name!r} の provenance module が存在しません: {provenance!r}"
             ) from exc
         raise
 
@@ -441,13 +441,11 @@ def _resolve_impl_callable(kind: str, name: str) -> Any:
             value = getattr(value, part)
         except AttributeError as exc:
             raise ValueError(
-                f"{kind} {name!r} の provenance attribute が存在しません: "
-                f"{provenance!r}"
+                f"{kind} {name!r} の provenance attribute が存在しません: {provenance!r}"
             ) from exc
     if not callable(value):
         raise ValueError(
-            f"{kind} {name!r} の provenance は callable ではありません: "
-            f"{provenance!r}"
+            f"{kind} {name!r} の provenance は callable ではありません: {provenance!r}"
         )
     return value
 
@@ -476,22 +474,22 @@ def _callable_source(value: Any) -> str | None:
         return None
 
 
-def _include_operation(kind: str, name: str, roots: tuple[Path, ...]) -> bool:
+def _include_operation(
+    kind: str,
+    name: str,
+    roots: tuple[Path, ...],
+    *,
+    catalog: OperationCatalog,
+) -> bool:
     """built-in または指定 project 配下の operation なら True を返す。"""
 
-    operation_spec: Any
     if kind == "primitive":
-        from grafix.core.primitive_registry import primitive_registry
-
-        operation_spec = primitive_registry[name]
         builtin_prefix = "grafix.core.primitives."
     elif kind == "effect":
-        from grafix.core.effect_registry import effect_registry
-
-        operation_spec = effect_registry[name]
         builtin_prefix = "grafix.core.effects."
     else:
         raise ValueError(f"unknown kind: {kind!r}")
+    operation_spec = catalog.resolve(cast(OpKind, kind), name)
     module_name = str(operation_spec.provenance).partition(":")[0]
     return module_name.startswith(builtin_prefix) or _source_is_within(
         operation_spec.source,
@@ -547,9 +545,7 @@ def _render_operation_docstring(
 ) -> list[str]:
     """operation 引数と共通 identity 引数の説明を含む docstring を組み立てる。"""
 
-    all_param_order = list(
-        dict.fromkeys((*param_order, *_PARAMETER_IDENTITY_STUB_DOCS))
-    )
+    all_param_order = list(dict.fromkeys((*param_order, *_PARAMETER_IDENTITY_STUB_DOCS)))
     all_param_docs = {
         **parsed_param_docs,
         **_PARAMETER_IDENTITY_STUB_DOCS,
@@ -596,7 +592,11 @@ def _render_method(
     return "".join(lines)
 
 
-def _render_g_protocol(primitive_names: list[str]) -> str:
+def _render_g_protocol(
+    primitive_names: list[str],
+    *,
+    catalog: OperationCatalog,
+) -> str:
     """`G`（primitive 名前空間）の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _G(Protocol):\n")
@@ -604,14 +604,10 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
     lines.append("    def __call__(self, name: str | None = None) -> _G:\n")
     lines.append('        """ラベル付き primitive 名前空間を返す。"""\n')
     lines.append("        ...\n")
-    lines.append(
-        "    def catalog(self) -> tuple[OpCatalogEntry[PrimitiveFunc], ...]:\n"
-    )
+    lines.append("    def catalog(self) -> tuple[OperationCatalogEntry, ...]:\n")
     lines.append('        """登録済み primitive の catalog を名前順で返す。"""\n')
     lines.append("        ...\n")
-    lines.append(
-        "    def describe(self, name: str) -> OpCatalogEntry[PrimitiveFunc]:\n"
-    )
+    lines.append("    def describe(self, name: str) -> OperationCatalogEntry:\n")
     lines.append('        """primitive の catalog entry を名前で取得する。"""\n')
     lines.append("        ...\n")
     lines.append(
@@ -636,15 +632,13 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
         )
     )
 
-    from grafix.core.primitive_registry import primitive_registry  # type: ignore[import]
-
     for prim in primitive_names:
         if prim == "select":
             continue
-        spec = primitive_registry[prim]
-        meta_by_name: dict[str, ParamMeta] = dict(spec.meta)
+        spec = catalog.resolve("primitive", prim)
+        meta_by_name: dict[str, ParamMeta] = dict(spec.schema.meta)
         param_order = _operation_param_order(spec)
-        impl = _resolve_impl_callable("primitive", prim)
+        impl = _resolve_impl_callable("primitive", prim, catalog=catalog)
 
         params: list[str] = []
         if param_order or meta_by_name:
@@ -684,7 +678,11 @@ def _render_g_protocol(primitive_names: list[str]) -> str:
     return "".join(lines)
 
 
-def _render_effect_builder_protocol(effect_names: list[str]) -> str:
+def _render_effect_builder_protocol(
+    effect_names: list[str],
+    *,
+    catalog: OperationCatalog,
+) -> str:
     """`E.xxx(...)` の戻り値である builder の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _EffectBuilder(Protocol):\n")
@@ -717,15 +715,13 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
         )
     )
 
-    from grafix.core.effect_registry import effect_registry  # type: ignore[import]
-
     for eff in effect_names:
         if eff == "select":
             continue
-        impl = _resolve_impl_callable("effect", eff)
+        impl = _resolve_impl_callable("effect", eff, catalog=catalog)
 
-        spec = effect_registry[eff]
-        meta_by_name: dict[str, ParamMeta] = dict(spec.meta)
+        spec = catalog.resolve("effect", eff)
+        meta_by_name: dict[str, ParamMeta] = dict(spec.schema.meta)
         param_order = _operation_param_order(spec)
 
         params: list[str] = []
@@ -770,7 +766,11 @@ def _render_effect_builder_protocol(effect_names: list[str]) -> str:
     return "".join(lines)
 
 
-def _render_e_protocol(effect_names: list[str]) -> str:
+def _render_e_protocol(
+    effect_names: list[str],
+    *,
+    catalog: OperationCatalog,
+) -> str:
     """`E`（effect 名前空間）の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _E(Protocol):\n")
@@ -778,14 +778,10 @@ def _render_e_protocol(effect_names: list[str]) -> str:
     lines.append("    def __call__(self, name: str | None = None) -> _E:\n")
     lines.append('        """ラベル付き effect 名前空間を返す。"""\n')
     lines.append("        ...\n")
-    lines.append(
-        "    def catalog(self) -> tuple[OpCatalogEntry[EffectFunc], ...]:\n"
-    )
+    lines.append("    def catalog(self) -> tuple[OperationCatalogEntry, ...]:\n")
     lines.append('        """登録済み effect の catalog を名前順で返す。"""\n')
     lines.append("        ...\n")
-    lines.append(
-        "    def describe(self, name: str) -> OpCatalogEntry[EffectFunc]:\n"
-    )
+    lines.append("    def describe(self, name: str) -> OperationCatalogEntry:\n")
     lines.append('        """effect の catalog entry を名前で取得する。"""\n')
     lines.append("        ...\n")
     lines.append(
@@ -812,15 +808,13 @@ def _render_e_protocol(effect_names: list[str]) -> str:
         )
     )
 
-    from grafix.core.effect_registry import effect_registry  # type: ignore[import]
-
     for eff in effect_names:
         if eff == "select":
             continue
-        impl = _resolve_impl_callable("effect", eff)
+        impl = _resolve_impl_callable("effect", eff, catalog=catalog)
 
-        spec = effect_registry[eff]
-        meta_by_name: dict[str, ParamMeta] = dict(spec.meta)
+        spec = catalog.resolve("effect", eff)
+        meta_by_name: dict[str, ParamMeta] = dict(spec.schema.meta)
         param_order = _operation_param_order(spec)
 
         params: list[str] = []
@@ -892,7 +886,11 @@ def _render_l_protocol() -> str:
     return "".join(lines)
 
 
-def _render_p_protocol(preset_names: list[str]) -> str:
+def _render_p_protocol(
+    preset_names: list[str],
+    *,
+    catalog: PresetCatalog,
+) -> str:
     """`P`（preset 名前空間）の `Protocol` 定義を生成する。"""
     lines: list[str] = []
     lines.append("class _P(Protocol):\n")
@@ -908,17 +906,16 @@ def _render_p_protocol(preset_names: list[str]) -> str:
     )
     lines.append('        """ラベル付き preset 名前空間を返す。"""\n')
     lines.append("        ...\n\n")
-    from grafix.core.preset_registry import preset_op, preset_registry  # type: ignore[import]
-
     for preset_name in preset_names:
-        op = preset_op(preset_name)
-        if op not in preset_registry:
+        if preset_name not in catalog:
             continue
 
-        spec = preset_registry[op]
+        spec = catalog[preset_name]
         impl = spec.func
-        meta_by_name: dict[str, ParamMeta] = dict(spec.meta)
-        param_order = [p for p in spec.param_order if _is_valid_identifier(p)]
+        meta_by_name: dict[str, ParamMeta] = dict(spec.schema.meta)
+        param_order = [
+            p for p in spec.schema.param_order if _is_valid_identifier(p)
+        ]
 
         params: list[str] = []
         if meta_by_name:
@@ -950,6 +947,9 @@ def _render_p_protocol(preset_names: list[str]) -> str:
 def generate_stubs_str(
     *,
     source_roots: Sequence[str | Path] = (),
+    config: RuntimeConfig | None = None,
+    operation_catalog: OperationCatalog | None = None,
+    preset_catalog: PresetCatalog | None = None,
 ) -> str:
     """`grafix/api/__init__.pyi` の生成結果を文字列として返す。
 
@@ -960,23 +960,36 @@ def generate_stubs_str(
 
     Notes
     -----
-    - registry を初期化するために built-in 登録を行う（副作用あり）。
-    - project-local module は呼び出し前に import して registry へ登録する必要がある。
-    - presets は `runtime_config().preset_module_dirs` 配下からロードされたものだけを採用する。
+    - config authoring module は隔離 candidate へ明示ロードする。
+    - 注入 catalog がある場合は、その immutable snapshot だけを読む。
+    - presets は config preset directory または source_roots 配下だけを採用する。
     """
+    from grafix.core.authoring_loader import load_config_authoring_definitions
+    from grafix.core.runtime_config import (  # type: ignore[import]
+        RuntimeConfig,
+        runtime_config,
+    )
 
-    from grafix.core.builtins import ensure_builtin_ops_registered
-
-    ensure_builtin_ops_registered()
-    from grafix.core.runtime_config import runtime_config  # type: ignore[import]
-
-    cfg = runtime_config()
-    presets = importlib.import_module("grafix.api.presets")
-    presets._autoload_preset_modules(cfg)  # type: ignore[attr-defined]
-
-    from grafix.core.primitive_registry import primitive_registry  # type: ignore[import]
-    from grafix.core.effect_registry import effect_registry  # type: ignore[import]
-    from grafix.core.preset_registry import preset_registry  # type: ignore[import]
+    if config is not None and not isinstance(config, RuntimeConfig):
+        raise TypeError("config は RuntimeConfig または None である必要があります")
+    cfg = runtime_config() if config is None else config
+    loaded = (
+        None
+        if operation_catalog is not None and preset_catalog is not None
+        else load_config_authoring_definitions(cfg)
+    )
+    selected_operations = operation_catalog
+    if selected_operations is None:
+        assert loaded is not None
+        selected_operations = loaded.operations
+    selected_presets = preset_catalog
+    if selected_presets is None:
+        assert loaded is not None
+        selected_presets = loaded.presets
+    if type(selected_operations) is not OperationCatalog:
+        raise TypeError("operation_catalog は exact OperationCatalog である必要があります")
+    if type(selected_presets) is not PresetCatalog:
+        raise TypeError("preset_catalog は exact PresetCatalog である必要があります")
 
     roots = tuple(Path(root).expanduser().resolve(strict=False) for root in source_roots)
 
@@ -985,31 +998,35 @@ def generate_stubs_str(
     # - method 名に使えない識別子は除外
     # - built-in と source_roots 配下の project-local operation だけを採用
     primitive_names = sorted(
-        name
-        for name in primitive_registry
-        if _is_valid_identifier(name)
-        and not name.startswith("_")
-        and _include_operation("primitive", name, roots)
+        entry.name
+        for entry in selected_operations.public_entries(kind="primitive")
+        if _is_valid_identifier(entry.name)
+        and _include_operation(
+            "primitive",
+            entry.name,
+            roots,
+            catalog=selected_operations,
+        )
     )
     effect_names = sorted(
-        name
-        for name in effect_registry
-        if _is_valid_identifier(name)
-        and not name.startswith("_")
-        and _include_operation("effect", name, roots)
+        entry.name
+        for entry in selected_operations.public_entries(kind="effect")
+        if _is_valid_identifier(entry.name)
+        and _include_operation(
+            "effect",
+            entry.name,
+            roots,
+            catalog=selected_operations,
+        )
     )
 
-    # user presets は、preset dir ごとに「パス由来のハッシュで作った擬似パッケージ名」
-    # (`grafix_user_presets_<hash>`) 以下に import される設計。
-    # ここではその prefix と一致する関数だけをスタブ対象にする。
-    preset_pkg_prefixes: tuple[str, ...] = tuple(
-        f"grafix_user_presets_{hashlib.sha256(str(Path(d).resolve(strict=False)).encode('utf-8')).hexdigest()[:10]}."
-        for d in cfg.preset_module_dirs
-        if Path(d).resolve(strict=False).is_dir()
+    preset_roots = tuple(
+        Path(directory).resolve(strict=False)
+        for directory in cfg.preset_module_dirs
+        if Path(directory).resolve(strict=False).is_dir()
     )
     preset_entries = tuple(
-        (op.removeprefix("preset."), spec.func)
-        for op, spec in preset_registry.items()
+        (declaration.name, declaration.func) for declaration in selected_presets.declarations()
     )
     preset_names = sorted(
         name
@@ -1018,10 +1035,7 @@ def generate_stubs_str(
         and not name.startswith("_")
         and (
             (
-                any(
-                    str(getattr(fn, "__module__", "")).startswith(pref)
-                    for pref in preset_pkg_prefixes
-                )
+                _source_is_within(_callable_source(fn), preset_roots)
                 and (not roots or _source_is_within(_callable_source(fn), roots))
             )
             or _source_is_within(_callable_source(fn), roots)
@@ -1042,20 +1056,18 @@ def generate_stubs_str(
     lines.append("from pathlib import Path\n")
     lines.append("from typing import Any, Literal, Protocol, TypeAlias\n\n")
 
-    lines.append("from grafix.core.effect_registry import EffectFunc\n")
     lines.append("from grafix.core.geometry import Geometry\n")
     lines.append("from grafix.core.layer import Layer\n")
-    lines.append("from grafix.core.op_registry import OpCatalogEntry\n")
-    lines.append("from grafix.core.primitive_registry import PrimitiveFunc\n")
+    lines.append("from grafix.core.operation_catalog import OperationCatalogEntry\n")
     lines.append("from grafix.core.scene import SceneItem\n\n")
 
     lines.append("Vec3: TypeAlias = tuple[float, float, float]\n\n")
 
-    lines.append(_render_g_protocol(primitive_names))
-    lines.append(_render_effect_builder_protocol(effect_names))
-    lines.append(_render_e_protocol(effect_names))
+    lines.append(_render_g_protocol(primitive_names, catalog=selected_operations))
+    lines.append(_render_effect_builder_protocol(effect_names, catalog=selected_operations))
+    lines.append(_render_e_protocol(effect_names, catalog=selected_operations))
     lines.append(_render_l_protocol())
-    lines.append(_render_p_protocol(preset_names))
+    lines.append(_render_p_protocol(preset_names, catalog=selected_presets))
 
     lines.append("G: _G\n")
     lines.append("E: _E\n")
@@ -1077,8 +1089,8 @@ def generate_stubs_str(
         "render_variation_batch as render_variation_batch)\n"
     )
     lines.append("from grafix.api.preset import preset as preset\n")
-    lines.append("from grafix.core.effect_registry import effect as effect\n")
-    lines.append("from grafix.core.primitive_registry import primitive as primitive\n")
+    lines.append("from grafix.core.operation_authoring import effect as effect\n")
+    lines.append("from grafix.core.operation_authoring import primitive as primitive\n")
     lines.append(
         "from grafix.core.resource_budget import ResourceBudget as ResourceBudget, "
         "ResourceLimitError as ResourceLimitError\n\n"
@@ -1088,6 +1100,7 @@ def generate_stubs_str(
         "RuntimeLimitProfiles as RuntimeLimitProfiles, "
         "RuntimeLimits as RuntimeLimits)\n\n"
     )
+    lines.append("from grafix.core.runtime_config import RuntimeConfig, RuntimeConfigFallback\n\n")
 
     # `grafix.api.__init__.py` は遅延 import だが、型はここで固定する。
     lines.append(
@@ -1095,6 +1108,8 @@ def generate_stubs_str(
         "    draw: Callable[[float], SceneItem],\n"
         "    *,\n"
         "    config_path: str | Path | None = ...,\n"
+        "    config: RuntimeConfig | None = ...,\n"
+        "    config_fallback: RuntimeConfigFallback | None = ...,\n"
         "    run_id: str | None = ...,\n"
         "    background_color: Vec3 = ...,\n"
         "    line_thickness: float = ...,\n"
@@ -1290,33 +1305,27 @@ def main(argv: list[str] | None = None) -> int:
     elif not config_path.is_absolute():
         config_path = project_root / config_path
 
-    from grafix.core.runtime_config import runtime_config, set_config_path
-
-    try:
-        previous_config = runtime_config().config_path
-    except Exception:
-        previous_config = None
+    from grafix.core.runtime_config import bind_runtime_config, load_runtime_config
 
     targets = list(args.imports)
     if not args.no_default_import and (project_root / "sketch" / "main.py").is_file():
         targets.insert(0, "sketch/main.py")
 
     try:
-        if config_path is not None:
-            set_config_path(config_path)
-        with _project_import_path(project_root):
+        config = load_runtime_config(config_path)
+        with bind_runtime_config(config), _project_import_path(project_root):
             for target in targets:
                 _import_project_target(project_root, str(target))
-            content = generate_stubs_str(source_roots=(project_root,))
+            content = generate_stubs_str(
+                source_roots=(project_root,),
+                config=config,
+            )
     except Exception as exc:
         print(
             f"project-local stub の生成に失敗しました: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )  # noqa: T201
         return 2
-    finally:
-        if config_path is not None:
-            set_config_path(previous_config)
 
     atomic_write_text(output_path, content)
     if args.output is None:

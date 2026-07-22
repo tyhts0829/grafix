@@ -41,6 +41,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Protocol, cast
 
+from grafix.core.authoring_definitions import AuthoringDefinitionsSnapshot
+from grafix.core.authoring_loader import (
+    authoring_definitions_for_draw,
+    load_authoring_definitions_recipe,
+)
+from grafix.core.authoring_recipe import AuthoringDefinitionsRecipe
 from grafix.core.layer import Layer
 from grafix.core.operation_diagnostics import (
     OperationDiagnostic,
@@ -55,7 +61,13 @@ from grafix.core.parameters import (
 from grafix.core.parameters.context import parameter_context_from_snapshot
 from grafix.core.parameters.snapshot_ops import ParamSnapshot, materialize_snapshot
 from grafix.core.parameters.source import MidiFrameSnapshot
+from grafix.core.operation_catalog import bind_operation_catalog
 from grafix.core.preview_quality import PreviewQuality, preview_quality_context
+from grafix.core.preset_catalog import bind_preset_catalog
+from grafix.core.runtime_config import (
+    RuntimeConfig,
+    bind_runtime_config,
+)
 from grafix.core.scene import SceneItem, normalize_scene
 from grafix.core.value_validation import (
     exact_integer,
@@ -542,6 +554,8 @@ def _draw_worker_main(
     result_q: mp_queues.Queue[_WorkerMessage],
     draw: Callable[[float], SceneItem],
     generation: int,
+    effective_config: RuntimeConfig,
+    authoring_recipe: AuthoringDefinitionsRecipe,
 ) -> None:
     """worker プロセスのエントリポイント。
 
@@ -562,6 +576,11 @@ def _draw_worker_main(
         name="generation",
         minimum=0,
     )
+    # 親が capture した exact source recipe から immutable snapshot を再構築する。
+    # config directory は worker 側で再走査しない。
+    # ReloadedDraw は呼び出し中に、source bytes から再構築したより狭い candidate
+    # catalog を内側へ束縛する。
+    worker_definitions = load_authoring_definitions_recipe(authoring_recipe)
     result_q.put(_WorkerReady(worker=worker, pid=pid, generation=worker_generation))
 
     snapshot: ParamSnapshot | None = None
@@ -664,7 +683,12 @@ def _draw_worker_main(
             try:
                 # snapshot を固定したコンテキスト内で draw を実行することで、
                 # GUI の状態（ParamStore）と独立に「このフレームで解決すべき値」を決定できる。
-                with preview_quality_context(task.quality):
+                with (
+                    bind_operation_catalog(worker_definitions.operations),
+                    bind_preset_catalog(worker_definitions.presets),
+                    bind_runtime_config(effective_config),
+                    preview_quality_context(task.quality),
+                ):
                     with parameter_context_from_snapshot(
                         evaluation_snapshot,
                         cc_snapshot=task.cc_snapshot,
@@ -741,6 +765,8 @@ class MpDraw:
         n_worker: int,
         evaluation_timeout: float | None = 5.0,
         event_callback: _PerfEventCallback | None = None,
+        effective_config: RuntimeConfig,
+        definitions: AuthoringDefinitionsSnapshot | None = None,
     ) -> None:
         """worker 群を起動して mp-draw を開始する。
 
@@ -753,6 +779,9 @@ class MpDraw:
         evaluation_timeout : float | None
             1 回の `draw(t)` を待つ秒数。超過した worker 世代を破棄して再起動する。
             `None` の場合は timeout を無効にする。
+        definitions : AuthoringDefinitionsSnapshot | None
+            親 session が確定済みなら同じ snapshot を渡す。その recipe だけを
+            spawn へ送り、callable catalog 自体は pickle しない。
 
         Raises
         ------
@@ -782,6 +811,20 @@ class MpDraw:
         self._n_worker = worker_count
         self._evaluation_timeout = timeout
         self._event_callback = event_callback
+        if not isinstance(effective_config, RuntimeConfig):
+            raise TypeError("effective_config は RuntimeConfig である必要があります")
+        self._effective_config = effective_config
+        selected_definitions = authoring_definitions_for_draw(
+            draw,
+            config=effective_config,
+            definitions=definitions,
+        )
+        authoring_recipe = selected_definitions.recipe
+        if authoring_recipe is None:
+            raise ValueError(
+                "mp-draw には親 generation の exact authoring recipe が必要です"
+            )
+        self._authoring_recipe = authoring_recipe
         self._generation = 0
         self._restart_count = 0
         self._last_restart_reason: str | None = None
@@ -887,6 +930,8 @@ class MpDraw:
                     self._result_q,
                     self._draw,
                     generation,
+                    self._effective_config,
+                    self._authoring_recipe,
                 ),
                 name=f"grafix-mp-draw-g{generation}-{i}",
             )

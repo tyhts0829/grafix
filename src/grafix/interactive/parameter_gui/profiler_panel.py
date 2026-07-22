@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from grafix.interactive.runtime.perf import PerfSnapshot, PerfTiming
+from grafix.interactive.telemetry import PerfSnapshot, PerfTiming
 
 
 def _timing_line(index: int, timing: PerfTiming) -> str:

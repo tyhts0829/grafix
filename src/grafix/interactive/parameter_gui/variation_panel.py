@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Literal, TypeAlias
 from grafix.core.parameters.favorites import favorite_parameter_keys
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.store import ParamStore
-from grafix.core.parameters.variations import diff_variation, list_variations
+from grafix.core.parameters.variations import (
+    diff_variation,
+    list_variations,
+    locked_parameter_keys,
+)
 
 if TYPE_CHECKING:
     from grafix.export.capture import CaptureFrame, CaptureService
@@ -145,7 +149,7 @@ def variation_scope_summary(
         keys = filtered_parameter_keys(view)
     else:
         raise ValueError(f"unknown variation scope: {scope!r}")
-    locked = store._locked_keys_ref()
+    locked = frozenset(locked_parameter_keys(store))
     return VariationScopeSummary(
         scope=scope,
         keys=keys,

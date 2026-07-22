@@ -9,11 +9,9 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol, TypeAlias
 
-from grafix.core.effect_registry import EffectFunc
 from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer
-from grafix.core.op_registry import OpCatalogEntry
-from grafix.core.primitive_registry import PrimitiveFunc
+from grafix.core.operation_catalog import OperationCatalogEntry
 from grafix.core.scene import SceneItem
 
 Vec3: TypeAlias = tuple[float, float, float]
@@ -22,10 +20,10 @@ class _G(Protocol):
     def __call__(self, name: str | None = None) -> _G:
         """ラベル付き primitive 名前空間を返す。"""
         ...
-    def catalog(self) -> tuple[OpCatalogEntry[PrimitiveFunc], ...]:
+    def catalog(self) -> tuple[OperationCatalogEntry, ...]:
         """登録済み primitive の catalog を名前順で返す。"""
         ...
-    def describe(self, name: str) -> OpCatalogEntry[PrimitiveFunc]:
+    def describe(self, name: str) -> OperationCatalogEntry:
         """primitive の catalog entry を名前で取得する。"""
         ...
     def select(self, *, target: str = ..., params_by_target: Mapping[str, Mapping[str, Any]] | None = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> Geometry:
@@ -1030,10 +1028,10 @@ class _E(Protocol):
     def __call__(self, name: str | None = None) -> _E:
         """ラベル付き effect 名前空間を返す。"""
         ...
-    def catalog(self) -> tuple[OpCatalogEntry[EffectFunc], ...]:
+    def catalog(self) -> tuple[OperationCatalogEntry, ...]:
         """登録済み effect の catalog を名前順で返す。"""
         ...
-    def describe(self, name: str) -> OpCatalogEntry[EffectFunc]:
+    def describe(self, name: str) -> OperationCatalogEntry:
         """effect の catalog entry を名前で取得する。"""
         ...
     def select(self, *, target: str = ..., n_inputs: int = ..., params_by_target: Mapping[str, Mapping[str, Any]] | None = ..., key: str | int | None = ..., instance_key: str | int | None = ..., shared: bool = ...) -> _EffectBuilder:
@@ -1926,16 +1924,20 @@ from grafix.api.export import export as export
 from grafix.api.render import (Color as Color, ExportFormat as ExportFormat, ExportResult as ExportResult, Frame as Frame, RenderOptions as RenderOptions, RenderSession as RenderSession, RenderSessionMetadata as RenderSessionMetadata, render as render)
 from grafix.api.variation_batch import (VariationBatchResult as VariationBatchResult, VariationRenderResult as VariationRenderResult, render_variation_batch as render_variation_batch)
 from grafix.api.preset import preset as preset
-from grafix.core.effect_registry import effect as effect
-from grafix.core.primitive_registry import primitive as primitive
+from grafix.core.operation_authoring import effect as effect
+from grafix.core.operation_authoring import primitive as primitive
 from grafix.core.resource_budget import ResourceBudget as ResourceBudget, ResourceLimitError as ResourceLimitError
 
 from grafix.core.runtime_limits import (RuntimeLimitProfiles as RuntimeLimitProfiles, RuntimeLimits as RuntimeLimits)
+
+from grafix.core.runtime_config import RuntimeConfig, RuntimeConfigFallback
 
 def run(
     draw: Callable[[float], SceneItem],
     *,
     config_path: str | Path | None = ...,
+    config: RuntimeConfig | None = ...,
+    config_fallback: RuntimeConfigFallback | None = ...,
     run_id: str | None = ...,
     background_color: Vec3 = ...,
     line_thickness: float = ...,

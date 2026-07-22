@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import empty_geom
+from grafix.core.geometry_kernels.packed import empty_packed_geometry
 
 # 高速 path の float64 中間配列・bool mask を 1 line あたり 192 bytes と
 # 保守的に見積もっても、追加 peak が 8 MiB 未満に収まる上限にする。
@@ -119,7 +119,7 @@ def _pack_uniform_two_point_lines(
 
     kept_count = int(np.count_nonzero(keep_mask))
     if kept_count <= 0:
-        return empty_geom()
+        return empty_packed_geometry()
 
     point_mask = np.repeat(keep_mask, 2)
     out_coords = coords[point_mask]
@@ -428,7 +428,7 @@ def drop(
             face_index += 1
 
     if not np.any(keep_mask):
-        return empty_geom()
+        return empty_packed_geometry()
 
     out_coords_list: list[np.ndarray] = []
     out_offsets_list: list[int] = [0]
@@ -447,7 +447,7 @@ def drop(
         out_offsets_list.append(cursor)
 
     if len(out_offsets_list) == 1:
-        return empty_geom()
+        return empty_packed_geometry()
 
     out_coords = np.concatenate(out_coords_list, axis=0)
     out_offsets = np.asarray(out_offsets_list, dtype=np.int32)

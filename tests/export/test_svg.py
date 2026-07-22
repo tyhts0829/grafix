@@ -6,9 +6,14 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
+from grafix.core.evaluation_context import (
+    EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+    EvaluationFingerprint,
+)
 from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer
 from grafix.core.pipeline import RealizedLayer
+from grafix.core.realize import GeometryCacheKey
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.export.svg import export_svg
 
@@ -32,7 +37,11 @@ def _realized_layer(
     return RealizedLayer(
         layer=layer,
         realized=realized,
-        cache_key=(geometry.id, (0, 0)),
+        cache_key=GeometryCacheKey(
+            geometry_id=geometry.id,
+            evaluation=EvaluationFingerprint("0" * 64),
+            external_dependencies=EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+        ),
         color=color,
         thickness=thickness,
     )

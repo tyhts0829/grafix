@@ -13,7 +13,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from grafix.core.effect_registry import EffectFunc
+from grafix.core.operation_authoring import EffectEvaluator
 from grafix.core.operation_diagnostics import (
     OperationDiagnostic,
     OperationDiagnosticBuffer,
@@ -21,6 +21,7 @@ from grafix.core.operation_diagnostics import (
 )
 from grafix.core.preview_quality import PreviewQuality, preview_quality_context
 from grafix.core.realized_geometry import RealizedGeometry
+from grafix.devtools.benchmarks.definition import CaseDefinition, define_case
 from grafix.devtools.benchmarks.schema import (
     BenchmarkOutput,
     ContractResult,
@@ -55,6 +56,31 @@ _JIT_EFFECTS = frozenset(
 _PROCESS_COLD_EFFECTS = frozenset(
     {"boolean", "buffer", "clip", "mirror3d", "offset_curve", "partition"}
 )
+
+
+def case_definitions() -> tuple[CaseDefinition, ...]:
+    """除外 5 件以外の effect direct-evaluator actual-work case を返す。"""
+
+    cases_source_file = Path(__file__).with_name("cases.py")
+    return tuple(
+        define_case(
+            case.case_id,
+            case.label,
+            category="effect",
+            suite="effects-remaining",
+            fixture=case.fixture,
+            parameters=case.parameters(),
+            tags=case.tags,
+            selectable_suites=case.selectable_suites,
+            setup=setup_remaining_effect_benchmark,
+            workload=run_remaining_effect,
+            postprocess=observe_remaining_effect_output,
+            measurement_context=remaining_effect_measurement_context,
+            support_source_files=(Path(__file__), cases_source_file),
+        )
+        for case in remaining_effect_benchmark_cases()
+    )
+
 
 # 既存 effect は Phase 0 の immutable baseline から固定した値。今回新設した effect は
 # semantic test と公開契約を確定した初期実装の出力を、今後の変更検出用 baseline とする。
@@ -345,7 +371,7 @@ class RemainingEffectBenchmarkState:
 
     case_id: str
     effect: str
-    evaluator: EffectFunc
+    evaluator: EffectEvaluator
     inputs: tuple[RealizedGeometry, ...]
     arguments: tuple[tuple[str, Any], ...]
     quality: PreviewQuality
@@ -358,7 +384,7 @@ class RemainingEffectBenchmarkState:
     input_checksums: tuple[str, ...]
     input_snapshots: tuple[_GeometryMutationSnapshot, ...]
     effect_source_sha256: str
-    util_source_sha256: str
+    geometry_kernels_source_sha256: str
     diagnostic_buffer: OperationDiagnosticBuffer | None = None
 
 
@@ -858,9 +884,8 @@ def setup_remaining_effect_benchmark(
 ) -> RemainingEffectBenchmarkState:
     """evaluator、fixture、引数、baseline 契約を timer 外で準備する。"""
 
-    from grafix.core.builtins import ensure_builtin_effect_registered
-    from grafix.core.effect_registry import effect_registry
-    from grafix.devtools.benchmarks.runner import geometry_checksum
+    from grafix.core.builtins import builtin_operation_catalog
+    from grafix.devtools.benchmarks.metrics import geometry_checksum
 
     effect_name = str(parameters["effect"])
     if effect_name in _EXCLUDED_EFFECTS:
@@ -868,11 +893,10 @@ def setup_remaining_effect_benchmark(
     fixture = str(parameters["fixture"])
     inputs = _build_inputs(fixture=fixture, seed=int(seed))
 
-    ensure_builtin_effect_registered(effect_name)
-    spec = effect_registry[effect_name]
-    arguments = dict(spec.defaults)
+    spec = builtin_operation_catalog().resolve("effect", effect_name)
+    arguments = dict(spec.schema.defaults)
     for name, value in cast(dict[str, Any], parameters["arguments"]).items():
-        meta = spec.meta.get(name)
+        meta = spec.schema.meta.get(name)
         if meta is not None and meta.kind in {"vec3", "rgb"}:
             if not isinstance(value, list) or len(value) != 3:
                 raise TypeError(
@@ -888,7 +912,7 @@ def setup_remaining_effect_benchmark(
 
     package_dir = Path(__file__).resolve().parents[2]
     effect_path = package_dir / "core" / "effects" / f"{effect_name}.py"
-    util_path = package_dir / "core" / "effects" / "util.py"
+    geometry_kernels_path = package_dir / "core" / "geometry_kernels"
     return RemainingEffectBenchmarkState(
         case_id=str(parameters["case_id"]),
         effect=effect_name,
@@ -917,7 +941,7 @@ def setup_remaining_effect_benchmark(
         input_checksums=tuple(geometry_checksum(value) for value in inputs),
         input_snapshots=tuple(_geometry_mutation_snapshot(value) for value in inputs),
         effect_source_sha256=_file_sha256(effect_path),
-        util_source_sha256=_file_sha256(util_path),
+        geometry_kernels_source_sha256=_python_sources_sha256(geometry_kernels_path),
     )
 
 
@@ -950,7 +974,7 @@ def observe_remaining_effect_output(
 ) -> BenchmarkOutput:
     """raw evaluator output を timer 外で exact 検証・要約する。"""
 
-    from grafix.devtools.benchmarks.runner import geometry_checksum
+    from grafix.devtools.benchmarks.metrics import geometry_checksum
 
     effect_state = cast(RemainingEffectBenchmarkState, state)
     if not isinstance(output, RealizedGeometry):
@@ -1045,10 +1069,10 @@ def observe_remaining_effect_output(
             effect_state.effect_source_sha256,
         ),
         _metric(
-            "util_source_sha256",
+            "geometry_kernels_source_sha256",
             "gauge",
             "text",
-            effect_state.util_source_sha256,
+            effect_state.geometry_kernels_source_sha256,
         ),
     ]
     metrics.extend(
@@ -1713,6 +1737,20 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _python_sources_sha256(directory: Path) -> str:
+    """directory 直下の Python source 列をファイル名と内容で要約する。"""
+
+    digest = hashlib.sha256()
+    for path in sorted(directory.glob("*.py")):
+        name = path.relative_to(directory).as_posix().encode("utf-8")
+        source = path.read_bytes()
+        digest.update(len(name).to_bytes(8, byteorder="big"))
+        digest.update(name)
+        digest.update(len(source).to_bytes(8, byteorder="big"))
+        digest.update(source)
+    return digest.hexdigest()
+
+
 def _contract_operand(value: object) -> object:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -1727,6 +1765,7 @@ def _contract_operand(value: object) -> object:
 
 
 __all__ = [
+    "case_definitions",
     "RemainingEffectBenchmarkCase",
     "RemainingEffectBenchmarkState",
     "observe_remaining_effect_output",

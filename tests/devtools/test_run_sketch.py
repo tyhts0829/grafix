@@ -12,6 +12,7 @@ import pytest
 pyglet.options["shadow_window"] = False
 
 from grafix import __main__ as grafix_main
+from grafix.core.runtime_config import RuntimeConfigFallback
 from grafix.devtools import run_sketch
 
 
@@ -107,3 +108,64 @@ def test_run_cli_reports_initial_source_error(
     assert run_sketch.main([str(sketch), "--no-parameter-gui"]) == 1
     captured = capsys.readouterr()
     assert "SyntaxError" in captured.err
+
+
+def test_run_cli_binds_explicit_config_during_initial_source_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = (tmp_path / "configured-output").resolve()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "paths:\n  output_dir: configured-output\n",
+        encoding="utf-8",
+    )
+    sketch = tmp_path / "config_probe.py"
+    sketch.write_text(
+        "from grafix.core.runtime_config import current_runtime_config\n"
+        f"assert str(current_runtime_config().output_dir) == {str(output_dir)!r}\n"
+        "def draw(t):\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    runner_module = importlib.import_module("grafix.api.runner")
+    monkeypatch.setattr(runner_module, "run", lambda *_args, **_kwargs: None)
+
+    assert run_sketch.main(
+        [
+            str(sketch),
+            "--config",
+            str(config_path),
+            "--no-parameter-gui",
+        ]
+    ) == 0
+
+
+def test_run_cli_forwards_invalid_config_fallback_to_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("unknown_section: true\n", encoding="utf-8")
+    sketch = tmp_path / "art.py"
+    _write_sketch(sketch)
+    seen: list[dict[str, object]] = []
+    runner_module = importlib.import_module("grafix.api.runner")
+    monkeypatch.setattr(
+        runner_module,
+        "run",
+        lambda _draw, **kwargs: seen.append(kwargs),
+    )
+
+    assert run_sketch.main(
+        [
+            str(sketch),
+            "--config",
+            str(config_path),
+            "--no-parameter-gui",
+        ]
+    ) == 0
+
+    fallback = seen[0]["config_fallback"]
+    assert isinstance(fallback, RuntimeConfigFallback)
+    assert fallback.source == config_path.resolve()

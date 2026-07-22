@@ -8,7 +8,6 @@ import os
 import re
 import shutil
 import tempfile
-from copy import deepcopy
 from dataclasses import dataclass, replace
 from html import escape
 from pathlib import Path
@@ -60,16 +59,6 @@ def _optional_exact_string(value: object, *, name: str) -> str | None:
     """None または exact str だけを受ける。"""
 
     return None if value is None else exact_string(value, name=name)
-
-
-@dataclass(frozen=True, slots=True)
-class _ExactParamStoreSnapshot:
-    """Batch 開始時の ParamStore 全属性を正確に戻す内部 snapshot。"""
-
-    attributes: dict[str, object]
-    variation_container: dict[str, Variation]
-    variation_items: tuple[tuple[str, Variation], ...]
-    snapshot_cache: object | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,11 +284,11 @@ def render_variation_batch(
     try:
         output_directory = batch_directory.working
         service = CaptureService() if capture_service is None else capture_service
-        original = _capture_exact_param_store(store)
         items: list[VariationRenderResult] = []
-        try:
-            for index, (requested_name, variation) in enumerate(requests, start=1):
-                _restore_exact_param_store(store, original)
+        for index, (requested_name, variation) in enumerate(requests, start=1):
+            # item ごとに batch 呼び出し時の論理状態を退避し、render/export の
+            # 成否にかかわらず次 item の前に正確に戻す。
+            with store.begin_transient_rollback():
                 if variation is None:
                     items.append(
                         VariationRenderResult(
@@ -357,8 +346,6 @@ def render_variation_batch(
                         manifest_path=captured.manifest_path,
                     )
                 )
-        finally:
-            _restore_exact_param_store(store, original)
 
         _publish_text(
             output_directory / "contact-sheet.svg",
@@ -397,43 +384,6 @@ def render_variation_batch(
     finally:
         if batch_directory.staged and batch_directory.working.exists():
             shutil.rmtree(batch_directory.working)
-
-
-def _capture_exact_param_store(store: ParamStore) -> _ExactParamStoreSnapshot:
-    """Transient batch 用に ParamStore の全属性を独立コピーする。"""
-
-    variations = store._variations_ref()
-    snapshot_cache = store._snapshot_cache
-    # Variation は immutable で batch が書き換えない。元 container/object を
-    # 保つことで、復元時に named variation の identity も不要に壊さない。
-    memo: dict[int, object] = {id(variations): variations}
-    if snapshot_cache is not None:
-        memo[id(snapshot_cache)] = snapshot_cache
-    attributes: dict[str, object] = deepcopy(vars(store), memo)
-    return _ExactParamStoreSnapshot(
-        attributes=attributes,
-        variation_container=variations,
-        variation_items=tuple(variations.items()),
-        snapshot_cache=snapshot_cache,
-    )
-
-
-def _restore_exact_param_store(
-    store: ParamStore,
-    snapshot: _ExactParamStoreSnapshot,
-) -> None:
-    """ParamStore identity を保ちつつ batch 開始時の全属性へ戻す。"""
-
-    snapshot.variation_container.clear()
-    snapshot.variation_container.update(snapshot.variation_items)
-    memo: dict[int, object] = {
-        id(snapshot.variation_container): snapshot.variation_container,
-    }
-    if snapshot.snapshot_cache is not None:
-        memo[id(snapshot.snapshot_cache)] = snapshot.snapshot_cache
-    restored: dict[str, object] = deepcopy(snapshot.attributes, memo)
-    vars(store).clear()
-    vars(store).update(restored)
 
 
 def _positive_size(value: tuple[int, int]) -> tuple[int, int]:

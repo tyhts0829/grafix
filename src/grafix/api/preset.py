@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from functools import wraps
 from typing import Any, ParamSpec
 
+from grafix.core.authoring_definitions import register_authoring_declaration
 from grafix.core.geometry import Geometry
 from grafix.core.parameters import caller_site_id, current_frame_params, current_param_store
 from grafix.core.parameters.context import (
@@ -21,10 +22,14 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.meta_spec import meta_dict_from_user
 from grafix.core.parameters.resolver import resolve_params
 from grafix.core.parameters.validation import validate_parameter_value
+from grafix.core.operation_schema import ParameterOpSchema
+from grafix.core.preset_catalog import (
+    PresetDeclaration,
+    PresetIdentity,
+    attach_preset_declaration,
+    preset_op,
+)
 from grafix.core.scene import SceneItem
-
-# parameters package の初期化後に読み、registry module を循環なく参照する。
-import grafix.core.preset_registry as preset_registry_module
 
 _PSpec = ParamSpec("_PSpec")
 _PRESET_ACTIVATE_META = ParamMeta(
@@ -34,7 +39,7 @@ _PRESET_ACTIVATE_META = ParamMeta(
 
 # --- 役割メモ ---
 #
-# preset_registry は callable と GUI/永続化向けの静的仕様を同じ世代で保持する。
+# preset declaration は callable と GUI/永続化向け仕様を同じ snapshot で保持する。
 # canonical op は `ParameterKey(op=..., site_id=..., arg=...)` の op 側にも使われる。
 
 
@@ -120,11 +125,7 @@ def preset(
 
     def decorator(func: Callable[_PSpec, SceneItem]) -> Callable[_PSpec, SceneItem]:
         preset_name = identity_string(func.__name__, name="preset name")
-        # name 重複は「P.<name>」の解決が曖昧になるため禁止する。
-        registry = preset_registry_module.preset_registry
-        preset_op = preset_registry_module.preset_op(preset_name)
-        if preset_op in registry:
-            raise ValueError(f"preset '{preset_name}' は既に登録されている")
+        parameter_op = preset_op(preset_name)
 
         # GUI 側で扱う op 名は `preset.<funcname>` に固定する。
         # 目的: preset を「1 種類の op」として分類/表示し、ParameterKey の op にも使う。
@@ -137,7 +138,7 @@ def preset(
                 f"{func.__name__}({bad})"
             )
         # 公開パラメータは default 必須として、呼び出しごとの base 値が必ず決まるようにする。
-        _defaults_from_signature(func, meta_norm)
+        defaults = _defaults_from_signature(func, meta_norm)
         meta_keys = set(meta_norm.keys())
         # activate はデコレータ側で自動的に公開する（meta には書かせない）。
         meta_with_activate = {"activate": _PRESET_ACTIVATE_META, **meta_norm}
@@ -145,7 +146,7 @@ def preset(
         sig_order = [arg_name for arg_name in sig.parameters if arg_name in meta_keys]
 
         def _invoke_at_site(
-            identity: preset_registry_module.PresetIdentity,
+            identity: PresetIdentity,
             site_id: str,
             args: tuple[Any, ...],
             kwargs: dict[str, Any],
@@ -168,10 +169,8 @@ def preset(
 
             # group header 名は、指定が無ければ関数名を使う（GUI 未使用時は何もしない）。
             if current_param_recording_enabled():
-                label = (
-                    preset_name if identity.name is None else identity.name
-                )
-                _maybe_set_label(op=preset_op, site_id=site_id, label=label)
+                label = preset_name if identity.name is None else identity.name
+                _maybe_set_label(op=parameter_op, site_id=site_id, label=label)
 
             # 公開引数だけ解決する:
             # - preset の “公開 UI” を meta に絞り、本体内部の G/E パラメータは GUI/永続化対象外にする。
@@ -192,7 +191,7 @@ def preset(
                 # - base 値（スケッチ側）/ GUI 値 / CC 値 を統合して effective 値を返す
                 # - 同時に frame_params に「観測結果」を記録し、フレーム終端で ParamStore にマージされる
                 resolved_params = resolve_params(
-                    op=preset_op,
+                    op=parameter_op,
                     params=public_params,
                     meta=meta_with_activate,
                     site_id=site_id,
@@ -220,7 +219,7 @@ def preset(
             with parameter_recording_muted():
                 return func(*bound.args, **bound.kwargs)
 
-        direct_identity = preset_registry_module.PresetIdentity(
+        direct_identity = PresetIdentity(
             name=None,
             key=None,
             instance_key=None,
@@ -238,12 +237,12 @@ def preset(
             )
 
         def invoker(
-            identity: preset_registry_module.PresetIdentity,
+            identity: PresetIdentity,
             /,
             *args: Any,
             **kwargs: Any,
         ) -> SceneItem:
-            if not isinstance(identity, preset_registry_module.PresetIdentity):
+            if not isinstance(identity, PresetIdentity):
                 raise TypeError("preset identity は PresetIdentity である必要があります")
             site_id = caller_site_id(
                 skip=1,
@@ -253,16 +252,19 @@ def preset(
             )
             return _invoke_at_site(identity, site_id, args, kwargs)
 
-        # callable と GUI 用の静的仕様を、一つの spec として原子的に登録する。
-        registry._register(
-            preset_name,
-            wrapper,
+        declaration = PresetDeclaration(
+            name=preset_name,
+            func=wrapper,
             invoker=invoker,
-            display_op=preset_name,
-            meta=meta_with_activate,
-            param_order=("activate", *sig_order),
-            ui_visible=ui_visible,
+            schema=ParameterOpSchema(
+                meta=meta_with_activate,
+                defaults={"activate": True, **defaults},
+                param_order=("activate", *sig_order),
+                ui_visible={} if ui_visible is None else ui_visible,
+            ),
         )
+        register_authoring_declaration(declaration)
+        attach_preset_declaration(wrapper, declaration)
         return wrapper
 
     return decorator

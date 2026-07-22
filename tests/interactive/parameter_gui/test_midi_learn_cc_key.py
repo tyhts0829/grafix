@@ -72,7 +72,7 @@ def test_scalar_learn_assign_and_clear() -> None:
     state = MidiLearnState()
     rules = ui_rules_for_row(row)
 
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, state = _render_cc_cell(
         DummyImGui(clicked_ids={"cc_learn"}),
         row=row,
         rules=rules,
@@ -88,7 +88,7 @@ def test_scalar_learn_assign_and_clear() -> None:
     assert state.last_seen_cc_seq == 10
 
     waiting_imgui = DummyImGui()
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, state = _render_cc_cell(
         waiting_imgui,
         row=row,
         rules=rules,
@@ -100,7 +100,7 @@ def test_scalar_learn_assign_and_clear() -> None:
     assert changed is False
     assert waiting_imgui.buttons == ["V...##cc_learn"]
 
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, state = _render_cc_cell(
         DummyImGui(),
         row=row,
         rules=rules,
@@ -113,7 +113,7 @@ def test_scalar_learn_assign_and_clear() -> None:
     assert cc_key == 64
     assert state.active_target is None
 
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, state = _render_cc_cell(
         DummyImGui(clicked_ids={"cc_learn"}),
         row=row,
         rules=rules,
@@ -132,7 +132,7 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     rules = ui_rules_for_row(row)
 
     waiting_imgui = DummyImGui(clicked_ids={"cc_learn_1"})
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, state = _render_cc_cell(
         waiting_imgui,
         row=row,
         rules=rules,
@@ -148,7 +148,7 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
 
     # learn 中の同ボタン押下でキャンセル
     waiting_imgui = DummyImGui(clicked_ids={"cc_learn_1"})
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, state = _render_cc_cell(
         waiting_imgui,
         row=row,
         rules=rules,
@@ -167,7 +167,7 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     ]
 
     # もう一度 learn してから CC を受信して割当
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, state = _render_cc_cell(
         DummyImGui(clicked_ids={"cc_learn_1"}),
         row=row,
         rules=rules,
@@ -178,7 +178,7 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     )
     assert state.active_component == 1
 
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, state = _render_cc_cell(
         DummyImGui(),
         row=row,
         rules=rules,
@@ -192,7 +192,7 @@ def test_vec3_component_learn_and_cancel_and_clear() -> None:
     assert state.active_target is None
 
     # 割当済ボタン押下でクリア（全 None → cc_key=None）
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, state = _render_cc_cell(
         DummyImGui(clicked_ids={"cc_learn_1"}),
         row=row,
         rules=rules,

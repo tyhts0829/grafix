@@ -1,36 +1,40 @@
-import imgui
 import pyglet
 
-from grafix.interactive.parameter_gui.pyglet_backend import (
-    create_imgui_pyglet_renderer,
-)
+from grafix.core.lifecycle import CleanupErrors
+from grafix.interactive.parameter_gui.pyglet_backend import PygletImguiBackend
+from grafix.interactive.pyglet_window_lifecycle import close_pyglet_window
 
 
-def main():
-    window = pyglet.window.Window(
+def main() -> None:
+    window = pyglet.window.Window(  # type: ignore[abstract]
         1280, 720, caption="pyimgui + pyglet demo", resizable=True
     )
-
-    imgui.create_context()
-    impl = create_imgui_pyglet_renderer(window)
-
-    @window.event
-    def on_draw():
-        window.clear()
-
-        # 念のため毎フレーム更新（バックエンドが面倒を見てくれる場合もある）
-        imgui.get_io().display_size = window.get_size()
-
-        imgui.new_frame()
-        imgui.show_demo_window()
-        imgui.render()
-
-        impl.render(imgui.get_draw_data())
-
+    backend = None
+    root_error: BaseException | None = None
     try:
+        backend = PygletImguiBackend(window)
+        imgui = backend.imgui
+
+        @window.event
+        def on_draw() -> None:
+            backend.begin_frame(1.0 / 60.0)
+            imgui.show_demo_window()
+            backend.render()
+
+        @window.event
+        def on_close() -> object:
+            pyglet.app.exit()
+            return pyglet.event.EVENT_HANDLED
+
         pyglet.app.run()
+    except BaseException as error:
+        root_error = error
     finally:
-        impl.shutdown()
+        errors = CleanupErrors(initial_error=root_error)
+        if backend is not None:
+            errors.attempt(backend.close)
+        errors.attempt(lambda: close_pyglet_window(window))
+        errors.raise_if_any()
 
 
 if __name__ == "__main__":

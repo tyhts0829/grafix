@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,8 @@ from grafix.core.capture_manifest import (
     CAPTURE_MANIFEST_SCHEMA_VERSION,
     CaptureManifest,
     RecordingManifest,
+)
+from grafix.export.capture_publish import (
     capture_manifest_path_for,
     publish_capture_generation,
     write_capture_manifest,
@@ -292,7 +295,7 @@ def test_capture_generation_overwrite_rolls_back_both_files_on_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import grafix.core.capture_manifest as capture_module
+    capture_module = importlib.import_module("grafix.export.capture_publish")
 
     staged = tmp_path / ".staged.svg"
     staged.write_bytes(b"new artifact")

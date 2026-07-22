@@ -9,12 +9,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
 from grafix.core.font_resolver import default_font_path
-from grafix.core.runtime_config import runtime_config, set_config_path
+from grafix.core.runtime_config import bind_runtime_config, load_runtime_config
 from grafix.core.value_validation import exact_string, exact_string_choice
 
 DoctorStatus = Literal["ok", "warning", "error"]
@@ -282,6 +283,7 @@ def run_doctor(
     *,
     output_dir: str | Path | None = None,
     font_path: str | Path | None = None,
+    config_path: str | Path | None = None,
 ) -> DoctorReport:
     """GL・外部command・MIDI・font・出力先を検査する。
 
@@ -305,21 +307,36 @@ def run_doctor(
 
     configured_output: Path | None = None
     config_error: Exception | None = None
-    if output_dir is None:
+    config = None
+    if config_path is not None or output_dir is None or font_path is None:
         try:
-            configured_output = Path(runtime_config().output_dir)
+            config = load_runtime_config(config_path)
         except Exception as exc:
             config_error = exc
+    if output_dir is None:
+        if config is not None:
+            configured_output = Path(config.output_dir)
     else:
         configured_output = Path(output_dir)
 
-    checks = [
-        _check_gl(),
-        _check_command("resvg"),
-        _check_command("ffmpeg"),
-        _check_midi(),
-        _check_font(None if font_path is None else Path(font_path)),
-    ]
+    config_context = nullcontext() if config is None else bind_runtime_config(config)
+    with config_context:
+        checks = [
+            _check_gl(),
+            _check_command("resvg"),
+            _check_command("ffmpeg"),
+            _check_midi(),
+            _check_font(None if font_path is None else Path(font_path)),
+        ]
+    if config_error is not None:
+        checks.append(
+            DoctorCheck(
+                name="runtime_config",
+                status="error",
+                summary="runtime config を読み込めません",
+                details=(f"{type(config_error).__name__}: {config_error}",),
+            )
+        )
     if configured_output is None:
         assert config_error is not None
         checks.append(
@@ -364,18 +381,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="structured JSON を表示する")
     args = parser.parse_args(argv)
 
-    previous_config: Path | None = None
-    if args.config is not None:
-        try:
-            previous_config = runtime_config().config_path
-        except Exception:
-            previous_config = None
-        set_config_path(args.config)
-    try:
-        report = run_doctor()
-    finally:
-        if args.config is not None:
-            set_config_path(previous_config)
+    report = (
+        run_doctor()
+        if args.config is None
+        else run_doctor(config_path=args.config)
+    )
 
     if args.json:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))  # noqa: T201

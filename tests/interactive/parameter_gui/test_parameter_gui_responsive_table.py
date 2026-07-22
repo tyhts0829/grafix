@@ -248,7 +248,7 @@ def _render(
     *,
     last_source: ValueSource | None = None,
 ) -> None:
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, _learn_state = _render_cc_cell(
         imgui,
         row=row,
         rules=ui_rules_for_row(row),
@@ -340,7 +340,7 @@ def test_unassigned_midi_controls_use_one_consistent_component_series() -> None:
 
     rgb = LayoutImGui(cell_width=165.0)
     rgb_row = _row(kind="rgb", cc_key=None)
-    changed, cc_key = _render_cc_cell(
+    changed, cc_key, _learn_state = _render_cc_cell(
         rgb,
         row=rgb_row,
         rules=RowUiRules(minmax="none", cc_key="int3", show_override=True),

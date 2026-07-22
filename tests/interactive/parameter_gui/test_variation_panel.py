@@ -22,8 +22,8 @@ from grafix.core.parameters.variations import (
 from grafix.interactive.parameter_gui.gui import ParameterGUI
 from grafix.interactive.parameter_gui.parameter_filter import ParameterFilterState
 from grafix.interactive.parameter_gui.store_bridge import parameter_table_view_for_store
+from grafix.interactive.parameter_gui.variation_controller import VariationController
 from grafix.interactive.parameter_gui.variation_panel import (
-    VariationPanelState,
     make_capture_service_thumbnail_capture,
     normalize_variation_selection,
     variation_panel_model,
@@ -72,32 +72,23 @@ def _set(store: ParamStore, key: ParameterKey, value: float) -> None:
     assert ok and error is None
 
 
-def _value(store: ParamStore, key: ParameterKey) -> float:
-    state = store.get_state(key)
-    assert state is not None
-    return float(state.ui_value)
-
-
 def _gui(
     gui: ParameterGUI,
     store: ParamStore,
-    *,
-    thumbnail: Path | None = None,
 ) -> Any:
     gui_state = cast(Any, gui)
     gui_state._store = store
     gui_state._history = ParamStoreHistory(store)
     gui_state._transport = None
-    gui_state._show_inactive_params = True
-    gui_state._parameter_filter_state = ParameterFilterState()
-    gui_state._parameter_error_keys = frozenset()
-    gui_state._favorite_parameter_keys = frozenset()
-    gui_state._parameter_table_view = None
-    gui_state._variation_panel_state = VariationPanelState()
-    gui_state._variation_thumbnail_capture = (
-        None if thumbnail is None else lambda _name: thumbnail
+    gui_state._session.show_inactive_parameters = True
+    gui_state._session.filter_state = ParameterFilterState()
+    gui_state._session.error_keys = frozenset()
+    gui_state._session.favorite_keys = frozenset()
+    gui_state._session.table_view = None
+    gui_state._variation_controller = VariationController(
+        store,
+        history=gui_state._history,
     )
-    gui_state._variation_thumbnail_preview = None
     return gui_state
 
 
@@ -184,66 +175,6 @@ def test_capture_service_adapter_exports_current_frame_without_clobber(
     assert calls == [(frame, tmp_path / "candidate.png", False)]
 
 
-def test_gui_save_uses_thumbnail_boundary_and_load_is_undoable(
-    tmp_path: Path,
-    initialized_parameter_gui: ParameterGUI,
-) -> None:
-    store, key_a, _key_b = _store()
-    thumbnail = tmp_path / "variation.png"
-    gui = _gui(initialized_parameter_gui, store, thumbnail=thumbnail)
-    state = gui._variation_state()
-    state.new_name = "candidate"
-    state.new_note = "keep this"
-    state.random_seed = 23
-
-    assert gui._save_named_variation() is True
-
-    saved = list_variations(store)[0]
-    assert saved.name == "candidate"
-    assert saved.note == "keep this"
-    assert saved.seed == 23
-    assert saved.thumbnail_path == str(thumbnail)
-
-    _set(store, key_a, 8.0)
-    gui._history.synchronize()
-    assert gui._load_named_variation("candidate") is True
-    assert _value(store, key_a) == 2.0
-    assert gui._history.undo() is True
-    assert _value(store, key_a) == 8.0
-
-
-def test_gui_rename_duplicate_and_delete_selected_variation(
-    initialized_parameter_gui: ParameterGUI,
-) -> None:
-    store, _key_a, _key_b = _store()
-    create_variation(store, "first", created_at=100.0)
-    gui = _gui(initialized_parameter_gui, store)
-    state = gui._variation_state()
-    state.selected_name = "first"
-    state.target_name = "renamed"
-
-    assert gui._rename_selected_variation() is True
-    assert [variation.name for variation in list_variations(store)] == ["renamed"]
-
-    state.duplicate_name = "copy"
-    assert gui._duplicate_selected_variation() is True
-    assert [variation.name for variation in list_variations(store)] == [
-        "renamed",
-        "copy",
-    ]
-
-    assert gui._request_delete_selected_variation() is True
-    assert state.pending_delete_name == "copy"
-    assert [variation.name for variation in list_variations(store)] == [
-        "renamed",
-        "copy",
-    ]
-
-    assert gui._confirm_delete_pending_variation() is True
-    assert state.pending_delete_name is None
-    assert [variation.name for variation in list_variations(store)] == ["renamed"]
-
-
 class _OpenedModal:
     opened = True
 
@@ -287,9 +218,9 @@ def test_delete_confirmation_modal_names_target_before_permanent_delete(
     store, _key_a, _key_b = _store()
     create_variation(store, "precious")
     gui = _gui(initialized_parameter_gui, store)
-    state = gui._variation_state()
+    state = gui._variation_controller.state
     state.selected_name = "precious"
-    assert gui._request_delete_selected_variation() is True
+    assert gui._variation_controller.request_delete_selected() is True
     assert list_variations(store)[0].name == "precious"
 
     imgui = _DeleteConfirmationImgui(confirm=True)
@@ -301,104 +232,13 @@ def test_delete_confirmation_modal_names_target_before_permanent_delete(
     assert list_variations(store) == ()
 
 
-def test_gui_randomize_and_lock_use_favorite_or_filtered_scope(
-    initialized_parameter_gui: ParameterGUI,
-) -> None:
-    store, key_a, key_b = _store()
-    set_parameters_favorite(store, (key_a,), favorite=True)
-    gui = _gui(initialized_parameter_gui, store)
-    state = gui._variation_state()
-    state.scope = "favorites"
-    state.random_seed = 91
-
-    before_b = _value(store, key_b)
-    assert gui._randomize_variation_scope() is True
-    randomized_a = _value(store, key_a)
-    assert randomized_a != 2.0
-    assert _value(store, key_b) == before_b
-    assert gui._history.undo() is True
-    assert _value(store, key_a) == 2.0
-
-    assert gui._set_variation_scope_locked(locked=True) is True
-    assert gui._randomize_variation_scope() is False
-    assert state.notice is not None and "locked" in state.notice
-    assert _value(store, key_a) == 2.0
-    assert gui._set_variation_scope_locked(locked=True) is False
-    assert state.notice is not None and "already locked" in state.notice
-    assert gui._set_variation_scope_locked(locked=False) is True
-    assert gui._set_variation_scope_locked(locked=False) is False
-    assert state.notice is not None and "No parameters" in state.notice
-
-    state.scope = "filtered"
-    gui._parameter_filter_state = ParameterFilterState(query="site-b")
-    assert gui._randomize_variation_scope() is True
-    assert _value(store, key_a) == 2.0
-    assert _value(store, key_b) != before_b
-
-
-def test_gui_morph_applies_only_current_scope_and_is_undoable(
-    initialized_parameter_gui: ParameterGUI,
-) -> None:
-    store, key_a, key_b = _store()
-    set_parameters_favorite(store, (key_a,), favorite=True)
-    _set(store, key_a, 1.0)
-    _set(store, key_b, 3.0)
-    create_variation(store, "A", created_at=100.0)
-    _set(store, key_a, 9.0)
-    _set(store, key_b, 7.0)
-    create_variation(store, "B", created_at=200.0)
-    gui = _gui(initialized_parameter_gui, store)
-    state = gui._variation_state()
-    state.scope = "favorites"
-    state.morph_a = "A"
-    state.morph_b = "B"
-    state.morph_amount = 0.5
-
-    assert gui._morph_variation_scope() is True
-
-    assert _value(store, key_a) == pytest.approx(5.0)
-    assert _value(store, key_b) == pytest.approx(7.0)
-    assert gui._history.undo() is True
-    assert _value(store, key_a) == pytest.approx(9.0)
-
-
-def test_zero_and_all_locked_scope_actions_report_explicit_no_op(
-    initialized_parameter_gui: ParameterGUI,
-) -> None:
-    store, key_a, _key_b = _store()
-    _set(store, key_a, 1.0)
-    create_variation(store, "A")
-    _set(store, key_a, 9.0)
-    create_variation(store, "B")
-    gui = _gui(initialized_parameter_gui, store)
-    state = gui._variation_state()
-    state.morph_a = "A"
-    state.morph_b = "B"
-    state.scope = "filtered"
-    gui._parameter_filter_state = ParameterFilterState(query="does-not-exist")
-
-    assert gui._randomize_variation_scope() is False
-    assert state.notice is not None and "No parameters" in state.notice
-    assert gui._set_variation_scope_locked(locked=True) is False
-    assert state.notice is not None and "No parameters" in state.notice
-    assert gui._morph_variation_scope() is False
-    assert state.notice is not None and "No parameters" in state.notice
-
-    gui._parameter_filter_state = ParameterFilterState(query="site-a")
-    set_parameters_locked(store, (key_a,), locked=True)
-    assert gui._randomize_variation_scope() is False
-    assert state.notice is not None and "locked" in state.notice
-    assert gui._morph_variation_scope() is False
-    assert state.notice is not None and "locked" in state.notice
-
-
 def test_real_pyimgui_renders_empty_variation_popup(
     initialized_parameter_gui: ParameterGUI,
 ) -> None:
     imgui = pytest.importorskip("imgui")
     store, _key_a, _key_b = _store()
     gui = _gui(initialized_parameter_gui, store)
-    context = gui._context
+    context = gui._backend._context
     imgui.set_current_context(context)
     try:
         io = imgui.get_io()

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from grafix.core.parameters.key import ParameterKey
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class MidiLearnState:
     """MIDI learn の状態。
 
@@ -22,4 +22,3 @@ class MidiLearnState:
     active_target: ParameterKey | None = None
     active_component: int | None = None
     last_seen_cc_seq: int = 0
-

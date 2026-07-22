@@ -262,13 +262,13 @@ def _many_square_rings(*, n_rings: int) -> RealizedGeometry:
     count = max(1, int(n_rings))
     columns = int(np.ceil(np.sqrt(float(count))))
     indices = np.arange(count, dtype=np.int32)
-    center_x = (
-        indices % columns - np.float32(0.5 * float(columns - 1))
-    ).astype(np.float32) * np.float32(4.0)
+    center_x = (indices % columns - np.float32(0.5 * float(columns - 1))).astype(
+        np.float32
+    ) * np.float32(4.0)
     rows = int(np.ceil(float(count) / float(columns)))
-    center_y = (
-        indices // columns - np.float32(0.5 * float(rows - 1))
-    ).astype(np.float32) * np.float32(4.0)
+    center_y = (indices // columns - np.float32(0.5 * float(rows - 1))).astype(
+        np.float32
+    ) * np.float32(4.0)
 
     corners = np.asarray(
         [

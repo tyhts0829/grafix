@@ -11,8 +11,6 @@ import multiprocessing.process as mp_process
 import multiprocessing.queues as mp_queues
 import os
 import queue
-import shutil
-import tempfile
 import time
 import traceback
 from collections import deque
@@ -36,6 +34,12 @@ from grafix.core.value_validation import (
     rgb01_tuple,
 )
 from grafix.export.capture import CaptureService
+from grafix.export.capture_staging import (
+    CaptureStaging,
+    capture_staging_work_path,
+    cleanup_capture_staging,
+    validate_capture_staged_outputs,
+)
 
 _WORKER_JOIN_TIMEOUT_S = 0.5
 _PARENT_TIMEOUT_GRACE_S = 0.25
@@ -267,6 +271,7 @@ class ExportJob:
     output_path: Path
     timeout_s: float
     staging_dir: Path = field(compare=False, repr=False)
+    base_output_path: Path | None = field(default=None, compare=False)
     split_gcode_layers: bool = False
     output_size: tuple[int, int] | None = None
     deadline_monotonic: float | None = field(default=None, compare=False, repr=False)
@@ -296,6 +301,11 @@ class ExportJob:
             )
         job_id = exact_integer(self.job_id, name="job_id", minimum=1)
         output_path = _path(self.output_path, name="output_path")
+        base_output_path = (
+            output_path
+            if self.base_output_path is None
+            else _path(self.base_output_path, name="base_output_path")
+        )
         staging_dir = _path(self.staging_dir, name="staging_dir")
         normalized_output_size = _normalize_output_size(
             self.format,
@@ -317,6 +327,7 @@ class ExportJob:
         )
         object.__setattr__(self, "job_id", job_id)
         object.__setattr__(self, "output_path", output_path)
+        object.__setattr__(self, "base_output_path", base_output_path)
         object.__setattr__(self, "timeout_s", timeout_s)
         object.__setattr__(self, "staging_dir", staging_dir)
         object.__setattr__(self, "output_size", normalized_output_size)
@@ -391,48 +402,23 @@ _WorkerMessage = _WorkerReady | ExportJobResult
 ExportBackend = Callable[[ExportJob], Sequence[Path]]
 
 
-def _job_work_output_path(job: ExportJob) -> Path:
-    """worker が書く private staging path を返す。"""
-
-    staging_dir = job.staging_dir
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    return staging_dir / job.output_path.name
-
-
-def _cleanup_job_staging(job: ExportJob) -> None:
-    """job-private staging directory を best-effort で削除する。"""
-
-    shutil.rmtree(job.staging_dir, ignore_errors=True)
-
-
-def _validate_staged_paths(
-    job: ExportJob,
-    paths: Sequence[str | Path],
-) -> tuple[Path, ...]:
-    """backend の成果物が job-private staging 配下だけを指すことを検証する。"""
-
-    staging_dir = job.staging_dir.resolve(strict=False)
-    staged_paths = tuple(Path(path) for path in paths)
-    for path in staged_paths:
-        resolved = path.resolve(strict=False)
-        if resolved == staging_dir or not resolved.is_relative_to(staging_dir):
-            raise ValueError(
-                "export backend は staging directory 内の path だけを返せます: "
-                f"path={path}, staging={job.staging_dir}"
-            )
-    return staged_paths
-
-
 def _commit_staged_outputs(
     job: ExportJob,
     staged_paths: Sequence[Path],
+    *,
+    capture_service: CaptureService | None = None,
 ) -> tuple[tuple[Path, ...], Path]:
     """成果物と manifest を上書きなしの一世代として親側で公開する。"""
 
-    published = _CAPTURE_SERVICE.publish_staged(
+    service = _CAPTURE_SERVICE if capture_service is None else capture_service
+    base_output_path = job.base_output_path
+    if base_output_path is None:
+        raise RuntimeError("validated ExportJob に base_output_path がありません")
+    published = service.publish_staged_with_retry(
         job.snapshot,
-        job.output_path,
-        _validate_staged_paths(job, staged_paths),
+        base_output_path,
+        validate_capture_staged_outputs(job.staging_dir, staged_paths),
+        initial_path=job.output_path,
         format=job.format,
         split_gcode_layers=job.split_gcode_layers,
         output_size=job.output_size,
@@ -443,13 +429,19 @@ def _commit_staged_outputs(
 def _finalize_backend_result(
     job: ExportJob,
     result: ExportJobResult,
+    *,
+    capture_service: CaptureService | None = None,
 ) -> ExportJobResult:
     """worker result を親側で commit し、staging を必ず掃除する。"""
 
     try:
         if result.status is not ExportJobStatus.SUCCESS:
             return result
-        committed_paths, manifest_path = _commit_staged_outputs(job, result.paths)
+        committed_paths, manifest_path = _commit_staged_outputs(
+            job,
+            result.paths,
+            capture_service=capture_service,
+        )
         return replace(
             result,
             paths=committed_paths,
@@ -467,13 +459,13 @@ def _finalize_backend_result(
             worker_exitcode=result.worker_exitcode,
         )
     finally:
-        _cleanup_job_staging(job)
+        cleanup_capture_staging(job.staging_dir)
 
 
 def _execute_export_job(job: ExportJob) -> tuple[Path, ...]:
     """既定 backend として PNG/G-code job を同期実行する。"""
 
-    work_output_path = _job_work_output_path(job)
+    work_output_path = capture_staging_work_path(job.staging_dir, job.output_path)
     gcode_params = (
         job.snapshot.gcode_params
         if job.format is ExportFormat.GCODE
@@ -505,7 +497,10 @@ def _export_worker_main(
             if job is None:
                 return
             try:
-                paths = _validate_staged_paths(job, backend(job))
+                paths = validate_capture_staged_outputs(
+                    job.staging_dir,
+                    backend(job),
+                )
                 result = ExportJobResult(
                     job_id=job.job_id,
                     format=job.format,
@@ -565,6 +560,7 @@ class ExportJobSystem:
         backend: ExportBackend = _execute_export_job,
         default_timeout_s: float = 30.0,
         runtime_limits: RuntimeLimits = DEFAULT_FINAL_RUNTIME_LIMITS,
+        capture_service: CaptureService | None = None,
     ) -> None:
         if not isinstance(runtime_limits, RuntimeLimits):
             raise TypeError("runtime_limits は RuntimeLimits である必要があります")
@@ -577,6 +573,13 @@ class ExportJobSystem:
 
         self._ctx = mp.get_context("spawn")
         self._backend = backend
+        if capture_service is not None and not isinstance(
+            capture_service, CaptureService
+        ):
+            raise TypeError("capture_service は CaptureService である必要があります")
+        self._capture_service = (
+            CaptureService() if capture_service is None else capture_service
+        )
         self._default_timeout_s = timeout_s
         self._max_pending_jobs = int(runtime_limits.capture_queue_pending_jobs)
         self._max_retained_bytes = int(runtime_limits.capture_queue_bytes)
@@ -857,7 +860,7 @@ class ExportJobSystem:
                 self._start_worker()
             self._task_q.put_nowait(dispatched)
         except Exception:
-            _cleanup_job_staging(dispatched)
+            cleanup_capture_staging(dispatched.staging_dir)
             self._completed.append(
                 self._terminal_result(
                     job,
@@ -881,7 +884,11 @@ class ExportJobSystem:
             current = self._in_flight
             if current is None or message.job_id != current.job_id:
                 continue
-            message = _finalize_backend_result(current, message)
+            message = _finalize_backend_result(
+                current,
+                message,
+                capture_service=self._capture_service,
+            )
             self._completed.append(message)
             self._in_flight = None
             self._release_job(current)
@@ -911,7 +918,7 @@ class ExportJobSystem:
             self._replace_worker()
         finally:
             if current is not None:
-                _cleanup_job_staging(current)
+                cleanup_capture_staging(current.staging_dir)
 
     def _expire_timed_out_job(self) -> None:
         current = self._in_flight
@@ -937,7 +944,7 @@ class ExportJobSystem:
         try:
             self._replace_worker()
         finally:
-            _cleanup_job_staging(current)
+            cleanup_capture_staging(current.staging_dir)
 
     def _service(self) -> None:
         self._drain_worker_messages()
@@ -952,6 +959,7 @@ class ExportJobSystem:
         format: ExportFormat,
         snapshot: CaptureExportSnapshot,
         output_path: str | Path,
+        base_output_path: str | Path | None = None,
         split_gcode_layers: bool = False,
         timeout_s: float | None = None,
         output_size: tuple[int, int] | None = None,
@@ -983,13 +991,11 @@ class ExportJobSystem:
             raise error
 
         output = Path(output_path)
+        base_output = output if base_output_path is None else Path(base_output_path)
         next_job_id = self._next_job_id + 1
-        output.parent.mkdir(parents=True, exist_ok=True)
-        staging_dir = Path(
-            tempfile.mkdtemp(
-                prefix=f".{output.stem}.export-{next_job_id}-",
-                dir=output.parent,
-            )
+        staging = CaptureStaging.create(
+            output,
+            purpose=f"export-{next_job_id}",
         )
         try:
             job = ExportJob(
@@ -997,13 +1003,14 @@ class ExportJobSystem:
                 format=format,
                 snapshot=snapshot,
                 output_path=output,
+                base_output_path=base_output,
                 timeout_s=self._default_timeout_s if timeout_s is None else timeout_s,
-                staging_dir=staging_dir,
+                staging_dir=staging.directory,
                 split_gcode_layers=split_gcode_layers,
                 output_size=normalized_output_size,
             )
         except BaseException:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            staging.close()
             raise
         self._next_job_id = next_job_id
 
@@ -1048,7 +1055,7 @@ class ExportJobSystem:
                     )
                 )
                 self._release_job(pending)
-                _cleanup_job_staging(pending)
+                cleanup_capture_staging(pending.staging_dir)
                 cancelled = True
             else:
                 kept.append(pending)
@@ -1071,7 +1078,7 @@ class ExportJobSystem:
             try:
                 self._replace_worker()
             finally:
-                _cleanup_job_staging(current)
+                cleanup_capture_staging(current.staging_dir)
 
         if self._in_flight is None and self._pending:
             self._dispatch(self._pending.popleft())
@@ -1118,7 +1125,7 @@ class ExportJobSystem:
             errors.attempt(lambda: self._close_queues(cancel_pending=had_in_flight))
         finally:
             for job in jobs_to_cancel:
-                _cleanup_job_staging(job)
+                cleanup_capture_staging(job.staging_dir)
 
         errors.raise_if_any()
 

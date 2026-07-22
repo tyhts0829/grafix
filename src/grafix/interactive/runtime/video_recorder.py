@@ -12,7 +12,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from grafix.core.output_paths import output_path_for_draw
+from grafix.export.output_paths import output_path_for_draw
+from grafix.core.runtime_config import RuntimeConfig
 from grafix.core.value_validation import (
     exact_string,
     finite_real,
@@ -27,7 +28,11 @@ _MIN_PROCESS_REAP_GRACE_S = 0.5
 
 
 def default_video_output_path(
-    draw: Callable[[float], object], *, run_id: str | None = None, ext: str = "mp4"
+    draw: Callable[[float], object],
+    *,
+    run_id: str | None = None,
+    ext: str = "mp4",
+    config: RuntimeConfig | None = None,
 ) -> Path:
     """draw の定義元に基づく動画の既定保存パスを返す。
 
@@ -45,7 +50,13 @@ def default_video_output_path(
         or "\\" in suffix
     ):
         raise ValueError("ext は '.' なしの空でない拡張子名で指定してください")
-    return output_path_for_draw(kind="video", ext=suffix, draw=draw, run_id=run_id)
+    return output_path_for_draw(
+        kind="video",
+        ext=suffix,
+        draw=draw,
+        run_id=run_id,
+        config=config,
+    )
 
 
 def _ffmpeg_command(

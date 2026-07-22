@@ -207,7 +207,9 @@ def test_report_delta_requires_compatible_mode_and_settings(
 
     assert "+100.0%" not in html
 
-    self_sampling_result = replace(base.cases[0], spec=replace(base.cases[0].spec, self_sampling=True))
+    self_sampling_result = replace(
+        base.cases[0], spec=replace(base.cases[0].spec, self_sampling=True)
+    )
     self_sampling_base = replace(base, cases=(self_sampling_result,))
     compatible_head = replace(
         base,
@@ -227,9 +229,7 @@ def test_report_delta_requires_compatible_mode_and_settings(
         ),
     )
 
-    html = render_report_html(
-        LoadedRuns((self_sampling_base, compatible_head), ())
-    )
+    html = render_report_html(LoadedRuns((self_sampling_base, compatible_head), ()))
 
     assert "+100.0%" in html
 

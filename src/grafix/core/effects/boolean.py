@@ -7,15 +7,15 @@ from collections.abc import Sequence
 import numpy as np
 import pyclipper  # type: ignore[import-not-found, import-untyped]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
-from .util import (
+from grafix.core.geometry_kernels.packed import empty_packed_geometry
+from grafix.core.geometry_kernels.planar import (
     PlanarFrame,
     canonical_planar_frame,
-    empty_geom,
     planarity_threshold,
 )
 
@@ -207,7 +207,7 @@ def _restore_rings(
     frame: PlanarFrame,
 ) -> GeomTuple:
     if not paths:
-        return empty_geom()
+        return empty_packed_geometry()
 
     counts = np.fromiter(
         (len(path) + 1 for path in paths),
@@ -282,7 +282,7 @@ def boolean(
     first_lines = _closed_world_lines(a, label="第 1 入力")
     second_lines = _closed_world_lines(b, label="第 2 入力")
     if not first_lines and not second_lines:
-        return empty_geom()
+        return empty_packed_geometry()
 
     frame_coords, frame_offsets = _pack_frame_input(first_lines, second_lines)
     frame = canonical_planar_frame(frame_coords, frame_offsets)
@@ -310,7 +310,7 @@ def boolean(
 
     if not first_paths:
         if mode_s in {"intersection", "difference"}:
-            return empty_geom()
+            return empty_packed_geometry()
         tree = _execute_polytree(
             second_paths,
             (),
@@ -318,7 +318,7 @@ def boolean(
         )
     elif not second_paths:
         if mode_s == "intersection":
-            return empty_geom()
+            return empty_packed_geometry()
         tree = _execute_polytree(
             first_paths,
             (),

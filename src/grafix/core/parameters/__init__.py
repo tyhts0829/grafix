@@ -25,10 +25,11 @@ from .key import (
     make_site_id,
     validate_parameter_identity,
 )
+from .known_operations import KnownOperationSchemaSnapshot
 from .meta import ParamMeta, ParamScale
 from .state import ParamState
-from .store import ParamStore
-from .runtime import LoadProvenance, ParamStoreLoadDiagnostic
+from .store import ParamStore, ParamStoreRollback
+from .runtime import LoadProvenance, ParamRuntimeView, ParamStoreLoadDiagnostic
 from .reconcile import ReconcileOrphan, ReconcileOrphanReason
 from .reconcile_ops import list_reconcile_orphans, manual_migrate_orphan
 from .source import MidiFrameSnapshot, MidiValueSource, ValueSource
@@ -86,6 +87,7 @@ __all__ = [
     "set_effect_order",
     "store_effect_order_snapshot",
     "ParameterKey",
+    "KnownOperationSchemaSnapshot",
     "make_site_id",
     "caller_site_id",
     "validate_parameter_identity",
@@ -93,7 +95,9 @@ __all__ = [
     "ParamScale",
     "ParamState",
     "ParamStore",
+    "ParamStoreRollback",
     "LoadProvenance",
+    "ParamRuntimeView",
     "MidiFrameSnapshot",
     "MidiValueSource",
     "ParamStoreLoadDiagnostic",

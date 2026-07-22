@@ -9,7 +9,7 @@ from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.interactive.parameter_gui.gui import ParameterGUI
 from grafix.interactive.midi import MidiSession
-from grafix.interactive.runtime.diagnostics import DiagnosticCenter
+from grafix.interactive.diagnostics import DiagnosticCenter
 
 
 class _Popup:
@@ -157,11 +157,10 @@ def _setup_with_mapping(
 
     gui_state = cast(Any, gui)
     gui_state._store = store
-    gui_state._show_inactive_params = False
-    gui_state._midi_clear_notice = None
-    gui_state._midi_clear_notice_token = None
+    gui_state._session.show_inactive_parameters = False
+    gui_state._session.midi_clear_notice = None
     gui_state._history = None
-    gui_state._midi_learn_state = SimpleNamespace(
+    gui_state._session.midi_learn = SimpleNamespace(
         active_target="target",
         active_component=0,
     )
@@ -180,10 +179,11 @@ def test_table_toolbar_names_filter_and_moves_clear_into_midi_menu(
     assert imgui.checkbox_labels == ["Show inactive##show_inactive_params"]
     assert imgui.opened_popups == ["MIDI mappings##midi_menu_popup"]
     assert imgui.menu_enabled == [True]
-    assert gui._show_inactive_params is True
-    assert gui._midi_learn_state.active_target is None
-    assert gui._midi_learn_state.active_component is None
-    assert gui._midi_clear_notice == "MIDI mappings cleared"
+    assert gui._session.show_inactive_parameters is True
+    assert gui._session.midi_learn.active_target is None
+    assert gui._session.midi_learn.active_component is None
+    notice = gui._session.midi_clear_notice
+    assert notice is not None and notice.message == "MIDI mappings cleared"
     assert imgui.button_labels.index("MIDI##midi_menu") < imgui.button_labels.index(
         "Expand all##parameter_groups_expand_all"
     )
@@ -205,9 +205,9 @@ def test_table_toolbar_updates_search_filter_and_displays_filtered_count(
 
     assert gui._render_parameter_table_toolbar() is False
 
-    assert gui._parameter_filter_state.query == "CIRCLE MIDI 12"
-    assert gui._parameter_filter_state.activity == "active"
-    assert gui._parameter_filter_state.midi_mapped_only is True
+    assert gui._session.filter_state.query == "CIRCLE MIDI 12"
+    assert gui._session.filter_state.activity == "active"
+    assert gui._session.filter_state.midi_mapped_only is True
     assert "1 / 1 parameters" in imgui.disabled_text
 
 
@@ -232,7 +232,7 @@ def test_clear_all_menu_item_is_disabled_without_mappings(
 
     assert gui._render_parameter_table_toolbar() is False
     assert imgui.menu_enabled == [False]
-    assert gui._midi_clear_notice is None
+    assert gui._session.midi_clear_notice is None
 
 
 def test_midi_disabled_session_does_not_enable_or_run_reconnect(
@@ -273,7 +273,7 @@ def test_clear_notice_exposes_one_click_undo(
 
     state = store.get_state(key)
     assert state is not None and state.cc_key == 12
-    assert gui._midi_clear_notice is None
+    assert gui._session.midi_clear_notice is None
 
 
 def test_clear_notice_disappears_instead_of_undoing_a_later_edit(
@@ -296,7 +296,7 @@ def test_clear_notice_disappears_instead_of_undoing_a_later_edit(
     assert gui._render_midi_clear_notice() is False
     state = store.get_state(key)
     assert state is not None and state.ui_value == 0.9
-    assert gui._midi_clear_notice is None
+    assert gui._session.midi_clear_notice is None
 
 
 def test_collapse_all_is_an_independent_undoable_operation(
@@ -348,10 +348,9 @@ def test_vec3_menu_counts_each_assigned_component(
     gui = cast(Any, initialized_parameter_gui)
     gui._store = store
     gui._history = None
-    gui._show_inactive_params = False
-    gui._midi_clear_notice = None
-    gui._midi_clear_notice_token = None
-    gui._midi_learn_state = SimpleNamespace(active_target=None, active_component=None)
+    gui._session.show_inactive_parameters = False
+    gui._session.midi_clear_notice = None
+    gui._session.midi_learn = SimpleNamespace(active_target=None, active_component=None)
     imgui = _Imgui(click_clear=False)
     gui._imgui = imgui
 

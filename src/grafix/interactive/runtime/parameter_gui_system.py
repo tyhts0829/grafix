@@ -20,12 +20,13 @@ from grafix.interactive.midi import MidiSession
 if TYPE_CHECKING:
     from grafix.core.parameters.autosave import ParamStoreAutosave
     from grafix.core.parameters.history import ParamSnapshotSlots, ParamStoreHistory
-    from grafix.interactive.runtime.frame_clock import TransportClock
+    from grafix.interactive.transport import TransportClock
     from grafix.interactive.runtime.monitor import RuntimeMonitor
     from grafix.interactive.parameter_gui.variation_panel import (
         VariationThumbnailCapture,
         VariationThumbnailPreview,
     )
+    from grafix.interactive.parameter_gui.catalog import ParameterGuiCatalog
 
 _logger = logging.getLogger(__name__)
 
@@ -49,6 +50,8 @@ class ParameterGUIWindowSystem:
         variation_thumbnail_capture: VariationThumbnailCapture | None = None,
         variation_thumbnail_preview: VariationThumbnailPreview | None = None,
         ui_scale: float = 1.0,
+        catalog: ParameterGuiCatalog | None = None,
+        catalog_provider: Callable[[], ParameterGuiCatalog] | None = None,
         on_parameter_revision_created: (
             Callable[[int, int, str], None] | None
         ) = None,
@@ -67,14 +70,20 @@ class ParameterGUIWindowSystem:
             minimum=0.0,
             minimum_inclusive=False,
         )
+        if catalog_provider is not None and not callable(catalog_provider):
+            raise TypeError("catalog_provider は callable または None である必要があります")
         w, h = effective_config.parameter_gui_window_size
-        self.window = create_parameter_gui_window(width=w, height=h, vsync=False)
+        window = create_parameter_gui_window(width=w, height=h, vsync=False)
+        self.window = window
         self._store = store
         self._autosave = autosave
         self._monitor = monitor
         self._on_parameter_revision_created = on_parameter_revision_created
+        self._catalog_provider = catalog_provider
+        # ParameterGUI は constructor 入口から window を所有し、途中失敗時も自ら閉じる。
+        # system 側で同じ window を再度閉じず、所有権を一箇所に保つ。
         self._gui = ParameterGUI(
-            self.window,
+            window,
             effective_config=effective_config,
             store=store,
             midi_session=midi_session,
@@ -87,12 +96,16 @@ class ParameterGUIWindowSystem:
             variation_thumbnail_capture=variation_thumbnail_capture,
             variation_thumbnail_preview=variation_thumbnail_preview,
             ui_scale=scale,
+            catalog=catalog,
         )
 
     def draw_frame(self) -> None:
         """1 フレーム分の GUI を描画する（`flip()` は呼ばない）。"""
 
         store = self._store
+        catalog_provider = self._catalog_provider
+        if catalog_provider is not None:
+            self._gui.replace_catalog(catalog_provider())
         revision_before = int(store.revision)
         value_revision_before = int(store.value_revision)
         input_started_ns = time.monotonic_ns()

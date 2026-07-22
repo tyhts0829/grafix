@@ -7,7 +7,7 @@ import pytest
 
 from grafix.core.effects.buffer import buffer
 from grafix.core.effects.partition import partition
-from grafix.core.effects.util import (
+from grafix.core.geometry_kernels.planar import (
     canonical_planar_frame,
     planarity_threshold,
 )

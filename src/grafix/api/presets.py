@@ -4,80 +4,19 @@
 
 from __future__ import annotations
 
-import hashlib
-import importlib
-import sys
-import types
 from collections.abc import Callable
 from functools import partial
-from pathlib import Path
 
 from grafix.core.parameters import validate_parameter_identity
 from grafix.core.parameters.identity import identity_string
-from grafix.core.preset_registry import PresetIdentity, preset_op
-from grafix.core.runtime_config import RuntimeConfig, runtime_config
+from grafix.core.preset_catalog import PresetIdentity, current_preset_catalog
 from grafix.core.scene import SceneItem
-
-import grafix.core.preset_registry as preset_registry_module
-
-_AUTOLOAD_KEY: tuple[Path | None, tuple[Path, ...]] | None = None
-
-
-def _loaded_module_paths() -> set[Path]:
-    """別名を含め、現在の process で実行済みの module source を返す。"""
-
-    return {
-        Path(module_file).resolve(strict=False)
-        for module in tuple(sys.modules.values())
-        if (module_file := getattr(module, "__file__", None)) is not None
-    }
-
-
-def _autoload_preset_modules(cfg: RuntimeConfig) -> None:
-    """確定済み runtime config が指定する user preset を一度だけ import する。"""
-
-    key = (cfg.config_path, tuple(cfg.preset_module_dirs))
-
-    global _AUTOLOAD_KEY
-    if _AUTOLOAD_KEY == key:
-        return
-
-    dirs = cfg.preset_module_dirs
-    loaded_paths = _loaded_module_paths()
-    for d in dirs:
-        dir_path = Path(d).resolve(strict=False)
-        if not dir_path.is_dir():
-            continue
-
-        token = hashlib.sha256(str(dir_path).encode("utf-8")).hexdigest()[:10]
-        pkg_name = f"grafix_user_presets_{token}"
-        if pkg_name not in sys.modules:
-            pkg = types.ModuleType(pkg_name)
-            pkg.__path__ = [str(dir_path)]  # type: ignore[attr-defined]
-            sys.modules[pkg_name] = pkg
-
-        for py_path in sorted(dir_path.rglob("*.py")):
-            rel = py_path.relative_to(dir_path)
-            if rel.name == "__init__.py":
-                continue
-            resolved_path = py_path.resolve(strict=False)
-            if resolved_path in loaded_paths:
-                continue
-            mod_name = pkg_name + "." + ".".join(rel.with_suffix("").parts)
-            importlib.import_module(mod_name)
-            loaded_paths.add(resolved_path)
-
-    _AUTOLOAD_KEY = key
 
 
 class PresetNamespace:
     """preset を `P.<name>(...)` で呼び出す名前空間。
 
-    Notes
-    -----
-    - 初回アクセス時に `config.yaml` の `paths.preset_module_dirs` を走査し、
-      ディレクトリ配下の `*.py` を自動 import して preset を登録する。
-    - 未登録名は `AttributeError`。
+    束縛中は session catalog、束縛外では default authoring snapshot だけを参照する。
     """
 
     __slots__ = ("_identity",)
@@ -89,17 +28,13 @@ class PresetNamespace:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        registry = preset_registry_module.preset_registry
-        op = preset_op(name)
-        if op not in registry:
-            _autoload_preset_modules(runtime_config())
-            registry = preset_registry_module.preset_registry
-        if op not in registry:
+        catalog = current_preset_catalog()
+        if name not in catalog:
             raise AttributeError(f"未登録の preset: {name!r}")
-        spec = registry[op]
+        declaration = catalog[name]
         if self._identity is None:
-            return spec.func
-        return partial(spec.invoker, self._identity)
+            return declaration.func
+        return partial(declaration.invoker, self._identity)
 
     def __call__(
         self,

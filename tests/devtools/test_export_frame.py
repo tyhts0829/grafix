@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from grafix import ExportFormat, ExportResult, RenderOptions
+from grafix.core.runtime_config import RuntimeConfig, current_runtime_config
 from grafix.devtools import export_frame
 
 
@@ -60,8 +61,18 @@ def test_main_passes_render_inputs_and_prints_actual_capture_result(
         )
 
     config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "paths:\n  output_dir: configured-output\n",
+        encoding="utf-8",
+    )
     parameter_path = tmp_path / "parameters.json"
-    monkeypatch.setattr(export_frame, "_resolve_callable", lambda _spec: _draw)
+    observed_configs: list[RuntimeConfig] = []
+
+    def resolve_callable(_spec: str):
+        observed_configs.append(current_runtime_config())
+        return _draw
+
+    monkeypatch.setattr(export_frame, "_resolve_callable", resolve_callable)
     monkeypatch.setattr(export_frame, "RenderSession", make_session)
     monkeypatch.setattr(export_frame, "export", fake_export)
 
@@ -94,7 +105,10 @@ def test_main_passes_render_inputs_and_prints_actual_capture_result(
     assert session.draw is _draw
     assert session.rendered == [1.25]
     assert session.kwargs["parameter_source"] == parameter_path
-    assert session.kwargs["config_path"] == str(config_path)
+    config = session.kwargs["config"]
+    assert isinstance(config, RuntimeConfig)
+    assert config.config_path == config_path.resolve()
+    assert observed_configs == [config]
     assert session.kwargs["run_id"] == "take-a"
     assert session.kwargs["seed"] == 1847
     options = session.kwargs["options"]

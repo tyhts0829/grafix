@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 
 
@@ -183,11 +184,221 @@ def test_core_does_not_depend_on_api_export_or_interactive() -> None:
             "grafix.api",
             "grafix.export",
             "grafix.interactive",
+            "subprocess",
+            "tempfile",
             "pyglet",
             "moderngl",
             "imgui",
         ),
         forbidden_exact=("grafix",),
+    )
+
+
+def test_core_does_not_implement_publish_or_path_allocation_policy() -> None:
+    """domain layer から fsync/link と capture path policy を排除する。"""
+
+    root = _repo_root()
+    violations: list[str] = []
+    core_root = root / "src" / "grafix" / "core"
+    forbidden_names = {
+        "VersionedPathAllocator",
+        "publish_capture_generation",
+        "capture_manifest_path_for",
+    }
+    for path in _iter_py_files(core_root):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id in forbidden_names:
+                violations.append(
+                    f"{path.relative_to(root)}:{node.lineno}: {node.id}"
+                )
+            if not isinstance(node, ast.Call) or not isinstance(
+                node.func, ast.Attribute
+            ):
+                continue
+            owner = node.func.value
+            if (
+                isinstance(owner, ast.Name)
+                and owner.id == "os"
+                and node.func.attr in {"fsync", "link"}
+            ):
+                violations.append(
+                    f"{path.relative_to(root)}:{node.lineno}: os.{node.func.attr}"
+                )
+
+    assert not violations, "core filesystem policy を検出:\n" + "\n".join(
+        violations
+    )
+
+
+def test_parameters_do_not_depend_on_operation_registries() -> None:
+    """parameter domain は application から schema snapshot を受け取る。"""
+
+    root = _repo_root()
+    _assert_no_forbidden_imports(
+        root=root / "src" / "grafix" / "core" / "parameters",
+        forbidden_prefixes=(
+            "grafix.core.effect_registry",
+            "grafix.core.primitive_registry",
+            "grafix.core.op_registry",
+            "grafix.core.preset_registry",
+        ),
+    )
+
+
+def test_legacy_registry_modules_are_deleted_and_never_imported() -> None:
+    """authoring/runtime は旧 process-global registry へ戻れない。"""
+
+    root = _repo_root()
+    legacy_modules = {
+        "grafix.core.effect_registry",
+        "grafix.core.op_registry",
+        "grafix.core.preset_registry",
+        "grafix.core.primitive_registry",
+    }
+    core = root / "src" / "grafix" / "core"
+    assert all(
+        not (core / f"{module.rsplit('.', 1)[1]}.py").exists()
+        for module in legacy_modules
+    )
+
+    violations: list[str] = []
+    for source_root in (root / "src" / "grafix", root / "tests"):
+        for path in _iter_py_files(source_root):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                imported: set[str] = set()
+                if isinstance(node, ast.Import):
+                    imported.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                    if node.module is not None:
+                        imported.add(node.module)
+                elif isinstance(node, ast.Call):
+                    module = _constant_importlib_module(node)
+                    if module is not None:
+                        imported.add(module)
+                for module in sorted(imported & legacy_modules):
+                    violations.append(
+                        f"{path.relative_to(root)}:{node.lineno}: {module}"
+                    )
+
+    assert not violations, "legacy registry import を検出:\n" + "\n".join(violations)
+
+
+def test_authoring_has_one_registration_path_and_no_legacy_global_store() -> None:
+    """旧 live registry API と新たな module-global builder を復活させない。"""
+
+    root = _repo_root()
+    source_root = root / "src" / "grafix"
+    legacy_symbols = {
+        "BuiltinOpCatalog",
+        "OpCatalogEntry",
+        "OpRegistry",
+        "OpSpec",
+        "PresetRegistry",
+        "PresetSpec",
+        "RegistryRevision",
+        "_AUTOLOAD_KEY",
+        "_registry_revision",
+        "builtin_effect_catalog",
+        "builtin_primitive_catalog",
+        "current_registry_revision",
+        "effect_registry",
+        "preset_registry",
+        "primitive_registry",
+        "registry_revision",
+        "replace_all",
+    }
+    mutable_builder_factories = {
+        "DefaultAuthoringDefinitions",
+        "OperationCatalogBuilder",
+        "PresetCatalogBuilder",
+        "RegistrationTarget",
+    }
+    allowed_global_builder = (
+        Path("src/grafix/core/authoring_definitions.py"),
+        "default_authoring_definitions",
+        "DefaultAuthoringDefinitions",
+    )
+    expected_decorator_definitions = {
+        (Path("src/grafix/api/preset.py"), "preset"),
+        (Path("src/grafix/core/operation_authoring.py"), "effect"),
+        (Path("src/grafix/core/operation_authoring.py"), "primitive"),
+    }
+    expected_registration_calls = {
+        Path("src/grafix/api/preset.py"): 1,
+        Path("src/grafix/core/operation_authoring.py"): 2,
+    }
+
+    violations: list[str] = []
+    decorator_definitions: set[tuple[Path, str]] = set()
+    registration_calls: dict[Path, int] = {}
+    for path in _iter_py_files(source_root):
+        rel = path.relative_to(root)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in {"primitive", "effect", "preset"}:
+                    decorator_definitions.add((rel, node.name))
+            if isinstance(node, ast.Call):
+                called = node.func
+                called_name = (
+                    called.id
+                    if isinstance(called, ast.Name)
+                    else called.attr
+                    if isinstance(called, ast.Attribute)
+                    else None
+                )
+                if called_name == "register_authoring_declaration":
+                    registration_calls[rel] = registration_calls.get(rel, 0) + 1
+            if isinstance(node, ast.Name) and node.id in legacy_symbols:
+                violations.append(f"{rel}:{node.lineno}: {node.id}")
+            elif isinstance(node, ast.Attribute) and node.attr in legacy_symbols:
+                violations.append(f"{rel}:{node.lineno}: {node.attr}")
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    imported_name = alias.name.rsplit(".", 1)[-1]
+                    if imported_name in legacy_symbols:
+                        violations.append(
+                            f"{rel}:{node.lineno}: import {imported_name}"
+                        )
+
+        # Catalog builder/registration target を module global に置くと、session
+        # snapshot ではなく live process state へ戻る。唯一の例外は公開
+        # decorator convenience 用 DefaultAuthoringDefinitions そのものだけ。
+        for statement in tree.body:
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = statement.value
+            if not isinstance(value, ast.Call):
+                continue
+            called = value.func
+            factory = (
+                called.id
+                if isinstance(called, ast.Name)
+                else called.attr
+                if isinstance(called, ast.Attribute)
+                else None
+            )
+            if factory not in mutable_builder_factories:
+                continue
+            targets = (
+                statement.targets
+                if isinstance(statement, ast.Assign)
+                else [statement.target]
+            )
+            for target in targets:
+                target_name = target.id if isinstance(target, ast.Name) else ast.unparse(target)
+                if (rel, target_name, factory) != allowed_global_builder:
+                    violations.append(
+                        f"{rel}:{statement.lineno}: global {target_name} = {factory}(...)"
+                    )
+
+    assert decorator_definitions == expected_decorator_definitions
+    assert registration_calls == expected_registration_calls
+    assert not violations, "legacy/global registration state を検出:\n" + "\n".join(
+        violations
     )
 
 
@@ -213,6 +424,272 @@ def test_interactive_does_not_depend_on_api() -> None:
         forbidden_prefixes=("grafix.api",),
         forbidden_exact=("grafix",),
     )
+
+
+def test_interactive_leaf_packages_do_not_depend_on_runtime_composition() -> None:
+    """GL/MIDI/GUI の leaf 実装を runtime composition へ逆依存させない。"""
+
+    root = _repo_root()
+    for package in ("gl", "midi", "parameter_gui"):
+        _assert_no_forbidden_imports(
+            root=root / "src" / "grafix" / "interactive" / package,
+            forbidden_prefixes=("grafix.interactive.runtime",),
+        )
+
+
+def test_runtime_does_not_reach_through_renderer_context() -> None:
+    """framebuffer operation は DrawRenderer の明示 API だけを通す。"""
+
+    root = _repo_root()
+    violations: list[str] = []
+    runtime_root = root / "src" / "grafix" / "interactive" / "runtime"
+    for path in _iter_py_files(runtime_root):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute) or node.attr != "ctx":
+                continue
+            owner = node.value
+            if isinstance(owner, ast.Name) and "renderer" in owner.id:
+                violations.append(f"{path.relative_to(root)}:{node.lineno}")
+            elif isinstance(owner, ast.Attribute) and "renderer" in owner.attr:
+                violations.append(f"{path.relative_to(root)}:{node.lineno}")
+
+    assert not violations, "renderer context への直接到達を検出:\n" + "\n".join(
+        violations
+    )
+
+
+def test_phase6_coordinators_do_not_reabsorb_extracted_policy() -> None:
+    """DWS、GUI、runner を順序と配線だけの coordinator に保つ。"""
+
+    root = _repo_root()
+    src_root = root / "src"
+    targets = {
+        "dws": src_root
+        / "grafix"
+        / "interactive"
+        / "runtime"
+        / "draw_window_system.py",
+        "gui": src_root
+        / "grafix"
+        / "interactive"
+        / "parameter_gui"
+        / "gui.py",
+        "runner": src_root / "grafix" / "api" / "runner.py",
+    }
+    forbidden_names = {
+        "dws": {
+            "VersionedPathAllocator",
+            "reserve_path",
+            "publish_staged_with_retry",
+            "publish_recording_staged_with_retry",
+            "set_minimum_size",
+            "set_maximum_size",
+            "_recording_capture",
+            "_preview_was_playing_before_recording",
+        },
+        "gui": {
+            "create_variation",
+            "delete_variation",
+            "duplicate_variation",
+            "morph_variations",
+            "randomize_parameters",
+            "rename_variation",
+            "restore_variation",
+            "update_state_from_ui",
+        },
+        "runner": {
+            "NSScreen",
+            "MidiController",
+            "FrozenMidiInput",
+            "shutdown_midi_controller",
+            "_ns_screen",
+        },
+    }
+    violations: list[str] = []
+    for label, path in targets.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = forbidden_names[label]
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id in names:
+                violations.append(
+                    f"{path.relative_to(root)}:{node.lineno}: {node.id}"
+                )
+            if isinstance(node, ast.Attribute) and node.attr in names:
+                violations.append(
+                    f"{path.relative_to(root)}:{node.lineno}: {node.attr}"
+                )
+
+    runner_imports = _import_modules_in_file(
+        path=targets["runner"],
+        src_root=src_root,
+    )
+    for module in sorted(runner_imports):
+        if module in {"AppKit", "Cocoa", "Foundation"}:
+            violations.append(f"{targets['runner'].relative_to(root)}: {module}")
+
+    gui_imports = _import_modules_in_file(
+        path=targets["gui"],
+        src_root=src_root,
+    )
+    for module in sorted(gui_imports):
+        if module in {
+            "grafix.core.parameters.variations",
+            "grafix.core.parameters.ui_ops",
+            "grafix.core.parameters.midi_ops",
+            "grafix.core.parameters.effect_order_ops",
+        }:
+            violations.append(f"{targets['gui'].relative_to(root)}: {module}")
+
+    assert not violations, "coordinator への責務逆流を検出:\n" + "\n".join(
+        violations
+    )
+
+
+def test_api_and_interactive_do_not_access_param_store_private_state() -> None:
+    """composition 外から ParamStore の live container へ到達させない。"""
+
+    root = _repo_root()
+    forbidden_names = {
+        "_runtime_ref",
+        "_variations_ref",
+        "_collapsed_headers_ref",
+        "_locked_keys_ref",
+        "_favorite_keys_ref",
+        "_get_state_ref",
+        "_snapshot_cache",
+        "_touch",
+    }
+    forbidden_prefixes = ("_observe_history_",)
+    violations: list[str] = []
+
+    def is_store_expression(node: ast.expr) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id == "store" or node.id.endswith("_store")
+        if isinstance(node, ast.Attribute):
+            return node.attr in {"store", "_store"}
+        return False
+
+    for source_root in (
+        root / "src" / "grafix" / "api",
+        root / "src" / "grafix" / "interactive",
+    ):
+        for path in _iter_py_files(source_root):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                    if node.func.id == "vars" and node.args:
+                        argument = node.args[0]
+                        if is_store_expression(argument):
+                            violations.append(
+                                f"{path.relative_to(root)}:{node.lineno}: vars(store)"
+                            )
+                if not isinstance(node, ast.Attribute):
+                    continue
+                name = node.attr
+                if name in forbidden_names or name.startswith(forbidden_prefixes):
+                    violations.append(
+                        f"{path.relative_to(root)}:{node.lineno}: {name}"
+                    )
+
+    assert not violations, "ParamStore private state access を検出:\n" + "\n".join(
+        violations
+    )
+
+
+def test_effect_modules_do_not_import_sibling_effects() -> None:
+    root = _repo_root()
+    src_root = root / "src"
+    effects_root = src_root / "grafix" / "core" / "effects"
+    violations: list[str] = []
+
+    for path in sorted(effects_root.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        current = f"grafix.core.effects.{path.stem}"
+        imported = _import_modules_in_file(path=path, src_root=src_root)
+        siblings = sorted(
+            module
+            for module in imported
+            if (
+                module == "grafix.core.effects"
+                or module.startswith("grafix.core.effects.")
+            )
+            and module != current
+            and not module.startswith(f"{current}.")
+        )
+        if siblings:
+            violations.append(f"{path.relative_to(root)}: {', '.join(siblings)}")
+
+    assert not violations, "effect 間の直接 import を検出:\n" + "\n".join(violations)
+
+
+def test_geometry_kernel_import_graph_is_acyclic_and_does_not_depend_on_effects(
+) -> None:
+    root = _repo_root()
+    src_root = root / "src"
+    kernels_root = src_root / "grafix" / "core" / "geometry_kernels"
+    kernel_modules = {
+        f"grafix.core.geometry_kernels.{path.stem}"
+        for path in kernels_root.glob("*.py")
+        if path.name != "__init__.py"
+    }
+    graph: dict[str, set[str]] = {}
+    effect_imports: list[str] = []
+
+    for path in sorted(kernels_root.glob("*.py")):
+        current, _is_package = _module_name_for_path(path=path, src_root=src_root)
+        imported = _import_modules_in_file(path=path, src_root=src_root)
+        graph[current] = {
+            candidate
+            for candidate in kernel_modules
+            if any(
+                module == candidate or module.startswith(f"{candidate}.")
+                for module in imported
+            )
+        }
+        bad = sorted(
+            module
+            for module in imported
+            if module == "grafix.core.effects"
+            or module.startswith("grafix.core.effects.")
+        )
+        effect_imports.extend(f"{path.relative_to(root)}: {module}" for module in bad)
+
+    assert not effect_imports, "kernel から effect への import を検出:\n" + "\n".join(
+        effect_imports
+    )
+    try:
+        tuple(TopologicalSorter(graph).static_order())
+    except CycleError as exc:
+        raise AssertionError(f"geometry kernel の import cycle を検出: {exc}") from exc
+
+
+def test_packed_geometry_builders_have_one_canonical_implementation() -> None:
+    root = _repo_root()
+    core_root = root / "src" / "grafix" / "core"
+    canonical = core_root / "geometry_kernels" / "packed.py"
+    definitions: dict[str, list[Path]] = {
+        "empty_packed_geometry": [],
+        "pack_polylines": [],
+        "empty_geom": [],
+        "empty_geom_tuple": [],
+        "lines_to_geom_tuple": [],
+    }
+
+    for path in _iter_py_files(core_root):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in definitions:
+                    definitions[node.name].append(path)
+
+    assert definitions["empty_packed_geometry"] == [canonical]
+    assert definitions["pack_polylines"] == [canonical]
+    assert definitions["empty_geom"] == []
+    assert definitions["empty_geom_tuple"] == []
+    assert definitions["lines_to_geom_tuple"] == []
+    assert not (core_root / "effects" / "util.py").exists()
 
 
 def _parse_single_stmt(source: str) -> ast.stmt:

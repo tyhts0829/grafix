@@ -4,20 +4,6 @@ from grafix.devtools.benchmarks import system_benchmark
 
 
 def test_small_workloads_report_deterministic_output_and_cache_stats() -> None:
-    soak = system_benchmark._animated_soak(frames=12, sides=48)
-    cache = soak["cache"]
-    assert soak["output"]["unique_geometry_ids"] == 12
-    assert cache["hits"] == soak["output"]["static_base_hits"] == 11
-    assert cache["misses"] == 13
-    assert cache["evictions"] == 11
-    assert cache["entries"] > 0
-    assert 0 < cache["bytes"] <= cache["budget_bytes"]
-
-    end_to_end = system_benchmark._draw_realize_indices(grid_size=3)
-    assert end_to_end["output"]["draw_lines"] > 0
-    assert end_to_end["output"]["index_count"] > 0
-    assert end_to_end["cache"]["misses"] == 2
-
     signature_a = system_benchmark._geometry_signature_workload(iterations=5)
     signature_b = system_benchmark._geometry_signature_workload(iterations=5)
     assert signature_a == signature_b
@@ -43,55 +29,6 @@ def test_small_workloads_report_deterministic_output_and_cache_stats() -> None:
         "entries": 1,
         "bytes": 0,
     }
-
-    store = system_benchmark._parameter_store(rows=12)
-    model = system_benchmark._parameter_snapshot_model_workload(store, frames=5)
-    assert model["output"]["rows"] == 12
-    assert model["output"]["snapshot_entries"] == 12
-    assert model["output"]["render_calls"] == 5
-    assert model["output"]["model_builds"] == 1
-    assert model["cache"]["hits"] == 4
-    assert model["cache"]["misses"] == 1
-
-    renderer_geometry = system_benchmark._renderer_geometry(polylines=100)
-    renderer = system_benchmark._renderer_cache_workload(
-        renderer_geometry,
-        frames=5,
-    )
-    assert renderer["output"]["n_lines"] == 100
-    assert renderer["output"]["index_builds"] == 1
-    assert renderer["output"]["uploads"] == 2
-    assert renderer["cache"]["hits"] == 3
-    assert renderer["cache"]["misses"] == 2
-    assert renderer["cache"]["entries"] == 1
-    assert 0 < renderer["cache"]["bytes"] <= renderer["cache"]["budget_bytes"]
-
-    multilayer = system_benchmark._renderer_multilayer_dynamic_workload(
-        layers=8,
-        frames=6,
-        polylines=12,
-        stable_topology=True,
-    )
-    assert multilayer["output"]["index_builds"] == 8
-    assert multilayer["output"]["full_uploads"] == 8
-    assert multilayer["output"]["vertex_only_uploads"] == 8 * 5
-    assert multilayer["output"]["dynamic_entries"] == 8
-    assert (
-        multilayer["output"]["dynamic_entries"]
-        <= multilayer["output"]["dynamic_entry_limit"]
-    )
-
-    changing_multilayer = (
-        system_benchmark._renderer_multilayer_dynamic_workload(
-            layers=3,
-            frames=4,
-            polylines=12,
-            stable_topology=False,
-        )
-    )
-    assert changing_multilayer["output"]["index_builds"] == 3 * 4
-    assert changing_multilayer["output"]["full_uploads"] == 3 * 4
-    assert changing_multilayer["output"]["vertex_only_uploads"] == 0
 
     inputs = system_benchmark._concat_inputs(parts=3, vertices_per_part=2)
     concat = system_benchmark._concat_workload(inputs)

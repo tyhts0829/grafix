@@ -10,7 +10,7 @@ from shapely.errors import GEOSException  # type: ignore[import-untyped]
 
 from grafix.api import E, G
 from grafix.core.effects.partition import partition as partition_impl
-from grafix.core.primitive_registry import primitive
+from grafix.core.operation_authoring import primitive
 from grafix.core.realize import realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 

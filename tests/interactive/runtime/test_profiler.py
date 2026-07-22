@@ -13,6 +13,7 @@ from grafix.core.parameters import ParamStore
 from grafix.core.pipeline import realize_scene
 from grafix.core.realize import RealizeSession
 from grafix.core.runtime_limits import RuntimeLimits
+from grafix.core.runtime_config import runtime_config
 from grafix.interactive.runtime.mp_draw import DrawResult
 from grafix.interactive.runtime.perf import PerfCollector
 from grafix.interactive.runtime.scene_runner import SceneRunner
@@ -414,7 +415,12 @@ def test_scene_runner_records_worker_submit_to_result_lag() -> None:
         effect_chains=(),
         worker_lag_ms=24.5,
     )
-    runner = SceneRunner(lambda _t: geometry, perf=perf, n_worker=0)
+    runner = SceneRunner(
+        lambda _t: geometry,
+        perf=perf,
+        n_worker=0,
+        effective_config=runtime_config(),
+    )
     runner._mp_draw = cast(Any, _LaggedMpDraw(result))
     try:
         with perf.frame():

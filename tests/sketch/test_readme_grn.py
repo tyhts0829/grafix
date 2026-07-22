@@ -31,11 +31,16 @@ def test_grn_6_draw_evaluates_with_repository_preset_path(tmp_path: Path) -> Non
     command = "\n".join(
         [
             "import json, runpy",
-            "from grafix.core.runtime_config import set_config_path",
+            "from grafix.core.authoring_loader import load_config_authoring_definitions",
+            "from grafix.core.operation_catalog import bind_operation_catalog",
+            "from grafix.core.preset_catalog import bind_preset_catalog",
+            "from grafix.core.runtime_config import load_runtime_config",
             "from grafix.core.scene import normalize_scene",
-            f"set_config_path({str(config_path)!r})",
-            f"namespace = runpy.run_path({str(_PROJECT_ROOT / 'sketch/readme/grn/6.py')!r})",
-            "layers = normalize_scene(namespace['draw'](0.0))",
+            f"config = load_runtime_config({str(config_path)!r})",
+            "definitions = load_config_authoring_definitions(config)",
+            "with bind_operation_catalog(definitions.operations), bind_preset_catalog(definitions.presets):",
+            f"    namespace = runpy.run_path({str(_PROJECT_ROOT / 'sketch/readme/grn/6.py')!r})",
+            "    layers = normalize_scene(namespace['draw'](0.0))",
             "print(json.dumps([{'name': layer.name, 'color': layer.color} for layer in layers]))",
         ]
     )

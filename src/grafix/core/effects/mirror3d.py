@@ -7,11 +7,11 @@ from functools import lru_cache
 
 import numpy as np
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .util import empty_geom
+from grafix.core.geometry_kernels.packed import empty_packed_geometry
 
 EPS = 1e-6
 INCLUDE_BOUNDARY = True
@@ -199,7 +199,7 @@ def mirror3d(
             )
     uniq = _dedup_lines(out_lines)
     if not uniq:
-        return empty_geom()
+        return empty_packed_geometry()
 
     all_coords = np.vstack(uniq).astype(np.float32, copy=False)
     new_offsets = np.zeros((len(uniq) + 1,), dtype=np.int32)

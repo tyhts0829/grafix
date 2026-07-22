@@ -22,6 +22,7 @@ from grafix import (
     render_variation_batch,
 )
 from grafix.core.geometry import Geometry
+from grafix.core.parameters.codec import encode_param_store
 from grafix.core.parameters.collapsed_header import primitive_collapsed_header_key
 from grafix.core.parameters.frame_params import FrameParamRecord
 from grafix.core.parameters.key import ParameterKey
@@ -391,8 +392,10 @@ def test_batch_exactly_isolates_render_mutations_and_restores_store(
     before_locks = set(store._locked_keys_ref())
     before_collapsed = set(store._collapsed_headers_ref())
     before_runtime = deepcopy(store._runtime_ref())
-    variation_container = store._variations_ref()
-    variation_items = tuple(variation_container.items())
+    before_persisted = encode_param_store(
+        store,
+        preserve_explicit_overrides=True,
+    )
 
     result = render_variation_batch(
         session,
@@ -411,15 +414,13 @@ def test_batch_exactly_isolates_render_mutations_and_restores_store(
     assert store._locked_keys_ref() == before_locks
     assert store._collapsed_headers_ref() == before_collapsed
     assert store._runtime_ref() == before_runtime
-    assert store._variations_ref() is variation_container
-    assert tuple(store._variations_ref()) == tuple(name for name, _ in variation_items)
-    assert all(
-        store._variations_ref()[name] is variation
-        for name, variation in variation_items
+    assert (
+        encode_param_store(store, preserve_explicit_overrides=True)
+        == before_persisted
     )
     assert store.get_state(_DISCOVERED) is None
 
-    # exact restore 後に作る mutation view は、deepcopy 側ではなく元 store を更新する。
+    # exact restore 後に作る mutation view は復元後の store を更新する。
     restored_revision = store.revision
     store._favorite_keys_ref().add(_AMOUNT)
     assert _AMOUNT in store._favorite_keys_ref()

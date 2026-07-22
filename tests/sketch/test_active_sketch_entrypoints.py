@@ -52,10 +52,9 @@ import sys
 from pathlib import Path
 
 import grafix
-from grafix.api import presets as presets_api
 from grafix.api.render import RenderSession
+from grafix.core.authoring_loader import default_session_authoring_definitions
 from grafix.core.render_options import RenderOptions
-from grafix.core.runtime_config import runtime_config
 from grafix.core.value_validation import (
     exact_bool,
     exact_integer,
@@ -68,7 +67,7 @@ real_run = grafix.run
 
 def smoke_run(draw, *args, **kwargs):
     inspect.signature(real_run).bind(draw, *args, **kwargs)
-    gui_enabled = exact_bool(
+    exact_bool(
         kwargs.get("parameter_gui", True),
         name="parameter_gui",
     )
@@ -98,9 +97,6 @@ def smoke_run(draw, *args, **kwargs):
     )
     finite_real(kwargs.get("fps", 60.0), name="fps")
 
-    if gui_enabled:
-        presets_api._autoload_preset_modules(runtime_config())
-
     options = RenderOptions(
         background_color=kwargs.get(
             "background_color",
@@ -110,11 +106,20 @@ def smoke_run(draw, *args, **kwargs):
         line_color=kwargs.get("line_color", (0.0, 0.0, 0.0)),
         canvas_size=kwargs.get("canvas_size", (800, 800)),
     )
+    # 直接実行した preset module は自身の declaration を登録済みなので、
+    # config directory を再 import せず、その generation を明示的に固定する。
+    preset_root = (Path.cwd() / "sketch" / "presets").resolve()
+    definitions = (
+        default_session_authoring_definitions()
+        if script_path.is_relative_to(preset_root)
+        else None
+    )
     with RenderSession(
         draw,
         options=options,
         parameter_source="code",
         seed=kwargs.get("seed"),
+        definitions=definitions,
     ) as session:
         frame = session.render(0.0)
     print(json.dumps({"layers": len(frame.layers)}))

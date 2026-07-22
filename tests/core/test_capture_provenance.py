@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import importlib
+import json
 import random
 from dataclasses import FrozenInstanceError, dataclass
 from enum import Enum
@@ -9,16 +10,19 @@ from pathlib import Path
 
 import pytest
 
-import grafix.core.capture_provenance as provenance_module
+import grafix.core.capture_provenance as provenance_values
 from grafix import G, RenderSession, export
 from grafix.core.capture_provenance import (
     FrameProvenance,
     GitProvenance,
     ParameterSnapshotProvenance,
 )
+from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.style import style_key
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.interactive.runtime.source_reload import ReloadedDraw
+
+provenance_module = importlib.import_module("grafix.export.capture_provenance")
 
 
 def _draw(_t: float):
@@ -133,15 +137,15 @@ def test_provenance_json_rejects_unknown_duck_typed_and_dataclass_values() -> No
         {1, 2},
     ):
         with pytest.raises(TypeError):
-            provenance_module._canonical_json(value)
+            provenance_values.canonical_provenance_json(value)
 
 
 def test_provenance_json_rejects_non_string_keys_and_nonfinite_numbers() -> None:
     with pytest.raises(TypeError, match="keys"):
-        provenance_module._canonical_json({1: "integer", "1": "string"})
+        provenance_values.canonical_provenance_json({1: "integer", "1": "string"})
     for value in (float("nan"), float("inf"), float("-inf")):
         with pytest.raises(ValueError, match="finite"):
-            provenance_module._canonical_json({"value": value})
+            provenance_values.canonical_provenance_json({"value": value})
 
 
 def test_parameter_snapshot_is_cached_until_store_or_effective_revision_changes(
@@ -207,6 +211,30 @@ def test_parameter_snapshot_is_cached_until_store_or_effective_revision_changes(
         changed.provenance.frame.parameters.sha256
         != first.provenance.frame.parameters.sha256
     )
+
+
+def test_cached_parameter_snapshot_does_not_rebuild_runtime_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_view_calls = 0
+    runtime_view = ParamStore.runtime_view
+
+    def count_runtime_view(store: ParamStore):
+        nonlocal runtime_view_calls
+        runtime_view_calls += 1
+        return runtime_view(store)
+
+    monkeypatch.setattr(ParamStore, "runtime_view", count_runtime_view)
+
+    with RenderSession(_draw) as session:
+        # 初回 merge で source policy を確定させ、次の miss から計測する。
+        session.render(0.0)
+        runtime_view_calls = 0
+        first = session.render(1.0)
+        stable = session.render(2.0)
+
+    assert stable.provenance.frame.parameters is first.provenance.frame.parameters
+    assert runtime_view_calls == 1
 
 
 def test_git_unavailable_is_explicit_in_manifest(

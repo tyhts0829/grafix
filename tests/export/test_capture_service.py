@@ -18,8 +18,8 @@ from grafix import (
     export,
     render,
 )
-from grafix.core.capture_manifest import capture_manifest_path_for
-from grafix.core.runtime_config import runtime_config, set_config_path
+from grafix.export.capture_publish import capture_manifest_path_for
+from grafix.core.runtime_config import runtime_config
 from grafix.export import capture as capture_module
 from grafix.export.capture import CaptureService
 from grafix.export.gcode import export_gcode
@@ -451,43 +451,29 @@ def test_gcode_capture_is_byte_identical_to_existing_encoder(
 def test_gcode_export_uses_closed_render_session_effective_config(
     tmp_path: Path,
 ) -> None:
-    caller_config_path = tmp_path / "caller.yaml"
-    caller_config_path.write_text(
-        "version: 1\nexport:\n  gcode:\n    z_up: 5.0\n    decimals: 2\n",
-        encoding="utf-8",
-    )
     render_config_path = tmp_path / "render.yaml"
     render_config_path.write_text(
         "version: 1\nexport:\n  gcode:\n    z_up: 17.0\n    decimals: 1\n",
         encoding="utf-8",
     )
 
-    set_config_path(caller_config_path)
-    caller_config = runtime_config()
-    try:
-        frame = render(lambda _t: (), config_path=render_config_path)
-        assert runtime_config() is caller_config
+    default_config = runtime_config()
+    frame = render(lambda _t: (), config_path=render_config_path)
+    assert runtime_config() == default_config
 
-        result = export(frame, tmp_path / "closed-session.gcode")
-        assert result.format is ExportFormat.GCODE
-        assert "G1 Z37.0" in result.path.read_text(encoding="utf-8")
-        assert result.manifest_path is not None
-        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
-        assert manifest["config"]["effective"]["gcode"]["z_up"] == 17.0
-        assert manifest["config"]["effective"]["gcode"]["decimals"] == 1
-    finally:
-        set_config_path(None)
+    result = export(frame, tmp_path / "closed-session.gcode")
+    assert result.format is ExportFormat.GCODE
+    assert "G1 Z37.0" in result.path.read_text(encoding="utf-8")
+    assert result.manifest_path is not None
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["config"]["effective"]["gcode"]["z_up"] == 17.0
+    assert manifest["config"]["effective"]["gcode"]["decimals"] == 1
 
 
 def test_png_export_uses_closed_render_session_effective_scale(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    caller_config_path = tmp_path / "caller.yaml"
-    caller_config_path.write_text(
-        "version: 1\nexport:\n  png:\n    scale: 2.0\n",
-        encoding="utf-8",
-    )
     render_config_path = tmp_path / "render.yaml"
     render_config_path.write_text(
         "version: 1\nexport:\n  png:\n    scale: 3.5\n",
@@ -507,25 +493,21 @@ def test_png_export_uses_closed_render_session_effective_scale(
         return Path(png_path)
 
     monkeypatch.setattr(capture_module, "rasterize_svg_to_png", fake_rasterize)
-    set_config_path(caller_config_path)
-    caller_config = runtime_config()
-    try:
-        frame = render(
-            lambda _t: (),
-            options=RenderOptions(canvas_size=(10, 8)),
-            config_path=render_config_path,
-        )
-        assert runtime_config() is caller_config
+    default_config = runtime_config()
+    frame = render(
+        lambda _t: (),
+        options=RenderOptions(canvas_size=(10, 8)),
+        config_path=render_config_path,
+    )
+    assert runtime_config() == default_config
 
-        result = export(frame, tmp_path / "closed-session.png")
-        assert result.format is ExportFormat.PNG
-        assert observed_sizes == [(35, 28)]
-        assert result.manifest_path is not None
-        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
-        assert manifest["config"]["effective"]["png_scale"] == 3.5
-        assert manifest["output"]["size"] == {"width": 35, "height": 28}
-    finally:
-        set_config_path(None)
+    result = export(frame, tmp_path / "closed-session.png")
+    assert result.format is ExportFormat.PNG
+    assert observed_sizes == [(35, 28)]
+    assert result.manifest_path is not None
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["config"]["effective"]["png_scale"] == 3.5
+    assert manifest["output"]["size"] == {"width": 35, "height": 28}
 
 
 def test_export_rejects_unsupported_suffix_before_creating_parent(

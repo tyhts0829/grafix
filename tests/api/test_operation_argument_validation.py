@@ -12,12 +12,13 @@ import grafix.api._op_validation as op_validation_module
 import grafix.core.geometry as geometry_module
 from grafix import E, G
 from grafix.api._op_validation import validate_operation_kwargs
-from grafix.core.op_registry import OpSpec
-from grafix.core.effect_registry import effect
+from grafix.core.operation_declaration import create_op_declaration
+from grafix.core.operation_schema import ParameterOpSchema
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.store import ParamStore
-from grafix.core.primitive_registry import primitive
+from grafix.core.operation_authoring import primitive
 from grafix.core.realized_geometry import GeomTuple
 
 
@@ -115,15 +116,20 @@ def test_operation_selectors_require_exact_bool_activate(invalid: object) -> Non
 
 
 def test_var_keyword_operation_keeps_dynamic_authoring_contract() -> None:
-    spec = OpSpec(
-        evaluator=lambda: None,
-        meta={},
-        defaults={},
-        param_order=(),
-        ui_visible={},
-        n_inputs=0,
+    def evaluator(**_params: object) -> object:
+        return None
+
+    spec = create_op_declaration(
+        name="dynamic",
         kind="primitive",
-        accepts_var_kwargs=True,
+        evaluator=evaluator,
+        schema=ParameterOpSchema(
+            meta={},
+            defaults={},
+            param_order=(),
+            ui_visible={},
+        ),
+        n_inputs=0,
     )
 
     assert validate_operation_kwargs(

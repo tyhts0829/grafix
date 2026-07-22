@@ -13,7 +13,7 @@ from grafix.core.value_validation import (
     finite_real,
     positive_integer_pair,
 )
-from grafix.interactive.runtime.frame_clock import RecordingClock
+from grafix.interactive.transport import RecordingClock
 from grafix.interactive.runtime.video_recorder import (
     DEFAULT_VIDEO_FINALIZE_TIMEOUT_S,
     VideoRecorder,
@@ -131,22 +131,18 @@ class VideoRecordingSystem:
             recorder.abort()
             raise
 
-    def write_frame(self, screen: object) -> None:
-        """現在の screen 内容を 1 フレームとして書き込む。"""
+    def write_frame(self, frame_rgb24: bytes) -> None:
+        """renderer が読み出した RGB24 bytes を 1 フレームとして書き込む。"""
 
         recorder = self._recorder
         clock = self._clock
         if recorder is None or clock is None:
             return
 
-        w, h = self._size
         try:
-            frame = screen.read(  # type: ignore[attr-defined]
-                viewport=(0, 0, w, h),
-                components=3,
-                alignment=1,
-            )
-            recorder.write_frame_rgb24(frame)
+            if not isinstance(frame_rgb24, bytes):
+                raise TypeError("frame_rgb24 は bytes である必要があります")
+            recorder.write_frame_rgb24(frame_rgb24)
         except Exception as exc:
             self.pause_frame(f"{type(exc).__name__}: {exc}")
             raise

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Literal
 
 from grafix.core.parameters import MidiFrameSnapshot
-from grafix.interactive.runtime.diagnostics import (
+from grafix.interactive.diagnostics import (
     DiagnosticAction,
     DiagnosticCenter,
     DiagnosticEvent,
@@ -19,7 +19,7 @@ from .midi_controller import (
     MidiConnectionError,
     MidiController,
     _cc_number,
-    _shutdown_midi_controller,
+    shutdown_midi_controller,
 )
 
 MidiConnectionState = Literal["disabled", "live", "frozen"]
@@ -321,7 +321,7 @@ class MidiSession:
         self._frozen_save_controller = None
         if controller is None:
             return
-        _shutdown_midi_controller(
+        shutdown_midi_controller(
             controller,
             on_snapshot_save_skipped=self._publish_snapshot_save_skipped,
             report_secondary=lambda label: _logger.exception(

@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import importlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
+from typing import Literal
 
 import pytest
 
-from grafix import G, Frame, RenderOptions, RenderSession, RuntimeLimits, render
+from grafix import G, P, Frame, RenderOptions, RenderSession, RuntimeLimits, render
+from grafix.core.font_resources import FontResources
 from grafix.core.parameters import ParamStore
 from grafix.core.resource_budget import ResourceBudget, ResourceLimitError
 from grafix.core.parameters.style import style_key
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.runtime_config import (
+    current_runtime_config,
+    load_runtime_config,
     runtime_config,
-    runtime_config_report,
-    set_config_path,
 )
 from grafix.core.preview_quality import current_preview_quality, preview_quality_context
 
@@ -205,9 +209,7 @@ def test_parameter_source_selects_one_explicit_load_path(
     assert calls == [
         (
             expected_loader,
-            (tmp_path / "specific.json").resolve()
-            if expected_source == "path"
-            else default_path,
+            (tmp_path / "specific.json").resolve() if expected_source == "path" else default_path,
         )
     ]
     assert metadata.parameter_source == (
@@ -230,26 +232,36 @@ paths:
         encoding="utf-8",
     )
 
-    try:
-        with RenderSession(_constant_draw(), config_path=config_path) as session:
-            frame = session.render(0.0)
-            metadata = session.metadata
+    with RenderSession(_constant_draw(), config_path=config_path) as session:
+        frame = session.render(0.0)
+        metadata = session.metadata
 
-        assert metadata.config_path == config_path.resolve()
-        assert metadata.effective_config is frame.metadata.effective_config
-        assert metadata.effective_config.output_dir == (tmp_path / "artifacts").resolve()
-    finally:
-        set_config_path(None)
+    assert metadata.config_path == config_path.resolve()
+    assert metadata.effective_config is frame.metadata.effective_config
+    assert metadata.effective_config.output_dir == (tmp_path / "artifacts").resolve()
 
 
-def test_render_session_restores_caller_config_and_freezes_session_config(
+def test_render_session_keeps_explicit_config_identity_and_rejects_path_pair(
     tmp_path: Path,
 ) -> None:
-    caller_config_path = tmp_path / "caller.yaml"
-    caller_config_path.write_text(
-        "version: 1\npaths:\n  output_dir: caller-artifacts\n",
-        encoding="utf-8",
-    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("paths:\n  output_dir: artifacts\n", encoding="utf-8")
+    config = load_runtime_config(config_path)
+
+    with RenderSession(_constant_draw(), config=config) as session:
+        assert session.config is config
+
+    with pytest.raises(ValueError, match="同時"):
+        RenderSession(
+            _constant_draw(),
+            config=config,
+            config_path=config_path,
+        )
+
+
+def test_render_session_freezes_config_without_mutating_default_discovery(
+    tmp_path: Path,
+) -> None:
     session_config_path = tmp_path / "session.yaml"
     session_config_path.write_text(
         "version: 1\npaths:\n  output_dir: session-artifacts\n",
@@ -258,62 +270,207 @@ def test_render_session_restores_caller_config_and_freezes_session_config(
     observed_configs = []
 
     def draw(t: float):
-        observed_configs.append(runtime_config())
+        observed_configs.append(current_runtime_config())
         return _constant_draw()(t)
 
-    set_config_path(caller_config_path)
-    caller_config = runtime_config()
-    caller_report = runtime_config_report()
-    try:
-        session = RenderSession(draw, config_path=session_config_path)
-        session_config = session.config
-        assert runtime_config() is session_config
-        assert runtime_config_report().config is session_config
+    default_before = runtime_config()
+    session = RenderSession(draw, config_path=session_config_path)
+    session_config = session.config
 
-        # Session 作成後に設定ファイルが変化しても、評価は開始時 snapshot を使う。
-        session_config_path.write_text(
-            "version: 1\npaths:\n  output_dir: changed-artifacts\n",
-            encoding="utf-8",
-        )
-        session.render(0.0)
-        session.close()
+    # Session 作成後に設定ファイルが変化しても、評価は開始時 snapshot を使う。
+    session_config_path.write_text(
+        "version: 1\npaths:\n  output_dir: changed-artifacts\n",
+        encoding="utf-8",
+    )
+    session.render(0.0)
+    session.close()
 
-        assert observed_configs == [session_config]
-        assert session_config.output_dir == (tmp_path / "session-artifacts").resolve()
-        assert runtime_config() is caller_config
-        assert runtime_config_report() is caller_report
-        assert runtime_config().output_dir == (tmp_path / "caller-artifacts").resolve()
-    finally:
-        set_config_path(None)
+    assert observed_configs == [session_config]
+    assert session_config.output_dir == (tmp_path / "session-artifacts").resolve()
+    assert runtime_config() == default_before
 
 
-def test_render_session_restores_caller_config_when_initialization_fails(
+def test_render_session_config_load_failure_does_not_change_existing_session(
+    tmp_path: Path,
+) -> None:
+    valid_config_path = tmp_path / "valid.yaml"
+    valid_config_path.write_text(
+        "version: 1\npaths:\n  output_dir: valid-artifacts\n",
+        encoding="utf-8",
+    )
+    invalid_config_path = tmp_path / "invalid.yaml"
+    invalid_config_path.write_text("paths:\n  outpt_dir: broken\n", encoding="utf-8")
+
+    existing = RenderSession(_constant_draw(), config_path=valid_config_path)
+
+    with pytest.raises(RuntimeError, match="paths.outpt_dir"):
+        RenderSession(_constant_draw(), config_path=invalid_config_path)
+
+    frame = existing.render(0.0)
+    existing.close()
+    assert frame.metadata.effective_config.output_dir == (tmp_path / "valid-artifacts").resolve()
+
+
+@pytest.mark.parametrize("first_to_close", ["a", "b"])
+def test_render_sessions_are_isolated_for_any_close_order(
+    tmp_path: Path,
+    first_to_close: Literal["a", "b"],
+) -> None:
+    config_a = tmp_path / "a.yaml"
+    config_b = tmp_path / "b.yaml"
+    config_a.write_text("paths:\n  output_dir: a-output\n", encoding="utf-8")
+    config_b.write_text("paths:\n  output_dir: b-output\n", encoding="utf-8")
+
+    observed_a = []
+    observed_b = []
+
+    def draw_a(_t: float):
+        observed_a.append(current_runtime_config())
+        return ()
+
+    def draw_b(_t: float):
+        observed_b.append(current_runtime_config())
+        return ()
+
+    session_a = RenderSession(draw_a, config_path=config_a)
+    session_b = RenderSession(draw_b, config_path=config_b)
+    session_a.render(0.0)
+    session_b.render(0.0)
+    session_a.render(0.5)
+    session_b.render(0.5)
+
+    # A/B を交互に評価した後、どちらを先に close しても、
+    # 残った session の config は変わらない。
+    if first_to_close == "a":
+        session_a.close()
+        session_b.render(1.0)
+        session_b.close()
+    else:
+        session_b.close()
+        session_a.render(1.0)
+        session_a.close()
+
+    assert all(config is session_a.config for config in observed_a)
+    assert all(config is session_b.config for config in observed_b)
+    assert len(observed_a) == (2 if first_to_close == "a" else 3)
+    assert len(observed_b) == (3 if first_to_close == "a" else 2)
+    assert session_a.config.output_dir == (tmp_path / "a-output").resolve()
+    assert session_b.config.output_dir == (tmp_path / "b-output").resolve()
+
+
+def test_render_session_runtime_config_binding_is_thread_local(tmp_path: Path) -> None:
+    config_a = tmp_path / "thread-a.yaml"
+    config_b = tmp_path / "thread-b.yaml"
+    config_a.write_text("paths:\n  output_dir: thread-a\n", encoding="utf-8")
+    config_b.write_text("paths:\n  output_dir: thread-b\n", encoding="utf-8")
+    barrier = Barrier(2)
+    observed: dict[str, Path] = {}
+
+    def make_draw(name: str):
+        def draw(_t: float):
+            barrier.wait(timeout=5.0)
+            observed[name] = current_runtime_config().output_dir
+            return ()
+
+        return draw
+
+    session_a = RenderSession(make_draw("a"), config_path=config_a)
+    session_b = RenderSession(make_draw("b"), config_path=config_b)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_a = executor.submit(session_a.render, 0.0)
+        future_b = executor.submit(session_b.render, 0.0)
+        future_a.result(timeout=10.0)
+        future_b.result(timeout=10.0)
+    session_a.close()
+    session_b.close()
+
+    assert observed == {
+        "a": (tmp_path / "thread-a").resolve(),
+        "b": (tmp_path / "thread-b").resolve(),
+    }
+
+
+@pytest.mark.parametrize("parameter_source", ["saved", "recovery"])
+def test_render_session_parameter_path_uses_session_config(
+    tmp_path: Path,
+    parameter_source: Literal["saved", "recovery"],
+) -> None:
+    config_path = tmp_path / f"{parameter_source}.yaml"
+    config_path.write_text(
+        f"paths:\n  output_dir: {parameter_source}-output\n",
+        encoding="utf-8",
+    )
+
+    with RenderSession(
+        _constant_draw(),
+        config_path=config_path,
+        parameter_source=parameter_source,
+    ) as session:
+        store_path = session.metadata.parameter_store_path
+
+    assert store_path is not None
+    assert store_path.is_relative_to((tmp_path / f"{parameter_source}-output").resolve())
+
+
+def test_render_session_preset_autoload_uses_session_config(tmp_path: Path) -> None:
+    preset_dir = tmp_path / "presets"
+    preset_dir.mkdir()
+    (preset_dir / "session_config.py").write_text(
+        "\n".join(
+            (
+                "from grafix import G, preset",
+                "",
+                "@preset(meta={})",
+                "def phase1_session_config_preset():",
+                "    return G.line(length=1.0)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "preset.yaml"
+    config_path.write_text(
+        f"paths:\n  preset_module_dirs:\n    - {preset_dir.as_posix()}\n",
+        encoding="utf-8",
+    )
+
+    def draw(_t: float):
+        return P.phase1_session_config_preset()
+
+    with RenderSession(draw, config_path=config_path) as session:
+        frame = session.render(0.0)
+
+    assert len(frame.layers) == 1
+
+
+def test_render_session_text_resolution_uses_session_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    render_module = importlib.import_module("grafix.api.render")
-    caller_config_path = tmp_path / "caller.yaml"
-    caller_config_path.write_text(
-        "version: 1\npaths:\n  output_dir: caller-artifacts\n",
+    original_resolve = FontResources.resolve
+    observed_font_dirs: list[tuple[Path, ...]] = []
+    observed_configs: list[object] = []
+
+    def resolve_with_observation(self, font, face_index, *, config):
+        observed_configs.append(config)
+        observed_font_dirs.append(config.font_dirs)
+        return original_resolve(self, font, face_index, config=config)
+
+    monkeypatch.setattr(FontResources, "resolve", resolve_with_observation)
+    font_dir = tmp_path / "fonts"
+    config_path = tmp_path / "font.yaml"
+    config_path.write_text(
+        f"paths:\n  font_dirs:\n    - {font_dir.as_posix()}\n",
         encoding="utf-8",
     )
-    session_config_path = tmp_path / "session.yaml"
-    session_config_path.write_text(
-        "version: 1\npaths:\n  output_dir: session-artifacts\n",
-        encoding="utf-8",
-    )
 
-    set_config_path(caller_config_path)
-    caller_config = runtime_config()
+    def draw(_t: float):
+        return G.text(text="A", font="GoogleSans-Regular.ttf")
 
-    def fail_load(*_args: object, **_kwargs: object) -> tuple[object, object, object]:
-        raise RuntimeError("parameter load failed")
+    with RenderSession(draw, config_path=config_path) as session:
+        fixed_config = session.config
+        session.render(0.0)
 
-    monkeypatch.setattr(render_module, "_load_parameter_store", fail_load)
-    try:
-        with pytest.raises(RuntimeError, match="parameter load failed"):
-            RenderSession(_constant_draw(), config_path=session_config_path)
-
-        assert runtime_config() is caller_config
-    finally:
-        set_config_path(None)
+    assert observed_font_dirs == [((font_dir).resolve(),)]
+    assert observed_configs == [fixed_config]
+    assert observed_configs[0] is fixed_config

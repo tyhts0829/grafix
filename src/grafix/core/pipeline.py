@@ -11,16 +11,21 @@ from typing import Callable
 
 from grafix.core.layer import Layer, LayerStyleDefaults, resolve_layer_style
 from grafix.core.parameters.layer_style import observe_and_apply_layer_style
-from grafix.core.realize import GeometryCacheKey, RealizeSession
+from grafix.core.evaluation_context import EvaluationContext, EvaluationResources
+from grafix.core.operation_catalog import bind_operation_catalog, current_operation_catalog
+from grafix.core.preview_quality import current_preview_quality, preview_quality_context
+from grafix.core.preset_catalog import (
+    PresetCatalog,
+    bind_preset_catalog,
+    current_preset_catalog,
+)
+from grafix.core.realize import GeometryCacheKey, RealizeCacheStore, RealizeSession
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.resource_budget import ensure_resource_usage
 from grafix.core.scene import SceneItem, normalize_scene
-from grafix.core.value_validation import (
-    exact_integer,
-    exact_string,
-    finite_real,
-    rgb01_tuple,
-)
+from grafix.core.runtime_config import bind_runtime_config, current_runtime_config
+from grafix.core.runtime_limits import DEFAULT_FINAL_RUNTIME_LIMITS
+from grafix.core.value_validation import finite_real, rgb01_tuple
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,41 +45,13 @@ class RealizedLayer:
             raise TypeError(
                 "RealizedLayer.realized は RealizedGeometry である必要があります"
             )
-        cache_key = self.cache_key
-        if type(cache_key) is not tuple or len(cache_key) != 2:
-            raise TypeError(
-                "RealizedLayer.cache_key は (geometry_id, revision) tuple である必要があります"
-            )
-        geometry_id = exact_string(
-            cache_key[0],
-            name="RealizedLayer.cache_key.geometry_id",
-        )
-        revision = cache_key[1]
-        if type(revision) is not tuple or len(revision) != 2:
-            raise TypeError(
-                "RealizedLayer.cache_key revision は2要素の tuple である必要があります"
-            )
-        normalized_key: GeometryCacheKey = (
-            geometry_id,
-            (
-                exact_integer(
-                    revision[0],
-                    name="RealizedLayer.cache_key.primitive_revision",
-                    minimum=0,
-                ),
-                exact_integer(
-                    revision[1],
-                    name="RealizedLayer.cache_key.effect_revision",
-                    minimum=0,
-                ),
-            ),
-        )
-        if geometry_id != self.layer.geometry.id:
+        if type(self.cache_key) is not GeometryCacheKey:
+            raise TypeError("RealizedLayer.cache_key は exact GeometryCacheKey です")
+        if self.cache_key.geometry_id != self.layer.geometry.id:
             raise ValueError(
                 "RealizedLayer.cache_key geometry_id は Layer.geometry.id と"
                 "一致する必要があります"
             )
-        object.__setattr__(self, "cache_key", normalized_key)
         object.__setattr__(
             self,
             "color",
@@ -98,6 +75,7 @@ def realize_scene(
     defaults: LayerStyleDefaults,
     *,
     session: RealizeSession | None = None,
+    presets: PresetCatalog | None = None,
 ) -> list[RealizedLayer]:
     """1 フレーム分のシーンを realize して返す。
 
@@ -111,6 +89,8 @@ def realize_scene(
         スタイル欠損を埋める既定値。
     session : RealizeSession or None, optional
         複数フレームで共有する評価セッション。省略時はこの呼び出しだけが所有する。
+    presets : PresetCatalog or None, optional
+        ``draw`` に束縛する preset snapshot。省略時は現在の snapshot を使う。
 
     Returns
     -------
@@ -118,10 +98,37 @@ def realize_scene(
         realize 済みの Layer 列。
     """
 
+    if presets is not None and type(presets) is not PresetCatalog:
+        raise TypeError("presets は exact PresetCatalog または None です")
+
     owned_session = session is None
-    active_session = RealizeSession() if session is None else session
+    owned_resources: EvaluationResources | None = None
+    owned_store: RealizeCacheStore | None = None
+    if session is None:
+        context = EvaluationContext(
+            catalog=current_operation_catalog(),
+            quality=current_preview_quality(),
+            config=current_runtime_config(),
+        )
+        owned_resources = EvaluationResources()
+        owned_store = RealizeCacheStore.from_runtime_limits(DEFAULT_FINAL_RUNTIME_LIMITS)
+        active_session = RealizeSession(
+            context=context,
+            resources=owned_resources,
+            cache_store=owned_store,
+        )
+    else:
+        active_session = session
     try:
-        scene = draw(t)
+        preset_catalog = current_preset_catalog() if presets is None else presets
+        context = active_session.context
+        with (
+            bind_operation_catalog(context.catalog),
+            bind_preset_catalog(preset_catalog),
+            bind_runtime_config(context.config),
+            preview_quality_context(context.quality),
+        ):
+            scene = draw(t)
         layers = normalize_scene(scene)
 
         out: list[RealizedLayer] = []
@@ -177,3 +184,7 @@ def realize_scene(
     finally:
         if owned_session:
             active_session.close()
+            assert owned_resources is not None
+            assert owned_store is not None
+            owned_resources.close()
+            owned_store.close()

@@ -5,8 +5,13 @@ from typing import Any, cast
 import pytest
 
 from grafix.core.parameters import ParamStore
+from grafix.core.operation_catalog import OperationCatalogBuilder
+from grafix.core.preset_catalog import PresetCatalogBuilder
 from grafix.core.runtime_config import RuntimeConfig
+from grafix.interactive.parameter_gui.catalog import ParameterGuiCatalog
+from grafix.interactive.parameter_gui import gui as gui_module
 from grafix.interactive.parameter_gui.gui import ParameterGUI
+from grafix.interactive.parameter_gui.pyglet_backend import PygletImguiBackend
 
 
 class _FailingWindow:
@@ -41,31 +46,66 @@ class _FailingImGui:
         raise RuntimeError("context destroy failed")
 
 
-def test_close_switches_to_owned_context_and_attempts_every_cleanup_step(
+class _FailingBackend:
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def close(self) -> None:
+        self._calls.append("backend.close")
+        raise RuntimeError("backend close failed")
+
+
+def test_parameter_gui_owns_injected_catalog_without_global_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    effective_runtime_config: RuntimeConfig,
+) -> None:
+    catalog = ParameterGuiCatalog.capture(
+        OperationCatalogBuilder().freeze(),
+        PresetCatalogBuilder().freeze(),
+    )
+
+    def fail_global_lookup() -> None:
+        raise AssertionError("explicit session catalog must be used")
+
+    def initialize(self: ParameterGUI, *_args: object, **_kwargs: object) -> None:
+        assert self._catalog is catalog
+        self._closed = True
+
+    monkeypatch.setattr(gui_module, "current_parameter_gui_catalog", fail_global_lookup)
+    monkeypatch.setattr(ParameterGUI, "_initialize", initialize)
+
+    instance = ParameterGUI(
+        _FailingWindow([]),
+        effective_config=effective_runtime_config,
+        store=ParamStore(),
+        catalog=catalog,
+    )
+
+    assert instance._catalog is catalog
+
+
+def test_backend_close_switches_to_owned_context_and_attempts_every_cleanup_step(
     caplog: pytest.LogCaptureFixture,
-    initialized_parameter_gui: ParameterGUI,
 ) -> None:
     calls: list[str] = []
-    gui = cast(Any, initialized_parameter_gui)
-    gui._closed = False
-    gui._window = _FailingWindow(calls)
-    gui._renderer = _FailingRenderer(calls)
-    gui._imgui = _FailingImGui(calls)
-    gui._context = "owned-context"
+    backend = cast(Any, object.__new__(PygletImguiBackend))
+    backend._closed = False
+    backend._window = _FailingWindow(calls)
+    backend._renderer = _FailingRenderer(calls)
+    backend._imgui = _FailingImGui(calls)
+    backend._context = "owned-context"
 
     with pytest.raises(RuntimeError, match="switch failed"):
-        gui.close()
+        backend.close()
 
     assert calls == [
         "switch_to",
-        "renderer.shutdown",
         "imgui.destroy_context",
-        "window.close",
     ]
 
     # 最初の close が例外を返しても、二重解放はしない。
-    gui.close()
-    assert len(calls) == 4
+    backend.close()
+    assert len(calls) == 2
     assert caplog.records == []
 
 
@@ -78,9 +118,7 @@ def test_partial_initialization_cleans_resources_and_preserves_root_error(
 
     def fail_initialize(self: ParameterGUI, *_args: object, **_kwargs: object) -> None:
         gui_state = cast(Any, self)
-        gui_state._renderer = _FailingRenderer(calls)
-        gui_state._imgui = _FailingImGui(calls)
-        gui_state._context = "owned-context"
+        gui_state._backend = _FailingBackend(calls)
         raise ValueError("font initialization failed")
 
     monkeypatch.setattr(ParameterGUI, "_initialize", fail_initialize)
@@ -93,11 +131,47 @@ def test_partial_initialization_cleans_resources_and_preserves_root_error(
         )
 
     assert calls == [
+        "backend.close",
         "switch_to",
-        "renderer.shutdown",
-        "imgui.destroy_context",
         "window.close",
     ]
+
+
+def test_parameter_gui_close_attempts_backend_and_window_cleanup(
+    initialized_parameter_gui: ParameterGUI,
+) -> None:
+    calls: list[str] = []
+    gui = cast(Any, initialized_parameter_gui)
+    gui._closed = False
+    gui._window = _FailingWindow(calls)
+    gui._backend = _FailingBackend(calls)
+
+    with pytest.raises(RuntimeError, match="backend close failed"):
+        gui.close()
+
+    assert calls == ["backend.close", "switch_to", "window.close"]
+
+
+def test_catalog_lookup_failure_closes_owned_window_and_preserves_root_error(
+    monkeypatch: pytest.MonkeyPatch,
+    effective_runtime_config: RuntimeConfig,
+) -> None:
+    calls: list[str] = []
+    window = _FailingWindow(calls)
+
+    def fail_global_lookup() -> ParameterGuiCatalog:
+        raise LookupError("catalog lookup failed")
+
+    monkeypatch.setattr(gui_module, "current_parameter_gui_catalog", fail_global_lookup)
+
+    with pytest.raises(LookupError, match="catalog lookup failed"):
+        ParameterGUI(
+            window,
+            effective_config=effective_runtime_config,
+            store=ParamStore(),
+        )
+
+    assert calls == ["switch_to", "window.close"]
 
 
 @pytest.mark.parametrize(
@@ -117,7 +191,8 @@ def test_parameter_gui_rejects_noncanonical_scalar_configuration_before_init(
     error: type[Exception],
     match: str,
 ) -> None:
-    window = _FailingWindow([])
+    calls: list[str] = []
+    window = _FailingWindow(calls)
     with pytest.raises(error, match=match):
         ParameterGUI(
             window,
@@ -125,3 +200,5 @@ def test_parameter_gui_rejects_noncanonical_scalar_configuration_before_init(
             store=ParamStore(),
             **kwargs,  # type: ignore[arg-type]
         )
+
+    assert calls == ["switch_to", "window.close"]

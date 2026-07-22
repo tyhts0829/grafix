@@ -4,13 +4,11 @@ from grafix.devtools.benchmarks.perf_hotpath_benchmark import (
     make_perf_backlog_scenario,
     run_perf_backlog_scenario,
 )
-from grafix.devtools.benchmarks.runner import case_definitions
+from grafix.devtools.benchmarks.catalog import case_definitions
 
 
 def test_perf_backlog_scenario_preserves_ordered_prefix_semantics() -> None:
-    result = run_perf_backlog_scenario(
-        make_perf_backlog_scenario({"pending": 100, "samples": 4})
-    )
+    result = run_perf_backlog_scenario(make_perf_backlog_scenario({"pending": 100, "samples": 4}))
 
     assert result.value["pending"] == 100
     assert result.value["samples"] == 4
@@ -31,17 +29,11 @@ def test_perf_backlog_scenario_preserves_ordered_prefix_semantics() -> None:
     ):
         assert metrics[name].distribution is not None
         assert metrics[name].distribution.count == 4
-    assert all(
-        contract.passed
-        for contract in result.contracts
-        if contract.severity == "hard"
-    )
+    assert all(contract.passed for contract in result.contracts if contract.severity == "hard")
 
 
 def test_perf_backlog_registry_has_scaling_cases() -> None:
-    definitions = {
-        definition.case_id: definition for definition in case_definitions()
-    }
+    definitions = {definition.case_id: definition for definition in case_definitions()}
 
     small = definitions["runtime.perf.causal_backlog.pending_100"]
     large = definitions["runtime.perf.causal_backlog.pending_4096"]

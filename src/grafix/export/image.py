@@ -10,9 +10,10 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from grafix.core.atomic_write import atomic_output_path
-from grafix.core.output_paths import output_path_for_draw
+from grafix.file_io import atomic_output_path
+from grafix.export.output_paths import output_path_for_draw
 from grafix.core.parameters.style import rgb01_to_rgb255
+from grafix.core.runtime_config import RuntimeConfig
 from grafix.core.value_validation import finite_real, positive_integer_pair
 
 _DEFAULT_RESVG_TIMEOUT_S = 30.0
@@ -24,6 +25,7 @@ def default_png_output_path(
     scale: float,
     canvas_size: tuple[int, int],
     run_id: str | None = None,
+    config: RuntimeConfig | None = None,
 ) -> Path:
     """draw の定義元に基づく PNG の既定保存パスを返す。
 
@@ -39,6 +41,7 @@ def default_png_output_path(
         draw=draw,
         run_id=run_id,
         canvas_size=(out_w, out_h),
+        config=config,
     )
 
 

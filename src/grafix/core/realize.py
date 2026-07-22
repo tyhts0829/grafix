@@ -1,4 +1,4 @@
-"""Geometry DAG の評価とセッション単位の bounded cache を提供する。"""
+"""immutable evaluation context による Geometry DAG 評価を提供する。"""
 
 from __future__ import annotations
 
@@ -8,33 +8,28 @@ import time
 from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import NoReturn, Protocol, TypeAlias
+from typing import NoReturn, Protocol
 
-from grafix.core.builtins import (
-    ensure_builtin_effect_registered,
-    ensure_builtin_primitive_registered,
+from grafix.core.evaluation_context import (
+    EvaluationContext,
+    EvaluationFingerprint,
+    EvaluationResources,
+    ExternalDependenciesFingerprint,
+    bind_external_dependency,
 )
-from grafix.core.effect_registry import effect_registry
 from grafix.core.geometry import Geometry, GeometryId
+from grafix.core.lifecycle import CleanupErrors
+from grafix.core.operation_catalog import bind_operation_catalog, current_operation_catalog
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
-from grafix.core.primitive_registry import primitive_registry
+from grafix.core.preview_quality import current_preview_quality, preview_quality_context
 from grafix.core.realized_geometry import RealizedGeometry, concat_realized_geometries
-from grafix.core.resource_budget import (
-    ensure_geometry_output,
-    resource_budget_context,
+from grafix.core.resource_budget import ensure_geometry_output, resource_budget_context
+from grafix.core.runtime_config import (
+    bind_runtime_config,
+    current_runtime_config,
 )
-from grafix.core.runtime_limits import (
-    DEFAULT_FINAL_RUNTIME_LIMITS,
-    RuntimeLimits,
-)
-
-RegistryRevision: TypeAlias = tuple[int, int]
-"""``(primitive revision, effect revision)`` のスナップショット。"""
-
-GeometryCacheKey: TypeAlias = tuple[GeometryId, RegistryRevision]
-"""CPU/GPU cache で共有する、operation 実装の世代を含むキー。"""
-
-_MAX_PREPARED_GEOMETRIES = 4096
+from grafix.core.runtime_limits import DEFAULT_FINAL_RUNTIME_LIMITS, RuntimeLimits
+from grafix.core.value_validation import exact_integer, exact_string
 
 
 class PerformanceRecorder(Protocol):
@@ -59,9 +54,48 @@ class RealizeError(RuntimeError):
     """Geometry の評価中に発生した通常の失敗を表す。"""
 
 
+class CatalogMismatchError(RealizeError):
+    """Geometry が固定した operation ref と session catalog の不一致。"""
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryCacheKey:
+    """CPU/inflight/RealizedLayer/GPU が共有する typed cache key。"""
+
+    geometry_id: GeometryId
+    evaluation: EvaluationFingerprint
+    external_dependencies: ExternalDependenciesFingerprint
+    uncached_generation: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "geometry_id",
+            exact_string(self.geometry_id, name="geometry cache key id"),
+        )
+        if not self.geometry_id:
+            raise ValueError("geometry cache key id は空にできません")
+        if type(self.evaluation) is not EvaluationFingerprint:
+            raise TypeError("evaluation は exact EvaluationFingerprint です")
+        if type(self.external_dependencies) is not ExternalDependenciesFingerprint:
+            raise TypeError(
+                "external_dependencies は exact ExternalDependenciesFingerprint です"
+            )
+        if self.uncached_generation is not None:
+            object.__setattr__(
+                self,
+                "uncached_generation",
+                exact_integer(
+                    self.uncached_generation,
+                    name="uncached_generation",
+                    minimum=1,
+                ),
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class CacheStats:
-    """RealizeSession の cache 統計スナップショット。"""
+    """RealizeCacheStore の統計スナップショット。"""
 
     hits: int
     misses: int
@@ -70,10 +104,164 @@ class CacheStats:
     bytes: int
 
 
+class RealizeCacheStore:
+    """catalog generation の外側で親 runtime が所有する bounded LRU。"""
+
+    __slots__ = (
+        "_cache",
+        "_cache_bytes",
+        "_closed",
+        "_evictions",
+        "_hits",
+        "_lock",
+        "_max_bytes",
+        "_max_entries",
+        "_misses",
+    )
+
+    def __init__(self, *, max_bytes: int, max_entries: int) -> None:
+        self._max_bytes = exact_integer(max_bytes, name="max_bytes", minimum=0)
+        self._max_entries = exact_integer(max_entries, name="max_entries", minimum=0)
+        self._lock = threading.Lock()
+        self._cache: OrderedDict[GeometryCacheKey, RealizedGeometry] = OrderedDict()
+        self._cache_bytes = 0
+        self._hits = 0
+        self._misses = 0
+        self._evictions = 0
+        self._closed = False
+
+    @classmethod
+    def from_runtime_limits(cls, limits: RuntimeLimits) -> RealizeCacheStore:
+        """RuntimeLimits の cache 上限だけを parent store へ固定する。"""
+
+        if type(limits) is not RuntimeLimits:
+            raise TypeError("limits は exact RuntimeLimits です")
+        return cls(
+            max_bytes=limits.cpu_cache_bytes,
+            max_entries=limits.cpu_cache_entries,
+        )
+
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    def get(self, key: GeometryCacheKey) -> RealizedGeometry | None:
+        """key を lookup し、hit 時だけ LRU/stat を更新する。"""
+
+        if type(key) is not GeometryCacheKey:
+            raise TypeError("key は exact GeometryCacheKey です")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("close 済みの RealizeCacheStore は使用できません")
+            cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.move_to_end(key)
+                self._hits += 1
+            return cached
+
+    def record_staged_hit(self) -> None:
+        """transaction-local entry の hit を store-wide stats へ加える。"""
+
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("close 済みの RealizeCacheStore は使用できません")
+            self._hits += 1
+
+    def record_miss(self) -> None:
+        """実 evaluator を開始する miss を一度記録する。"""
+
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("close 済みの RealizeCacheStore は使用できません")
+            self._misses += 1
+
+    def put(self, key: GeometryCacheKey, result: RealizedGeometry) -> int:
+        """result を bounded LRU へ格納し、eviction 数を返す。"""
+
+        if type(key) is not GeometryCacheKey:
+            raise TypeError("key は exact GeometryCacheKey です")
+        if type(result) is not RealizedGeometry:
+            raise TypeError("result は exact RealizedGeometry です")
+        size = result.byte_size
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("close 済みの RealizeCacheStore は使用できません")
+            if size > self._max_bytes:
+                emit_operation_diagnostic(
+                    op="runtime.cpu_cache",
+                    original_value=size,
+                    effective_value=self._max_bytes,
+                    reason="result exceeded the CPU cache limit and was not cached",
+                    severity="warning",
+                )
+                return 0
+            if self._max_entries == 0:
+                return 0
+
+            previous = self._cache.pop(key, None)
+            if previous is not None:
+                self._cache_bytes -= previous.byte_size
+
+            projected_bytes = self._cache_bytes + size
+            byte_limit_reached = projected_bytes > self._max_bytes
+            evicted_count = 0
+            while self._cache and (
+                len(self._cache) >= self._max_entries
+                or self._cache_bytes + size > self._max_bytes
+            ):
+                _, evicted = self._cache.popitem(last=False)
+                self._cache_bytes -= evicted.byte_size
+                evicted_count += 1
+            self._evictions += evicted_count
+
+            if evicted_count and byte_limit_reached:
+                emit_operation_diagnostic(
+                    op="runtime.cpu_cache",
+                    original_value=projected_bytes,
+                    effective_value=self._max_bytes,
+                    reason=f"CPU cache limit evicted {evicted_count} entrie(s)",
+                    severity="info",
+                )
+
+            self._cache[key] = result
+            self._cache_bytes += size
+            return evicted_count
+
+    def stats(self) -> CacheStats:
+        """store-wide cache statistics を返す。"""
+
+        with self._lock:
+            return CacheStats(
+                hits=self._hits,
+                misses=self._misses,
+                evictions=self._evictions,
+                entries=len(self._cache),
+                bytes=self._cache_bytes,
+            )
+
+    def clear(self) -> None:
+        """完了済み cache entry を破棄する。"""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._cache.clear()
+            self._cache_bytes = 0
+
+    def close(self) -> None:
+        """store を一度だけ閉じて全 entry を解放する。"""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._cache.clear()
+            self._cache_bytes = 0
+
+
 @dataclass(slots=True)
 class _InflightEntry:
-    """同じ cache key を評価するスレッド間で結果を受け渡す。"""
-
     condition: threading.Condition
     done: bool = False
     result: RealizedGeometry | None = None
@@ -82,8 +270,6 @@ class _InflightEntry:
 
 @dataclass(slots=True)
 class _CacheTransaction:
-    """scene aggregate 検査が通るまで新しい CPU cache entry を保持する。"""
-
     entries: OrderedDict[GeometryCacheKey, RealizedGeometry]
     commit_requested: bool = False
 
@@ -93,8 +279,6 @@ class _CacheTransaction:
 
 @dataclass(slots=True)
 class _EvaluationFrame:
-    """再帰を使わず 1 node の入力評価状態を保持する。"""
-
     geometry: Geometry
     key: GeometryCacheKey
     cacheable: bool
@@ -104,67 +288,131 @@ class _EvaluationFrame:
     realized_inputs: list[RealizedGeometry]
 
 
-def current_registry_revision() -> RegistryRevision:
-    """現在の primitive/effect registry revision を返す。"""
+def _close_owned_dependencies(
+    *,
+    resources: EvaluationResources | None,
+    cache_store: RealizeCacheStore | None,
+    initial_error: BaseException | None = None,
+) -> None:
+    """session-owned dependency を順に閉じ、最初の例外を保持する。"""
 
-    return primitive_registry.revision, effect_registry.revision
+    errors = CleanupErrors(initial_error=initial_error)
+    if resources is not None:
+        errors.attempt(resources.close, "close owned evaluation resources")
+    if cache_store is not None:
+        errors.attempt(cache_store.close, "close owned realize cache store")
+    errors.raise_if_any()
 
 
 class RealizeSession:
-    """Geometry の評価結果を byte・entry 上限付きで再利用するセッション。
-
-    Parameters
-    ----------
-    runtime_limits : RuntimeLimits, optional
-        operation/scene/cache/capture 上限。既定は final 用の標準 profile。
-    profiler : PerformanceRecorder or None, optional
-        operation/layer/cache の実測値を受け取る recorder。
-
-    Notes
-    -----
-    cache と inflight coordinator は同じ lock で管理する。同一 key の同時評価は
-    先行する 1 スレッドだけが実行し、残りはその結果を共有する。
-    """
+    """明示 dependency を借用し、省略された resource/cache store だけを所有する。"""
 
     def __init__(
         self,
         *,
+        context: EvaluationContext | None = None,
+        resources: EvaluationResources | None = None,
+        cache_store: RealizeCacheStore | None = None,
         runtime_limits: RuntimeLimits = DEFAULT_FINAL_RUNTIME_LIMITS,
         profiler: PerformanceRecorder | None = None,
     ) -> None:
-        if not isinstance(runtime_limits, RuntimeLimits):
-            raise TypeError("runtime_limits は RuntimeLimits である必要がある")
+        if type(runtime_limits) is not RuntimeLimits:
+            raise TypeError("runtime_limits は exact RuntimeLimits です")
+        owns_resources = resources is None
+        owns_cache_store = cache_store is None
+        selected_resources: EvaluationResources | None = None
+        selected_store: RealizeCacheStore | None = None
+        try:
+            # application owner が明示注入した dependency は借用する。standalone
+            # 利用のために省略された resource/store だけを session が所有する。
+            selected_context = (
+                EvaluationContext(
+                    catalog=current_operation_catalog(),
+                    quality=current_preview_quality(),
+                    config=current_runtime_config(),
+                )
+                if context is None
+                else context
+            )
+            if type(selected_context) is not EvaluationContext:
+                raise TypeError("context は exact EvaluationContext です")
 
-        self._runtime_limits = runtime_limits
-        self._profiler = profiler
-        self._lock = threading.Lock()
-        self._cache_transaction_local = threading.local()
-        self._cache: OrderedDict[GeometryCacheKey, RealizedGeometry] = OrderedDict()
-        self._cache_bytes = 0
-        self._inflight: dict[GeometryCacheKey, _InflightEntry] = {}
-        self._prepared_geometries: OrderedDict[GeometryId, None] = OrderedDict()
-        self._cacheability: OrderedDict[GeometryCacheKey, bool] = OrderedDict()
-        self._uncached_generation = 0
-        self._hits = 0
-        self._misses = 0
-        self._evictions = 0
-        self._closed = False
+            selected_resources = (
+                EvaluationResources() if owns_resources else resources
+            )
+            if type(selected_resources) is not EvaluationResources:
+                raise TypeError("resources は exact EvaluationResources です")
+            if selected_resources.closed:
+                raise RuntimeError("close 済み EvaluationResources は借用できません")
+
+            selected_store = (
+                RealizeCacheStore.from_runtime_limits(runtime_limits)
+                if owns_cache_store
+                else cache_store
+            )
+            if type(selected_store) is not RealizeCacheStore:
+                raise TypeError("cache_store は exact RealizeCacheStore です")
+            if selected_store.closed:
+                raise RuntimeError("close 済み RealizeCacheStore は借用できません")
+
+            self._context = selected_context
+            self._resources = selected_resources
+            self._cache_store = selected_store
+            self._runtime_limits = runtime_limits
+            self._profiler = profiler
+            self._lock = threading.Lock()
+            self._cache_transaction_local = threading.local()
+            self._evaluation_local = threading.local()
+            self._inflight: dict[GeometryCacheKey, _InflightEntry] = {}
+            self._uncached_generation = 0
+            self._active_realizations = 0
+            self._owns_resources = owns_resources
+            self._owns_cache_store = owns_cache_store
+            self._closed = False
+        except BaseException as error:
+            _close_owned_dependencies(
+                resources=selected_resources if owns_resources else None,
+                cache_store=selected_store if owns_cache_store else None,
+                initial_error=error,
+            )
+            raise
 
     def __enter__(self) -> RealizeSession:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("close 済みの RealizeSession は再利用できません")
         return self
 
-    def __exit__(self, *_exc_info: object) -> None:
-        self.close()
+    def __exit__(
+        self,
+        _exc_type: object,
+        exc: BaseException | None,
+        _traceback: object,
+    ) -> None:
+        initial_error = exc
+        errors = CleanupErrors(initial_error=initial_error)
+        errors.attempt(self.close, "close realize session")
+        errors.raise_if_any()
+
+    @property
+    def context(self) -> EvaluationContext:
+        return self._context
+
+    @property
+    def resources(self) -> EvaluationResources:
+        return self._resources
+
+    @property
+    def cache_store(self) -> RealizeCacheStore:
+        return self._cache_store
 
     @property
     def runtime_limits(self) -> RuntimeLimits:
-        """この session の operation/scene/cache 上限を返す。"""
-
         return self._runtime_limits
 
     @contextlib.contextmanager
     def cache_transaction(self) -> Iterator[_CacheTransaction]:
-        """scene 検査成功まで新規 cache 書込みを遅延する。"""
+        """scene aggregate 検査成功まで新規 store write を遅延する。"""
 
         if getattr(self._cache_transaction_local, "current", None) is not None:
             raise RuntimeError("cache transaction は入れ子にできません")
@@ -176,26 +424,18 @@ class RealizeSession:
             del self._cache_transaction_local.current
             if transaction.commit_requested:
                 with self._lock:
-                    if not self._closed:
-                        for key, result in transaction.entries.items():
-                            self._store_cache_entry_locked(key, result)
+                    should_commit = not self._closed
+                if should_commit:
+                    for key, result in transaction.entries.items():
+                        evictions = self._cache_store.put(key, result)
+                        if evictions:
+                            self._record_cache(evictions=evictions)
 
     def stats(self) -> CacheStats:
-        """現在の cache 統計を lock 下で取得する。"""
-
-        with self._lock:
-            return CacheStats(
-                hits=self._hits,
-                misses=self._misses,
-                evictions=self._evictions,
-                entries=len(self._cache),
-                bytes=self._cache_bytes,
-            )
+        return self._cache_store.stats()
 
     @contextlib.contextmanager
     def profile_layer(self, name: str) -> Iterator[None]:
-        """1 layer の resolve/realize 区間を profiler へ記録する。"""
-
         profiler = self._profiler
         if profiler is None or not profiler.enabled:
             yield
@@ -206,28 +446,61 @@ class RealizeSession:
         finally:
             profiler.record_layer(str(name), time.perf_counter_ns() - started_ns)
 
-    def clear(self) -> None:
-        """完了済み cache を破棄する。進行中の評価は継続する。"""
-
-        with self._lock:
-            self._cache.clear()
-            self._cache_bytes = 0
-
     def close(self) -> None:
-        """新規評価を禁止し、完了済み cache を破棄する。"""
+        """新規評価を禁止し、session-owned dependency を一度だけ閉じる。
+
+        実行中の評価がある場合は、その最後の caller が評価終了後に閉じる。
+        明示注入された borrowed dependency は閉じない。
+        """
 
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            self._cache.clear()
-            self._cache_bytes = 0
-            self._prepared_geometries.clear()
-            self._cacheability.clear()
+            resources, cache_store = self._take_owned_dependencies_for_cleanup()
+        _close_owned_dependencies(resources=resources, cache_store=cache_store)
+
+    def _take_owned_dependencies_for_cleanup(
+        self,
+    ) -> tuple[EvaluationResources | None, RealizeCacheStore | None]:
+        """lock 内で未使用の owned dependency を一度だけ引き渡す。"""
+
+        if not self._closed or self._active_realizations != 0:
+            return None, None
+        resources = self._resources if self._owns_resources else None
+        cache_store = self._cache_store if self._owns_cache_store else None
+        self._owns_resources = False
+        self._owns_cache_store = False
+        return resources, cache_store
+
+    def _finish_realization(self) -> None:
+        """active call を終了し、deferred close があれば最後の caller が行う。"""
+
+        with self._lock:
+            if self._active_realizations <= 0:
+                raise RuntimeError("active realization counter が不正です")
+            self._active_realizations -= 1
+            resources, cache_store = self._take_owned_dependencies_for_cleanup()
+        _close_owned_dependencies(resources=resources, cache_store=cache_store)
+
+    @staticmethod
+    def _validate_geometry(geometry: Geometry) -> None:
+        """catalog を走査せず、root geometry 自体の前提だけを検証する。
+
+        operation ref の catalog 整合性は直後の external dependency preflight が
+        全 ref を一度ずつ解決する際に同時に検証する。ここで同じ ref 列を先に
+        resolve すると、external dependency を持たない通常 geometry でも毎 frame
+        二重走査になるためである。
+        """
+
+        if type(geometry) is not Geometry:
+            raise TypeError("geometry は exact Geometry です")
+        if not geometry.fully_bound:
+            raise CatalogMismatchError(
+                f"Geometry に未解決 operation があります: id={geometry.id}, op={geometry.op!r}"
+            )
 
     def realize(self, geometry: Geometry) -> RealizedGeometry:
-        """Geometry を評価し、同一 key の結果をセッション内で再利用する。"""
-
         result, _ = self.realize_with_key(geometry)
         return result
 
@@ -235,143 +508,94 @@ class RealizeSession:
         self,
         geometry: Geometry,
     ) -> tuple[RealizedGeometry, GeometryCacheKey]:
-        """評価結果と、その評価に対応する cache key を返す。"""
-
         with self._lock:
             if self._closed:
-                raise RuntimeError("close 済みの RealizeSession は使用できない")
+                raise RuntimeError("close 済みの RealizeSession は使用できません")
+            self._active_realizations += 1
+        try:
+            result = self._realize_with_key_active(geometry)
+        except BaseException as error:
+            errors = CleanupErrors(initial_error=error)
+            errors.attempt(self._finish_realization, "finish failed realization")
+            errors.raise_if_any()
+            raise
+        self._finish_realization()
+        return result
 
-        # lazy import による revision 増加を key の取得前に完了させる。
-        self._ensure_geometry_ops_registered(geometry)
-        revision = current_registry_revision()
-        key = (geometry.id, revision)
-        with self._lock:
-            cached = self._get_cached_locked(key)
-        if cached is not None:
-            return cached, key
-
-        cacheable = self._geometry_cacheability(geometry, revision)
-        result = self._realize(geometry, revision, cacheable=cacheable)
-        if cacheable:
-            result_key = key
-        else:
-            # GPU mesh cacheにも毎評価を別内容として伝え、stateful outputを固定しない。
-            with self._lock:
-                self._uncached_generation += 1
-                generation = self._uncached_generation
-            result_key = (f"{geometry.id}:uncached:{generation}", revision)
-        return result, result_key
-
-    def _geometry_cacheability(
+    def _realize_with_key_active(
         self,
         geometry: Geometry,
-        revision: RegistryRevision,
-    ) -> bool:
-        """部分木の cacheability を既知の部分木を省略しながら計算する。"""
+    ) -> tuple[RealizedGeometry, GeometryCacheKey]:
+        self._validate_geometry(geometry)
+        try:
+            external_snapshot = self._resources.preflight_external_dependencies(
+                geometry,
+                self._context,
+            )
+        except (KeyError, LookupError) as error:
+            raise CatalogMismatchError(
+                "Geometry operation ref と evaluation catalog が一致しません: "
+                f"id={geometry.id}"
+            ) from error
+        except BaseException as error:  # noqa: BLE001
+            if not isinstance(error, Exception):
+                raise
+            raise RealizeError(
+                "Geometry の external dependency 解決に失敗した: "
+                f"id={geometry.id}"
+            ) from error
+        key = GeometryCacheKey(
+            geometry_id=geometry.id,
+            evaluation=self._context.fingerprint,
+            external_dependencies=external_snapshot.fingerprint,
+        )
+        if geometry.cacheable:
+            cached = self._get_cached(key)
+            if cached is not None:
+                return cached, key
 
-        resolved: dict[GeometryId, bool] = {}
-        scheduled: set[GeometryId] = set()
-        stack: list[tuple[Geometry, bool]] = [(geometry, False)]
-        while stack:
-            node, expanded = stack.pop()
-            if expanded:
-                inputs_cacheable = all(resolved[item.id] for item in node.inputs)
-                if node.op == "concat":
-                    cacheable = inputs_cacheable
-                elif node.inputs:
-                    cacheable = (
-                        effect_registry[node.op].cache_policy == "content"
-                        and inputs_cacheable
-                    )
-                else:
-                    cacheable = (
-                        primitive_registry[node.op].cache_policy == "content"
-                    )
-                resolved[node.id] = cacheable
-
-                key = (node.id, revision)
-                with self._lock:
-                    self._cacheability.pop(key, None)
-                    self._cacheability[key] = cacheable
-                    while len(self._cacheability) > _MAX_PREPARED_GEOMETRIES:
-                        self._cacheability.popitem(last=False)
-                continue
-
-            if node.id in scheduled:
-                continue
-            scheduled.add(node.id)
-            key = (node.id, revision)
-            with self._lock:
-                cached = self._cacheability.get(key)
-                if cached is not None:
-                    self._cacheability.move_to_end(key)
-                    resolved[node.id] = cached
-                    continue
-            stack.append((node, True))
-            for item in reversed(node.inputs):
-                if item.id not in scheduled:
-                    stack.append((item, False))
-        return resolved[geometry.id]
-
-    def _ensure_geometry_ops_registered(self, geometry: Geometry) -> None:
-        """DAG が参照する組み込み operation を必要なものだけ import する。"""
-
-        stack = [geometry]
-        visited: set[GeometryId] = set()
-        prepared_now: list[GeometryId] = []
-        while stack:
-            node = stack.pop()
-            if node.id in visited:
-                continue
-            visited.add(node.id)
-
-            with self._lock:
-                already_prepared = node.id in self._prepared_geometries
-                if already_prepared:
-                    self._prepared_geometries.move_to_end(node.id)
-            if already_prepared:
-                continue
-
-            if node.op != "concat":
-                if node.inputs:
-                    if node.op not in effect_registry:
-                        ensure_builtin_effect_registered(node.op)
-                elif node.op not in primitive_registry:
-                    ensure_builtin_primitive_registered(node.op)
-            prepared_now.append(node.id)
-            stack.extend(node.inputs)
-
+        previous_snapshot = getattr(self._evaluation_local, "external_snapshot", None)
+        if previous_snapshot is not None:
+            raise RuntimeError("同じ RealizeSession で評価を入れ子にできません")
+        self._evaluation_local.external_snapshot = external_snapshot
+        try:
+            result = self._realize(geometry, key)
+        finally:
+            del self._evaluation_local.external_snapshot
+        if geometry.cacheable:
+            return result, key
         with self._lock:
-            if self._closed:
-                return
-            # 深い DAG でも次回は root で部分木全体を省略できるよう、root 側を
-            # LRU の末尾へ残す。登録そのものは上の走査中に完了している。
-            for geometry_id in reversed(prepared_now):
-                self._prepared_geometries.pop(geometry_id, None)
-                self._prepared_geometries[geometry_id] = None
-            while len(self._prepared_geometries) > _MAX_PREPARED_GEOMETRIES:
-                self._prepared_geometries.popitem(last=False)
+            self._uncached_generation += 1
+            generation = self._uncached_generation
+        return result, GeometryCacheKey(
+            geometry_id=geometry.id,
+            evaluation=self._context.fingerprint,
+            external_dependencies=external_snapshot.fingerprint,
+            uncached_generation=generation,
+        )
+
+    def _node_key(self, geometry: Geometry, root_key: GeometryCacheKey) -> GeometryCacheKey:
+        return GeometryCacheKey(
+            geometry_id=geometry.id,
+            evaluation=root_key.evaluation,
+            external_dependencies=root_key.external_dependencies,
+        )
 
     def _realize(
         self,
         geometry: Geometry,
-        revision: RegistryRevision,
-        *,
-        cacheable: bool,
+        root_key: GeometryCacheKey,
     ) -> RealizedGeometry:
-        """DAG を明示 frame stack で評価する。"""
-
         frames: list[_EvaluationFrame] = []
         current: Geometry | None = geometry
-        current_cacheable = cacheable
         pending: RealizedGeometry | None = None
         try:
             while True:
                 if current is not None:
                     started = self._start_evaluation(
                         current,
-                        revision,
-                        cacheable=current_cacheable,
+                        self._node_key(current, root_key),
+                        cacheable=current.cacheable,
                     )
                     if isinstance(started, RealizedGeometry):
                         pending = started
@@ -380,11 +604,6 @@ class RealizeSession:
                         frames.append(started)
                         if started.inputs:
                             current = started.inputs[0]
-                            current_cacheable = (
-                                True
-                                if started.cacheable
-                                else self._geometry_cacheability(current, revision)
-                            )
                             started.next_input = 1
                             continue
                         pending = self._finish_evaluation(started)
@@ -392,7 +611,7 @@ class RealizeSession:
                         current = None
 
                 if pending is None:
-                    raise RuntimeError("Geometry evaluator が結果を返さなかった")
+                    raise RuntimeError("Geometry evaluator が結果を返しませんでした")
                 if not frames:
                     return pending
 
@@ -401,14 +620,8 @@ class RealizeSession:
                 pending = None
                 if parent.next_input < len(parent.inputs):
                     current = parent.inputs[parent.next_input]
-                    current_cacheable = (
-                        True
-                        if parent.cacheable
-                        else self._geometry_cacheability(current, revision)
-                    )
                     parent.next_input += 1
                     continue
-
                 pending = self._finish_evaluation(parent)
                 frames.pop()
                 current = None
@@ -418,17 +631,13 @@ class RealizeSession:
     def _start_evaluation(
         self,
         geometry: Geometry,
-        revision: RegistryRevision,
+        key: GeometryCacheKey,
         *,
         cacheable: bool,
     ) -> RealizedGeometry | _EvaluationFrame:
-        """1 node の cache/inflight 状態を確定する。"""
-
-        key = (geometry.id, revision)
         if not cacheable:
-            with self._lock:
-                self._misses += 1
-                self._record_cache(misses=1)
+            self._cache_store.record_miss()
+            self._record_cache(misses=1)
             try:
                 return _EvaluationFrame(
                     geometry=geometry,
@@ -442,20 +651,17 @@ class RealizeSession:
             except BaseException as error:  # noqa: BLE001
                 if not isinstance(error, Exception):
                     raise
-                raise RealizeError(
-                    f"Geometry の評価に失敗した: id={geometry.id}"
-                ) from error
+                raise RealizeError(f"Geometry の評価に失敗した: id={geometry.id}") from error
 
         with self._lock:
-            cached = self._get_cached_locked(key)
+            cached = self._get_cached(key)
             if cached is not None:
                 return cached
-
             entry = self._inflight.get(key)
             if entry is None:
                 entry = _InflightEntry(condition=threading.Condition(self._lock))
                 self._inflight[key] = entry
-                self._misses += 1
+                self._cache_store.record_miss()
                 self._record_cache(misses=1)
             else:
                 while not entry.done:
@@ -467,17 +673,16 @@ class RealizeSession:
                         f"Geometry の評価に失敗した: id={geometry.id}"
                     ) from entry.error
                 if entry.result is None:
-                    raise RuntimeError("inflight entry に評価結果が設定されていない")
+                    raise RuntimeError("inflight entry に評価結果がありません")
                 return entry.result
 
         try:
-            inputs = self._evaluation_inputs(geometry)
-            frame = _EvaluationFrame(
+            return _EvaluationFrame(
                 geometry=geometry,
                 key=key,
                 cacheable=True,
                 inflight=entry,
-                inputs=inputs,
+                inputs=self._evaluation_inputs(geometry),
                 next_input=0,
                 realized_inputs=[],
             )
@@ -490,39 +695,27 @@ class RealizeSession:
                     completed.condition.notify_all()
             if not isinstance(error, Exception):
                 raise
-            raise RealizeError(
-                f"Geometry の評価に失敗した: id={geometry.id}"
-            ) from error
-
-        return frame
+            raise RealizeError(f"Geometry の評価に失敗した: id={geometry.id}") from error
 
     @staticmethod
     def _evaluation_inputs(geometry: Geometry) -> tuple[Geometry, ...]:
-        """非共有の内部 concat tree を leaf 列へ平坦化して返す。"""
-
         if geometry.op != "concat":
             return geometry.inputs
         return Geometry._flatten_concat_inputs(geometry.inputs)
 
     def _finish_evaluation(self, frame: _EvaluationFrame) -> RealizedGeometry:
-        """入力評価済み frame を実行し、所有する inflight を完了する。"""
-
-        result = self._evaluate_geometry_node(
-            frame.geometry,
-            frame.realized_inputs,
-        )
+        result = self._evaluate_geometry_node(frame.geometry, frame.realized_inputs)
         if not frame.cacheable:
             return result
-
         entry = frame.inflight
         if entry is None:
-            raise RuntimeError("cacheable evaluation に inflight entry がない")
+            raise RuntimeError("cacheable evaluation に inflight entry がありません")
         with self._lock:
             if not self._closed:
-                self._store_locked(frame.key, result)
+                self._store(frame.key, result)
             completed = self._inflight.pop(frame.key)
             if completed is not entry:
-                raise RuntimeError("inflight entry の所有者が一致しない")
+                raise RuntimeError("inflight entry の所有者が一致しません")
             completed.result = result
             completed.done = True
             completed.condition.notify_all()
@@ -533,8 +726,6 @@ class RealizeSession:
         frames: list[_EvaluationFrame],
         error: BaseException,
     ) -> NoReturn:
-        """未完了 frame を内側から失敗完了し、再帰時と同じ例外境界を作る。"""
-
         current_error = error
         while frames:
             frame = frames.pop()
@@ -554,19 +745,17 @@ class RealizeSession:
                 current_error = wrapped
         raise current_error
 
-    def _get_cached_locked(self, key: GeometryCacheKey) -> RealizedGeometry | None:
+    def _get_cached(self, key: GeometryCacheKey) -> RealizedGeometry | None:
         transaction = getattr(self._cache_transaction_local, "current", None)
         if transaction is not None:
             staged = transaction.entries.get(key)
             if staged is not None:
                 transaction.entries.move_to_end(key)
-                self._hits += 1
+                self._cache_store.record_staged_hit()
                 self._record_cache(hits=1)
                 return staged
-        cached = self._cache.get(key)
+        cached = self._cache_store.get(key)
         if cached is not None:
-            self._cache.move_to_end(key)
-            self._hits += 1
             self._record_cache(hits=1)
         return cached
 
@@ -577,20 +766,12 @@ class RealizeSession:
         misses: int = 0,
         evictions: int = 0,
     ) -> None:
-        """既存 cache stats と同じ差分を任意 profiler へ転送する。"""
-
         profiler = self._profiler
         if profiler is not None and profiler.enabled:
-            profiler.record_cache(
-                hits=int(hits),
-                misses=int(misses),
-                evictions=int(evictions),
-            )
+            profiler.record_cache(hits=hits, misses=misses, evictions=evictions)
 
     @contextlib.contextmanager
     def _profile_operation(self, op: str) -> Iterator[None]:
-        """入力 DAG 評価を除く operation evaluator 区間を記録する。"""
-
         profiler = self._profiler
         if profiler is None or not profiler.enabled:
             yield
@@ -609,40 +790,61 @@ class RealizeSession:
         op = geometry.op
         with resource_budget_context(self._runtime_limits.per_operation):
             if op == "concat":
+
                 def evaluate() -> RealizedGeometry:
                     ensure_geometry_output(
                         "concat",
-                        vertices=sum(
-                            int(item.coords.shape[0]) for item in realized_inputs
-                        ),
+                        vertices=sum(int(item.coords.shape[0]) for item in realized_inputs),
                         lines=sum(
-                            max(0, int(item.offsets.size) - 1)
-                            for item in realized_inputs
+                            max(0, int(item.offsets.size) - 1) for item in realized_inputs
                         ),
                         hint="入力 geometry または concat 対象数を減らしてください",
                     )
                     return concat_realized_geometries(*realized_inputs)
 
-            elif not geometry.inputs:
-                if op not in primitive_registry:
-                    ensure_builtin_primitive_registered(op)
-                primitive_spec = primitive_registry[op]
-
-                def evaluate() -> RealizedGeometry:
-                    return primitive_spec.evaluator(geometry.args)
-
             else:
-                if op not in effect_registry:
-                    ensure_builtin_effect_registered(op)
-                effect_spec = effect_registry[op]
+                operation = geometry.operation
+                if operation is None:
+                    raise CatalogMismatchError(f"未解決 operation です: {op!r}")
+                try:
+                    spec = self._context.catalog.resolve_ref(operation).evaluation
+                except (KeyError, LookupError) as exc:
+                    raise CatalogMismatchError(
+                        f"operation ref が catalog と一致しません: {op!r}"
+                    ) from exc
+                if spec.cache_policy != geometry.cache_policy:
+                    raise CatalogMismatchError(
+                        f"operation cache policy が Geometry と一致しません: {op!r}"
+                    )
+                if operation.kind == "primitive":
+                    if geometry.inputs or realized_inputs or spec.n_inputs != 0:
+                        raise CatalogMismatchError(f"primitive arity が不正です: {op!r}")
 
-                def evaluate() -> RealizedGeometry:
-                    return effect_spec.evaluator(realized_inputs, geometry.args)
+                    def evaluate() -> RealizedGeometry:
+                        return spec.evaluator(geometry.args)  # type: ignore[call-arg, no-any-return]
 
-            # 組み込み operation の事前見積もりに加え、すべての evaluator 出力を
-            # cache 投入前に検査する。これにより、事前検査を実装していない custom
-            # primitive/effect も同じ session budget に従う。
-            with self._profile_operation(op):
+                else:
+                    if len(geometry.inputs) != spec.n_inputs:
+                        raise CatalogMismatchError(
+                            f"effect {op!r} は入力 Geometry を {spec.n_inputs} 個必要とします"
+                        )
+
+                    def evaluate() -> RealizedGeometry:
+                        return spec.evaluator(  # type: ignore[call-arg, no-any-return]
+                            realized_inputs,
+                            geometry.args,
+                        )
+
+            external_snapshot = getattr(self._evaluation_local, "external_snapshot", None)
+            if external_snapshot is None:
+                raise RuntimeError("external dependency snapshot がありません")
+            with (
+                self._profile_operation(op),
+                bind_operation_catalog(self._context.catalog),
+                bind_runtime_config(self._context.config),
+                preview_quality_context(self._context.quality),
+                bind_external_dependency(external_snapshot, geometry.id),
+            ):
                 result = evaluate()
                 ensure_geometry_output(
                     op,
@@ -652,90 +854,59 @@ class RealizeSession:
                 )
                 return result
 
-    def _store_locked(self, key: GeometryCacheKey, result: RealizedGeometry) -> None:
+    def _store(self, key: GeometryCacheKey, result: RealizedGeometry) -> None:
         transaction = getattr(self._cache_transaction_local, "current", None)
         if transaction is not None:
             transaction.entries.pop(key, None)
             transaction.entries[key] = result
             return
-        self._store_cache_entry_locked(key, result)
-
-    def _store_cache_entry_locked(
-        self,
-        key: GeometryCacheKey,
-        result: RealizedGeometry,
-    ) -> None:
-        size = result.byte_size
-        cache_byte_limit = self._runtime_limits.cpu_cache_bytes
-        cache_entry_limit = self._runtime_limits.cpu_cache_entries
-        if size > cache_byte_limit:
-            emit_operation_diagnostic(
-                op="runtime.cpu_cache",
-                original_value=size,
-                effective_value=cache_byte_limit,
-                reason="result exceeded the CPU cache limit and was not cached",
-                severity="warning",
-            )
-            return
-        if cache_entry_limit == 0:
-            return
-
-        previous = self._cache.pop(key, None)
-        if previous is not None:
-            self._cache_bytes -= previous.byte_size
-
-        projected_bytes = self._cache_bytes + size
-        byte_limit_reached = projected_bytes > cache_byte_limit
-        evicted_count = 0
-        while self._cache and (
-            len(self._cache) >= cache_entry_limit
-            or self._cache_bytes + size > cache_byte_limit
-        ):
-            _, evicted = self._cache.popitem(last=False)
-            self._cache_bytes -= evicted.byte_size
-            self._evictions += 1
-            evicted_count += 1
-
-        if evicted_count:
-            self._record_cache(evictions=evicted_count)
-
-        if evicted_count and byte_limit_reached:
-            emit_operation_diagnostic(
-                op="runtime.cpu_cache",
-                original_value=projected_bytes,
-                effective_value=cache_byte_limit,
-                reason=f"CPU cache limit evicted {evicted_count} entrie(s)",
-                severity="info",
-            )
-
-        self._cache[key] = result
-        self._cache_bytes += size
+        evictions = self._cache_store.put(key, result)
+        if evictions:
+            self._record_cache(evictions=evictions)
 
 
 def realize(
     geometry: Geometry,
     *,
     session: RealizeSession | None = None,
+    context: EvaluationContext | None = None,
 ) -> RealizedGeometry:
-    """Geometry を評価する。
-
-    ``session`` を省略した呼び出しは一時セッションを所有する。複数回または複数
-    layer 間で結果を再利用する場合は、明示的な :class:`RealizeSession` を渡す。
-    """
+    """Geometry を評価する。session 省略時は一時 parent owner を構成する。"""
 
     if session is not None:
+        if context is not None:
+            raise ValueError("session と context は同時に指定できません")
         return session.realize(geometry)
-    with RealizeSession() as owned_session:
-        return owned_session.realize(geometry)
+    selected_context = (
+        EvaluationContext(
+            catalog=current_operation_catalog(),
+            quality=current_preview_quality(),
+            config=current_runtime_config(),
+        )
+        if context is None
+        else context
+    )
+    resources = EvaluationResources()
+    store = RealizeCacheStore.from_runtime_limits(DEFAULT_FINAL_RUNTIME_LIMITS)
+    try:
+        with RealizeSession(
+            context=selected_context,
+            resources=resources,
+            cache_store=store,
+        ) as owned_session:
+            return owned_session.realize(geometry)
+    finally:
+        resources.close()
+        store.close()
 
 
 __all__ = [
     "CacheStats",
+    "CatalogMismatchError",
     "GeometryCacheKey",
     "PerformanceRecorder",
+    "RealizeCacheStore",
     "RealizeError",
     "RealizeSession",
-    "RegistryRevision",
-    "current_registry_revision",
     "realize",
 ]

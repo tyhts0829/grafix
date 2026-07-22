@@ -189,62 +189,66 @@ class ParamStoreHistory:
             else finite_real(now, name="now")
         )
         use_patch = exact_bool(patch, name="patch")
-        if self._store.revision != self._seen_revision:
-            self.synchronize()
-        before_revision = self._store.revision
-        if use_patch:
-            capture = ParamStorePatchCapture(self._store)
-            self._store._begin_history_patch_capture(
-                observe_key=capture.observe_key,
-                observe_headers=capture.observe_headers,
-            )
+        self._store._begin_history_transaction(self)
+        try:
+            if self._store.revision != self._seen_revision:
+                self.synchronize()
+            before_revision = self._store.revision
+            if use_patch:
+                capture = ParamStorePatchCapture(self._store)
+                self._store._begin_history_patch_capture(
+                    observe_key=capture.observe_key,
+                    observe_headers=capture.observe_headers,
+                )
+                try:
+                    yield
+                finally:
+                    self._store._end_history_patch_capture()
+                    if self._store.revision != before_revision:
+                        operation = capture.finish()
+                        change_at = (
+                            finite_real(self._clock(), name="clock()")
+                            if explicit_now is None
+                            else explicit_now
+                        )
+                        if operation is None:
+                            # favorite や code-owned metadata など、memento の対象外だけが
+                            # 変わった場合は Undo を増やさず基準 revision だけ進める。
+                            self._seen_revision = self._store.revision
+                        else:
+                            self._record_operation(
+                                operation=_PatchTarget(
+                                    patch=operation,
+                                    after=False,
+                                ),
+                                source=source,
+                                now=change_at,
+                            )
+                            update_param_store_memento_from_patch(
+                                self._current,
+                                operation,
+                                after=True,
+                            )
+                return
+
+            before = self._current
             try:
                 yield
             finally:
-                self._store._end_history_patch_capture()
                 if self._store.revision != before_revision:
-                    operation = capture.finish()
-                    change_at = (
-                        finite_real(self._clock(), name="clock()")
-                        if explicit_now is None
-                        else explicit_now
+                    after = capture_param_store_memento(self._store)
+                    self._record_transition(
+                        before=before,
+                        after=after,
+                        source=source,
+                        now=(
+                            finite_real(self._clock(), name="clock()")
+                            if explicit_now is None
+                            else explicit_now
+                        ),
                     )
-                    if operation is None:
-                        # favorite や code-owned metadata など、memento の対象外だけが
-                        # 変わった場合は Undo を増やさず基準 revision だけ進める。
-                        self._seen_revision = self._store.revision
-                    else:
-                        self._record_operation(
-                            operation=_PatchTarget(
-                                patch=operation,
-                                after=False,
-                            ),
-                            source=source,
-                            now=change_at,
-                        )
-                        update_param_store_memento_from_patch(
-                            self._current,
-                            operation,
-                            after=True,
-                        )
-            return
-
-        before = self._current
-        try:
-            yield
         finally:
-            if self._store.revision != before_revision:
-                after = capture_param_store_memento(self._store)
-                self._record_transition(
-                    before=before,
-                    after=after,
-                    source=source,
-                    now=(
-                        finite_real(self._clock(), name="clock()")
-                        if explicit_now is None
-                        else explicit_now
-                    ),
-                )
+            self._store._end_history_transaction(self)
 
     def undo(self) -> bool:
         """直前の記録済み操作を戻す。履歴が無ければ False。"""

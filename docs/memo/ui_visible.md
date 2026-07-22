@@ -1,4 +1,4 @@
-# どこで: `src/grafix/interactive/parameter_gui/visibility.py` と各 registry（`preset_registry` / `primitive_registry` / `effect_registry`）。
+# どこで: `src/grafix/core/operation_schema.py`、`src/grafix/interactive/parameter_gui/catalog.py`、`visibility.py`。
 # 何を: Parameter GUI で「いまの状態で効いている引数だけを表示する」ための `ui_visible` の実装/追加方法メモ（開発者向け）。
 # なぜ: 分岐の多い preset/effect で GUI が “引数の海” になり、理解/操作が遅くなるのを避けるため。
 
@@ -16,16 +16,18 @@
 
 実体は「arg -> predicate（表示するなら True）」の辞書。
 
-- ルールは registry に登録される（永続化しない）
-  - preset: `preset_registry[op].ui_visible`
-  - primitive: `primitive_registry[op].ui_visible`
-  - effect: `effect_registry[op].ui_visible`
+- ルールは decorator が作る immutable `ParameterOpSchema.ui_visible` に入る（永続化しない）
+  - preset: `PresetDeclaration.schema.ui_visible`
+  - primitive/effect: `OpDeclaration.schema.ui_visible`
+- session/generation の operation/preset catalog から evaluator-free `ParameterGuiCatalog` へ
+  schema を一度だけ射影し、GUI はその snapshot だけを読む
 - GUI 側は行の group を `(op, site_id)` とみなし、group 内の “現在値辞書” を作って predicate に渡す
   - 現在値は基本 `last_effective_by_key`（解決後の実効値）
   - 無ければ `row.ui_value` にフォールバック
 - predicate が例外を投げたら **fail-open（その行は表示）** に倒す（GUI を壊さない）
 
 実装箇所:
+- schema / catalog projection: `src/grafix/core/operation_schema.py` / `src/grafix/interactive/parameter_gui/catalog.py`
 - 可視マスク計算: `src/grafix/interactive/parameter_gui/visibility.py`
 - 表示行だけ `render_parameter_table()` に渡しつつ、`rows_before/after` の 1:1 は維持: `src/grafix/interactive/parameter_gui/store_bridge.py`
 

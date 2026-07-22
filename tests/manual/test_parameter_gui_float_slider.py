@@ -8,13 +8,15 @@ from __future__ import annotations
 
 from _runner import PygletImGuiContext, run_pyglet_imgui
 
-from grafix.interactive.parameter_gui import render_parameter_table
-from grafix.interactive.parameter_gui.group_blocks import group_layout_from_rows
 from grafix.core.parameters.view import ParameterRow
+from grafix.interactive.parameter_gui import TableRenderInput, render_parameter_table
+from grafix.interactive.parameter_gui.catalog import current_parameter_gui_catalog
+from grafix.interactive.parameter_gui.group_blocks import group_layout_from_rows
 
 
 def main() -> None:
     """float スライダーが描画でき、値が更新できることを確認する。"""
+    catalog = current_parameter_gui_catalog()
     row = ParameterRow(
         label="1:value",
         op="demo",
@@ -29,7 +31,7 @@ def main() -> None:
         override=True,
         ordinal=1,
     )
-    group_layout = group_layout_from_rows([row])
+    group_layout = group_layout_from_rows([row], catalog=catalog)
 
     def draw_ui(ctx: PygletImGuiContext) -> None:
         nonlocal row
@@ -43,11 +45,15 @@ def main() -> None:
             flags=imgui_mod.WINDOW_NO_RESIZE | imgui_mod.WINDOW_NO_COLLAPSE,
         )
         model_rows = [row]
-        _, rows = render_parameter_table(
-            group_layout=group_layout,
-            model_rows=model_rows,
+        edits = render_parameter_table(
+            TableRenderInput(
+                group_layout=tuple(group_layout),
+                model_rows=tuple(model_rows),
+                catalog=catalog,
+                collapsed_headers=frozenset(),
+            )
         )
-        row = rows[0]
+        row = edits.rows[0]
         imgui_mod.end()
 
     run_pyglet_imgui(

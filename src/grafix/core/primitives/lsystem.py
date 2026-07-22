@@ -13,11 +13,9 @@ from functools import lru_cache
 import numpy as np
 
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.primitive_registry import primitive
-from grafix.core.realized_geometry import (
-    GeomTuple,
-    empty_geom_tuple,
-)
+from grafix.core.operation_authoring import primitive
+from grafix.core.geometry_kernels.packed import empty_packed_geometry
+from grafix.core.realized_geometry import GeomTuple
 
 _MAX_EXPANDED_CHARS = 500_000
 
@@ -287,7 +285,7 @@ def _turtle_to_geom_tuple(
 
     zf = z
     if not lines_xy:
-        return empty_geom_tuple()
+        return empty_packed_geometry()
 
     total_vertices = sum(len(poly) for poly in lines_xy)
     coords = np.empty((total_vertices, 3), dtype=np.float32)
@@ -424,7 +422,7 @@ def lsystem(
         program = _expand_preset(kind_s, iters_i)
         batch_random = True
     if not program:
-        return empty_geom_tuple()
+        return empty_packed_geometry()
 
     return _turtle_to_geom_tuple(
         program,

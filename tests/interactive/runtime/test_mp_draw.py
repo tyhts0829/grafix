@@ -6,15 +6,18 @@ import queue
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 import grafix.interactive.runtime.scene_runner as scene_runner_module
 from grafix.api import G
+from grafix.core.authoring_loader import load_config_authoring_definitions
 from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer, LayerStyleDefaults
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
+from grafix.core.operation_catalog import bind_operation_catalog
 from grafix.core.parameters import (
     EffectOrderSnapshot,
     EffectStepTopology,
@@ -38,6 +41,7 @@ from grafix.core.parameters.layer_style import (
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.resource_budget import ResourceBudget
 from grafix.core.runtime_limits import RuntimeLimitProfiles, RuntimeLimits
+from grafix.core.runtime_config import current_runtime_config, runtime_config
 from grafix.core.preview_quality import current_preview_quality
 from grafix.core.scene import normalize_scene
 from grafix.interactive.runtime.mp_draw import (
@@ -55,10 +59,32 @@ from grafix.interactive.runtime.perf import PerfCollector
 from grafix.interactive.runtime.scene_runner import SceneRunner
 
 _WAIT_TIMEOUT_S = 8.0
+_EFFECTIVE_CONFIG = runtime_config()
+
+
+def _mp_draw(draw: Any, **kwargs: Any) -> MpDraw:
+    return MpDraw(draw, effective_config=_EFFECTIVE_CONFIG, **kwargs)
+
+
+def _scene_runner(draw: Any, **kwargs: Any) -> SceneRunner:
+    return SceneRunner(draw, effective_config=_EFFECTIVE_CONFIG, **kwargs)
 
 
 def _empty_draw(_t: float) -> Geometry:
     return Geometry.create(op="concat")
+
+
+def _runtime_config_probe_draw(_t: float) -> Layer:
+    config = current_runtime_config()
+    return Layer(
+        geometry=Geometry.create(op="concat"),
+        site_id="runtime-config-probe",
+        name=str(config.output_dir),
+    )
+
+
+def _config_recipe_probe_draw(_t: float) -> Geometry:
+    return G.mp_config_recipe_shape()
 
 
 def _failing_empty_draw(_t: float) -> Geometry:
@@ -150,7 +176,7 @@ def initialized_mp_draw(monkeypatch: pytest.MonkeyPatch) -> Iterator[MpDraw]:
         assert wait_ready
 
     monkeypatch.setattr(MpDraw, "_start_generation", skip_worker_start)
-    mp_draw = MpDraw(_empty_draw, n_worker=1)
+    mp_draw = _mp_draw(_empty_draw, n_worker=1)
     initialized_state = mp_draw.__dict__.copy()
     try:
         yield mp_draw
@@ -168,7 +194,7 @@ def test_workers_report_ready_and_normal_close_leaves_no_children(
 ) -> None:
     """1 worker と複数 worker が同じ lifecycle 契約を満たす。"""
 
-    mp_draw = MpDraw(_empty_draw, n_worker=n_worker)
+    mp_draw = _mp_draw(_empty_draw, n_worker=n_worker)
     procs = list(mp_draw._procs)
     worker_pids = {int(proc.pid) for proc in procs if proc.pid is not None}
 
@@ -200,9 +226,94 @@ def test_workers_report_ready_and_normal_close_leaves_no_children(
     assert worker_pids.isdisjoint(active_pids)
 
 
+def test_spawn_worker_draw_uses_explicit_runtime_config() -> None:
+    worker_config = replace(
+        _EFFECTIVE_CONFIG,
+        output_dir=_EFFECTIVE_CONFIG.output_dir / "spawn-worker-config",
+    )
+    mp_draw = MpDraw(
+        _runtime_config_probe_draw,
+        n_worker=1,
+        effective_config=worker_config,
+    )
+    try:
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=0,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
+        result = _wait_for_result(mp_draw)
+    finally:
+        mp_draw.close()
+
+    assert result.error is None
+    assert result.layers[0].name == str(worker_config.output_dir)
+
+
+def test_spawn_worker_uses_parent_config_authoring_recipe(
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config-authoring"
+    config_root.mkdir()
+    source_path = config_root / "shape.py"
+
+    def source(value: float) -> str:
+        return (
+            "import numpy as np\n"
+            "from grafix import primitive\n"
+            "@primitive(meta={'value': {'kind': 'float'}})\n"
+            f"def mp_config_recipe_shape(value={value}):\n"
+            "    coords = np.asarray([[value, 0.0, 0.0]], dtype=np.float32)\n"
+            "    return coords, np.asarray([0, 1], dtype=np.int32)\n"
+        )
+
+    source_path.write_text(source(8.0), encoding="utf-8")
+    config = replace(
+        _EFFECTIVE_CONFIG,
+        preset_module_dirs=(config_root,),
+    )
+    definitions = load_config_authoring_definitions(config)
+    parent_entry = definitions.operations.resolve(
+        "primitive",
+        "mp_config_recipe_shape",
+    )
+    with bind_operation_catalog(definitions.operations):
+        parent_geometry = _config_recipe_probe_draw(0.0)
+    source_path.write_text(source(80.0), encoding="utf-8")
+
+    mp_draw = MpDraw(
+        _config_recipe_probe_draw,
+        n_worker=1,
+        effective_config=config,
+        definitions=definitions,
+    )
+    try:
+        mp_draw.submit(
+            t=0.0,
+            snapshot_revision=0,
+            snapshot={},
+            effect_order_snapshot={},
+            epoch=0,
+            quality="draft",
+        )
+        result = _wait_for_result(mp_draw)
+    finally:
+        mp_draw.close()
+
+    assert result.error is None
+    worker_geometry = result.layers[0].geometry
+    assert worker_geometry.operation == parent_entry.ref
+    assert worker_geometry.operation == parent_geometry.operation
+    assert worker_geometry.id == parent_geometry.id
+    assert dict(worker_geometry.args)["value"] == 8.0
+
+
 def test_mp_draw_rejects_zero_workers() -> None:
     with pytest.raises(ValueError, match="1 以上"):
-        MpDraw(_empty_draw, n_worker=0)
+        _mp_draw(_empty_draw, n_worker=0)
 
 
 @pytest.mark.parametrize("n_worker", [True, 1.0, "1"])
@@ -210,19 +321,19 @@ def test_mp_draw_rejects_implicitly_convertible_worker_count(
     n_worker: object,
 ) -> None:
     with pytest.raises(TypeError, match="n_worker.*int"):
-        MpDraw(_empty_draw, n_worker=n_worker)  # type: ignore[arg-type]
+        _mp_draw(_empty_draw, n_worker=n_worker)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
 def test_mp_draw_rejects_invalid_evaluation_timeout(timeout: float) -> None:
     with pytest.raises(ValueError, match="evaluation_timeout"):
-        MpDraw(_empty_draw, n_worker=1, evaluation_timeout=timeout)
+        _mp_draw(_empty_draw, n_worker=1, evaluation_timeout=timeout)
 
 
 @pytest.mark.parametrize("timeout", [True, "1", object()])
 def test_mp_draw_rejects_non_real_evaluation_timeout(timeout: object) -> None:
     with pytest.raises(TypeError, match="evaluation_timeout"):
-        MpDraw(
+        _mp_draw(
             _empty_draw,
             n_worker=1,
             evaluation_timeout=timeout,  # type: ignore[arg-type]
@@ -995,7 +1106,7 @@ def test_constructor_failure_before_first_queue_preserves_root_cause(
     _install_constructor_fault_context(monkeypatch, context)
 
     with pytest.raises(RuntimeError) as exc_info:
-        MpDraw(_empty_draw, n_worker=1)
+        _mp_draw(_empty_draw, n_worker=1)
 
     assert isinstance(exc_info.value.__cause__, OSError)
     assert str(exc_info.value.__cause__) == "queue creation failed"
@@ -1011,7 +1122,7 @@ def test_constructor_failure_closes_every_partially_created_queue(
     _install_constructor_fault_context(monkeypatch, context)
 
     with pytest.raises(RuntimeError) as exc_info:
-        MpDraw(_empty_draw, n_worker=2)
+        _mp_draw(_empty_draw, n_worker=2)
 
     assert isinstance(exc_info.value.__cause__, OSError)
     assert len(context.queues) == 2
@@ -1028,7 +1139,7 @@ def test_constructor_failure_stops_partial_processes_and_closes_all_queues(
     active_children_before = {proc.pid for proc in mp.active_children() if proc.pid is not None}
 
     with pytest.raises(RuntimeError) as exc_info:
-        MpDraw(_empty_draw, n_worker=2)
+        _mp_draw(_empty_draw, n_worker=2)
 
     assert isinstance(exc_info.value.__cause__, OSError)
     assert str(exc_info.value.__cause__) == "process start failed"
@@ -1046,7 +1157,7 @@ def test_constructor_failure_stops_partial_processes_and_closes_all_queues(
 
 
 def test_hung_evaluation_restarts_worker_and_recovers_without_child_leak() -> None:
-    mp_draw = MpDraw(
+    mp_draw = _mp_draw(
         _draw_that_hangs_at_one,
         n_worker=1,
         evaluation_timeout=0.1,
@@ -1192,7 +1303,7 @@ def test_draw_task_rejects_partial_snapshot_payload(
 
 
 def test_error_result_keeps_last_successful_layers_for_preview() -> None:
-    mp_draw = MpDraw(_draw_that_fails_at_one, n_worker=2)
+    mp_draw = _mp_draw(_draw_that_fails_at_one, n_worker=2)
     try:
         mp_draw.submit(
             t=0.0,
@@ -1244,7 +1355,7 @@ def test_worker_roundtrip_preserves_frozen_midi_value_source() -> None:
     )
     assert ok and error is None
 
-    mp_draw = MpDraw(_midi_parameter_draw, n_worker=1)
+    mp_draw = _mp_draw(_midi_parameter_draw, n_worker=1)
     try:
         mp_draw.submit(
             t=0.0,
@@ -1269,7 +1380,7 @@ def test_worker_roundtrip_preserves_frozen_midi_value_source() -> None:
 
 
 def test_worker_result_carries_explicit_epoch() -> None:
-    mp_draw = MpDraw(_empty_draw, n_worker=2)
+    mp_draw = _mp_draw(_empty_draw, n_worker=2)
     try:
         mp_draw.submit(
             t=4.25,
@@ -1503,7 +1614,7 @@ def test_begin_epoch_invalidates_cached_result_and_queued_task(
 def test_fatal_draw_exit_fails_fast_with_worker_identity(
     draw: Callable[[float], Geometry], expected_exitcode: int
 ) -> None:
-    mp_draw = MpDraw(draw, n_worker=2)
+    mp_draw = _mp_draw(draw, n_worker=2)
     workers = {(proc.name, proc.pid) for proc in mp_draw._procs}
 
     try:
@@ -1529,7 +1640,7 @@ def test_fatal_draw_exit_fails_fast_with_worker_identity(
 
 
 def test_poll_detects_single_worker_death_without_fallback() -> None:
-    mp_draw = MpDraw(_empty_draw, n_worker=2)
+    mp_draw = _mp_draw(_empty_draw, n_worker=2)
     dead = mp_draw._procs[0]
     dead.terminate()
     dead.join(timeout=_WAIT_TIMEOUT_S)
@@ -1546,7 +1657,7 @@ def test_poll_detects_single_worker_death_without_fallback() -> None:
 
 
 def test_submit_detects_all_worker_death_without_fallback() -> None:
-    mp_draw = MpDraw(_empty_draw, n_worker=2)
+    mp_draw = _mp_draw(_empty_draw, n_worker=2)
     procs = list(mp_draw._procs)
     for proc in procs:
         proc.terminate()
@@ -1719,9 +1830,13 @@ class _IdleMpDraw:
         *,
         n_worker: int,
         evaluation_timeout: float | None,
+        effective_config: object,
+        definitions: object,
     ) -> None:
         self.n_worker = int(n_worker)
         self.evaluation_timeout = evaluation_timeout
+        self.effective_config = effective_config
+        self.definitions = definitions
         self.submit_calls: list[dict[str, object]] = []
         self.close_calls = 0
         self.last_submitted_frame_id = 0
@@ -1745,7 +1860,7 @@ class _IdleMpDraw:
 
 
 def test_scene_runner_sync_failure_keeps_generation_until_success() -> None:
-    runner = SceneRunner(
+    runner = _scene_runner(
         _failing_empty_draw,
         perf=PerfCollector(enabled=False),
         n_worker=0,
@@ -1787,7 +1902,7 @@ def test_scene_runner_mp_wait_does_not_finish_effect_chain_generation(
 ) -> None:
     _IdleMpDraw.instances = []
     monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
-    runner = SceneRunner(
+    runner = _scene_runner(
         _empty_draw,
         perf=PerfCollector(enabled=False),
         n_worker=1,
@@ -1815,7 +1930,7 @@ def test_scene_runner_mp_wait_does_not_finish_effect_chain_generation(
 
 def test_scene_runner_mp_fresh_empty_topology_finishes_effect_chain_generation() -> None:
     epoch_mp = _EpochMpDraw(None)
-    runner = SceneRunner(
+    runner = _scene_runner(
         _empty_draw,
         perf=PerfCollector(enabled=False),
         n_worker=0,
@@ -1878,7 +1993,7 @@ def test_scene_runner_uses_background_evaluation_for_positive_worker_count(
 
     _IdleMpDraw.instances = []
     monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
-    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=n_worker)
+    runner = _scene_runner(draw, perf=PerfCollector(enabled=False), n_worker=n_worker)
     try:
         assert (
             runner.run(
@@ -1911,7 +2026,7 @@ def test_scene_runner_passes_evaluation_timeout_to_mp_draw(
 ) -> None:
     _IdleMpDraw.instances = []
     monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
-    runner = SceneRunner(
+    runner = _scene_runner(
         _empty_draw,
         perf=PerfCollector(enabled=False),
         n_worker=1,
@@ -1933,7 +2048,7 @@ def test_scene_runner_replace_draw_retires_old_worker_and_keeps_configuration(
     def second_draw(_t: float) -> Geometry:
         return Geometry.create(op="concat")
 
-    runner = SceneRunner(
+    runner = _scene_runner(
         first_draw,
         perf=PerfCollector(enabled=False),
         n_worker=2,
@@ -1959,7 +2074,7 @@ def test_scene_runner_replace_draw_failure_keeps_current_worker(
 ) -> None:
     _IdleMpDraw.instances = []
     monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
-    runner = SceneRunner(
+    runner = _scene_runner(
         _empty_draw,
         perf=PerfCollector(enabled=False),
         n_worker=1,
@@ -1993,7 +2108,7 @@ def test_scene_runner_zero_runs_synchronously_without_constructing_worker(
         raise AssertionError("n_worker=0 must not construct MpDraw")
 
     monkeypatch.setattr(scene_runner_module, "MpDraw", unexpected_mp_draw)
-    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=0)
+    runner = _scene_runner(draw, perf=PerfCollector(enabled=False), n_worker=0)
     try:
         runner.run(
             2.5,
@@ -2019,7 +2134,7 @@ def test_scene_runner_uses_explicit_quality_for_preview_and_recording() -> None:
         qualities.append(current_preview_quality())
         return Geometry.create(op="concat")
 
-    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=0)
+    runner = _scene_runner(draw, perf=PerfCollector(enabled=False), n_worker=0)
     try:
         for transport_epoch, recording, quality in (
             (0, False, "draft"),
@@ -2043,8 +2158,44 @@ def test_scene_runner_uses_explicit_quality_for_preview_and_recording() -> None:
     assert qualities == ["draft", "final"]
 
 
-def test_scene_runner_rejects_non_final_quality_while_recording() -> None:
+def test_scene_runner_binds_explicit_runtime_config_during_sync_draw() -> None:
+    effective_config = replace(
+        _EFFECTIVE_CONFIG,
+        output_dir=_EFFECTIVE_CONFIG.output_dir / "sync-runner-config",
+    )
+    observed: list[object] = []
+
+    def draw(_t: float) -> Geometry:
+        observed.append(current_runtime_config())
+        return Geometry.create(op="concat")
+
     runner = SceneRunner(
+        draw,
+        perf=PerfCollector(enabled=False),
+        n_worker=0,
+        effective_config=effective_config,
+    )
+    try:
+        runner.run(
+            0.0,
+            store=ParamStore(),
+            cc_snapshot=None,
+            defaults=LayerStyleDefaults(
+                color=(0.0, 0.0, 0.0),
+                thickness=0.01,
+            ),
+            recording=False,
+            transport_epoch=0,
+            quality="draft",
+        )
+    finally:
+        runner.close()
+
+    assert observed == [effective_config]
+
+
+def test_scene_runner_rejects_non_final_quality_while_recording() -> None:
+    runner = _scene_runner(
         _empty_draw,
         perf=PerfCollector(enabled=False),
         n_worker=0,
@@ -2068,7 +2219,7 @@ def test_scene_runner_rejects_non_final_quality_while_recording() -> None:
 
 
 def test_mp_draw_quality_roundtrips_into_worker_context() -> None:
-    mp_draw = MpDraw(_quality_diagnostic_draw, n_worker=1)
+    mp_draw = _mp_draw(_quality_diagnostic_draw, n_worker=1)
     try:
         mp_draw.submit(
             t=0.0,
@@ -2089,7 +2240,7 @@ def test_mp_draw_quality_roundtrips_into_worker_context() -> None:
 
 def test_scene_runner_rejects_negative_worker_count() -> None:
     with pytest.raises(ValueError, match="0 以上"):
-        SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=-1)
+        _scene_runner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=-1)
 
 
 @pytest.mark.parametrize("n_worker", [True, 1.0, "1"])
@@ -2097,7 +2248,7 @@ def test_scene_runner_rejects_implicitly_convertible_worker_count(
     n_worker: object,
 ) -> None:
     with pytest.raises(TypeError, match="n_worker.*int"):
-        SceneRunner(
+        _scene_runner(
             _empty_draw,
             perf=PerfCollector(enabled=False),
             n_worker=n_worker,  # type: ignore[arg-type]
@@ -2113,7 +2264,7 @@ def test_scene_runner_validates_timeout_in_synchronous_mode(
 ) -> None:
     expected_error = TypeError if isinstance(timeout, (bool, str)) else ValueError
     with pytest.raises(expected_error, match="evaluation_timeout"):
-        SceneRunner(
+        _scene_runner(
             _empty_draw,
             perf=PerfCollector(enabled=False),
             n_worker=0,
@@ -2132,7 +2283,7 @@ def test_recording_remains_synchronous_with_background_preview_configured(
 
     _IdleMpDraw.instances = []
     monkeypatch.setattr(scene_runner_module, "MpDraw", _IdleMpDraw)
-    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=1)
+    runner = _scene_runner(draw, perf=PerfCollector(enabled=False), n_worker=1)
     try:
         runner.run(
             3.75,
@@ -2163,7 +2314,7 @@ def test_scene_runner_propagates_worker_death_without_sync_fallback() -> None:
 
     error = MpDrawWorkerError(worker="dead", pid=123, exitcode=7)
     dead_mp_draw = _DeadMpDraw(error)
-    runner = SceneRunner(draw, perf=PerfCollector(enabled=False), n_worker=0)
+    runner = _scene_runner(draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, dead_mp_draw)
 
     with pytest.raises(MpDrawWorkerError) as exc_info:
@@ -2189,7 +2340,7 @@ def test_scene_runner_couples_output_time_to_batched_success_before_later_error(
     """後続 error の `t` ではなく、実際に realize した success の `t` を返す。"""
 
     batched = _BatchedSuccessThenErrorMpDraw()
-    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
+    runner = _scene_runner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, batched)
     store = ParamStore()
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -2263,7 +2414,7 @@ def test_scene_runner_does_not_rerealize_same_mp_result(
         "realize_scene",
         counted_realize_scene,
     )
-    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
+    runner = _scene_runner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, mp_draw)
     store = ParamStore()
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -2348,7 +2499,7 @@ def test_scene_runner_retains_recording_frame_until_fresh_preview_result() -> No
         effect_chains=(),
     )
     epoch_mp = _EpochMpDraw(old_preview)
-    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
+    runner = _scene_runner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, epoch_mp)
     store = ParamStore()
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -2414,7 +2565,7 @@ def test_scene_runner_seek_epoch_adopts_only_fresh_result_and_time() -> None:
         effect_chains=(),
     )
     epoch_mp = _EpochMpDraw(initial)
-    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
+    runner = _scene_runner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, epoch_mp)
     store = ParamStore()
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -2524,7 +2675,7 @@ def test_scene_runner_retries_success_observations_after_realize_failure(
         return []
 
     monkeypatch.setattr(scene_runner_module, "realize_scene", fail_once)
-    runner = SceneRunner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
+    runner = _scene_runner(_empty_draw, perf=PerfCollector(enabled=False), n_worker=0)
     runner._mp_draw = cast(Any, batched)
     store = ParamStore()
     defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
@@ -2587,7 +2738,7 @@ def test_scene_runner_passes_runtime_profiles_to_realize_sessions() -> None:
     )
     preview_limits = RuntimeLimits(per_operation=budget, scene=budget)
     final_limits = RuntimeLimits()
-    runner = SceneRunner(
+    runner = _scene_runner(
         _empty_draw,
         perf=PerfCollector(enabled=False),
         n_worker=0,
@@ -2613,7 +2764,7 @@ def _wait_until(predicate: Callable[[], bool], *, message: str) -> None:
 
 
 def test_600_stable_frames_broadcast_snapshot_only_once() -> None:
-    mp_draw = MpDraw(_empty_draw, n_worker=2)
+    mp_draw = _mp_draw(_empty_draw, n_worker=2)
     try:
         for frame in range(600):
             mp_draw.submit(
@@ -2666,7 +2817,7 @@ def test_600_stable_frames_broadcast_snapshot_only_once() -> None:
 
 
 def test_single_worker_uses_task_snapshot_without_duplicate_control_broadcast() -> None:
-    mp_draw = MpDraw(_empty_draw, n_worker=1)
+    mp_draw = _mp_draw(_empty_draw, n_worker=1)
     try:
         for frame in range(30):
             mp_draw.submit(
@@ -2720,7 +2871,7 @@ def test_mp_draw_emits_revision_and_frame_causal_events() -> None:
     ) -> None:
         events.append((name, frame_id, revision))
 
-    mp_draw = MpDraw(
+    mp_draw = _mp_draw(
         _empty_draw,
         n_worker=1,
         event_callback=record_event,
@@ -2759,7 +2910,7 @@ def test_mp_draw_emits_revision_and_frame_causal_events() -> None:
 
 
 def test_worker_rejects_unknown_and_stale_revision_and_acks_stale_update() -> None:
-    mp_draw = MpDraw(_empty_draw, n_worker=2)
+    mp_draw = _mp_draw(_empty_draw, n_worker=2)
     try:
         mp_draw.submit(
             t=0.0,
@@ -2837,7 +2988,7 @@ def test_worker_rejects_unknown_and_stale_revision_and_acks_stale_update() -> No
 
 
 def test_rapid_revision_changes_keep_snapshot_control_backlog_bounded() -> None:
-    mp_draw = MpDraw(_empty_draw, n_worker=2)
+    mp_draw = _mp_draw(_empty_draw, n_worker=2)
     try:
         for revision in range(1, 201):
             mp_draw.submit(
@@ -2873,7 +3024,7 @@ def test_revision_churn_keeps_results_moving_and_reaches_latest(
 ) -> None:
     """GUI と同じ submit→poll 順でも revision ACK が draw を飢餓させない。"""
 
-    mp_draw = MpDraw(_empty_draw, n_worker=n_worker)
+    mp_draw = _mp_draw(_empty_draw, n_worker=n_worker)
     revisions_during_drag: list[int] = []
     try:
         for revision in range(1, 61):

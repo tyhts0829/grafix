@@ -4,7 +4,7 @@ import pytest
 
 from grafix import E
 from grafix.api.effects import EffectBuilder
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.geometry import Geometry
 from grafix.core.parameters.collapsed_header import effect_chain_collapsed_header_key
 from grafix.core.parameters.context import parameter_context

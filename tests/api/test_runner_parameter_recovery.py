@@ -10,9 +10,16 @@ import pytest
 pyglet.options["shadow_window"] = False
 
 import grafix.api.runner as runner_module
-import grafix.api.presets as presets_module
+import grafix.interactive.midi.factory as midi_factory_module
 import grafix.interactive.runtime.parameter_gui_system as gui_system_module
-from grafix.core.parameters import FrameParamRecord, ParamMeta, ParamStore, ParameterKey
+import grafix.interactive.runtime.parameter_session as parameter_session_module
+from grafix.core.parameters import (
+    FrameParamRecord,
+    KnownOperationSchemaSnapshot,
+    ParamMeta,
+    ParamStore,
+    ParameterKey,
+)
 from grafix.core.parameters.autosave import ParamStoreAutosave
 from grafix.core.parameters.merge_ops import merge_frame_params
 from grafix.core.parameters.persistence import (
@@ -22,13 +29,31 @@ from grafix.core.parameters.persistence import (
     save_param_store_recovery,
 )
 from grafix.core.parameters.ui_ops import update_state_from_ui
-from grafix.core.runtime_config import RuntimeConfigFallback
+from grafix.core.runtime_config import RuntimeConfigFallback, runtime_config
 from grafix.interactive.midi.midi_controller import (
     CcSnapshotLoadResult,
     CcSnapshotWriteBlockedError,
+    shutdown_midi_controller,
 )
 from grafix.interactive.runtime.monitor import RuntimeMonitor
-from grafix.interactive.runtime.diagnostics import DiagnosticAction, DiagnosticEvent
+from grafix.interactive.diagnostics import DiagnosticAction, DiagnosticEvent
+
+_EMPTY_KNOWN_OPERATIONS = KnownOperationSchemaSnapshot.empty()
+
+
+def test_parameter_session_owns_store_history_and_nonpersistent_finalize() -> None:
+    session = parameter_session_module.ParameterSession(
+        primary_path=None,
+        gui_enabled=True,
+        known_operations=_EMPTY_KNOWN_OPERATIONS,
+    )
+
+    assert isinstance(session.store, ParamStore)
+    assert session.history is not None
+    assert session.snapshot_slots is not None
+    assert session.autosave is None
+    assert session.source == "code"
+    session.persist(session_completed_cleanly=True, monitor=None)
 
 
 def test_config_fallback_is_published_to_shared_diagnostic_center(
@@ -93,11 +118,12 @@ def test_abnormal_shutdown_flushes_recovery_without_finalizing_primary(
     recovery = param_store_recovery_path(primary)
     store, key, autosave = _session_with_dirty_explicit_override(primary)
 
-    runner_module._persist_param_store_on_shutdown(
+    parameter_session_module._persist_param_store_on_shutdown(
         store=store,
         primary_path=primary,
         autosave=autosave,
         session_completed_cleanly=False,
+        known_operations=_EMPTY_KNOWN_OPERATIONS,
     )
 
     assert not primary.exists()
@@ -113,11 +139,12 @@ def test_clean_shutdown_promotes_primary_and_removes_recovery(tmp_path: Path) ->
     recovery = param_store_recovery_path(primary)
     store, key, autosave = _session_with_dirty_explicit_override(primary)
 
-    runner_module._persist_param_store_on_shutdown(
+    parameter_session_module._persist_param_store_on_shutdown(
         store=store,
         primary_path=primary,
         autosave=autosave,
         session_completed_cleanly=True,
+        known_operations=_EMPTY_KNOWN_OPERATIONS,
     )
 
     assert primary.exists()
@@ -143,13 +170,14 @@ def test_recovered_session_actions_are_wired_to_shared_diagnostic_center(
     )
     monitor = RuntimeMonitor()
 
-    session = runner_module._install_parameter_diagnostic_actions(
+    session = parameter_session_module._install_parameter_diagnostic_actions(
         monitor=monitor,
         store=recovered,
         primary_path=primary,
         autosave=recovered_autosave,
         history=None,
         snapshot_slots=None,
+        known_operations=_EMPTY_KNOWN_OPERATIONS,
         open_source=lambda _source: None,
     )
 
@@ -165,13 +193,10 @@ def test_recovered_session_actions_are_wired_to_shared_diagnostic_center(
         "compare",
     )
 
-    compare = next(
-        action for action in recovered_event.actions if action.action_id == "compare"
-    )
+    compare = next(action for action in recovered_event.actions if action.action_id == "compare")
     assert monitor.diagnostic_center.dispatch_action(recovered_event, compare)
     assert any(
-        event.summary == "Recovered session comparison"
-        for event in monitor.snapshot().diagnostics
+        event.summary == "Recovered session comparison" for event in monitor.snapshot().diagnostics
     )
 
     keep = next(action for action in recovered_event.actions if action.action_id == "keep")
@@ -207,13 +232,14 @@ def test_retry_action_retries_autosave_and_clears_failure(
         error=autosave.last_error,
         source=str(autosave.path),
     )
-    runner_module._install_parameter_diagnostic_actions(
+    parameter_session_module._install_parameter_diagnostic_actions(
         monitor=monitor,
         store=store,
         primary_path=None,
         autosave=autosave,
         history=None,
         snapshot_slots=None,
+        known_operations=_EMPTY_KNOWN_OPERATIONS,
         open_source=lambda _source: None,
     )
     failed = next(event for event in monitor.snapshot().diagnostics if event.category == "save")
@@ -236,11 +262,12 @@ def test_shutdown_save_failure_is_published_to_shared_center(tmp_path: Path) -> 
     monitor = RuntimeMonitor()
 
     with pytest.raises(OSError, match="read-only volume"):
-        runner_module._persist_param_store_on_shutdown(
+        parameter_session_module._persist_param_store_on_shutdown(
             store=store,
             primary_path=primary,
             autosave=autosave,
             session_completed_cleanly=False,
+            known_operations=_EMPTY_KNOWN_OPERATIONS,
             monitor=monitor,
         )
 
@@ -255,13 +282,14 @@ def test_open_action_uses_runner_source_handler(tmp_path: Path) -> None:
     source.write_text("pass\n", encoding="utf-8")
     opened: list[str] = []
     monitor = RuntimeMonitor()
-    runner_module._install_parameter_diagnostic_actions(
+    parameter_session_module._install_parameter_diagnostic_actions(
         monitor=monitor,
         store=ParamStore(),
         primary_path=None,
         autosave=None,
         history=None,
         snapshot_slots=None,
+        known_operations=_EMPTY_KNOWN_OPERATIONS,
         open_source=opened.append,
     )
     action = DiagnosticAction("open", "Open source")
@@ -283,7 +311,7 @@ def test_diagnostic_source_path_accepts_file_line_suffix(tmp_path: Path) -> None
     source = tmp_path / "sketch.py"
     source.write_text("pass\n", encoding="utf-8")
 
-    assert runner_module._diagnostic_source_path(f"{source}:42") == source.resolve()
+    assert parameter_session_module._diagnostic_source_path(f"{source}:42") == source.resolve()
 
 
 def test_cleanup_steps_continue_after_failure_and_raise_the_first_error() -> None:
@@ -383,7 +411,10 @@ def test_midi_save_failure_still_closes_the_owned_input_port() -> None:
             calls.append("close")
 
     with pytest.raises(RuntimeError, match="snapshot write failed") as exc_info:
-        runner_module._close_midi_controller(cast(Any, Midi()))
+        shutdown_midi_controller(
+            cast(Any, Midi()),
+            on_snapshot_save_skipped=lambda _controller: None,
+        )
 
     assert exc_info.value is save_error
     assert calls == ["save", "close"]
@@ -406,7 +437,10 @@ def test_midi_base_exception_still_closes_the_owned_input_port() -> None:
             calls.append("close")
 
     with pytest.raises(CleanupFault) as exc_info:
-        runner_module._close_midi_controller(cast(Any, Midi()))
+        shutdown_midi_controller(
+            cast(Any, Midi()),
+            on_snapshot_save_skipped=lambda _controller: None,
+        )
 
     assert exc_info.value is save_error
     assert calls == ["save", "close"]
@@ -414,7 +448,6 @@ def test_midi_base_exception_still_closes_the_owned_input_port() -> None:
 
 def test_unowned_rejected_midi_snapshot_uses_shutdown_skip_policy(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     calls: list[str] = []
     diagnostic = DiagnosticEvent(
@@ -438,10 +471,15 @@ def test_unowned_rejected_midi_snapshot_uses_shutdown_skip_policy(
         def close(self) -> None:
             calls.append("close")
 
-    runner_module._close_midi_controller(cast(Any, Midi()))
+    midi = cast(Any, Midi())
+    skipped: list[object] = []
+    shutdown_midi_controller(
+        midi,
+        on_snapshot_save_skipped=skipped.append,
+    )
 
     assert calls == ["save", "close"]
-    assert any("auto-save skipped" in record.getMessage() for record in caplog.records)
+    assert skipped == [midi]
 
 
 def test_acquisition_failure_closes_midi_created_before_draw_window(
@@ -459,41 +497,27 @@ def test_acquisition_failure_closes_midi_created_before_draw_window(
 
     midi = cast(Any, Midi())
     monkeypatch.setattr(
-        runner_module,
-        "runtime_config",
-        lambda: SimpleNamespace(
-            midi_inputs=(),
-            window_pos_draw=(0, 0),
-            window_pos_parameter_gui=(10, 10),
-            parameter_gui_window_size=(800, 1000),
-        ),
+        midi_factory_module,
+        "create_midi_controller",
+        lambda **_kwargs: midi,
     )
-    monkeypatch.setattr(
-        runner_module,
-        "output_path_for_draw",
-        lambda **_kwargs: tmp_path / "midi.json",
-    )
-    monkeypatch.setattr(
-        runner_module,
-        "default_param_store_path",
-        lambda *_args, **_kwargs: tmp_path / "params.json",
-    )
-    monkeypatch.setattr(runner_module, "create_midi_controller", lambda **_kwargs: midi)
 
     def fail_after_midi(**_kwargs: object) -> None:
         raise RuntimeError("frozen snapshot load failed")
 
     monkeypatch.setattr(
-        runner_module,
+        midi_factory_module,
         "maybe_load_frozen_cc_snapshot",
         fail_after_midi,
     )
 
     with pytest.raises(RuntimeError, match="frozen snapshot load failed"):
-        runner_module.run(
-            lambda _t: None,
-            parameter_gui=False,
-            parameter_persistence=False,
+        midi_factory_module.create_midi_session(
+            port_name="auto",
+            mode="7bit",
+            profile_name="midi",
+            save_dir=tmp_path,
+            snapshot_path=tmp_path / "midi.json",
         )
 
     assert calls == ["save midi", "close midi"]
@@ -534,23 +558,20 @@ def test_failure_after_draw_window_construction_runs_registered_closer(
     class DrawWindow:
         window = Window()
 
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
+        def __init__(self, *_args: object, **kwargs: object) -> None:
             calls.append("create draw")
+            self.authoring_definitions = kwargs["definitions"]
 
         def close(self) -> None:
             calls.append("close draw")
             midi.save()
             midi.close()
 
+    effective_config = runtime_config()
     monkeypatch.setattr(
         runner_module,
-        "runtime_config",
-        lambda: SimpleNamespace(
-            midi_inputs=(),
-            window_pos_draw=(0, 0),
-            window_pos_parameter_gui=(10, 10),
-            parameter_gui_window_size=(800, 1000),
-        ),
+        "runtime_config_with_fallback",
+        lambda _path: (effective_config, None),
     )
     monkeypatch.setattr(
         runner_module,
@@ -562,11 +583,10 @@ def test_failure_after_draw_window_construction_runs_registered_closer(
         "default_param_store_path",
         lambda *_args, **_kwargs: tmp_path / "params.json",
     )
-    monkeypatch.setattr(runner_module, "create_midi_controller", lambda **_kwargs: midi)
     monkeypatch.setattr(
         runner_module,
-        "maybe_load_frozen_cc_snapshot",
-        lambda **_kwargs: None,
+        "create_midi_session",
+        lambda **_kwargs: SimpleNamespace(close=lambda: None),
     )
     monkeypatch.setattr(runner_module, "DrawWindowSystem", DrawWindow)
 
@@ -585,7 +605,6 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
-    autoload_configs: list[object] = []
 
     class Midi:
         def __init__(self) -> None:
@@ -619,8 +638,9 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
         is_recording = False
         capture_service = object()
 
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
+        def __init__(self, *_args: object, **kwargs: object) -> None:
             calls.append("create draw")
+            self.authoring_definitions = kwargs["definitions"]
 
         def close(self) -> None:
             calls.append("close draw")
@@ -641,12 +661,7 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
         ) -> None:
             return None
 
-    effective_config = SimpleNamespace(
-        midi_inputs=(),
-        window_pos_draw=(0, 0),
-        window_pos_parameter_gui=(10, 10),
-        parameter_gui_window_size=(800, 1000),
-    )
+    effective_config = runtime_config()
 
     class FailedGUI:
         def __init__(self, **_kwargs: object) -> None:
@@ -656,14 +671,9 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
             raise RuntimeError("GUI construction failed")
 
     monkeypatch.setattr(
-        presets_module,
-        "_autoload_preset_modules",
-        lambda cfg: autoload_configs.append(cfg),
-    )
-    monkeypatch.setattr(
         runner_module,
-        "runtime_config",
-        lambda: effective_config,
+        "runtime_config_with_fallback",
+        lambda _path: (effective_config, None),
     )
     monkeypatch.setattr(
         runner_module,
@@ -675,11 +685,10 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
         "default_param_store_path",
         lambda *_args, **_kwargs: tmp_path / "params.json",
     )
-    monkeypatch.setattr(runner_module, "create_midi_controller", lambda **_kwargs: midi)
     monkeypatch.setattr(
         runner_module,
-        "maybe_load_frozen_cc_snapshot",
-        lambda **_kwargs: None,
+        "create_midi_session",
+        lambda **_kwargs: SimpleNamespace(close=lambda: None),
     )
     monkeypatch.setattr(runner_module, "DrawWindowSystem", DrawWindow)
     monkeypatch.setattr(gui_system_module, "ParameterGUIWindowSystem", FailedGUI)
@@ -698,26 +707,4 @@ def test_gui_construction_failure_closes_completed_draw_system_and_midi_once(
         "close draw",
         "save midi",
         "close midi",
-    ]
-    assert autoload_configs == [effective_config]
-
-
-def test_variation_thumbnail_path_size_and_missing_status(tmp_path: Path) -> None:
-    base = tmp_path / "sketch_800x400.png"
-    assert runner_module._variation_thumbnail_output_path(
-        base,
-        "  A/B candidate  ",
-    ) == tmp_path / "sketch_800x400_A_B_candidate.png"
-    assert runner_module._variation_thumbnail_size((800, 400)) == (320, 160)
-
-    messages: list[str] = []
-    imgui = SimpleNamespace(text_disabled=messages.append)
-    missing = tmp_path / "missing.png"
-    runner_module._draw_variation_thumbnail_status(imgui, missing)
-    missing.write_bytes(b"png")
-    runner_module._draw_variation_thumbnail_status(imgui, missing)
-
-    assert messages == [
-        f"Thumbnail unavailable (missing): {missing}",
-        "Thumbnail: missing.png",
     ]

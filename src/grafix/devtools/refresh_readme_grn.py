@@ -107,17 +107,26 @@ def _resolve_draw_and_canvas(mod: object) -> tuple[object, tuple[int, int]]:
     return draw, canvas_size
 
 
-def _export_one(*, draw: object, canvas_size: tuple[int, int]) -> tuple[Path, Path]:
+def _export_one(
+    *,
+    draw: object,
+    canvas_size: tuple[int, int],
+    config: object,
+) -> tuple[Path, Path]:
     """1 スケッチ分の SVG/PNG を export して保存先パスを返す。"""
     from grafix import RenderOptions, export, render
-    from grafix.core.output_paths import output_path_for_draw
+    from grafix.export.output_paths import output_path_for_draw
+    from grafix.core.runtime_config import RuntimeConfig
     from grafix.export.image import default_png_output_path
 
+    if not isinstance(config, RuntimeConfig):
+        raise TypeError("config は RuntimeConfig である必要があります")
     svg_path = output_path_for_draw(
         kind="svg",
         ext="svg",
         draw=draw,  # type: ignore[arg-type]
         canvas_size=canvas_size,
+        config=config,
     )
     frame = render(
         draw,  # type: ignore[arg-type]
@@ -129,6 +138,7 @@ def _export_one(*, draw: object, canvas_size: tuple[int, int]) -> tuple[Path, Pa
             background_color=BACKGROUND_COLOR,
         ),
         parameter_source="saved",
+        config=config,
     )
     svg_result = export(frame, svg_path, overwrite=True)
 
@@ -136,6 +146,7 @@ def _export_one(*, draw: object, canvas_size: tuple[int, int]) -> tuple[Path, Pa
         draw,  # type: ignore[arg-type]
         scale=frame.metadata.effective_config.png_scale,
         canvas_size=canvas_size,
+        config=frame.metadata.effective_config,
     )
     png_result = export(frame, png_path, overwrite=True)
     return svg_result.path, png_result.path
@@ -146,11 +157,11 @@ def main() -> int:
     root = _find_repo_root()
 
     # `P.grn_a5_frame` のような preset を確実に使えるよう、プロジェクトの config を優先する。
-    cfg = root / ".grafix/config.yaml"
-    if cfg.exists():
-        from grafix.core.runtime_config import set_config_path
+    candidate_config = root / ".grafix/config.yaml"
+    config_path = candidate_config if candidate_config.exists() else None
+    from grafix.core.runtime_config import bind_runtime_config, load_runtime_config
 
-        set_config_path(str(cfg))
+    config = load_runtime_config(config_path)
 
     sketches = _collect_sketches(root)
     if not sketches:
@@ -165,9 +176,14 @@ def main() -> int:
         return 0
 
     for sk in sketches:
-        mod = _load_module(path=sk.path)
-        draw, canvas_size = _resolve_draw_and_canvas(mod)
-        svg_path, png_path = _export_one(draw=draw, canvas_size=canvas_size)
+        with bind_runtime_config(config):
+            mod = _load_module(path=sk.path)
+            draw, canvas_size = _resolve_draw_and_canvas(mod)
+            svg_path, png_path = _export_one(
+                draw=draw,
+                canvas_size=canvas_size,
+                config=config,
+            )
         print(f"Exported: {sk.path.name} -> {svg_path} / {png_path}")
 
     if UPDATE_README_EXAMPLES:

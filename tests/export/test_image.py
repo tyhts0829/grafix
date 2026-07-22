@@ -6,20 +6,16 @@ from pathlib import Path
 import pytest
 
 from grafix.export import image
-from grafix.core.runtime_config import runtime_config, set_config_path
+from grafix.core.runtime_config import runtime_config
 
 
 # `grafix.export.image`（SVG→PNG / resvg）をテストする。
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    set_config_path(None)
+def _isolate_runtime_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
-    set_config_path(None)
-    yield
-    set_config_path(None)
 
 
 def test_default_png_output_path_uses_script_stem_and_output_size():

@@ -27,7 +27,6 @@ from grafix.core.operation_selector import (
     selector_effect_n_inputs,
     selector_kind,
 )
-from grafix.core.effect_registry import effect_registry
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.layer_style import (
     LAYER_STYLE_LINE_COLOR,
@@ -43,9 +42,8 @@ from grafix.core.parameters.style import (
     validate_rgb255,
 )
 from grafix.core.parameters.view import ParameterRow
-from grafix.core.preset_registry import preset_registry
-from grafix.core.primitive_registry import primitive_registry
 
+from .catalog import ParameterGuiCatalog, current_parameter_gui_catalog
 from .group_blocks import GroupBlockLayout
 from .grouping import GroupType
 
@@ -209,6 +207,7 @@ def _with_explicit_key(
 def _selector_kwargs(
     rows: Sequence[ParameterRow],
     *,
+    catalog: ParameterGuiCatalog,
     op: str,
     site_id: str,
     last_effective_by_key: Mapping[ParameterKey, object] | None,
@@ -233,15 +232,21 @@ def _selector_kwargs(
         )
     )
     kind = selector_kind(op)
-    registry = primitive_registry if kind == "primitive" else effect_registry
-    target_spec = registry[target] if target in registry else None
+    if kind is None:
+        raise ValueError(f"selector operation ではありません: {op!r}")
+    try:
+        target_spec = catalog.resolve_operation(kind, target)
+    except KeyError:
+        target_spec = None
     if target_spec is None:
         return [], (
-            f"# NOTE: selector target {target!r} が現在の registry に無いため "
+            f"# NOTE: selector target {target!r} が現在の catalog に無いため "
             "Copy Code を生成できません。target と登録順を確認してください。"
         )
 
-    non_gui_args = tuple(arg for arg in target_spec.accepted_args if arg not in target_spec.meta)
+    non_gui_args = tuple(
+        arg for arg in target_spec.accepted_args if arg not in target_spec.schema.meta
+    )
     if non_gui_args or target_spec.accepts_var_kwargs:
         details: list[str] = []
         if non_gui_args:
@@ -306,6 +311,7 @@ def snippet_for_block(
     block: GroupBlockLayout,
     indexed_rows: Sequence[ParameterRow],
     *,
+    catalog: ParameterGuiCatalog | None = None,
     last_effective_by_key: Mapping[ParameterKey, object] | None = None,
     step_info_by_site: Mapping[tuple[str, str], tuple[str, int]] | None = None,
     raw_label_by_site: Mapping[tuple[str, str], str] | None = None,
@@ -344,6 +350,9 @@ def snippet_for_block(
     - 返り値は **末尾改行あり**（空文字を除く）。
     """
 
+    selected_catalog = current_parameter_gui_catalog() if catalog is None else catalog
+    if type(selected_catalog) is not ParameterGuiCatalog:
+        raise TypeError("catalog は exact ParameterGuiCatalog である必要があります")
     group_type = block.group_id[0]
     rows = [indexed_rows[item.row_index] for item in block.items]
 
@@ -460,8 +469,11 @@ def snippet_for_block(
     if group_type is GroupType.PRESET:
         row0 = rows[0]
         op = row0.op
-        # preset は “表示名” と実装 op が一致しないケースがあるため、registry で表示名へ寄せる。
-        call_name = preset_registry[op].display_op
+        # parameter identity と公開 callable 名は catalog projection で分離する。
+        preset_entry = selected_catalog.resolve(op)
+        if preset_entry is None or preset_entry.kind != "preset":
+            raise LookupError(f"preset catalog entry が見つかりません: {op!r}")
+        call_name = preset_entry.call_name
         prefix = "P."
         if raw_label_by_site is not None:
             raw_label = raw_label_by_site.get((op, row0.site_id))
@@ -508,6 +520,7 @@ def snippet_for_block(
             )
             kwargs, note = _selector_kwargs(
                 selector_rows,
+                catalog=selected_catalog,
                 op=op,
                 site_id=row0.site_id,
                 last_effective_by_key=last_effective_by_key,
@@ -578,6 +591,7 @@ def snippet_for_block(
                 )
                 kwargs, note = _selector_kwargs(
                     selector_rows,
+                    catalog=selected_catalog,
                     op=op,
                     site_id=_site_id,
                     last_effective_by_key=last_effective_by_key,

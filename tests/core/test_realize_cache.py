@@ -3,61 +3,91 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from typing import cast
 
 import numpy as np
 import pytest
 
-from grafix.core.effect_registry import EffectFunc
+from grafix import E, G
+from grafix.core.authoring_definitions import RegistrationTarget, registration_scope
+from grafix.core.definition_fingerprint import (
+    EvaluationSpecFingerprint,
+    ParameterSchemaFingerprint,
+)
+from grafix.core.evaluation_context import EvaluationContext, EvaluationResources
 from grafix.core.geometry import Geometry
-from grafix.core.op_registry import OpRegistry, OpSpec
-from grafix.core.primitive_registry import PrimitiveFunc
-from grafix.core.realize import RealizeError, RealizeSession, realize
+from grafix.core.operation_declaration import (
+    CachePolicy,
+    EvaluationOpRef,
+    OpDeclaration,
+    OpKind,
+)
+from grafix.core.operation_catalog import (
+    OperationCatalog,
+    OperationCatalogEntry,
+    bind_operation_catalog,
+)
+from grafix.core.operation_schema import ParameterOpSchema
+from grafix.core.preview_quality import PreviewQuality, current_preview_quality
+from grafix.core.realize import (
+    CatalogMismatchError,
+    GeometryCacheKey,
+    RealizeCacheStore,
+    RealizeError,
+    RealizeSession,
+    realize,
+)
 from grafix.core.realized_geometry import RealizedGeometry
 from grafix.core.resource_budget import ResourceBudget
 from grafix.core.runtime_limits import RuntimeLimits
+from grafix.core.runtime_config import runtime_config
 
 realize_module = importlib.import_module("grafix.core.realize")
 
 
-def _primitive_spec(evaluator: PrimitiveFunc) -> OpSpec[PrimitiveFunc]:
-    return OpSpec(
-        evaluator=evaluator,
-        meta={},
-        defaults={},
-        param_order=(),
-        ui_visible={},
-        n_inputs=0,
-        kind="primitive",
-    )
+_EMPTY_SCHEMA = ParameterOpSchema(
+    meta={},
+    defaults={},
+    param_order=(),
+    ui_visible={},
+)
 
 
-def _uncached_primitive_spec(evaluator: PrimitiveFunc) -> OpSpec[PrimitiveFunc]:
-    return OpSpec(
+@dataclass(frozen=True, slots=True)
+class _TestSpec:
+    evaluator: Callable[..., RealizedGeometry]
+    n_inputs: int
+    cache_policy: CachePolicy = "content"
+
+
+def _primitive_spec(
+    evaluator: Callable[[tuple[tuple[str, object], ...]], RealizedGeometry],
+) -> _TestSpec:
+    return _TestSpec(evaluator=evaluator, n_inputs=0)
+
+
+def _uncached_primitive_spec(
+    evaluator: Callable[[tuple[tuple[str, object], ...]], RealizedGeometry],
+) -> _TestSpec:
+    return _TestSpec(
         evaluator=evaluator,
-        meta={},
-        defaults={},
-        param_order=(),
-        ui_visible={},
         n_inputs=0,
-        kind="primitive",
         cache_policy="none",
     )
 
 
-def _effect_spec(evaluator: EffectFunc) -> OpSpec[EffectFunc]:
-    return OpSpec(
-        evaluator=evaluator,
-        meta={},
-        defaults={},
-        param_order=(),
-        ui_visible={},
-        n_inputs=1,
-        kind="effect",
-    )
+def _effect_spec(
+    evaluator: Callable[
+        [Sequence[RealizedGeometry], tuple[tuple[str, object], ...]],
+        RealizedGeometry,
+    ],
+) -> _TestSpec:
+    return _TestSpec(evaluator=evaluator, n_inputs=1)
 
 
 def _realized(n_vertices: int, *, value: float = 0.0) -> RealizedGeometry:
@@ -66,23 +96,88 @@ def _realized(n_vertices: int, *, value: float = 0.0) -> RealizedGeometry:
     return RealizedGeometry(coords=coords, offsets=offsets)
 
 
-@pytest.fixture
-def isolated_registries(
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]]:
-    """realize module だけが参照する空の registry を用意する。"""
+class _TestDeclarations:
+    """test evaluator を immutable declaration として candidate へ登録する。"""
 
-    primitives: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
-    effects: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
-    monkeypatch.setattr(realize_module, "primitive_registry", primitives)
-    monkeypatch.setattr(realize_module, "effect_registry", effects)
-    return primitives, effects
+    def __init__(self, target: RegistrationTarget, *, kind: OpKind) -> None:
+        self._target = target
+        self._kind = kind
+        self._versions: dict[str, int] = {}
+
+    def register(
+        self,
+        name: str,
+        spec: _TestSpec,
+        *,
+        replace: bool = False,
+    ) -> None:
+        version = self._versions.get(name, 0) + 1
+        self._versions[name] = version
+        digest = hashlib.sha256(
+            f"grafix-test:{self._kind}:{name}:{version}:{spec.cache_policy}".encode()
+        ).hexdigest()
+        declaration = OpDeclaration(
+            name=name,
+            kind=self._kind,
+            evaluator=spec.evaluator,
+            schema=_EMPTY_SCHEMA,
+            n_inputs=spec.n_inputs,
+            cache_policy=spec.cache_policy,
+            evaluator_abi="test-v1",
+            version=("test-v1" if spec.cache_policy == "none" else None),
+            external_dependency_hook=None,
+            evaluation_fingerprint=EvaluationSpecFingerprint(digest),
+            schema_fingerprint=ParameterSchemaFingerprint(
+                hashlib.sha256(b"grafix-test-empty-schema").hexdigest()
+            ),
+            description="",
+            doc="",
+            source=None,
+            source_owner="grafix.tests.realize",
+            provenance=f"grafix.tests.realize:{self._kind}:{name}",
+            accepted_args=(),
+            required_args=(),
+            accepts_var_kwargs=True,
+        )
+        self._target.register(declaration, overwrite=replace)
+
+    @property
+    def catalog(self) -> OperationCatalog:
+        return self._target.snapshot().operations
+
+
+_CatalogPair = tuple[_TestDeclarations, _TestDeclarations]
+
+
+@pytest.fixture
+def isolated_catalog() -> Iterator[_CatalogPair]:
+    """各 test に空の scoped immutable-catalog builder を用意する。"""
+
+    target = RegistrationTarget()
+    declarations = (
+        _TestDeclarations(target, kind="primitive"),
+        _TestDeclarations(target, kind="effect"),
+    )
+    with registration_scope(target):
+        yield declarations
+
+
+def _evaluation_context(
+    catalog: OperationCatalog,
+    *,
+    quality: PreviewQuality = "final",
+) -> EvaluationContext:
+    return EvaluationContext(
+        catalog=catalog,
+        quality=quality,
+        config=runtime_config(),
+    )
 
 
 def test_session_reuses_same_content_across_geometry_instances(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     primitives.register("shape", _primitive_spec(lambda _args: _realized(4)))
     first_geometry = Geometry.create("shape", params={"variant": 1})
     same_geometry = Geometry.create("shape", params={"variant": 1})
@@ -101,9 +196,9 @@ def test_session_reuses_same_content_across_geometry_instances(
 
 
 def test_module_convenience_call_does_not_share_global_cache(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     calls = 0
 
     def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -122,10 +217,104 @@ def test_module_convenience_call_does_not_share_global_cache(
     assert not hasattr(realize_module, "realize_cache")
 
 
-def test_cache_policy_none_bypasses_cpu_cache_and_changes_gpu_key(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+def test_evaluator_nested_operation_uses_the_session_catalog() -> None:
+    target = RegistrationTarget()
+    primitives = _TestDeclarations(target, kind="primitive")
+    effects = _TestDeclarations(target, kind="effect")
+    primitives.register(
+        "realize_nested_inner_probe",
+        _primitive_spec(lambda _args: _realized(1, value=3.0)),
+    )
+    inner_ref = primitives.catalog.resolve(
+        "primitive",
+        "realize_nested_inner_probe",
+    ).ref
+    effects.register(
+        "realize_nested_effect_probe",
+        _effect_spec(lambda inputs, _args: inputs[0]),
+    )
+    effect_ref = effects.catalog.resolve(
+        "effect",
+        "realize_nested_effect_probe",
+    ).ref
+
+    def evaluate_outer(
+        _args: tuple[tuple[str, object], ...],
+    ) -> RealizedGeometry:
+        nested = G.realize_nested_inner_probe()
+        assert nested.operation == inner_ref
+        effected = E.realize_nested_effect_probe()(nested)
+        assert effected.operation == effect_ref
+        return _realized(2, value=7.0)
+
+    primitives.register(
+        "realize_nested_outer_probe",
+        _primitive_spec(evaluate_outer),
+    )
+    catalog = primitives.catalog
+    with bind_operation_catalog(catalog):
+        geometry = G.realize_nested_outer_probe()
+
+    with RealizeSession(context=_evaluation_context(catalog)) as session:
+        result = session.realize(geometry)
+
+    np.testing.assert_array_equal(result.coords, np.full((2, 3), 7.0))
+
+
+@pytest.mark.parametrize(
+    "order",
+    [("draft", "final"), ("final", "draft")],
+)
+def test_draft_and_final_use_distinct_typed_keys_in_both_orders(
+    isolated_catalog: _CatalogPair,
+    order: tuple[PreviewQuality, PreviewQuality],
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
+
+    def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
+        value = 1.0 if current_preview_quality() == "draft" else 2.0
+        return _realized(2, value=value)
+
+    primitives.register("quality_shape", _primitive_spec(evaluate))
+    geometry = Geometry.create("quality_shape")
+    limits = RuntimeLimits()
+    store = RealizeCacheStore.from_runtime_limits(limits)
+    resources = EvaluationResources()
+    qualities: tuple[PreviewQuality, PreviewQuality] = ("draft", "final")
+    sessions: dict[PreviewQuality, RealizeSession] = {
+        quality: RealizeSession(
+            context=_evaluation_context(primitives.catalog, quality=quality),
+            resources=resources,
+            cache_store=store,
+            runtime_limits=limits,
+        )
+        for quality in qualities
+    }
+    results: dict[PreviewQuality, RealizedGeometry] = {}
+    keys: dict[PreviewQuality, GeometryCacheKey] = {}
+    try:
+        for quality in order:
+            result, key = sessions[quality].realize_with_key(geometry)
+            results[quality] = result
+            keys[quality] = key
+        for quality in reversed(order):
+            assert sessions[quality].realize(geometry) is results[quality]
+    finally:
+        for session in sessions.values():
+            session.close()
+        resources.close()
+        store.close()
+
+    assert keys["draft"] != keys["final"]
+    assert keys["draft"].geometry_id == keys["final"].geometry_id == geometry.id
+    np.testing.assert_array_equal(results["draft"].coords, np.full((2, 3), 1.0))
+    np.testing.assert_array_equal(results["final"].coords, np.full((2, 3), 2.0))
+
+
+def test_cache_policy_none_bypasses_cpu_cache_and_changes_gpu_key(
+    isolated_catalog: _CatalogPair,
+) -> None:
+    primitives, _ = isolated_catalog
     calls = 0
 
     def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -150,9 +339,9 @@ def test_cache_policy_none_bypasses_cpu_cache_and_changes_gpu_key(
 
 
 def test_uncached_input_makes_content_parent_uncached(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, effects = isolated_registries
+    primitives, effects = isolated_catalog
     primitive_calls = 0
     effect_calls = 0
 
@@ -184,9 +373,9 @@ def test_uncached_input_makes_content_parent_uncached(
 
 
 def test_uncached_shared_input_is_evaluated_for_each_occurrence(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     calls = 0
 
     def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -207,9 +396,9 @@ def test_uncached_shared_input_is_evaluated_for_each_occurrence(
 
 
 def test_deep_unary_dag_is_realized_without_python_recursion(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, effects = isolated_registries
+    primitives, effects = isolated_catalog
     primitives.register("shape", _primitive_spec(lambda _args: _realized(2)))
     effects.register(
         "pass_through",
@@ -230,9 +419,9 @@ def test_deep_unary_dag_is_realized_without_python_recursion(
 
 
 def test_deep_binary_concat_is_flattened_once_without_python_recursion(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     primitive_calls = 0
 
     def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -255,9 +444,9 @@ def test_deep_binary_concat_is_flattened_once_without_python_recursion(
 
 
 def test_shared_concat_dag_hits_resource_limit_without_exponential_expansion(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     primitive_calls = 0
 
     def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -290,9 +479,9 @@ def test_shared_concat_dag_hits_resource_limit_without_exponential_expansion(
 
 
 def test_binary_and_bulk_concat_realize_in_the_same_leaf_order(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
 
     def evaluate(args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
         return _realized(2, value=float(cast(int, dict(args)["value"])))
@@ -314,10 +503,10 @@ def test_binary_and_bulk_concat_realize_in_the_same_leaf_order(
 
 
 def test_warm_root_hit_skips_deep_cacheability_walk(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    primitives, effects = isolated_registries
+    primitives, effects = isolated_catalog
     primitives.register("shape", _primitive_spec(lambda _args: _realized(2)))
     effects.register("pass_through", _effect_spec(lambda inputs, _args: inputs[0]))
     geometry = Geometry.create("shape")
@@ -332,19 +521,54 @@ def test_warm_root_hit_skips_deep_cacheability_walk(
         first = session.realize(geometry)
         monkeypatch.setattr(
             session,
-            "_geometry_cacheability",
-            lambda *_args: pytest.fail("warm root hitでcacheabilityを再計算した"),
+            "_realize",
+            lambda *_args, **_kwargs: pytest.fail(
+                "warm root hitでDAG evaluationを開始した"
+            ),
         )
         second = session.realize(geometry)
 
     assert second is first
 
 
-def test_input_preparation_failure_releases_inflight_leader(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+def test_preflight_is_the_single_catalog_validation_walk(
+    isolated_catalog: _CatalogPair,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
+    primitives.register("shape", _primitive_spec(lambda _args: _realized(2)))
+    catalog = primitives.catalog
+    geometry = Geometry.create("shape")
+    calls: list[EvaluationOpRef] = []
+    original_resolve_ref = OperationCatalog.resolve_ref
+
+    def counting_resolve_ref(
+        selected_catalog: OperationCatalog,
+        ref: EvaluationOpRef,
+    ) -> OperationCatalogEntry:
+        if selected_catalog is catalog:
+            calls.append(ref)
+        return original_resolve_ref(selected_catalog, ref)
+
+    monkeypatch.setattr(OperationCatalog, "resolve_ref", counting_resolve_ref)
+    with RealizeSession(context=_evaluation_context(catalog)) as session:
+        # evaluator dispatch 自体の resolve を除き、realize_with_key の preflight
+        # 境界だけを観測する。
+        monkeypatch.setattr(
+            session,
+            "_realize",
+            lambda _geometry, _key: _realized(2),
+        )
+        session.realize(geometry)
+
+    assert calls == list(geometry.operation_refs)
+
+
+def test_input_preparation_failure_releases_inflight_leader(
+    isolated_catalog: _CatalogPair,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primitives, _ = isolated_catalog
     primitives.register("shape", _primitive_spec(lambda _args: _realized(2)))
     geometry = Geometry.create("shape")
     session = RealizeSession()
@@ -365,9 +589,9 @@ def test_input_preparation_failure_releases_inflight_leader(
 
 
 def test_lru_evicts_least_recently_used_entry_by_byte_budget(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
 
     def evaluate(args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
         return _realized(cast(int, dict(args)["n"]))
@@ -396,10 +620,10 @@ def test_lru_evicts_least_recently_used_entry_by_byte_budget(
 
 
 def test_lru_evicts_least_recently_used_entry_by_entry_budget(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     diagnostics: list[dict[str, object]] = []
 
     def evaluate(args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -436,9 +660,9 @@ def test_lru_evicts_least_recently_used_entry_by_entry_budget(
 
 
 def test_cache_transaction_applies_entry_budget_only_after_commit(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     primitives.register("shape", _primitive_spec(lambda _args: _realized(3)))
     geometries = [
         Geometry.create("shape", params={"value": value}) for value in range(3)
@@ -464,9 +688,9 @@ def test_cache_transaction_applies_entry_budget_only_after_commit(
 
 
 def test_result_larger_than_budget_is_delivered_but_not_cached(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     calls = 0
 
     def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -493,9 +717,9 @@ def test_result_larger_than_budget_is_delivered_but_not_cached(
 
 
 def test_inflight_avoids_duplicate_computation_under_concurrency(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     entered = threading.Event()
     release = threading.Event()
     calls = 0
@@ -547,9 +771,9 @@ def test_inflight_avoids_duplicate_computation_under_concurrency(
 
 
 def test_failed_inflight_notifies_waiters_and_allows_retry(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     entered = threading.Event()
     release = threading.Event()
     calls = 0
@@ -607,10 +831,10 @@ def test_failed_inflight_notifies_waiters_and_allows_retry(
     ],
 )
 def test_leader_preserves_process_control_exception_and_cleans_inflight(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
     error_factory: Callable[[], BaseException],
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     should_fail = True
 
     def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -639,10 +863,10 @@ def test_leader_preserves_process_control_exception_and_cleans_inflight(
     ],
 )
 def test_process_control_exception_keeps_its_type_for_leader_and_waiters(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
     error_factory: Callable[[], BaseException],
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     entered = threading.Event()
     release = threading.Event()
     start = threading.Barrier(7)
@@ -695,33 +919,91 @@ def test_process_control_exception_keeps_its_type_for_leader_and_waiters(
     session.close()
 
 
-def test_registry_revision_invalidates_cached_geometry(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+def test_catalog_generations_share_only_compatible_per_operation_cache_entries(
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     primitives.register("shape", _primitive_spec(lambda _args: _realized(2, value=1.0)))
-    geometry = Geometry.create("shape")
+    primitives.register("unused", _primitive_spec(lambda _args: _realized(1)))
+    geometry_a = Geometry.create("shape")
+    catalog_a = primitives.catalog
+    limits = RuntimeLimits()
+    cache_store = RealizeCacheStore.from_runtime_limits(limits)
+    resources_a = EvaluationResources()
+    session_a = RealizeSession(
+        context=_evaluation_context(catalog_a),
+        resources=resources_a,
+        cache_store=cache_store,
+        runtime_limits=limits,
+    )
+    resources_unrelated = EvaluationResources()
+    resources_b = EvaluationResources()
+    session_unrelated: RealizeSession | None = None
+    session_b: RealizeSession | None = None
+    try:
+        first, first_key = session_a.realize_with_key(geometry_a)
+        primitives.register(
+            "unused",
+            _primitive_spec(lambda _args: _realized(1, value=9.0)),
+            replace=True,
+        )
+        catalog_unrelated = primitives.catalog
+        geometry_unrelated = Geometry.create("shape")
+        session_unrelated = RealizeSession(
+            context=_evaluation_context(catalog_unrelated),
+            resources=resources_unrelated,
+            cache_store=cache_store,
+            runtime_limits=limits,
+        )
+        unrelated, unrelated_key = session_unrelated.realize_with_key(
+            geometry_unrelated
+        )
 
-    with RealizeSession() as session:
-        first, first_key = session.realize_with_key(geometry)
         primitives.register(
             "shape",
             _primitive_spec(lambda _args: _realized(2, value=2.0)),
             replace=True,
         )
-        second, second_key = session.realize_with_key(geometry)
+        catalog_b = primitives.catalog
+        geometry_b = Geometry.create("shape")
+        session_b = RealizeSession(
+            context=_evaluation_context(catalog_b),
+            resources=resources_b,
+            cache_store=cache_store,
+            runtime_limits=limits,
+        )
+        second, second_key = session_b.realize_with_key(geometry_b)
 
-    assert first_key[0] == second_key[0] == geometry.id
-    assert first_key[1] != second_key[1]
+        assert geometry_unrelated.id == geometry_a.id
+        assert unrelated_key == first_key
+        assert unrelated is first
+        assert geometry_b.id != geometry_a.id
+        assert second_key.geometry_id == geometry_b.id
+        assert first_key.evaluation == second_key.evaluation
+        assert session_a.realize(geometry_a) is first
+        with pytest.raises(CatalogMismatchError):
+            session_b.realize(geometry_a)
+        assert cache_store.stats().misses == 2
+    finally:
+        session_a.close()
+        if session_unrelated is not None:
+            session_unrelated.close()
+        if session_b is not None:
+            session_b.close()
+        resources_a.close()
+        resources_unrelated.close()
+        resources_b.close()
+        cache_store.close()
+
     assert first is not second
     np.testing.assert_array_equal(first.coords, np.full((2, 3), 1.0, dtype=np.float32))
     np.testing.assert_array_equal(second.coords, np.full((2, 3), 2.0, dtype=np.float32))
 
 
 def test_animation_soak_stays_bounded_and_keeps_static_upstream_hot(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, effects = isolated_registries
+    primitives, effects = isolated_catalog
     primitive_calls = 0
     effect_calls = 0
 
@@ -766,9 +1048,9 @@ def test_animation_soak_stays_bounded_and_keeps_static_upstream_hot(
 
 
 def test_entry_bounded_animation_keeps_frequently_used_base_hot(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, effects = isolated_registries
+    primitives, effects = isolated_catalog
     primitive_calls = 0
 
     def make_base(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -809,9 +1091,9 @@ def test_entry_bounded_animation_keeps_frequently_used_base_hot(
 
 
 def test_zero_cache_entry_budget_disables_cache(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     calls = 0
 
     def evaluate(_args: tuple[tuple[str, object], ...]) -> RealizedGeometry:
@@ -835,32 +1117,206 @@ def test_zero_cache_entry_budget_disables_cache(
     assert stats.bytes == 0
 
 
-def test_clear_and_close_release_cache_and_close_is_idempotent(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+def test_parent_store_owns_clear_and_session_close_only_ends_borrow(
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     primitives.register("shape", _primitive_spec(lambda _args: _realized(4)))
     geometry = Geometry.create("shape")
+    limits = RuntimeLimits()
+    store = RealizeCacheStore.from_runtime_limits(limits)
+    resources = EvaluationResources()
+    context = _evaluation_context(primitives.catalog)
+    session = RealizeSession(
+        context=context,
+        resources=resources,
+        cache_store=store,
+        runtime_limits=limits,
+    )
+    replacement: RealizeSession | None = None
+    try:
+        first = session.realize(geometry)
+        store.clear()
+        assert session.stats().entries == 0
+        assert session.stats().bytes == 0
+        second = session.realize(geometry)
+        assert second is not first
+
+        session.close()
+        session.close()
+        assert session.stats().entries == 1
+        with pytest.raises(RuntimeError, match="close 済み"):
+            session.realize(geometry)
+
+        replacement = RealizeSession(
+            context=context,
+            resources=resources,
+            cache_store=store,
+            runtime_limits=limits,
+        )
+        assert replacement.realize(geometry) is second
+    finally:
+        session.close()
+        if replacement is not None:
+            replacement.close()
+        resources.close()
+        store.close()
+
+    assert store.stats().entries == 0
+    assert store.stats().bytes == 0
+
+
+def test_session_closes_only_resources_and_store_omitted_by_the_caller() -> None:
+    default_session = RealizeSession()
+    owned_resources = default_session.resources
+    owned_store = default_session.cache_store
+    default_session.close()
+    default_session.close()
+    assert owned_resources.closed is True
+    assert owned_store.closed is True
+
+    borrowed_resources = EvaluationResources()
+    resources_borrower = RealizeSession(resources=borrowed_resources)
+    resources_borrower_store = resources_borrower.cache_store
+    resources_borrower.close()
+    assert borrowed_resources.closed is False
+    assert resources_borrower_store.closed is True
+
+    borrowed_store = RealizeCacheStore.from_runtime_limits(RuntimeLimits())
+    store_borrower = RealizeSession(cache_store=borrowed_store)
+    store_borrower_resources = store_borrower.resources
+    store_borrower.close()
+    assert store_borrower_resources.closed is True
+    assert borrowed_store.closed is False
+
+    borrowed_resources.close()
+    borrowed_store.close()
+
+
+def test_owned_close_attempts_every_dependency_and_preserves_first_base_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FirstCloseFailure(BaseException):
+        pass
+
+    class SecondCloseFailure(BaseException):
+        pass
+
     session = RealizeSession()
+    resources = session.resources
+    store = session.cache_store
+    original_resources_close = EvaluationResources.close
+    original_store_close = RealizeCacheStore.close
+    first_error = FirstCloseFailure("resources")
+    second_error = SecondCloseFailure("store")
+    calls: list[str] = []
 
-    session.realize(geometry)
-    session.clear()
-    assert session.stats().entries == 0
-    assert session.stats().bytes == 0
-    session.realize(geometry)
+    def close_resources(owner: EvaluationResources) -> None:
+        calls.append("resources")
+        original_resources_close(owner)
+        raise first_error
 
+    def close_store(owner: RealizeCacheStore) -> None:
+        calls.append("store")
+        original_store_close(owner)
+        raise second_error
+
+    monkeypatch.setattr(EvaluationResources, "close", close_resources)
+    monkeypatch.setattr(RealizeCacheStore, "close", close_store)
+
+    with pytest.raises(FirstCloseFailure) as exc_info:
+        session.close()
+
+    assert exc_info.value is first_error
+    assert calls == ["resources", "store"]
+    assert resources.closed is True
+    assert store.closed is True
     session.close()
-    session.close()
-    assert session.stats().entries == 0
-    assert session.stats().bytes == 0
-    with pytest.raises(RuntimeError, match="close 済み"):
-        session.realize(geometry)
+    assert calls == ["resources", "store"]
+
+
+def test_context_exit_preserves_body_error_while_closing_every_owned_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = RealizeSession()
+    resources = session.resources
+    store = session.cache_store
+    original_resources_close = EvaluationResources.close
+    body_error = RuntimeError("body failed")
+    close_calls: list[str] = []
+
+    def close_resources(owner: EvaluationResources) -> None:
+        close_calls.append("resources")
+        original_resources_close(owner)
+        raise KeyboardInterrupt("resource close failed")
+
+    original_store_close = RealizeCacheStore.close
+
+    def close_store(owner: RealizeCacheStore) -> None:
+        close_calls.append("store")
+        original_store_close(owner)
+
+    monkeypatch.setattr(EvaluationResources, "close", close_resources)
+    monkeypatch.setattr(RealizeCacheStore, "close", close_store)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        with session:
+            raise body_error
+
+    assert exc_info.value is body_error
+    assert close_calls == ["resources", "store"]
+    assert resources.closed is True
+    assert store.closed is True
+
+
+def test_constructor_failure_closes_created_resources_and_keeps_root_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CleanupFailure(BaseException):
+        pass
+
+    created_resources: list[EvaluationResources] = []
+    close_calls: list[EvaluationResources] = []
+    original_init = EvaluationResources.__init__
+    original_close = EvaluationResources.close
+    root_error = RuntimeError("cache store construction failed")
+
+    def track_init(owner: EvaluationResources) -> None:
+        original_init(owner)
+        created_resources.append(owner)
+
+    def close_then_fail(owner: EvaluationResources) -> None:
+        close_calls.append(owner)
+        original_close(owner)
+        raise CleanupFailure("resource cleanup failed")
+
+    def fail_store_creation(
+        _cls: type[RealizeCacheStore],
+        _limits: RuntimeLimits,
+    ) -> RealizeCacheStore:
+        raise root_error
+
+    monkeypatch.setattr(EvaluationResources, "__init__", track_init)
+    monkeypatch.setattr(EvaluationResources, "close", close_then_fail)
+    monkeypatch.setattr(
+        RealizeCacheStore,
+        "from_runtime_limits",
+        classmethod(fail_store_creation),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        RealizeSession()
+
+    assert exc_info.value is root_error
+    assert len(created_resources) == 1
+    assert close_calls == created_resources
+    assert created_resources[0].closed is True
 
 
 def test_close_allows_inflight_leader_to_finish_without_repopulating_cache(
-    isolated_registries: tuple[OpRegistry[PrimitiveFunc], OpRegistry[EffectFunc]],
+    isolated_catalog: _CatalogPair,
 ) -> None:
-    primitives, _ = isolated_registries
+    primitives, _ = isolated_catalog
     entered = threading.Event()
     release = threading.Event()
 
@@ -894,6 +1350,8 @@ def test_close_allows_inflight_leader_to_finish_without_repopulating_cache(
     assert len(results) == 1
     assert session.stats().entries == 0
     assert session.stats().bytes == 0
+    assert session.resources.closed is True
+    assert session.cache_store.closed is True
 
 
 def test_negative_cache_limits_are_rejected() -> None:

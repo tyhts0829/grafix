@@ -10,10 +10,16 @@ import sys
 import time
 from pathlib import Path
 from types import ModuleType
-from typing import Callable
+from typing import Any, Callable
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "src"))
+
+from grafix.core.lifecycle import CleanupErrors  # noqa: E402
+from grafix.interactive.pyglet_window_lifecycle import (  # noqa: E402
+    activate_pyglet_window_context,
+    close_pyglet_window,
+)
 
 
 class PygletImGuiContext:
@@ -80,7 +86,7 @@ def _require_display(pyglet_mod: ModuleType) -> None:
     except Exception as exc:
         raise SystemExit(f"ディスプレイが取得できないため終了: {exc}")
     else:
-        test_window.close()
+        close_pyglet_window(test_window)
 
 
 def run_pyglet_imgui(
@@ -120,44 +126,46 @@ def run_pyglet_imgui(
     pyglet_mod.options["vsync"] = vsync
     _require_display(pyglet_mod)
 
-    gui_context = imgui_mod.create_context()
-    imgui_mod.style_colors_dark()
-    imgui_mod.set_current_context(gui_context)
-
-    gl_cfg = pyglet_mod.gl.Config(double_buffer=True, sample_buffers=1, samples=4)
-    window = pyglet_mod.window.Window(
-        width=width,
-        height=height,
-        caption=caption,
-        resizable=resizable,
-        vsync=vsync,
-        config=gl_cfg,
-    )
-    window.clearcolor = clear_color
-
-    from grafix.interactive.parameter_gui.pyglet_backend import (
-        create_imgui_pyglet_renderer,
-    )
-
-    renderer = create_imgui_pyglet_renderer(window)
-    renderer.refresh_font_texture()
-
-    running = True
-    prev_time = time.monotonic()
-
-    def stop_loop(*_: object) -> None:
-        nonlocal running
-        running = False
-
-    ctx = PygletImGuiContext(
-        pyglet_mod=pyglet_mod,
-        imgui_mod=imgui_mod,
-        window=window,
-        stop=stop_loop,
-    )
-    window.push_handlers(on_close=stop_loop)
-
+    gui_context: Any | None = None
+    window: Any | None = None
+    renderer: Any | None = None
+    root_error: BaseException | None = None
     try:
+        gui_context = imgui_mod.create_context()
+        imgui_mod.style_colors_dark()
+        imgui_mod.set_current_context(gui_context)
+
+        gl_cfg = pyglet_mod.gl.Config(double_buffer=True, sample_buffers=1, samples=4)
+        window = pyglet_mod.window.Window(
+            width=width,
+            height=height,
+            caption=caption,
+            resizable=resizable,
+            vsync=vsync,
+            config=gl_cfg,
+        )
+        window.clearcolor = clear_color
+
+        from imgui.integrations.pyglet import PygletProgrammablePipelineRenderer
+
+        renderer = PygletProgrammablePipelineRenderer(window)
+        renderer.refresh_font_texture()
+
+        running = True
+        prev_time = time.monotonic()
+
+        def stop_loop(*_: object) -> None:
+            nonlocal running
+            running = False
+
+        ctx = PygletImGuiContext(
+            pyglet_mod=pyglet_mod,
+            imgui_mod=imgui_mod,
+            window=window,
+            stop=stop_loop,
+        )
+        window.push_handlers(on_close=stop_loop)
+
         while running:
             now = time.monotonic()
             ctx.dt = now - prev_time
@@ -190,7 +198,23 @@ def run_pyglet_imgui(
             ctx.frame += 1
             if fps > 0:
                 time.sleep(1 / fps)
+    except BaseException as error:
+        root_error = error
     finally:
-        renderer.shutdown()
-        imgui_mod.destroy_context(gui_context)
-        window.close()
+        errors = CleanupErrors(initial_error=root_error)
+        context_active = False
+        if renderer is not None and window is not None:
+            try:
+                context_active = activate_pyglet_window_context(window)
+            except BaseException as error:
+                errors.record(error, "activate manual ImGui context")
+        if renderer is not None and context_active:
+            errors.attempt(renderer.shutdown, "close manual ImGui renderer")
+        if gui_context is not None:
+            errors.attempt(
+                lambda: imgui_mod.destroy_context(gui_context),
+                "close manual ImGui context",
+            )
+        if window is not None:
+            errors.attempt(lambda: close_pyglet_window(window), "close manual window")
+        errors.raise_if_any()

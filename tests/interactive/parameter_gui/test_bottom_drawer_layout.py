@@ -9,6 +9,8 @@ import pytest
 
 from grafix.core.parameters import ParamStore
 from grafix.interactive.parameter_gui import gui as gui_module
+from grafix.interactive.parameter_gui.midi_learn import MidiLearnState
+from grafix.interactive.parameter_gui.parameter_filter import ParameterFilterState
 from grafix.interactive.parameter_gui.store_bridge import (
     parameter_table_view_for_store,
 )
@@ -23,7 +25,10 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
 
     imgui = pytest.importorskip("imgui")
     parameter_gui = cast(Any, initialized_parameter_gui)
-    context = parameter_gui._context
+    backend = parameter_gui._backend
+    context = backend._context
+    owned_window = backend._window
+    owned_renderer = backend._renderer
     imgui.set_current_context(context)
     try:
         io = imgui.get_io()
@@ -54,28 +59,23 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
         parameter_gui._closed = False
         parameter_gui._prev_time = time.monotonic()
         parameter_gui._imgui = imgui
-        parameter_gui._context = context
         parameter_gui._custom_font_path = None
         parameter_gui._window = window
-        parameter_gui._renderer = renderer
+        backend._window = window
+        backend._renderer = renderer
         parameter_gui._monitor = monitor
         parameter_gui._transport = None
         parameter_gui._history = None
         parameter_gui._snapshot_slots = None
         parameter_gui._midi_session = None
-        parameter_gui._range_edit_mode = None
-        parameter_gui._range_edit_session = None
         parameter_gui._store = ParamStore()
-        parameter_gui._parameter_filter_state = gui_module.ParameterFilterState()
-        parameter_gui._parameter_error_keys = frozenset()
-        parameter_gui._favorite_parameter_keys = frozenset()
-        parameter_gui._parameter_table_view = None
-        parameter_gui._parameter_help_row = None
-        parameter_gui._midi_learn_state = cast(
-            Any,
-            SimpleNamespace(active_target=None, active_component=None),
-        )
-        parameter_gui._show_inactive_params = False
+        parameter_gui._session.filter_state = ParameterFilterState()
+        parameter_gui._session.error_keys = frozenset()
+        parameter_gui._session.favorite_keys = frozenset()
+        parameter_gui._session.table_view = None
+        parameter_gui._session.help_row = None
+        parameter_gui._session.midi_learn = MidiLearnState()
+        parameter_gui._session.show_inactive_parameters = False
         parameter_gui._title = "Parameters"
         parameter_gui._ui_scale = 1.0
 
@@ -95,7 +95,7 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
         parameter_gui._render_toolbar_area = render_toolbar_area
         parameter_gui._render_midi_clear_notice = lambda: False
         def render_parameter_table_toolbar() -> bool:
-            parameter_gui._parameter_table_view = parameter_table_view_for_store(
+            parameter_gui._session.table_view = parameter_table_view_for_store(
                 parameter_gui._store,
                 show_inactive_params=False,
             )
@@ -106,7 +106,7 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
         parameter_gui._maybe_preview_range_edit_by_midi = lambda: None
         parameter_gui._render_range_edit_mode = lambda: False
 
-        def render_table(*_args: object, **_kwargs: object) -> bool:
+        def render_table(*_args: object, **_kwargs: object) -> object:
             position = imgui.get_window_position()
             table_rects.append(
                 (
@@ -116,7 +116,10 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
                     float(imgui.get_window_height()),
                 )
             )
-            return False
+            return SimpleNamespace(
+                changed=False,
+                midi_learn_state=parameter_gui._session.midi_learn,
+            )
 
         monkeypatch.setattr(gui_module, "render_store_parameter_table", render_table)
         monkeypatch.setattr(
@@ -178,7 +181,7 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
             (quiet, None),
         ):
             monitor.current = snapshot
-            parameter_gui._parameter_help_row = help_row
+            parameter_gui._session.help_row = help_row
             parameter_gui.draw_frame()
 
         assert root_content_widths == pytest.approx(
@@ -189,3 +192,5 @@ def test_dynamic_drawer_content_does_not_move_or_narrow_parameter_table(
         assert root_scroll_maxima == pytest.approx([0.0, 0.0, 0.0])
     finally:
         imgui.set_current_context(context)
+        backend._window = owned_window
+        backend._renderer = owned_renderer

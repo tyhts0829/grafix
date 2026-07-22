@@ -53,9 +53,9 @@ def initialized_parameter_gui(
     renderer = _ParameterGuiRenderer()
     with monkeypatch.context() as initialization_patch:
         initialization_patch.setattr(
-            gui_module,
-            "create_imgui_pyglet_renderer",
-            lambda _window: renderer,
+            gui_module.PygletImguiBackend,
+            "_create_renderer",
+            staticmethod(lambda _window: renderer),
         )
         initialization_patch.setattr(
             ParameterGUI,

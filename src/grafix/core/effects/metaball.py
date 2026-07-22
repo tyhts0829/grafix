@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 import numpy as np
 from numba import (  # type: ignore[attr-defined, import-untyped]
@@ -11,23 +12,26 @@ from numba import (  # type: ignore[attr-defined, import-untyped]
     prange,
 )
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.preview_quality import current_preview_quality
 from grafix.core.realized_geometry import GeomTuple
-from .util import (
+from grafix.core.geometry_kernels.grid import (
     DEFAULT_MAX_GRID_CELLS,
     GridSpec,
-    PlanarRing,
-    PlanarFrame,
-    extract_planar_rings,
-    marching_squares_loops,
-    pack_planar_rings,
-    pack_polylines,
-    planarity_threshold,
-    scanline_evenodd_mask,
+    plan_grid_from_bbox,
 )
+from grafix.core.geometry_kernels.marching import marching_squares_loops
+from grafix.core.geometry_kernels.packed import pack_polylines
+from grafix.core.geometry_kernels.planar import (
+    PlanarFrame,
+    PlanarRing,
+    extract_planar_rings,
+    pack_planar_rings,
+    planarity_threshold,
+)
+from grafix.core.geometry_kernels.raster import scanline_evenodd_mask
 
 _AUTO_CLOSE_THRESHOLD_DEFAULT = 1e-3
 MAX_GRID_POINTS = DEFAULT_MAX_GRID_CELLS
@@ -40,6 +44,36 @@ _PACKED_FIELD_SEGMENT_BYTES = 5 * np.dtype(np.float64).itemsize
 _PACKED_FIELD_OFFSET_BYTES = np.dtype(np.int64).itemsize
 _PACKED_FIELD_MAX_SEGMENT_SCRATCH_BYTES = 8 * 1024 * 1024
 _PACKED_FIELD_MAX_ROW_SCRATCH_BYTES = 8 * 1024 * 1024
+
+
+def _grid_spec_from_bbox(
+    mins: np.ndarray,
+    maxs: np.ndarray,
+    *,
+    pitch: float,
+    padding: float,
+    max_cells: int,
+    overflow: Literal["reject", "coarsen"],
+) -> GridSpec | None:
+    plan = plan_grid_from_bbox(
+        mins,
+        maxs,
+        pitch=pitch,
+        padding=padding,
+        max_cells=max_cells,
+        overflow=overflow,
+    )
+    diagnostic = plan.diagnostic
+    if diagnostic is not None:
+        emit_operation_diagnostic(
+            op="GridSpec.from_bbox",
+            original_value=diagnostic.original_value,
+            effective_value=diagnostic.effective_value,
+            reason=diagnostic.reason,
+            severity=diagnostic.severity,
+        )
+    return plan.spec
+
 
 metaball_meta = {
     "radius": ParamMeta(
@@ -800,7 +834,7 @@ def metaball(
         )
     else:
         draft_grid_limit = DRAFT_MAX_GRID_POINTS
-    grid = GridSpec.from_bbox(
+    grid = _grid_spec_from_bbox(
         mins,
         maxs,
         pitch=pitch,

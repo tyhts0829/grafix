@@ -6,18 +6,18 @@ import math
 
 import numpy as np
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 from grafix.core.resource_budget import ensure_geometry_output
 
-from .util import (
+from grafix.core.geometry_kernels.packed import empty_packed_geometry
+from grafix.core.geometry_kernels.planar import (
     PlanarFrame,
-    RESAMPLE_CLOSED_DISTANCE_EPS,
     canonical_planar_frame,
-    empty_geom,
     planarity_threshold,
 )
+from grafix.core.geometry_kernels.resample import RESAMPLE_CLOSED_DISTANCE_EPS
 
 _QUAD_SEGS = 16
 _MITRE_LIMIT = 5.0
@@ -265,7 +265,7 @@ def _pack_output(
 ) -> GeomTuple:
     line_count = len(generated) + len(originals)
     if line_count == 0:
-        return empty_geom()
+        return empty_packed_geometry()
 
     total_vertices = sum(int(line.shape[0]) for line in generated) + sum(
         int(line.shape[0]) for line in originals

@@ -7,9 +7,10 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from grafix.api import G
+from grafix.api import G, P
 from grafix.core.geometry import Geometry
 from grafix.core.layer import Layer, LayerStyleDefaults
+from grafix.core.operation_schema import ParameterOpSchema
 from grafix.core.parameters import ParamStore, parameter_context
 from grafix.core.parameters.context import parameter_context_from_snapshot
 from grafix.core.parameters.layer_style import (
@@ -20,6 +21,10 @@ from grafix.core.parameters.layer_style import (
 )
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.core.pipeline import realize_scene
+from grafix.core.preset_catalog import (
+    PresetCatalogBuilder,
+    PresetDeclaration,
+)
 from grafix.core.realize import RealizeSession
 
 
@@ -39,8 +44,11 @@ def test_realize_scene_normalizes_and_realizes_layers() -> None:
     assert colors == [(0.1, 0.2, 0.3), (0.1, 0.2, 0.3)]
     assert thicknesses == [0.05, 0.05]
     assert all(isinstance(item.realized.coords, np.ndarray) for item in realized_layers)
-    assert [item.cache_key[0] for item in realized_layers] == [g1.id, g2.id]
-    assert realized_layers[0].cache_key[1] == realized_layers[1].cache_key[1]
+    assert [item.cache_key.geometry_id for item in realized_layers] == [g1.id, g2.id]
+    assert (
+        realized_layers[0].cache_key.evaluation
+        == realized_layers[1].cache_key.evaluation
+    )
 
 
 def test_realize_scene_reuses_explicit_session_between_frames() -> None:
@@ -58,13 +66,50 @@ def test_realize_scene_reuses_explicit_session_between_frames() -> None:
     assert second[0].cache_key == first[0].cache_key
 
 
+def test_realize_scene_binds_explicit_preset_snapshot() -> None:
+    calls: list[str] = []
+
+    def local_preset() -> Geometry:
+        calls.append("called")
+        return Geometry.create(op="concat")
+
+    builder = PresetCatalogBuilder()
+    builder.register(
+        PresetDeclaration(
+            name="pipeline_local_probe",
+            func=local_preset,
+            invoker=lambda *_args, **_kwargs: local_preset(),
+            schema=ParameterOpSchema(
+                meta={},
+                defaults={},
+                param_order=(),
+                ui_visible={},
+            ),
+        )
+    )
+    presets = builder.freeze()
+    defaults = LayerStyleDefaults(color=(0.0, 0.0, 0.0), thickness=0.01)
+
+    with RealizeSession() as session:
+        layers = realize_scene(
+            lambda _t: P.pipeline_local_probe(),
+            t=0.0,
+            defaults=defaults,
+            session=session,
+            presets=presets,
+        )
+
+    assert calls == ["called"]
+    assert len(layers) == 1
+
+
 @pytest.mark.parametrize(
     ("changes", "error"),
     [
         ({"layer": object()}, TypeError),
         ({"realized": object()}, TypeError),
         ({"cache_key": []}, TypeError),
-        ({"cache_key": ("other", (0, 0))}, ValueError),
+        ({"cache_key": ("other", (0, 0))}, TypeError),
         ({"cache_key": ("placeholder", (True, 0))}, TypeError),
         ({"color": [0.0, 0.0, 0.0]}, TypeError),
         ({"thickness": "0.1"}, TypeError),

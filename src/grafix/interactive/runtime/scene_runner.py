@@ -6,7 +6,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
+from grafix.core.authoring_definitions import AuthoringDefinitionsSnapshot
+from grafix.core.authoring_loader import authoring_definitions_for_draw
+from grafix.core.evaluation_context import EvaluationContext, EvaluationResources
 from grafix.core.layer import Layer, LayerStyleDefaults, resolve_layer_style
+from grafix.core.operation_catalog import OperationCatalog
 from grafix.core.operation_diagnostics import (
     OperationDiagnostic,
     OperationDiagnosticBuffer,
@@ -22,18 +26,88 @@ from grafix.core.parameters import (
 )
 from grafix.core.parameters.layer_style import observe_and_apply_layer_style
 from grafix.core.pipeline import RealizedLayer, realize_scene
-from grafix.core.realize import RealizeSession
-from grafix.core.preview_quality import PreviewQuality, preview_quality_context
+from grafix.core.realize import RealizeCacheStore, RealizeSession
+from grafix.core.preview_quality import PreviewQuality
 from grafix.core.resource_budget import ResourceLimitError
 from grafix.core.runtime_limits import (
     DEFAULT_RUNTIME_LIMIT_PROFILES,
     RuntimeLimitProfiles,
 )
+from grafix.core.runtime_config import RuntimeConfig
 from grafix.core.scene import SceneItem
 from grafix.core.value_validation import exact_integer, finite_real
 from grafix.interactive.runtime.mp_draw import MpDraw
 from grafix.interactive.runtime.perf import PerfCollector
-from grafix.interactive.runtime.diagnostics import DiagnosticCenter, DiagnosticEvent
+from grafix.interactive.diagnostics import DiagnosticCenter, DiagnosticEvent
+
+
+def _make_evaluation_generation(
+    definitions: AuthoringDefinitionsSnapshot,
+    *,
+    config: RuntimeConfig,
+    profiles: RuntimeLimitProfiles,
+    cache_store: RealizeCacheStore,
+    profiler: PerfCollector,
+) -> tuple[
+    OperationCatalog,
+    dict[PreviewQuality, EvaluationContext],
+    EvaluationResources,
+    dict[PreviewQuality, RealizeSession],
+]:
+    """一つの immutable catalog generation と子 session を構築する。"""
+
+    if type(definitions) is not AuthoringDefinitionsSnapshot:
+        raise TypeError("definitions は exact AuthoringDefinitionsSnapshot です")
+    catalog = definitions.operations
+    qualities: tuple[PreviewQuality, PreviewQuality] = ("draft", "final")
+    contexts: dict[PreviewQuality, EvaluationContext] = {
+        quality: EvaluationContext(
+            catalog=catalog,
+            quality=quality,
+            config=config,
+        )
+        for quality in qualities
+    }
+    resources = EvaluationResources()
+    sessions: dict[PreviewQuality, RealizeSession] = {}
+    try:
+        for quality in qualities:
+            limits = profiles.for_quality(quality)
+            sessions[quality] = RealizeSession(
+                context=contexts[quality],
+                resources=resources,
+                cache_store=cache_store,
+                runtime_limits=limits,
+                profiler=profiler,
+            )
+    except BaseException:
+        for session in sessions.values():
+            session.close()
+        resources.close()
+        raise
+    return catalog, contexts, resources, sessions
+
+
+def _close_evaluation_generation(
+    sessions: dict[PreviewQuality, RealizeSession],
+    resources: EvaluationResources,
+) -> None:
+    """子 session を先に全て閉じ、その後 resource owner を一度閉じる。"""
+
+    first_error: BaseException | None = None
+    for session in tuple(dict.fromkeys(sessions.values())):
+        try:
+            session.close()
+        except BaseException as error:  # noqa: BLE001
+            if first_error is None:
+                first_error = error
+    try:
+        resources.close()
+    except BaseException as error:  # noqa: BLE001
+        if first_error is None:
+            first_error = error
+    if first_error is not None:
+        raise first_error
 
 
 class SceneRunner:
@@ -48,6 +122,8 @@ class SceneRunner:
         evaluation_timeout: float | None = 5.0,
         runtime_limit_profiles: RuntimeLimitProfiles = DEFAULT_RUNTIME_LIMIT_PROFILES,
         diagnostic_center: DiagnosticCenter | None = None,
+        effective_config: RuntimeConfig,
+        definitions: AuthoringDefinitionsSnapshot | None = None,
     ) -> None:
         worker_count = exact_integer(n_worker, name="n_worker", minimum=0)
         timeout = (
@@ -71,32 +147,74 @@ class SceneRunner:
         self._worker_count = worker_count
         self._evaluation_timeout = timeout
         self._runtime_limit_profiles = runtime_limit_profiles
-        self._realize_sessions = {
-            "draft": RealizeSession(
-                runtime_limits=runtime_limit_profiles.preview,
-                profiler=perf,
+        if not isinstance(effective_config, RuntimeConfig):
+            raise TypeError("effective_config は RuntimeConfig である必要があります")
+        self._effective_config = effective_config
+        selected_definitions = authoring_definitions_for_draw(
+            draw,
+            config=effective_config,
+            definitions=definitions,
+        )
+        cache_store = RealizeCacheStore(
+            max_bytes=max(
+                runtime_limit_profiles.preview.cpu_cache_bytes,
+                runtime_limit_profiles.final.cpu_cache_bytes,
             ),
-            "final": RealizeSession(
-                runtime_limits=runtime_limit_profiles.final,
-                profiler=perf,
+            max_entries=max(
+                runtime_limit_profiles.preview.cpu_cache_entries,
+                runtime_limit_profiles.final.cpu_cache_entries,
             ),
-        }
+        )
+        try:
+            (
+                operation_catalog,
+                evaluation_contexts,
+                evaluation_resources,
+                realize_sessions,
+            ) = _make_evaluation_generation(
+                selected_definitions,
+                config=effective_config,
+                profiles=runtime_limit_profiles,
+                cache_store=cache_store,
+                profiler=perf,
+            )
+        except BaseException:
+            cache_store.close()
+            raise
+        self._cache_store = cache_store
+        self._definitions = selected_definitions
+        self._operation_catalog = operation_catalog
+        self._evaluation_contexts = evaluation_contexts
+        self._evaluation_resources = evaluation_resources
+        self._realize_sessions = realize_sessions
         self._diagnostic_center = diagnostic_center
         self._last_operation_diagnostics: tuple[OperationDiagnostic, ...] = ()
-        self._mp_draw: MpDraw | None = (
-            MpDraw(
-                draw,
-                n_worker=worker_count,
-                evaluation_timeout=timeout,
-                **(
-                    {"event_callback": perf.record_event}
-                    if perf.enabled
-                    else {}
-                ),
+        try:
+            self._mp_draw: MpDraw | None = (
+                MpDraw(
+                    draw,
+                    n_worker=worker_count,
+                    evaluation_timeout=timeout,
+                    effective_config=self._effective_config,
+                    definitions=selected_definitions,
+                    **(
+                        {"event_callback": perf.record_event}
+                        if perf.enabled
+                        else {}
+                    ),
+                )
+                if worker_count >= 1
+                else None
             )
-            if worker_count >= 1
-            else None
-        )
+        except BaseException:
+            try:
+                _close_evaluation_generation(
+                    self._realize_sessions,
+                    self._evaluation_resources,
+                )
+            finally:
+                self._cache_store.close()
+            raise
         # mp-draw は結果未到着の frame でも前回 scene を再利用して返すため、単なる
         # run() の正常 return だけでは user draw の回復を判定できない。None は
         # 「この呼び出しでは新しい評価結果が無い」を表す。
@@ -126,7 +244,12 @@ class SceneRunner:
         self._last_recording: bool | None = None
         self._last_quality: PreviewQuality | None = None
 
-    def replace_draw(self, draw: Callable[[float], SceneItem]) -> None:
+    def replace_draw(
+        self,
+        draw: Callable[[float], SceneItem],
+        *,
+        definitions: AuthoringDefinitionsSnapshot | None = None,
+    ) -> None:
         """draw callable と background worker 世代を一つの境界で交換する。
 
         新 worker の構築に失敗した場合は現在の callable/worker/last-good frame を
@@ -139,26 +262,60 @@ class SceneRunner:
 
         next_epoch = self._mp_epoch + 1
         replacement: MpDraw | None = None
-        if self._worker_count >= 1:
-            replacement = MpDraw(
-                draw,
-                n_worker=self._worker_count,
-                evaluation_timeout=self._evaluation_timeout,
-                **(
-                    {"event_callback": self._perf.record_event}
-                    if self._perf.enabled
-                    else {}
-                ),
-            )
-            try:
+        next_definitions = authoring_definitions_for_draw(
+            draw,
+            config=self._effective_config,
+            definitions=definitions,
+        )
+        (
+            next_catalog,
+            next_contexts,
+            next_resources,
+            next_sessions,
+        ) = _make_evaluation_generation(
+            next_definitions,
+            config=self._effective_config,
+            profiles=self._runtime_limit_profiles,
+            cache_store=self._cache_store,
+            profiler=self._perf,
+        )
+        try:
+            if self._worker_count >= 1:
+                replacement = MpDraw(
+                    draw,
+                    n_worker=self._worker_count,
+                    evaluation_timeout=self._evaluation_timeout,
+                    effective_config=self._effective_config,
+                    definitions=next_definitions,
+                    **(
+                        {"event_callback": self._perf.record_event}
+                        if self._perf.enabled
+                        else {}
+                    ),
+                )
                 replacement.begin_epoch(next_epoch)
-            except BaseException:
-                replacement.close()
-                raise
+        except BaseException as startup_error:  # noqa: BLE001
+            if replacement is not None:
+                try:
+                    replacement.close()
+                except BaseException:  # noqa: BLE001
+                    pass
+            try:
+                _close_evaluation_generation(next_sessions, next_resources)
+            except BaseException:  # noqa: BLE001
+                pass
+            raise startup_error
 
         previous = self._mp_draw
+        previous_sessions = self._realize_sessions
+        previous_resources = self._evaluation_resources
         self._draw = draw
         self._mp_draw = replacement
+        self._definitions = next_definitions
+        self._operation_catalog = next_catalog
+        self._evaluation_contexts = next_contexts
+        self._evaluation_resources = next_resources
+        self._realize_sessions = next_sessions
         self._mp_epoch = next_epoch
         self._last_merged_mp_success_frame_id = None
         self._last_merged_mp_success_epoch = None
@@ -172,22 +329,36 @@ class SceneRunner:
         self._last_realized_frame_id = self._retained_realized_frame_id
         self._waiting_for_fresh_result = replacement is not None
 
-        if previous is None:
-            return
+        close_errors: list[BaseException] = []
+        if previous is not None:
+            try:
+                previous.close()
+            except BaseException as error:  # noqa: BLE001
+                close_errors.append(error)
         try:
-            previous.close()
-        except Exception as exc:
+            _close_evaluation_generation(
+                previous_sessions,
+                previous_resources,
+            )
+        except BaseException as error:  # noqa: BLE001
+            close_errors.append(error)
+
+        if close_errors:
+            first_close_error = close_errors[0]
             center = self._diagnostic_center
             if center is not None:
                 center.publish(
                     DiagnosticEvent(
                         category="reload",
                         severity="warning",
-                        summary="旧 draw worker の終了に失敗しました",
-                        details=f"{type(exc).__name__}: {exc}",
+                        summary="旧 draw generation の終了に失敗しました",
+                        details=(
+                            f"{type(first_close_error).__name__}: "
+                            f"{first_close_error}"
+                        ),
                         dedupe_key=(
-                            "reload-old-worker-close:"
-                            f"{type(exc).__name__}:{exc}"
+                            "reload-old-generation-close:"
+                            f"{type(first_close_error).__name__}:{first_close_error}"
                         ),
                     )
                 )
@@ -254,6 +425,33 @@ class SceneRunner:
         """直近 evaluation で収集した immutable operation 診断を返す。"""
 
         return self._last_operation_diagnostics
+
+    @property
+    def operation_catalog(self) -> OperationCatalog:
+        """現在の draw generation が所有する immutable catalog。"""
+
+        return self._operation_catalog
+
+    @property
+    def definitions(self) -> AuthoringDefinitionsSnapshot:
+        """現在の draw generation が所有する authoring snapshot。"""
+
+        return self._definitions
+
+    @property
+    def evaluation_contexts(self) -> tuple[EvaluationContext, EvaluationContext]:
+        """draft/final 順の immutable evaluation context を返す。"""
+
+        return (
+            self._evaluation_contexts["draft"],
+            self._evaluation_contexts["final"],
+        )
+
+    @property
+    def cache_store(self) -> RealizeCacheStore:
+        """全 draw generation が共有する bounded CPU cache。"""
+
+        return self._cache_store
 
     def _commit_operation_diagnostics(
         self,
@@ -345,43 +543,40 @@ class SceneRunner:
                 transport_epoch=transport_epoch,
                 quality=quality,
             )
-            with preview_quality_context(quality):
-                with parameter_context(
-                    store, cc_snapshot=cc_snapshot
-                ) as operation_diagnostics:
-                    if quality == "final" or self._mp_draw is None:
-                        realized_layers = self._run_sync(
-                            t,
-                            defaults=defaults,
-                            quality=quality,
-                        )
-                        frame_params = current_frame_params()
-                        if frame_params is not None:
-                            frame_params.complete_effect_chain_observation()
-                        self._last_evaluation_succeeded = True
-                        self._last_output_updated = True
-                        self._last_evaluation_t = float(t)
-                        self._last_realized_t = float(t)
-                        self._last_realized_snapshot_revision = input_snapshot_revision
-                        self._retain_output(
-                            realized_layers,
-                            t=float(t),
-                            snapshot_revision=input_snapshot_revision,
-                            frame_id=None,
-                            source_layers=[
-                                item.layer for item in realized_layers
-                            ],
-                            style_revision=int(store.style_revision),
-                        )
-                        return realized_layers
-                    return self._run_mp(
+            with parameter_context(
+                store, cc_snapshot=cc_snapshot
+            ) as operation_diagnostics:
+                if quality == "final" or self._mp_draw is None:
+                    realized_layers = self._run_sync(
                         t,
-                        snapshot_revision=store.revision,
-                        cc_snapshot=cc_snapshot,
                         defaults=defaults,
                         quality=quality,
+                    )
+                    frame_params = current_frame_params()
+                    if frame_params is not None:
+                        frame_params.complete_effect_chain_observation()
+                    self._last_evaluation_succeeded = True
+                    self._last_output_updated = True
+                    self._last_evaluation_t = float(t)
+                    self._last_realized_t = float(t)
+                    self._last_realized_snapshot_revision = input_snapshot_revision
+                    self._retain_output(
+                        realized_layers,
+                        t=float(t),
+                        snapshot_revision=input_snapshot_revision,
+                        frame_id=None,
+                        source_layers=[item.layer for item in realized_layers],
                         style_revision=int(store.style_revision),
                     )
+                    return realized_layers
+                return self._run_mp(
+                    t,
+                    snapshot_revision=store.revision,
+                    cc_snapshot=cc_snapshot,
+                    defaults=defaults,
+                    quality=quality,
+                    style_revision=int(store.style_revision),
+                )
         except Exception as exc:
             self._last_evaluation_succeeded = False
             self._last_evaluation_t = None
@@ -535,6 +730,7 @@ class SceneRunner:
                 t,
                 defaults,
                 session=self._realize_sessions[quality],
+                presets=self._definitions.presets,
             )
 
     def _run_mp(
@@ -642,6 +838,7 @@ class SceneRunner:
                 t,
                 defaults,
                 session=self._realize_sessions[quality],
+                presets=self._definitions.presets,
             )
         perf.record_event(
             "realize_finished",
@@ -684,14 +881,17 @@ class SceneRunner:
         return realized_layers
 
     def close(self) -> None:
-        """mp-draw worker と realize session を終了する。"""
+        """worker、generation resources、共有 cache の順に終了する。"""
 
         mp_draw = self._mp_draw
         self._mp_draw = None
-        sessions = tuple(dict.fromkeys(self._realize_sessions.values()))
+        sessions = self._realize_sessions
+        resources = self._evaluation_resources
         try:
             if mp_draw is not None:
                 mp_draw.close()
         finally:
-            for session in sessions:
-                session.close()
+            try:
+                _close_evaluation_generation(sessions, resources)
+            finally:
+                self._cache_store.close()

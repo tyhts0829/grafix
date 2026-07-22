@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from grafix.core.parameters.view import ParameterRow
 
+from .catalog import ParameterGuiCatalog, current_parameter_gui_catalog
 from .grouping import GroupId, group_info_for_row
 
 
@@ -33,6 +34,7 @@ class GroupBlockLayout:
 def group_layout_from_rows(
     rows: Sequence[ParameterRow],
     *,
+    catalog: ParameterGuiCatalog | None = None,
     primitive_header_by_group: Mapping[tuple[str, int], str] | None = None,
     layer_style_name_by_site_id: Mapping[str, str] | None = None,
     effect_chain_header_by_id: Mapping[str, str] | None = None,
@@ -41,6 +43,9 @@ def group_layout_from_rows(
 ) -> tuple[GroupBlockLayout, ...]:
     """rows から revision 内で不変な group layout を構築する。"""
 
+    selected_catalog = current_parameter_gui_catalog() if catalog is None else catalog
+    if type(selected_catalog) is not ParameterGuiCatalog:
+        raise TypeError("catalog は exact ParameterGuiCatalog である必要があります")
     out: list[GroupBlockLayout] = []
 
     current_group_id: GroupId | None = None
@@ -68,6 +73,7 @@ def group_layout_from_rows(
     for row_index, row in enumerate(rows):
         info = group_info_for_row(
             row,
+            catalog=selected_catalog,
             primitive_header_by_group=primitive_header_by_group,
             layer_style_name_by_site_id=layer_style_name_by_site_id,
             effect_chain_header_by_id=effect_chain_header_by_id,
@@ -104,11 +110,7 @@ def visible_group_layout(
 
     out: list[GroupBlockLayout] = []
     for block in layout:
-        items = tuple(
-            item
-            for item in block.items
-            if visible_mask[item.row_index]
-        )
+        items = tuple(item for item in block.items if visible_mask[item.row_index])
         if not items:
             continue
         visible_block = (

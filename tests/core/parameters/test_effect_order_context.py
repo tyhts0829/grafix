@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from grafix import E
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.geometry import Geometry
 from grafix.core.parameters.context import (
     current_effect_order_snapshot,

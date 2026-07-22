@@ -3,15 +3,20 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from grafix.core.evaluation_context import current_external_dependency
+from grafix.core.font_resources import FontResources, ResolvedFontLease
 from grafix.devtools.benchmarks.primitive_benchmark import (
     PrimitiveBenchmarkState,
+    primitive_measurement_context,
     primitive_benchmark_cases,
+    run_raw_primitive,
+    setup_primitive_benchmark,
 )
-from grafix.devtools.benchmarks.runner import (
+from grafix.devtools.benchmarks.catalog import (
     case_definitions,
-    run_case_isolated,
     select_case_definitions,
 )
+from grafix.devtools.benchmarks.runner import run_case_isolated
 from grafix.devtools.benchmarks.schema import Metric
 
 _BUILTIN_PRIMITIVES = {
@@ -98,15 +103,16 @@ def test_each_primitive_direct_case_emits_common_metrics_and_hard_contracts(
     assert state.raw_function.__module__ == f"grafix.core.primitives.{primitive}"
     assert state.raw_function.__name__ == primitive
 
-    raw_output = definition.workload(state)
-    assert isinstance(raw_output, tuple)
-    assert len(raw_output) == 2
-    coords, offsets = raw_output
-    assert isinstance(coords, np.ndarray) and coords.flags.writeable
-    assert isinstance(offsets, np.ndarray) and offsets.flags.writeable
+    with primitive_measurement_context(state):
+        raw_output = definition.workload(state)
+        assert isinstance(raw_output, tuple)
+        assert len(raw_output) == 2
+        coords, offsets = raw_output
+        assert isinstance(coords, np.ndarray) and coords.flags.writeable
+        assert isinstance(offsets, np.ndarray) and offsets.flags.writeable
 
-    assert definition.postprocess is not None
-    output = definition.postprocess(state, raw_output)
+        assert definition.postprocess is not None
+        output = definition.postprocess(state, raw_output)
     assert output.value.coords.dtype == np.float32
     assert output.value.offsets.dtype == np.int32
     assert all(isinstance(metric, Metric) for metric in output.metrics)
@@ -123,6 +129,68 @@ def test_each_primitive_direct_case_emits_common_metrics_and_hard_contracts(
         contract.contract_id == f"primitive.{primitive}.exact_checksum"
         for contract in output.contracts
     )
+
+
+def _text_benchmark_state() -> PrimitiveBenchmarkState:
+    case = next(case for case in primitive_benchmark_cases() if case.primitive == "text")
+    return setup_primitive_benchmark(case.parameters(), 20260719)
+
+
+def test_text_measurement_context_binds_lease_and_closes_owner() -> None:
+    state = _text_benchmark_state()
+    owner = state.font_resources
+    lease = state.font_lease
+
+    assert owner is not None
+    assert lease is not None
+    assert not owner.closed
+    with primitive_measurement_context(state):
+        assert current_external_dependency(ResolvedFontLease) is lease
+        output = run_raw_primitive(state)
+        assert isinstance(output, tuple)
+
+    assert owner.closed
+    with pytest.raises(RuntimeError, match="preflight"):
+        current_external_dependency(ResolvedFontLease)
+
+
+def test_text_measurement_context_closes_owner_after_workload_error() -> None:
+    state = _text_benchmark_state()
+    owner = state.font_resources
+    assert owner is not None
+
+    def fail(**_arguments: object) -> tuple[np.ndarray, np.ndarray]:
+        raise RuntimeError("raw text failed")
+
+    state.raw_function = fail
+    with pytest.raises(RuntimeError, match="raw text failed"):
+        with primitive_measurement_context(state):
+            run_raw_primitive(state)
+
+    assert owner.closed
+
+
+def test_text_setup_closes_owner_when_font_resolve_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owners: list[FontResources] = []
+
+    def fail_resolve(
+        owner: FontResources,
+        *_args: object,
+        **_kwargs: object,
+    ) -> ResolvedFontLease:
+        owners.append(owner)
+        raise RuntimeError("font resolve failed")
+
+    monkeypatch.setattr(FontResources, "resolve", fail_resolve)
+    case = next(case for case in primitive_benchmark_cases() if case.primitive == "text")
+
+    with pytest.raises(RuntimeError, match="font resolve failed"):
+        setup_primitive_benchmark(case.parameters(), 20260719)
+
+    assert len(owners) == 1
+    assert owners[0].closed
 
 
 def test_primitive_case_runs_warm_in_isolated_process() -> None:

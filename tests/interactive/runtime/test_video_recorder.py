@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from grafix.core.runtime_config import set_config_path
 from grafix.interactive.runtime import video_recorder
 from grafix.interactive.runtime.video_recorder import (
     VideoRecorder,
@@ -20,20 +19,15 @@ def test_default_video_output_path_uses_data_dir_and_script_stem(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
-    set_config_path(None)
-
     def draw(t: float) -> None:
         return None
 
-    try:
-        path = default_video_output_path(draw)
-        assert path.parts[0] == "data"
-        assert path.parts[1] == "output"
-        assert path.parts[2] == "video"
-        assert path.name == f"{Path(__file__).stem}.mp4"
-        assert path.suffix == ".mp4"
-    finally:
-        set_config_path(None)
+    path = default_video_output_path(draw)
+    assert path.parts[0] == "data"
+    assert path.parts[1] == "output"
+    assert path.parts[2] == "video"
+    assert path.name == f"{Path(__file__).stem}.mp4"
+    assert path.suffix == ".mp4"
 
 
 @pytest.mark.parametrize("ext", [1, None, b"mp4"])

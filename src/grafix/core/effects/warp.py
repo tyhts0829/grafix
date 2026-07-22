@@ -16,11 +16,11 @@ from numba import (  # type: ignore[import-untyped, attr-defined]
     prange,
 )
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple, concat_geom_tuples
 
-from .util import (
+from grafix.core.geometry_kernels.planar import (
     PlanarFrame,
     extract_planar_rings,
     pack_planar_rings,

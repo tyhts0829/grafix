@@ -1,27 +1,21 @@
-"""operation selector の catalog metadata と公開表示 identity を提供する。"""
+"""immutable operation catalog から selector schema だけを合成する。"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from difflib import get_close_matches
-from typing import Any, Literal, TypeAlias
-from weakref import WeakKeyDictionary
+from threading import RLock
+from types import MappingProxyType
+from typing import Any, Literal, cast
 
-from .builtins import (
-    ensure_builtin_effects_registered,
-    ensure_builtin_primitives_registered,
-)
-from .effect_registry import EffectFunc
-from .op_registry import OpRegistry, OpSpec
-from .parameters.meta import ParamMeta
+from .operation_catalog import OperationCatalog, current_operation_catalog
+from .operation_declaration import OpKind
+from .operation_schema import ParameterOpSchema, UiVisiblePred
 from .parameters.identity import identity_string
-from .primitive_registry import PrimitiveFunc
-from .realized_geometry import RealizedGeometry
-from .value_validation import exact_integer
-
-import grafix.core.effect_registry as effect_registry_module
-import grafix.core.primitive_registry as primitive_registry_module
+from .parameters.meta import ParamMeta
+from .value_validation import exact_integer, exact_string_choice
 
 SelectorKind = Literal["primitive", "effect"]
 
@@ -29,49 +23,92 @@ PRIMITIVE_SELECTOR_OP = "_grafix_select_primitive"
 _EFFECT_SELECTOR_PREFIX = "_grafix_select_effect_"
 _TARGET_ARG = "target"
 _TARGET_PARAM_PREFIX = "@"
-
-_TARGET_META_DESCRIPTION = (
-    "この呼び出しで実行する登録済み operation を選択する。"
-)
+_TARGET_META_DESCRIPTION = "この呼び出しで実行する登録済み operation を選択する。"
 
 
 class _NoSelectableOperationsError(ValueError):
     """指定 kind/arity の selector 候補が 1 件も無いことを表す。"""
 
 
-_SelectorFingerprint: TypeAlias = tuple[tuple[str, int], ...]
+@dataclass(frozen=True, slots=True, order=True)
+class SelectorCatalogFingerprint:
+    """evaluation catalog identity から独立した selector schema fingerprint。"""
+
+    digest: str
+
+    def __post_init__(self) -> None:
+        if type(self.digest) is not str or len(self.digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.digest
+        ):
+            raise ValueError("selector fingerprint は SHA-256 lowercase hex です")
+
+
+@dataclass(frozen=True, slots=True)
+class SelectorSpec:
+    """selector discovery が返す evaluator を持たない immutable schema。"""
+
+    op: str
+    kind: SelectorKind
+    n_inputs: int
+    schema: ParameterOpSchema
+    fingerprint: SelectorCatalogFingerprint
+    target_schema_fingerprints: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        op = identity_string(self.op, name="selector op")
+        kind = cast(
+            SelectorKind,
+            exact_string_choice(
+                self.kind,
+                name="selector kind",
+                choices=("primitive", "effect"),
+            ),
+        )
+        n_inputs = exact_integer(self.n_inputs, name="selector n_inputs", minimum=0)
+        if kind == "primitive" and n_inputs != 0:
+            raise ValueError("primitive selector の n_inputs は 0 です")
+        if kind == "effect" and n_inputs < 1:
+            raise ValueError("effect selector の n_inputs は 1 以上です")
+        if type(self.schema) is not ParameterOpSchema:
+            raise TypeError("schema は exact ParameterOpSchema です")
+        if type(self.fingerprint) is not SelectorCatalogFingerprint:
+            raise TypeError("fingerprint は exact SelectorCatalogFingerprint です")
+        fingerprints: dict[str, str] = {}
+        for raw_name, raw_digest in self.target_schema_fingerprints.items():
+            name = identity_string(raw_name, name="selector target name")
+            if type(raw_digest) is not str or len(raw_digest) != 64:
+                raise ValueError("target schema fingerprint が不正です")
+            fingerprints[name] = raw_digest
+        object.__setattr__(self, "op", op)
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "n_inputs", n_inputs)
+        object.__setattr__(
+            self,
+            "target_schema_fingerprints",
+            MappingProxyType(fingerprints),
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class _SelectorCacheEntry:
-    """selector catalog fingerprint と registry 世代を束ねる。"""
-
-    fingerprint: _SelectorFingerprint
-    spec: OpSpec[Any]
-    revision: int
+    fingerprint: SelectorCatalogFingerprint
+    spec: SelectorSpec
 
 
-_SELECTOR_CACHE: WeakKeyDictionary[
-    object,
-    dict[str, _SelectorCacheEntry],
-] = WeakKeyDictionary()
+_SELECTOR_CACHE: dict[tuple[SelectorKind, int], _SelectorCacheEntry] = {}
+_SELECTOR_CACHE_LOCK = RLock()
 
 
 def validate_effect_selector_n_inputs(n_inputs: object) -> int:
     """effect selector の arity を厳密な正整数として返す。"""
 
-    return exact_integer(
-        n_inputs,
-        name="effect selector の n_inputs",
-        minimum=1,
-    )
+    return exact_integer(n_inputs, name="effect selector の n_inputs", minimum=1)
 
 
 def effect_selector_op(n_inputs: int) -> str:
     """effect arity に対応する private selector op 名を返す。"""
 
-    count = validate_effect_selector_n_inputs(n_inputs)
-    return f"{_EFFECT_SELECTOR_PREFIX}{count}"
+    return f"{_EFFECT_SELECTOR_PREFIX}{validate_effect_selector_n_inputs(n_inputs)}"
 
 
 def selector_kind(op: str) -> SelectorKind | None:
@@ -139,8 +176,7 @@ def selector_search_terms(op: str, arg: str) -> tuple[str, ...]:
     decoded = decode_selector_param_key(arg)
     if decoded is None:
         return (identity_string(arg, name="selector argument"),)
-    target, original_arg = decoded
-    return target, original_arg
+    return decoded
 
 
 def selector_help_identity(op: str, arg: str) -> str | None:
@@ -157,45 +193,13 @@ def selector_help_identity(op: str, arg: str) -> str | None:
     return f"{prefix}.{target}.{original_arg}"
 
 
-def _unreachable_primitive(
-    _args: tuple[tuple[str, Any], ...],
-) -> RealizedGeometry:
-    raise RuntimeError("primitive selector は実 Geometry node として評価できません")
-
-
-def _unreachable_effect(
-    _inputs: Sequence[RealizedGeometry],
-    _args: tuple[tuple[str, Any], ...],
-) -> RealizedGeometry:
-    raise RuntimeError("effect selector は実 Geometry node として評価できません")
-
-
-def _public_specs(
-    registry: OpRegistry[Any],
-    *,
-    n_inputs: int | None,
-) -> tuple[tuple[str, OpSpec[Any]], ...]:
-    return tuple(
-        (name, spec)
-        for name, spec in sorted(registry.items())
-        if not name.startswith("_")
-        and (n_inputs is None or spec.n_inputs == n_inputs)
-    )
-
-
-def _selector_fingerprint(
-    entries: tuple[tuple[str, OpSpec[Any]], ...],
-) -> _SelectorFingerprint:
-    return tuple((name, id(spec)) for name, spec in entries)
-
-
 def _selector_ui_rule(
     *,
     target: str,
     arg: str,
     arg_keys: Mapping[str, str],
-    target_rule: Any,
-):
+    target_rule: UiVisiblePred | None,
+) -> UiVisiblePred:
     activate_key = arg_keys.get("activate")
 
     def visible(values: Mapping[str, Any]) -> bool:
@@ -215,14 +219,46 @@ def _selector_ui_rule(
     return visible
 
 
-def _selector_spec(
+def _selector_entries(
+    catalog: OperationCatalog,
     *,
-    private_op: str,
     kind: SelectorKind,
     n_inputs: int,
-    entries: tuple[tuple[str, OpSpec[Any]], ...],
-) -> OpSpec[Any]:
-    names = tuple(name for name, _spec in entries)
+):
+    return tuple(
+        entry
+        for entry in catalog.public_entries(kind=cast(OpKind, kind))
+        if kind == "primitive" or entry.n_inputs == n_inputs
+    )
+
+
+def _selector_fingerprint(
+    *,
+    kind: SelectorKind,
+    n_inputs: int,
+    entries,
+) -> SelectorCatalogFingerprint:
+    digest = hashlib.sha256()
+    digest.update(b"grafix-selector-catalog-v1\0")
+    digest.update(kind.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(n_inputs).encode("ascii"))
+    for entry in entries:
+        digest.update(b"\0")
+        digest.update(entry.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(entry.schema_fingerprint.digest.encode("ascii"))
+    return SelectorCatalogFingerprint(digest.hexdigest())
+
+
+def _build_selector_spec(
+    *,
+    kind: SelectorKind,
+    n_inputs: int,
+    entries,
+    fingerprint: SelectorCatalogFingerprint,
+) -> SelectorSpec:
+    names = tuple(entry.name for entry in entries)
     if not names:
         arity = "" if kind == "primitive" else f"（n_inputs={n_inputs}）"
         raise _NoSelectableOperationsError(
@@ -239,19 +275,21 @@ def _selector_spec(
     }
     defaults: dict[str, Any] = {_TARGET_ARG: names[0]}
     param_order: list[str] = [_TARGET_ARG]
-    ui_visible: dict[str, Any] = {}
+    ui_visible: dict[str, UiVisiblePred] = {}
 
-    for target, target_spec in entries:
+    for entry in entries:
+        target = entry.name
+        target_schema = entry.schema
         ordered_args = tuple(
-            dict.fromkeys((*target_spec.param_order, *target_spec.meta.keys()))
+            dict.fromkeys((*target_schema.param_order, *target_schema.meta.keys()))
         )
         arg_keys = {
             arg: selector_param_key(target, arg)
             for arg in ordered_args
-            if arg in target_spec.meta
+            if arg in target_schema.meta
         }
         for arg in ordered_args:
-            target_meta = target_spec.meta.get(arg)
+            target_meta = target_schema.meta.get(arg)
             if target_meta is None:
                 continue
             encoded_arg = arg_keys[arg]
@@ -259,145 +297,89 @@ def _selector_spec(
                 target_meta,
                 display_name=target_meta.display_name or str(arg),
             )
-            if arg in target_spec.defaults:
-                defaults[encoded_arg] = target_spec.defaults[arg]
+            if arg in target_schema.defaults:
+                defaults[encoded_arg] = target_schema.defaults[arg]
             param_order.append(encoded_arg)
             ui_visible[encoded_arg] = _selector_ui_rule(
                 target=target,
                 arg=arg,
                 arg_keys=arg_keys,
-                target_rule=target_spec.ui_visible.get(arg),
+                target_rule=target_schema.ui_visible.get(arg),
             )
 
-    evaluator: PrimitiveFunc | EffectFunc
-    evaluator = (
-        _unreachable_primitive
-        if kind == "primitive"
-        else _unreachable_effect
-    )
-    return OpSpec(
-        evaluator=evaluator,
-        meta=meta,
-        defaults=defaults,
-        param_order=tuple(param_order),
-        ui_visible=ui_visible,
-        n_inputs=n_inputs,
+    op = PRIMITIVE_SELECTOR_OP if kind == "primitive" else effect_selector_op(n_inputs)
+    return SelectorSpec(
+        op=op,
         kind=kind,
-        description=f"Grafix internal {kind} selector metadata",
-        doc="DAG 作成時に実 operation へ lower される private selector。",
-        source=__file__,
-        provenance=f"{__name__}.{private_op}",
-        accepted_args=tuple(param_order),
-        required_args=(),
-        accepts_var_kwargs=False,
-        cache_policy="none",
+        n_inputs=n_inputs,
+        schema=ParameterOpSchema(
+            meta=meta,
+            defaults=defaults,
+            param_order=tuple(param_order),
+            ui_visible=ui_visible,
+        ),
+        fingerprint=fingerprint,
+        target_schema_fingerprints={
+            entry.name: entry.schema_fingerprint.digest for entry in entries
+        },
     )
 
 
-def _ensure_selector_spec(
+def selector_spec(
+    catalog: OperationCatalog,
     *,
-    registry: OpRegistry[Any],
-    private_op: str,
     kind: SelectorKind,
     n_inputs: int,
-) -> OpSpec[Any]:
-    cached = _cached_selector_spec(registry, private_op)
-    if cached is not None:
-        return cached
+) -> SelectorSpec:
+    """immutable catalog から evaluator を持たない selector schema を返す。"""
 
-    entries = _public_specs(
-        registry,
-        n_inputs=None if kind == "primitive" else n_inputs,
+    if type(catalog) is not OperationCatalog:
+        raise TypeError("catalog は exact OperationCatalog です")
+    canonical_kind = cast(
+        SelectorKind,
+        exact_string_choice(kind, name="selector kind", choices=("primitive", "effect")),
     )
-    fingerprint = _selector_fingerprint(entries)
-    by_op = _SELECTOR_CACHE.get(registry)
-    previous = None if by_op is None else by_op.get(private_op)
-    if (
-        previous is not None
-        and previous.fingerprint == fingerprint
-        and private_op in registry
-        and registry[private_op] is previous.spec
-    ):
-        assert by_op is not None
-        by_op[private_op] = _SelectorCacheEntry(
-            fingerprint=fingerprint,
-            spec=previous.spec,
-            revision=int(registry.revision),
-        )
-        return previous.spec
-
-    spec = _selector_spec(
-        private_op=private_op,
-        kind=kind,
-        n_inputs=n_inputs,
+    count = exact_integer(n_inputs, name="selector n_inputs", minimum=0)
+    if canonical_kind == "primitive" and count != 0:
+        raise ValueError("primitive selector の n_inputs は 0 です")
+    if canonical_kind == "effect" and count < 1:
+        raise ValueError("effect selector の n_inputs は 1 以上です")
+    entries = _selector_entries(catalog, kind=canonical_kind, n_inputs=count)
+    fingerprint = _selector_fingerprint(
+        kind=canonical_kind,
+        n_inputs=count,
         entries=entries,
     )
-    registry.register(private_op, spec, replace=private_op in registry)
-    if by_op is None:
-        by_op = {}
-        _SELECTOR_CACHE[registry] = by_op
-    by_op[private_op] = _SelectorCacheEntry(
-        fingerprint=fingerprint,
-        spec=spec,
-        revision=int(registry.revision),
-    )
-    return spec
+    cache_key = (canonical_kind, count)
+    with _SELECTOR_CACHE_LOCK:
+        cached = _SELECTOR_CACHE.get(cache_key)
+        if cached is not None and cached.fingerprint == fingerprint:
+            return cached.spec
+        spec = _build_selector_spec(
+            kind=canonical_kind,
+            n_inputs=count,
+            entries=entries,
+            fingerprint=fingerprint,
+        )
+        _SELECTOR_CACHE[cache_key] = _SelectorCacheEntry(fingerprint, spec)
+        return spec
 
 
-def _cached_selector_spec(
-    registry: OpRegistry[Any],
-    private_op: str,
-) -> OpSpec[Any] | None:
-    """registry revision が未変更なら catalog 走査なしで selector spec を返す。"""
+def ensure_primitive_selector_spec() -> SelectorSpec:
+    """current immutable catalog の primitive selector schema を返す。"""
 
-    by_op = _SELECTOR_CACHE.get(registry)
-    cached = None if by_op is None else by_op.get(private_op)
-    if (
-        cached is None
-        or cached.revision != int(registry.revision)
-        or private_op not in registry
-        or registry[private_op] is not cached.spec
-    ):
-        return None
-    return cached.spec
+    return selector_spec(current_operation_catalog(), kind="primitive", n_inputs=0)
 
 
-def ensure_primitive_selector_spec() -> OpSpec[PrimitiveFunc]:
-    """current primitive registry 用の private selector spec を返す。"""
-
-    registry = primitive_registry_module.primitive_registry
-    cached = _cached_selector_spec(registry, PRIMITIVE_SELECTOR_OP)
-    if cached is not None:
-        return cached
-    ensure_builtin_primitives_registered()
-    return _ensure_selector_spec(
-        registry=registry,
-        private_op=PRIMITIVE_SELECTOR_OP,
-        kind="primitive",
-        n_inputs=0,
-    )
-
-
-def ensure_effect_selector_spec(n_inputs: int) -> OpSpec[EffectFunc]:
-    """current effect registry の arity 別 private selector spec を返す。"""
+def ensure_effect_selector_spec(n_inputs: int) -> SelectorSpec:
+    """current immutable catalog の arity 別 effect selector schema を返す。"""
 
     count = validate_effect_selector_n_inputs(n_inputs)
-    private_op = effect_selector_op(count)
-    registry = effect_registry_module.effect_registry
-    cached = _cached_selector_spec(registry, private_op)
-    if cached is not None:
-        return cached
-    ensure_builtin_effects_registered()
-    return _ensure_selector_spec(
-        registry=registry,
-        private_op=private_op,
-        kind="effect",
-        n_inputs=count,
-    )
+    return selector_spec(current_operation_catalog(), kind="effect", n_inputs=count)
 
 
 def ensure_selector_spec_registered(op: str) -> bool:
-    """private selector ``op`` を current process の registry へ登録する。"""
+    """current catalog から selector schema を構築できるか返す（catalog は変更しない）。"""
 
     kind = selector_kind(op)
     try:
@@ -411,8 +393,6 @@ def ensure_selector_spec_registered(op: str) -> bool:
             ensure_effect_selector_spec(n_inputs)
             return True
     except _NoSelectableOperationsError:
-        # 保存済み/worker 由来の selector group は、現在の process に同じ
-        # kind/arity の operation が無くても GUI 全体を壊さず表示する。
         return False
     return False
 
@@ -438,14 +418,13 @@ def validate_selector_target(
     *,
     kind: SelectorKind,
     target: str,
-    selector_spec: OpSpec[Any],
+    selector_spec: SelectorSpec,
     n_inputs: int | None,
 ) -> str:
-    """selector spec の現在候補に target が含まれることを検証する。"""
+    """selector schema の固定済み候補に target が含まれることを検証する。"""
 
     target_s = identity_string(target, name=f"{kind} selector target")
-    target_meta = selector_spec.meta[_TARGET_ARG]
-    choices = tuple(target_meta.choices or ())
+    choices = tuple(selector_spec.schema.meta[_TARGET_ARG].choices or ())
     if target_s.startswith("_") or target_s not in choices:
         raise _target_error(
             kind=kind,
@@ -456,12 +435,22 @@ def validate_selector_target(
     return target_s
 
 
-def validate_effect_selector_target(target: str, *, n_inputs: int) -> str:
-    """effect selector の base target を arity 別 catalog で検証する。"""
+def validate_effect_selector_target(
+    target: str,
+    *,
+    n_inputs: int,
+    catalog: OperationCatalog | None = None,
+) -> str:
+    """effect selector の base target を指定 catalog の schema で検証する。"""
 
     count = validate_effect_selector_n_inputs(n_inputs)
+    selected_catalog = current_operation_catalog() if catalog is None else catalog
     try:
-        selector_spec = ensure_effect_selector_spec(count)
+        spec = selector_spec(
+            selected_catalog,
+            kind="effect",
+            n_inputs=count,
+        )
     except _NoSelectableOperationsError:
         raise _target_error(
             kind="effect",
@@ -471,15 +460,17 @@ def validate_effect_selector_target(target: str, *, n_inputs: int) -> str:
         ) from None
     return validate_selector_target(
         kind="effect",
-        target=identity_string(target, name="effect selector target"),
-        selector_spec=selector_spec,
+        target=target,
+        selector_spec=spec,
         n_inputs=count,
     )
 
 
 __all__ = [
     "PRIMITIVE_SELECTOR_OP",
+    "SelectorCatalogFingerprint",
     "SelectorKind",
+    "SelectorSpec",
     "decode_selector_param_key",
     "effect_selector_op",
     "ensure_effect_selector_spec",
@@ -490,6 +481,7 @@ __all__ = [
     "selector_kind",
     "selector_param_key",
     "selector_search_terms",
+    "selector_spec",
     "validate_effect_selector_n_inputs",
     "validate_effect_selector_target",
     "validate_selector_target",

@@ -14,14 +14,14 @@ from grafix.core.effects.lowpass import (
     MAX_TOTAL_VERTICES,
     lowpass,
 )
-from grafix.core.effects.util import (
+from grafix.core.geometry_kernels.packed import pack_polylines
+from grafix.core.geometry_kernels.resample import (
     RESAMPLE_CLOSED_DISTANCE_EPS,
     ResamplePlan,
     build_gaussian_kernel,
-    pack_polylines,
     resample_polylines,
 )
-from grafix.core.primitive_registry import primitive
+from grafix.core.operation_authoring import primitive
 from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple
 

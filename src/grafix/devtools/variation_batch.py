@@ -8,6 +8,7 @@ from pathlib import Path
 
 from grafix.api.render import ExportFormat, RenderOptions, RenderSession
 from grafix.api.variation_batch import render_variation_batch
+from grafix.core.runtime_config import bind_runtime_config, load_runtime_config
 from grafix.devtools.export_frame import _parameter_source, _resolve_callable
 
 
@@ -102,13 +103,15 @@ def main(argv: list[str] | None = None) -> int:
     """Named variation batch を実行し、partial failure 時は 1 を返す。"""
 
     args = _parse_args(sys.argv[1:] if argv is None else argv)
-    draw = _resolve_callable(args.callable)
+    config = load_runtime_config(args.config)
+    with bind_runtime_config(config):
+        draw = _resolve_callable(args.callable)
     canvas_w, canvas_h = args.canvas
     with RenderSession(
         draw,
         options=RenderOptions(canvas_size=(int(canvas_w), int(canvas_h))),
         parameter_source=_parameter_source(args.parameter_source),
-        config_path=args.config,
+        config=config,
         run_id=args.run_id,
     ) as session:
         result = render_variation_batch(

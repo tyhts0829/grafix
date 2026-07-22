@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from grafix.interactive.parameter_gui.gui import ParameterGUI
-from grafix.interactive.runtime.frame_clock import TransportClock
+from grafix.interactive.transport import TransportClock
 
 
 class _FakeImGui:
@@ -106,12 +106,11 @@ def test_range_edit_shortcuts_ignore_captured_keyboard(
     gui._range_edit_key_r = 82
     gui._range_edit_key_e = 69
     gui._range_edit_key_t = 84
-    gui._range_edit_mode = None
-    gui._range_edit_session = None
+    gui._range_edit_controller.cancel()
 
     gui._on_key_press(82, 0)
     gui._on_key_press(69, 0)
     gui._on_key_press(84, 0)
 
-    assert gui._range_edit_mode is None
-    assert gui._range_edit_session is None
+    assert gui._range_edit_controller.mode is None
+    assert gui._range_edit_controller.session is None

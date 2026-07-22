@@ -1,3 +1,5 @@
+"""P namespace と immutable PresetCatalog の選択規則を検証する。"""
+
 from __future__ import annotations
 
 import importlib.util
@@ -6,16 +8,15 @@ from pathlib import Path
 
 import pytest
 
-import grafix.api.presets as presets_module
-import grafix.core.preset_registry as preset_registry_module
 from grafix import P
 from grafix.api import preset
+from grafix.core.authoring_definitions import RegistrationTarget, registration_scope
 from grafix.core.geometry import Geometry
 from grafix.core.parameters import ParamStore
 from grafix.core.parameters.context import parameter_context
 from grafix.core.parameters.snapshot_ops import store_snapshot
-from grafix.core.preset_registry import PresetRegistry
-from grafix.core.runtime_config import runtime_config, set_config_path
+from grafix.core.preset_catalog import bind_preset_catalog, preset_declaration
+from grafix.core.runtime_config import bind_runtime_config, load_runtime_config
 
 
 def _write_config(*, path: Path, preset_module_dir: Path) -> None:
@@ -34,137 +35,55 @@ def _write_config(*, path: Path, preset_module_dir: Path) -> None:
     )
 
 
-def test_preset_namespace_autoload_raises_on_duplicate_name(tmp_path: Path) -> None:
-    preset_dir = tmp_path / "presets"
-    preset_dir.mkdir(parents=True, exist_ok=True)
-
-    (preset_dir / "a.py").write_text(
-        "\n".join(
-            [
-                "from grafix.api import preset",
-                "from grafix.core.geometry import Geometry",
-                "",
-                '@preset(meta={"x": {"kind": "float"}})',
-                "def dup_logo(*, x: float = 1.0) -> Geometry:",
-                "    return Geometry.create(op='concat')",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    (preset_dir / "b.py").write_text(
-        "\n".join(
-            [
-                "from grafix.api import preset",
-                "from grafix.core.geometry import Geometry",
-                "",
-                '@preset(meta={"x": {"kind": "float"}})',
-                "def dup_logo(*, x: float = 2.0) -> Geometry:",
-                "    return Geometry.create(op='concat')",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    cfg_path = tmp_path / "config.yaml"
-    _write_config(path=cfg_path, preset_module_dir=preset_dir)
-
-    set_config_path(cfg_path)
-    try:
-        with pytest.raises(ValueError, match=r"dup_logo"):
-            _ = P.dup_logo
-    finally:
-        set_config_path(None)
-
-
-def test_preset_namespace_autoload_makes_preset_available(tmp_path: Path) -> None:
-    preset_dir = tmp_path / "presets"
-    preset_dir.mkdir(parents=True, exist_ok=True)
-
-    (preset_dir / "ok.py").write_text(
-        "\n".join(
-            [
-                "from grafix.api import preset",
-                "from grafix.core.geometry import Geometry",
-                "",
-                '@preset(meta={"x": {"kind": "float"}})',
-                "def ok_logo(*, x: float = 1.0) -> Geometry:",
-                "    return Geometry.create(op='concat', params={'x': float(x)})",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    cfg_path = tmp_path / "config.yaml"
-    _write_config(path=cfg_path, preset_module_dir=preset_dir)
-
-    set_config_path(cfg_path)
-    try:
-        fn = P.ok_logo
-        out = fn(x=2.0)
-        assert isinstance(out, Geometry)
-        assert dict(out.args)["x"] == 2.0
-
-        store = ParamStore()
-        with parameter_context(store=store, cc_snapshot=None):
-            _ = fn(x=3.0)
-
-        snap = store_snapshot(store)
-        ok_args = {k.arg for k in snap.keys() if k.op == "preset.ok_logo"}
-        assert ok_args == {"activate", "x"}
-    finally:
-        set_config_path(None)
-
-
-def test_preset_autoload_skips_source_already_loaded_under_an_alias(
-    monkeypatch: pytest.MonkeyPatch,
+def test_preset_namespace_does_not_implicitly_autoload_config_modules(
     tmp_path: Path,
 ) -> None:
     preset_dir = tmp_path / "presets"
-    preset_dir.mkdir(parents=True, exist_ok=True)
-    module_path = preset_dir / "direct_demo.py"
-    module_path.write_text(
-        "\n".join(
-            [
-                "from grafix.api import preset",
-                "from grafix.core.geometry import Geometry",
-                "",
-                '@preset(meta={"x": {"kind": "float"}})',
-                "def direct_demo(*, x: float = 1.0) -> Geometry:",
-                "    return Geometry.create(op='concat', params={'x': float(x)})",
-                "",
-            ]
-        ),
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "implicit.py").write_text(
+        "from grafix.api import preset\n"
+        "from grafix.core.geometry import Geometry\n"
+        "@preset(meta={})\n"
+        "def implicit_catalog_preset():\n"
+        "    return Geometry.create(op='concat')\n",
         encoding="utf-8",
     )
-
-    isolated = PresetRegistry()
-    monkeypatch.setattr(preset_registry_module, "preset_registry", isolated)
-    monkeypatch.setattr(presets_module, "_AUTOLOAD_KEY", None)
-
-    spec = importlib.util.spec_from_file_location(
-        "direct_preset_demo",
-        module_path,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, spec.name, module)
-    spec.loader.exec_module(module)
-    assert isolated.revision == 1
-
     cfg_path = tmp_path / "config.yaml"
     _write_config(path=cfg_path, preset_module_dir=preset_dir)
-    set_config_path(cfg_path)
-    try:
-        presets_module._autoload_preset_modules(runtime_config())
-    finally:
-        set_config_path(None)
 
-    assert isolated.revision == 1
-    assert isolated["preset.direct_demo"].func is module.direct_demo
+    with bind_runtime_config(load_runtime_config(cfg_path)):
+        with pytest.raises(AttributeError, match="implicit_catalog_preset"):
+            _ = P.implicit_catalog_preset
+
+
+def test_explicit_module_load_registers_only_into_the_scoped_candidate(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "explicit.py"
+    module_path.write_text(
+        "from grafix.api import preset\n"
+        "from grafix.core.geometry import Geometry\n"
+        "@preset(meta={'x': {'kind': 'float'}})\n"
+        "def explicit_catalog_preset(*, x: float = 1.0):\n"
+        "    return Geometry.create(op='concat', params={'x': x})\n",
+        encoding="utf-8",
+    )
+    spec = importlib.util.spec_from_file_location("explicit_catalog_preset_module", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    target = RegistrationTarget()
+    with registration_scope(target):
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(spec.name, None)
+
+    with pytest.raises(AttributeError, match="explicit_catalog_preset"):
+        _ = P.explicit_catalog_preset
+    with bind_preset_catalog(target.snapshot().presets):
+        out = P.explicit_catalog_preset(x=2.0)
+    assert dict(out.args)["x"] == 2.0
 
 
 def test_preset_namespace_supports_p_call_name_without_signature() -> None:
@@ -178,17 +97,62 @@ def test_preset_namespace_supports_p_call_name_without_signature() -> None:
 
     assert isinstance(out, Geometry)
     assert dict(out.args)["x"] == 3.0
-
     snap = store_snapshot(store)
     labels = {
         label
-        for k, (_meta, _state, _ordinal, label) in snap.items()
-        if k.op == "preset.b_only_sample"
+        for key, (_meta, _state, _ordinal, label) in snap.items()
+        if key.op == "preset.b_only_sample"
     }
     assert labels == {"Custom"}
-
-    site_ids = {k.site_id for k in snap.keys() if k.op == "preset.b_only_sample"}
+    site_ids = {key.site_id for key in snap if key.op == "preset.b_only_sample"}
     assert any(site_id.endswith("|int:1") for site_id in site_ids)
+
+
+def test_preset_decorator_builds_one_complete_immutable_schema() -> None:
+    target = RegistrationTarget()
+    visible = {"mode": lambda values: values["count"] > 0}
+    with registration_scope(target):
+
+        @preset(
+            meta={
+                "mode": {"kind": "choice", "choices": ("line", "fill")},
+                "count": {"kind": "int"},
+            },
+            ui_visible=visible,
+        )
+        def complete_preset_schema(
+            *, count: int = 2, mode: str = "line"
+        ) -> Geometry:
+            _ = count, mode
+            return Geometry.create(op="concat")
+
+    declaration = preset_declaration(complete_preset_schema)
+    assert target.snapshot().presets["complete_preset_schema"] is declaration
+    assert tuple(declaration.schema.meta) == ("activate", "mode", "count")
+    assert declaration.schema.defaults == {
+        "activate": True,
+        "mode": "line",
+        "count": 2,
+    }
+    assert declaration.schema.param_order == ("activate", "count", "mode")
+    assert declaration.schema.ui_visible["mode"](
+        {"activate": True, "count": 1, "mode": "line"}
+    )
+    with pytest.raises(TypeError):
+        declaration.schema.defaults["count"] = 3  # type: ignore[index]
+
+
+def test_preset_decorator_validates_public_function_defaults() -> None:
+    target = RegistrationTarget()
+    with registration_scope(target):
+        with pytest.raises(TypeError, match="int"):
+
+            @preset(meta={"count": {"kind": "int"}})
+            def invalid_preset_default(*, count: int = True) -> Geometry:
+                _ = count
+                return Geometry.create(op="concat")
+
+    assert "invalid_preset_default" not in target.snapshot().presets
 
 
 def test_preset_namespace_rejects_positional_identity() -> None:
@@ -199,23 +163,20 @@ def test_preset_namespace_rejects_positional_identity() -> None:
 @pytest.mark.parametrize("reserved_name", ["name", "key", "instance_key", "shared"])
 def test_preset_namespace_rejects_identity_as_direct_preset_kwargs(
     reserved_name: str,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        preset_registry_module,
-        "preset_registry",
-        PresetRegistry(),
-    )
+    target = RegistrationTarget()
+    with registration_scope(target):
 
-    @preset(meta={"x": {"kind": "float"}})
-    def b_only_direct_rejection(*, x: float = 1.0) -> Geometry:
-        return Geometry.create(op="concat", params={"x": float(x)})
+        @preset(meta={"x": {"kind": "float"}})
+        def b_only_direct_rejection(*, x: float = 1.0) -> Geometry:
+            return Geometry.create(op="concat", params={"x": float(x)})
 
-    with pytest.raises(
-        TypeError,
-        match=f"unexpected keyword argument '{reserved_name}'",
-    ):
-        P.b_only_direct_rejection(x=2.0, **{reserved_name: "reserved"})
+    with bind_preset_catalog(target.snapshot().presets):
+        with pytest.raises(
+            TypeError,
+            match=f"unexpected keyword argument '{reserved_name}'",
+        ):
+            P.b_only_direct_rejection(x=2.0, **{reserved_name: "reserved"})
 
 
 @pytest.mark.parametrize("reserved_name", ["name", "key", "instance_key", "shared", "activate"])
@@ -229,51 +190,56 @@ def test_preset_rejects_every_reserved_name_in_original_signature(
         {"Geometry": Geometry},
         namespace,
     )
-
     with pytest.raises(ValueError, match=reserved_name):
         preset(meta={})(namespace["invalid_reserved"])  # type: ignore[arg-type]
 
 
-def test_preset_registration_is_single_revision_and_duplicate_is_non_mutating(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    isolated = PresetRegistry()
-    monkeypatch.setattr(preset_registry_module, "preset_registry", isolated)
+def test_preset_duplicate_is_atomic_inside_one_candidate() -> None:
+    target = RegistrationTarget()
+    with registration_scope(target):
 
-    @preset(meta={"amount": {"kind": "float"}})
-    def duplicate_contract(amount: float = 1.0) -> Geometry:
-        return Geometry.create(op="concat", params={"amount": amount})
+        @preset(meta={"amount": {"kind": "float"}})
+        def duplicate_contract(amount: float = 1.0) -> Geometry:
+            return Geometry.create(op="concat", params={"amount": amount})
 
-    original = duplicate_contract
-    original_spec = dict(isolated.items())["preset.duplicate_contract"]
-    assert isolated.revision == 1
-    assert isolated["preset.duplicate_contract"].func is original
-    assert P.duplicate_contract is original
+    before = target.snapshot()
 
-    def invalid_duplicate_contract() -> Geometry:
+    def duplicate() -> Geometry:
         return Geometry.create(op="concat")
 
-    invalid_duplicate_contract.__name__ = "duplicate_contract"
-    with pytest.raises(
-        ValueError,
-        match=r"^preset 'duplicate_contract' は既に登録されている$",
-    ):
-        preset(meta={"missing": {"kind": "float"}})(invalid_duplicate_contract)
+    duplicate.__name__ = "duplicate_contract"
+    with registration_scope(target):
+        with pytest.raises(ValueError, match=r"duplicate_contract.*既に登録"):
+            preset(meta={})(duplicate)
 
-    assert isolated.revision == 1
-    assert dict(isolated.items())["preset.duplicate_contract"] is original_spec
-    assert isolated["preset.duplicate_contract"].func is original
+    after = target.snapshot()
+    assert after.presets["duplicate_contract"] is before.presets["duplicate_contract"]
 
 
-def test_preset_namespace_unknown_error_is_unchanged(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        preset_registry_module,
-        "preset_registry",
-        PresetRegistry(),
-    )
+def test_two_catalogs_can_own_the_same_preset_name() -> None:
+    first = RegistrationTarget()
+    second = RegistrationTarget()
 
+    def scene_a() -> Geometry:
+        return Geometry.create(op="concat", params={"value": 1})
+
+    def scene_b() -> Geometry:
+        return Geometry.create(op="concat", params={"value": 2})
+
+    scene_a.__name__ = scene_b.__name__ = "same_catalog_preset"
+    with registration_scope(first):
+        preset(meta={})(scene_a)
+    with registration_scope(second):
+        preset(meta={})(scene_b)
+
+    with bind_preset_catalog(first.snapshot().presets):
+        first_value = dict(P.same_catalog_preset().args)["value"]
+    with bind_preset_catalog(second.snapshot().presets):
+        second_value = dict(P.same_catalog_preset().args)["value"]
+    assert (first_value, second_value) == (1, 2)
+
+
+def test_preset_namespace_unknown_error_is_stable() -> None:
     with pytest.raises(
         AttributeError,
         match=r"^未登録の preset: 'missing_contract'$",
@@ -288,26 +254,3 @@ def test_preset_decorator_rejects_empty_callable_name() -> None:
     unnamed.__name__ = ""
     with pytest.raises(ValueError, match="空でない文字列"):
         preset(meta={})(unnamed)
-
-
-def test_preset_namespace_passes_one_resolved_config_to_autoload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = object()
-    observed: list[object] = []
-    monkeypatch.setattr(
-        preset_registry_module,
-        "preset_registry",
-        PresetRegistry(),
-    )
-    monkeypatch.setattr(presets_module, "runtime_config", lambda: config)
-    monkeypatch.setattr(
-        presets_module,
-        "_autoload_preset_modules",
-        lambda cfg: observed.append(cfg),
-    )
-
-    with pytest.raises(AttributeError, match="missing_config_contract"):
-        _ = P.missing_config_contract
-
-    assert observed == [config]

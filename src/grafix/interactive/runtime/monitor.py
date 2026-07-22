@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
 import time
 
@@ -18,115 +17,18 @@ from grafix.core.value_validation import (
     finite_real,
 )
 
-from .diagnostics import DiagnosticAction, DiagnosticCenter, DiagnosticEvent
-from .perf import PerfSnapshot
+from grafix.interactive.diagnostics import (
+    DiagnosticAction,
+    DiagnosticCenter,
+    DiagnosticEvent,
+)
+from grafix.interactive.telemetry import MonitorSnapshot, PerfSnapshot
 
 
 def _optional_string(value: object, *, name: str) -> str | None:
     if value is None:
         return None
     return exact_string(value, name=name)
-
-
-@dataclass(frozen=True, slots=True)
-class MonitorSnapshot:
-    """Parameter GUI に表示する監視値のスナップショット。"""
-
-    fps: float
-    cpu_percent: float
-    rss_mb: float
-    vertices: int
-    lines: int
-    frame_error: str | None = None
-    transport_t: float = 0.0
-    transport_requested_t: float = 0.0
-    transport_waiting: bool = False
-    transport_speed: float = 1.0
-    transport_recording: bool = False
-    capture_request_count: int = 0
-    capture_request_limit: int = 0
-    capture_retained_bytes: int = 0
-    capture_byte_limit: int = 0
-    capture_notice: str | None = None
-    diagnostics: tuple[DiagnosticEvent, ...] = ()
-    autosave_status: str = "clean"
-    autosave_error: str | None = None
-    recovered_session: bool = False
-    profiler: PerfSnapshot | None = None
-
-    def __post_init__(self) -> None:
-        for field_name in ("fps", "cpu_percent", "rss_mb"):
-            object.__setattr__(
-                self,
-                field_name,
-                finite_real(
-                    getattr(self, field_name),
-                    name=field_name,
-                    minimum=0.0,
-                ),
-            )
-        for field_name in (
-            "vertices",
-            "lines",
-            "capture_request_count",
-            "capture_request_limit",
-            "capture_retained_bytes",
-            "capture_byte_limit",
-        ):
-            object.__setattr__(
-                self,
-                field_name,
-                exact_integer(
-                    getattr(self, field_name),
-                    name=field_name,
-                    minimum=0,
-                ),
-            )
-        for field_name in ("transport_t", "transport_requested_t"):
-            object.__setattr__(
-                self,
-                field_name,
-                finite_real(getattr(self, field_name), name=field_name),
-            )
-        object.__setattr__(
-            self,
-            "transport_speed",
-            finite_real(
-                self.transport_speed,
-                name="transport_speed",
-                minimum=0.0,
-                minimum_inclusive=False,
-            ),
-        )
-        for field_name in (
-            "transport_waiting",
-            "transport_recording",
-            "recovered_session",
-        ):
-            exact_bool(getattr(self, field_name), name=field_name)
-        for field_name in (
-            "frame_error",
-            "capture_notice",
-            "autosave_error",
-        ):
-            _optional_string(getattr(self, field_name), name=field_name)
-        exact_string_choice(
-            self.autosave_status,
-            name="autosave_status",
-            choices=("clean", "dirty", "saving", "failed"),
-        )
-        if not isinstance(self.diagnostics, tuple) or any(
-            not isinstance(event, DiagnosticEvent)
-            for event in self.diagnostics
-        ):
-            raise TypeError(
-                "diagnostics は DiagnosticEvent の tuple である必要があります"
-            )
-        if self.profiler is not None and not isinstance(
-            self.profiler,
-            PerfSnapshot,
-        ):
-            raise TypeError("profiler は PerfSnapshot または None である必要があります")
 
 
 class RuntimeMonitor:

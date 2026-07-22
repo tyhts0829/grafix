@@ -5,10 +5,11 @@ from __future__ import annotations
 import numpy as np
 from numba import njit  # type: ignore[attr-defined, import-untyped]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import empty_geom, round_half_away_from_zero
+from grafix.core.geometry_kernels.grid import round_half_away_from_zero
+from grafix.core.geometry_kernels.packed import empty_packed_geometry
 
 MAX_TOTAL_VERTICES = 10_000_000
 
@@ -307,7 +308,7 @@ def pixelate(
         total_vertices += est_n
 
     if not line_ranges:
-        return empty_geom()
+        return empty_packed_geometry()
 
     offsets_out = np.empty((len(line_ranges) + 1,), dtype=np.int32)
     acc = 0

@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from grafix.interactive.runtime.monitor import MonitorSnapshot
+from grafix.interactive.telemetry import MonitorSnapshot
 
 from .theme import PARAMETER_GUI_PALETTE
 

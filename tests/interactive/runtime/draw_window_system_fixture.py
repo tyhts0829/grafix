@@ -5,16 +5,20 @@ from __future__ import annotations
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 from grafix.api.render import RenderOptions
+from grafix.core.capture_manifest import RecordingManifest
 from grafix.core.parameters import ParamStore
 from grafix.core.pipeline import RealizedLayer
 from grafix.core.runtime_config import runtime_config
 from grafix.core.runtime_limits import RuntimeLimits
+from grafix.core.scene import SceneItem
 from grafix.interactive.gl.index_buffer import LineIndexStats
+from grafix.interactive.runtime import capture_queue as capture_queue_module
 from grafix.interactive.runtime import draw_window_system as draw_window_module
+from grafix.interactive.runtime import recording_session as recording_session_module
 from grafix.interactive.runtime.draw_window_system import DrawWindowSystem
 from grafix.interactive.runtime.export_job_system import (
     ExportJobResult,
@@ -22,8 +26,10 @@ from grafix.interactive.runtime.export_job_system import (
     FrameExportSnapshot,
 )
 from grafix.interactive.runtime.monitor import RuntimeMonitor
+from grafix.interactive.runtime.recording_system import StagedVideoCapture
 
-def _draw(_t: float) -> list[object]:
+
+def _draw(_t: float) -> SceneItem:
     return []
 
 
@@ -61,26 +67,27 @@ class FakeWindow:
         return None
 
 
-class _FakeScreen:
-    def use(self) -> None:
-        return None
-
-
 class FakeRenderer:
     """DrawRenderer の必須描画/lifecycle contract。"""
 
     def __init__(self) -> None:
-        self.ctx = SimpleNamespace(screen=_FakeScreen())
         self.mesh_upload_count = 0
 
     def apply_runtime_limits(self, _limits: RuntimeLimits) -> None:
         return None
 
-    def viewport(self, _width: int, _height: int) -> None:
+    def begin_frame(
+        self,
+        _width: int,
+        _height: int,
+        *,
+        background_color: tuple[float, float, float],
+    ) -> None:
+        del background_color
         return None
 
-    def clear(self, _color: tuple[float, float, float]) -> None:
-        return None
+    def read_frame_rgb24(self, _width: int, _height: int) -> bytes:
+        return b""
 
     def render_layer(self, *_args: object, **_kwargs: object) -> LineIndexStats:
         return LineIndexStats(draw_vertices=0, draw_lines=0)
@@ -153,21 +160,37 @@ class FakeRecording:
     def t(self) -> float:
         return float(self._t)
 
-    def write_frame(self, _screen: object) -> None:
+    def write_frame(self, _frame_rgb24: bytes) -> None:
         return None
 
     def pause_frame(self, _message: str) -> None:
         return None
 
-    def stop(self, *, timeout_s: float | None = None) -> object:
+    def stop(
+        self,
+        *,
+        timeout_s: float,
+        stop_reason: str,
+        abort_reason: str | None,
+    ) -> StagedVideoCapture | None:
         del timeout_s
         self.is_recording = False
-        return SimpleNamespace(
-            path=self._path,
-            t0=self._t,
-            t1=self._t,
-            frame_count=0,
+        output_path = self._path
+        if output_path is None:
+            return None
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        staging_path = output_path.with_name(f".{output_path.name}.recording")
+        staging_path.write_bytes(b"")
+        return StagedVideoCapture(
+            staging_path=staging_path,
+            output_path=output_path,
             framebuffer_size=(800, 800),
+            recording=RecordingManifest(
+                fps=60.0,
+                frame_count=0,
+                stop_reason=stop_reason,
+                abort_reason=abort_reason,
+            ),
         )
 
 
@@ -184,7 +207,7 @@ class FakeSceneRunner:
         self.is_waiting_for_fresh_result = False
 
     def run(self, *args: object, **kwargs: object) -> list[RealizedLayer]:
-        t = float(args[0])
+        t = float(cast(Any, args[0]))
         store = kwargs["store"]
         assert isinstance(store, ParamStore)
         self.last_evaluation_succeeded = True
@@ -196,7 +219,13 @@ class FakeSceneRunner:
         self.is_waiting_for_fresh_result = False
         return []
 
-    def replace_draw(self, _draw_callback: object) -> None:
+    def replace_draw(
+        self,
+        _draw_callback: object,
+        *,
+        definitions: object | None = None,
+    ) -> None:
+        del definitions
         return None
 
     def close(self) -> None:
@@ -229,14 +258,14 @@ def make_draw_window_system(
         )
         stack.enter_context(
             patch.object(
-                draw_window_module,
+                capture_queue_module,
                 "ExportJobSystem",
                 side_effect=lambda *_args, **_kwargs: FakeExportJobs(),
             )
         )
         stack.enter_context(
             patch.object(
-                draw_window_module,
+                recording_session_module,
                 "VideoRecordingSystem",
                 side_effect=lambda *_args, **_kwargs: FakeRecording(),
             )

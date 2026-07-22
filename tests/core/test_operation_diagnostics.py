@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from grafix.core.effects.subdivide import MAX_SUBDIVISIONS, subdivide
-from grafix.core.effects.util import GridSpec
+from grafix.core.effects.isocontour import _grid_spec_from_bbox
+from grafix.core.geometry_kernels.grid import plan_grid_from_bbox
 from grafix.core.operation_diagnostics import (
     current_operation_diagnostics,
     emit_operation_diagnostic,
@@ -88,9 +89,9 @@ def test_subdivide_float32_early_stop_reports_actual_effective_level() -> None:
     assert "minimum segment length stopped" in diagnostic.reason
 
 
-def test_grid_normal_path_has_no_diagnostic() -> None:
+def test_grid_planner_is_pure_on_normal_path() -> None:
     with operation_diagnostic_context() as buffer:
-        grid = GridSpec.from_bbox(
+        plan = plan_grid_from_bbox(
             (0.0, 0.0),
             (2.0, 1.0),
             pitch=1.0,
@@ -98,16 +99,41 @@ def test_grid_normal_path_has_no_diagnostic() -> None:
             overflow="reject",
         )
 
+    grid = plan.spec
     assert grid is not None
+    assert plan.diagnostic is None
     assert buffer.snapshot() == ()
 
 
-def test_grid_reject_emits_one_diagnostic() -> None:
+def test_grid_planner_returns_rejection_without_emitting() -> None:
     with operation_diagnostic_context() as buffer:
-        grid = GridSpec.from_bbox(
+        plan = plan_grid_from_bbox(
             (0.0, 0.0),
             (2.0, 1.0),
             pitch=1.0,
+            max_cells=5,
+            overflow="reject",
+        )
+
+    assert plan.spec is None
+    assert plan.diagnostic is not None
+    assert plan.diagnostic.original_value == (1.0, 6, 5, "reject")
+    assert plan.diagnostic.effective_value is None
+    assert (
+        plan.diagnostic.reason
+        == "requested grid exceeded the cell limit and was rejected"
+    )
+    assert plan.diagnostic.severity == "warning"
+    assert buffer.snapshot() == ()
+
+
+def test_effect_side_grid_wrapper_emits_rejection_diagnostic() -> None:
+    with operation_diagnostic_context() as buffer:
+        grid = _grid_spec_from_bbox(
+            (0.0, 0.0),
+            (2.0, 1.0),
+            pitch=1.0,
+            padding=0.0,
             max_cells=5,
             overflow="reject",
         )
@@ -116,18 +142,26 @@ def test_grid_reject_emits_one_diagnostic() -> None:
     assert len(buffer) == 1
     diagnostic = buffer.snapshot()[0]
     assert diagnostic.op == "GridSpec.from_bbox"
+    assert diagnostic.original_value == (1.0, 6, 5, "reject")
     assert diagnostic.effective_value is None
-    assert "rejected" in diagnostic.reason
+    assert (
+        diagnostic.reason
+        == "requested grid exceeded the cell limit and was rejected"
+    )
+    assert diagnostic.severity == "warning"
 
 
 def test_grid_repeated_non_finite_rejection_is_deduplicated() -> None:
     with operation_diagnostic_context() as buffer:
         for _ in range(2):
             assert (
-                GridSpec.from_bbox(
+                _grid_spec_from_bbox(
                     (0.0, 0.0),
                     (2.0, 1.0),
                     pitch=float("nan"),
+                    padding=0.0,
+                    max_cells=4_000_000,
+                    overflow="reject",
                 )
                 is None
             )
@@ -137,10 +171,11 @@ def test_grid_repeated_non_finite_rejection_is_deduplicated() -> None:
 
 def test_grid_coarsen_emits_one_diagnostic() -> None:
     with operation_diagnostic_context() as buffer:
-        grid = GridSpec.from_bbox(
+        grid = _grid_spec_from_bbox(
             (0.0, 0.0),
             (100.0, 100.0),
             pitch=1.0,
+            padding=0.0,
             max_cells=100,
             overflow="coarsen",
         )
@@ -150,4 +185,5 @@ def test_grid_coarsen_emits_one_diagnostic() -> None:
     diagnostic = buffer.snapshot()[0]
     assert diagnostic.original_value == 1.0
     assert diagnostic.effective_value == grid.pitch
-    assert "coarsened" in diagnostic.reason
+    assert diagnostic.reason == "grid pitch was coarsened to satisfy the cell limit"
+    assert diagnostic.severity == "warning"

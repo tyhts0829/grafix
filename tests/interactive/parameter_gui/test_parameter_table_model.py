@@ -12,7 +12,9 @@ from grafix.core.parameters.meta import ParamMeta
 from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.ui_ops import update_state_from_ui
 from grafix.interactive.parameter_gui import store_bridge
+from grafix.interactive.parameter_gui.catalog import current_parameter_gui_catalog
 from grafix.interactive.parameter_gui.parameter_filter import ParameterFilterState
+from grafix.interactive.parameter_gui.table import TableEdits
 
 
 def _layout_rows(group_layout, model_rows):
@@ -21,6 +23,14 @@ def _layout_rows(group_layout, model_rows):
         for block in group_layout
         for item in block.items
     ]
+
+
+def _table_edits(render_input, rows) -> TableEdits:
+    return TableEdits(
+        rows=tuple(rows),
+        collapsed_headers=render_input.collapsed_headers,
+        midi_learn_state=render_input.midi_learn_state,
+    )
 
 
 def _store_with_rows(count: int) -> tuple[ParamStore, list[FrameParamRecord]]:
@@ -50,13 +60,13 @@ def test_1000_rows_reuse_one_table_model_for_60_frames(monkeypatch) -> None:
     store_bridge.clear_parameter_table_model_cache()
     render_calls = 0
 
-    def fake_render(*, group_layout, model_rows, **_kwargs):
+    def fake_render(render_input, **_kwargs):
         nonlocal render_calls
         render_calls += 1
-        rows = _layout_rows(group_layout, model_rows)
+        rows = _layout_rows(render_input.group_layout, render_input.model_rows)
         assert len(rows) == 1_000
-        assert group_layout is first.group_layout
-        return False, list(rows)
+        assert render_input.group_layout is first.group_layout
+        return _table_edits(render_input, rows)
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
 
@@ -66,13 +76,10 @@ def test_1000_rows_reuse_one_table_model_for_60_frames(monkeypatch) -> None:
             store,
             show_inactive_params=True,
         )
-        assert (
-            store_bridge.render_store_parameter_table(
-                store,
-                table_view=view,
-            )
-            is False
-        )
+        assert not store_bridge.render_store_parameter_table(
+            store,
+            table_view=view,
+        ).changed
 
     assert render_calls == 60
     assert store_bridge.parameter_table_model_build_count() == 1
@@ -84,7 +91,7 @@ def test_1000_rows_reuse_one_table_model_for_60_frames(monkeypatch) -> None:
     assert store_bridge.parameter_table_model_build_count() == 1
 
 
-def test_table_model_patches_value_change_and_rebuilds_for_registry(monkeypatch) -> None:
+def test_table_model_patches_value_change_and_rebuilds_for_catalog_generation() -> None:
     store, records = _store_with_rows(2)
     store_bridge.clear_parameter_table_model_cache()
 
@@ -103,13 +110,10 @@ def test_table_model_patches_value_change_and_rebuilds_for_registry(monkeypatch)
     row_index = second.row_index_by_key[records[0].key]
     assert second.rows[row_index].ui_value == 1.5
 
-    primitive, effect, preset = store_bridge._registry_revision()
-    monkeypatch.setattr(
-        store_bridge,
-        "_registry_revision",
-        lambda: (primitive + 1, effect, preset),
+    third = store_bridge._parameter_table_model_for_store(
+        store,
+        catalog=current_parameter_gui_catalog(),
     )
-    third = store_bridge._parameter_table_model_for_store(store)
     assert third is not second
     assert third.group_layout is not second.group_layout
     assert store_bridge.parameter_table_model_build_count() == 2
@@ -251,15 +255,12 @@ def test_search_index_matches_valid_midi_cc(query: str) -> None:
     assert view.filtered_count == 1
 
 
-def test_unchanged_render_does_not_consume_returned_rows(monkeypatch) -> None:
+def test_unchanged_render_returns_immutable_rows_without_store_change(monkeypatch) -> None:
     store, _records = _store_with_rows(3)
 
-    class RowsThatMustNotBeConsumed:
-        def __iter__(self):
-            raise AssertionError("unchanged rows should not be restored")
-
-    def fake_render(**_kwargs):
-        return False, RowsThatMustNotBeConsumed()
+    def fake_render(render_input, **_kwargs):
+        rows = _layout_rows(render_input.group_layout, render_input.model_rows)
+        return _table_edits(render_input, rows)
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
 
@@ -267,33 +268,30 @@ def test_unchanged_render_does_not_consume_returned_rows(monkeypatch) -> None:
         store,
         show_inactive_params=True,
     )
-    assert (
-        store_bridge.render_store_parameter_table(
-            store,
-            table_view=view,
-        )
-        is False
-    )
+    assert not store_bridge.render_store_parameter_table(
+        store,
+        table_view=view,
+    ).changed
 
 
 def test_changed_render_refreshes_only_value_without_model_rebuild(monkeypatch) -> None:
     store, records = _store_with_rows(1_000)
     store_bridge.clear_parameter_table_model_cache()
 
-    def fake_render(*, group_layout, model_rows, **_kwargs):
-        rows = _layout_rows(group_layout, model_rows)
+    def fake_render(render_input, **_kwargs):
+        rows = _layout_rows(render_input.group_layout, render_input.model_rows)
         updated = list(rows)
         updated[0] = replace(updated[0], ui_value=123.5)
-        return True, updated
+        return _table_edits(render_input, updated)
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
     view = store_bridge.parameter_table_view_for_store(
         store,
         show_inactive_params=True,
     )
-    assert (
-        store_bridge.render_store_parameter_table(store, table_view=view) is True
-    )
+    assert store_bridge.render_store_parameter_table(
+        store, table_view=view
+    ).changed
 
     model = store_bridge._parameter_table_model_for_store(store)
     index = model.row_index_by_key[records[0].key]
@@ -307,12 +305,17 @@ def test_filtered_render_keeps_model_indices_for_layout_and_applies_visible_edit
     store, records = _store_with_rows(3)
     store_bridge.clear_parameter_table_model_cache()
 
-    def fake_render(*, group_layout, model_rows, **_kwargs):
-        rows = _layout_rows(group_layout, model_rows)
+    def fake_render(render_input, **_kwargs):
+        rows = _layout_rows(render_input.group_layout, render_input.model_rows)
         assert [row.arg for row in rows] == ["value_0001"]
-        assert model_rows[group_layout[0].items[0].row_index] is rows[0]
+        assert (
+            render_input.model_rows[
+                render_input.group_layout[0].items[0].row_index
+            ]
+            is rows[0]
+        )
         updated = [replace(rows[0], ui_value=99.0)]
-        return True, updated
+        return _table_edits(render_input, updated)
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
     view = store_bridge.parameter_table_view_for_store(
@@ -320,13 +323,10 @@ def test_filtered_render_keeps_model_indices_for_layout_and_applies_visible_edit
         show_inactive_params=True,
         filter_state=ParameterFilterState(query="value_0001"),
     )
-    assert (
-        store_bridge.render_store_parameter_table(
-            store,
-            table_view=view,
-        )
-        is True
-    )
+    assert store_bridge.render_store_parameter_table(
+        store,
+        table_view=view,
+    ).changed
 
     assert store.get_state(records[0].key).ui_value == 0.0
     assert store.get_state(records[1].key).ui_value == 99.0
@@ -572,10 +572,10 @@ def test_favorite_is_view_overlay_and_does_not_rebuild_static_model(
 
     captured_favorite: list[bool] = []
 
-    def fake_render(*, group_layout, model_rows, **_kwargs):
-        rows = _layout_rows(group_layout, model_rows)
+    def fake_render(render_input, **_kwargs):
+        rows = _layout_rows(render_input.group_layout, render_input.model_rows)
         captured_favorite[:] = [bool(row.favorite) for row in rows]
-        return False, list(rows)
+        return _table_edits(render_input, rows)
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
     store_bridge.render_store_parameter_table(

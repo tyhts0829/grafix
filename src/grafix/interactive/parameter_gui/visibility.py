@@ -8,16 +8,11 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from grafix.core.builtins import (
-    ensure_builtin_effect_registered,
-    ensure_builtin_primitive_registered,
-)
-from grafix.core.effect_registry import effect_registry
-from grafix.core.op_registry import UiVisiblePred
+from grafix.core.operation_schema import UiVisiblePred
 from grafix.core.parameters.key import ParameterKey
 from grafix.core.parameters.view import ParameterRow
-from grafix.core.preset_registry import preset_registry
-from grafix.core.primitive_registry import primitive_registry
+
+from .catalog import ParameterGuiCatalog, current_parameter_gui_catalog
 
 _logger = logging.getLogger(__name__)
 
@@ -25,6 +20,7 @@ _logger = logging.getLogger(__name__)
 def active_mask_for_rows(
     rows: Sequence[ParameterRow],
     *,
+    catalog: ParameterGuiCatalog | None = None,
     show_inactive: bool,
     last_effective_by_key: Mapping[ParameterKey, object] | None,
 ) -> list[bool]:
@@ -35,6 +31,10 @@ def active_mask_for_rows(
     - mask は「描画/表示」のみを制御し、値や override を変更しない。
     - 例外時は UI を壊さないため “表示する” に倒す。
     """
+
+    selected_catalog = current_parameter_gui_catalog() if catalog is None else catalog
+    if type(selected_catalog) is not ParameterGuiCatalog:
+        raise TypeError("catalog は exact ParameterGuiCatalog である必要があります")
 
     if bool(show_inactive):
         return [True] * len(rows)
@@ -51,9 +51,7 @@ def active_mask_for_rows(
             v = {}
             values_by_group[group] = v
         key = ParameterKey(op=row.op, site_id=row.site_id, arg=row.arg)
-        v[row.arg] = (
-            row.ui_value if effective is None else effective.get(key, row.ui_value)
-        )
+        v[row.arg] = row.ui_value if effective is None else effective.get(key, row.ui_value)
 
     ui_visible_by_op: dict[str, dict[str, UiVisiblePred]] = {}
 
@@ -70,22 +68,8 @@ def active_mask_for_rows(
         cached = ui_visible_by_op.get(op)
         if cached is not None:
             return cached
-        if (
-            op not in preset_registry
-            and op not in primitive_registry
-            and op not in effect_registry
-        ):
-            ensure_builtin_primitive_registered(op)
-            ensure_builtin_effect_registered(op)
-        rules: Mapping[str, UiVisiblePred]
-        if op in preset_registry:
-            rules = preset_registry[op].ui_visible
-        elif op in primitive_registry:
-            rules = primitive_registry[op].ui_visible
-        elif op in effect_registry:
-            rules = effect_registry[op].ui_visible
-        else:
-            rules = {}
+        entry = selected_catalog.resolve(op)
+        rules: Mapping[str, UiVisiblePred] = {} if entry is None else entry.schema.ui_visible
         ui_visible_by_op[op] = dict(rules)
         return ui_visible_by_op[op]
 
@@ -109,9 +93,7 @@ def active_mask_for_rows(
         try:
             mask.append(bool(pred(values)))
         except Exception as exc:
-            _logger.warning(
-                "ui_visible の評価に失敗: op=%s arg=%s err=%s", op, arg, exc
-            )
+            _logger.warning("ui_visible の評価に失敗: op=%s arg=%s err=%s", op, arg, exc)
             mask.append(True)
 
     return mask

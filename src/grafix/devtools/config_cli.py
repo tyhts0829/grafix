@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from grafix.core.runtime_config import RuntimeConfigReport, runtime_config_report, set_config_path
+from grafix.core.runtime_config import RuntimeConfigReport, load_runtime_config_report
 
 
 def _add_config_path_argument(parser: argparse.ArgumentParser) -> None:
@@ -48,14 +48,11 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     args = _parse_args(argv)
 
-    set_config_path(args.path)
     try:
-        report = runtime_config_report()
+        report = load_runtime_config_report(args.path)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"config invalid: {exc}", file=sys.stderr)
         return 2
-    finally:
-        set_config_path(None)
 
     if args.command == "validate":
         print(f"config valid: {report.active_source}")

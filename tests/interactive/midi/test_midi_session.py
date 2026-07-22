@@ -12,7 +12,7 @@ from grafix.interactive.midi.midi_controller import (
     CcSnapshotLoadResult,
     MidiConnectionError,
 )
-from grafix.interactive.runtime.diagnostics import DiagnosticCenter, DiagnosticEvent
+from grafix.interactive.diagnostics import DiagnosticCenter, DiagnosticEvent
 
 
 class _Controller:

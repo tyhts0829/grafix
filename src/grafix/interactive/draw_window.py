@@ -9,6 +9,7 @@ from pyglet.gl import Config
 from pyglet.window import Window
 
 from grafix.core.render_options import RenderOptions
+from grafix.interactive.pyglet_window_lifecycle import close_pyglet_window
 
 MINIMUM_DRAW_WINDOW_WIDTH = 320
 MINIMUM_DRAW_WINDOW_HEIGHT = 320
@@ -28,5 +29,12 @@ def create_draw_window(options: RenderOptions, *, render_scale: float) -> Window
         caption="Grafix",
         config=config,
     )
-    window.set_minimum_size(MINIMUM_DRAW_WINDOW_WIDTH, MINIMUM_DRAW_WINDOW_HEIGHT)
+    try:
+        window.set_minimum_size(MINIMUM_DRAW_WINDOW_WIDTH, MINIMUM_DRAW_WINDOW_HEIGHT)
+    except BaseException:
+        try:
+            close_pyglet_window(window)
+        except BaseException:
+            pass
+        raise
     return window

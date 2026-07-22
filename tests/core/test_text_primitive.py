@@ -1,23 +1,38 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 import pytest
 
 from grafix.api import G
+from grafix.core.evaluation_context import (
+    EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+    ExternalDependencySnapshot,
+    bind_external_dependency,
+)
 from grafix.core.font_resolver import resolve_font_path
-from grafix.core.primitives import text as text_module
+from grafix.core.font_resources import FontResources, ResolvedFontLease
 from grafix.core.primitives._text_flatten import flatten_recording
 from grafix.core.primitives.text import text as text_impl
 from grafix.core.realize import RealizeError, realize
+from grafix.core.realized_geometry import RealizedGeometry
+from grafix.core.runtime_config import RuntimeConfig, load_runtime_config
 
 
-def _geometry_checksum(value: tuple[np.ndarray, np.ndarray]) -> str:
+def _geometry_checksum(
+    value: tuple[np.ndarray, np.ndarray] | RealizedGeometry,
+) -> str:
+    if type(value) is RealizedGeometry:
+        arrays = (value.coords, value.offsets)
+    else:
+        arrays = value
     digest = hashlib.sha256()
-    digest.update(np.ascontiguousarray(value[0]).view(np.uint8))
-    digest.update(np.ascontiguousarray(value[1]).view(np.uint8))
+    digest.update(np.ascontiguousarray(arrays[0]).view(np.uint8))
+    digest.update(np.ascontiguousarray(arrays[1]).view(np.uint8))
     return digest.hexdigest()
 
 
@@ -30,18 +45,43 @@ def _command_checksum(value: tuple) -> str:
     return digest.hexdigest()
 
 
+@contextmanager
+def _bound_text_font(
+    font: str = "GoogleSans-Regular.ttf",
+    font_index: int = 0,
+    *,
+    config: RuntimeConfig | None = None,
+) -> Iterator[ResolvedFontLease]:
+    with FontResources() as resources:
+        lease = resources.resolve(
+            font,
+            font_index,
+            config=load_runtime_config() if config is None else config,
+        )
+        snapshot = ExternalDependencySnapshot(
+            fingerprint=EMPTY_EXTERNAL_DEPENDENCIES_FINGERPRINT,
+            leases={"text-test-node": lease},
+        )
+        with bind_external_dependency(snapshot, "text-test-node"):
+            yield lease
+
+
 def test_text_representative_glyph_checksums_are_stable() -> None:
-    ascii_compound = text_impl(
-        text="AgOé",
-        font="GoogleSans-Regular.ttf",
-        quality=0.5,
-        scale=10.0,
+    ascii_compound = realize(
+        G.text(
+            text="AgOé",
+            font="GoogleSans-Regular.ttf",
+            quality=0.5,
+            scale=10.0,
+        )
     )
-    japanese = text_impl(
-        text="日本あ",
-        font="NotoSansJP-Regular.ttf",
-        quality=0.5,
-        scale=10.0,
+    japanese = realize(
+        G.text(
+            text="日本あ",
+            font="NotoSansJP-Regular.ttf",
+            quality=0.5,
+            scale=10.0,
+        )
     )
 
     assert (
@@ -55,16 +95,15 @@ def test_text_representative_glyph_checksums_are_stable() -> None:
 
 
 def test_text_compound_glyph_flattened_command_checksum_is_stable() -> None:
-    font_path = resolve_font_path("GoogleSans-Regular.ttf")
-    font = text_module.TEXT_RENDERER.get_font(font_path, 0)
-    commands = text_module.TEXT_RENDERER.get_glyph_commands(
-        char="é",
-        font_path=font_path,
-        font_index=0,
-        flat_seg_len_units=20.0,
-        tt_font=font,
-        cmap=font.getBestCmap(),
-    )
+    with _bound_text_font() as lease:
+        font = lease.renderer.get_font(lease)
+        commands = lease.renderer.get_glyph_commands(
+            char="é",
+            lease=lease,
+            flat_seg_len_units=20.0,
+            tt_font=font,
+            cmap=font.getBestCmap(),
+        )
 
     assert len(commands) == 204
     assert sum(command == "lineTo" for command, _ in commands) == 200
@@ -109,15 +148,11 @@ def test_text_empty_returns_empty_geometry() -> None:
 
 
 def test_text_align_shifts_x() -> None:
-    left = realize(
-        G.text(text="A", font="GoogleSans-Regular.ttf", scale=10.0, text_align="left")
-    )
+    left = realize(G.text(text="A", font="GoogleSans-Regular.ttf", scale=10.0, text_align="left"))
     center = realize(
         G.text(text="A", font="GoogleSans-Regular.ttf", scale=10.0, text_align="center")
     )
-    right = realize(
-        G.text(text="A", font="GoogleSans-Regular.ttf", scale=10.0, text_align="right")
-    )
+    right = realize(G.text(text="A", font="GoogleSans-Regular.ttf", scale=10.0, text_align="right"))
 
     assert left.coords.shape[0] > 0
     assert center.coords.shape[0] > 0
@@ -189,12 +224,8 @@ def test_text_scale_scales_extent() -> None:
 
 
 def test_text_quality_increases_point_count() -> None:
-    low = realize(
-        G.text(text="O", font="GoogleSans-Regular.ttf", scale=10.0, quality=0.0)
-    )
-    high = realize(
-        G.text(text="O", font="GoogleSans-Regular.ttf", scale=10.0, quality=1.0)
-    )
+    low = realize(G.text(text="O", font="GoogleSans-Regular.ttf", scale=10.0, quality=0.0))
+    high = realize(G.text(text="O", font="GoogleSans-Regular.ttf", scale=10.0, quality=1.0))
 
     assert high.coords.shape[0] > low.coords.shape[0]
 
@@ -225,9 +256,7 @@ def _polyline_count(realized) -> int:
 
 
 def test_text_box_width_wraps_increases_y_extent() -> None:
-    base = realize(
-        G.text(text="AAAAA", font="GoogleSans-Regular.ttf", scale=10.0, line_height=1.2)
-    )
+    base = realize(G.text(text="AAAAA", font="GoogleSans-Regular.ttf", scale=10.0, line_height=1.2))
     off = realize(
         G.text(
             text="AAAAA",
@@ -267,9 +296,7 @@ def test_text_box_width_wraps_increases_y_extent() -> None:
     assert off.coords.shape == base.coords.shape
     assert off.offsets.tolist() == base.offsets.tolist()
     assert np.allclose(off.coords, base.coords, atol=1e-5)
-    assert np.isclose(
-        float(off.coords[:, 1].max()), float(base.coords[:, 1].max()), atol=1e-5
-    )
+    assert np.isclose(float(off.coords[:, 1].max()), float(base.coords[:, 1].max()), atol=1e-5)
     assert float(wrapped.coords[:, 1].max()) > float(no_wrap.coords[:, 1].max()) + 30.0
 
 
@@ -320,61 +347,62 @@ def test_text_missing_glyph_is_treated_as_space() -> None:
 
 
 def test_text_raw_results_are_fresh_writable_and_non_sharing() -> None:
-    for value in ("HELLO", ""):
-        first_coords, first_offsets = text_impl(
-            text=value, font="GoogleSans-Regular.ttf"
-        )
-        second_coords, second_offsets = text_impl(
-            text=value, font="GoogleSans-Regular.ttf"
-        )
+    with _bound_text_font():
+        for value in ("HELLO", ""):
+            first_coords, first_offsets = text_impl(text=value, font="GoogleSans-Regular.ttf")
+            second_coords, second_offsets = text_impl(text=value, font="GoogleSans-Regular.ttf")
 
-        assert first_coords.flags.writeable
-        assert first_offsets.flags.writeable
-        assert second_coords.flags.writeable
-        assert second_offsets.flags.writeable
-        assert not np.shares_memory(first_coords, second_coords)
-        assert not np.shares_memory(first_offsets, second_offsets)
-        assert np.array_equal(first_coords, second_coords)
-        assert np.array_equal(first_offsets, second_offsets)
+            assert first_coords.flags.writeable
+            assert first_offsets.flags.writeable
+            assert second_coords.flags.writeable
+            assert second_offsets.flags.writeable
+            assert not np.shares_memory(first_coords, second_coords)
+            assert not np.shares_memory(first_offsets, second_offsets)
+            assert np.array_equal(first_coords, second_coords)
+            assert np.array_equal(first_offsets, second_offsets)
 
 
 def test_text_preplacement_glyph_cache_is_bounded_readonly_and_reused() -> None:
-    cache = text_module.TEXT_RENDERER._glyph_polyline_cache
-    command_cache = text_module.TEXT_RENDERER._glyph_cache
-    text_module.TEXT_RENDERER.clear_glyph_caches()
-
-    text_impl(text="ABBA", font="GoogleSans-Regular.ttf", quality=0.5)
-    first_values = tuple(cache._od.values())
-    first_ids = tuple(id(value) for value in first_values)
-    text_impl(
-        text="BAAB",
-        font="GoogleSans-Regular.ttf",
-        quality=0.5,
-        center=(10.0, 20.0, 0.0),
-        scale=3.0,
-    )
-    second_values = tuple(cache._od.values())
-
-    try:
-        assert 0 < len(cache) <= cache.maxsize
-        assert 0 < len(command_cache) <= command_cache.maxsize
-        assert cache.maxbytes is not None
-        assert cache.byte_size <= cache.maxbytes
-        assert set(first_ids) == {id(value) for value in second_values}
-        assert all(
-            not polyline.flags.writeable
-            for glyph in second_values
-            for polyline in glyph
+    with _bound_text_font() as lease:
+        text_impl(text="ABBA", font="GoogleSans-Regular.ttf", quality=0.5)
+        first_stats = lease.renderer.stats()
+        text_impl(
+            text="BAAB",
+            font="GoogleSans-Regular.ttf",
+            quality=0.5,
+            center=(10.0, 20.0, 0.0),
+            scale=3.0,
         )
-    finally:
-        text_module.TEXT_RENDERER.clear_glyph_caches()
-    assert len(cache) == 0
-    assert cache.byte_size == 0
-    assert len(command_cache) == 0
+        second_stats = lease.renderer.stats()
+
+        font = lease.renderer.get_font(lease)
+        first = lease.renderer.get_glyph_polylines(
+            char="A",
+            lease=lease,
+            flat_seg_len_units=20.0,
+            tt_font=font,
+            cmap=font.getBestCmap(),
+        )
+        second = lease.renderer.get_glyph_polylines(
+            char="A",
+            lease=lease,
+            flat_seg_len_units=20.0,
+            tt_font=font,
+            cmap=font.getBestCmap(),
+        )
+
+        assert first_stats.fonts == 1
+        assert 0 < first_stats.glyph_commands <= 4096
+        assert 0 < first_stats.glyph_polylines <= 256
+        assert first_stats.glyph_polyline_bytes <= 32 * 1024 * 1024
+        assert second_stats == first_stats
+        assert second is first
+        assert all(not polyline.flags.writeable for polyline in second)
 
 
 def test_text_resolves_an_already_absolute_font_path_only_once(monkeypatch) -> None:
     font_path = resolve_font_path("GoogleSans-Regular.ttf")
+    config = load_runtime_config()
     original_resolve = Path.resolve
     calls: list[Path] = []
 
@@ -383,6 +411,7 @@ def test_text_resolves_an_already_absolute_font_path_only_once(monkeypatch) -> N
         return original_resolve(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "resolve", counting_resolve)
-    text_impl(text="ABBA", font=str(font_path), quality=0.5)
+    with _bound_text_font(str(font_path), config=config):
+        text_impl(text="ABBA", font=str(font_path), quality=0.5)
 
     assert len(calls) == 1

@@ -12,14 +12,16 @@ from collections.abc import Sequence
 import numpy as np
 from numba import njit  # type: ignore[attr-defined]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.operation_diagnostics import emit_operation_diagnostic
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
-from .util import (
-    PlanarFrame,
-    empty_geom,
+from grafix.core.geometry_kernels.packed import (
+    empty_packed_geometry,
     pack_polylines,
+)
+from grafix.core.geometry_kernels.planar import (
+    PlanarFrame,
     planarity_threshold,
 )
 
@@ -747,7 +749,7 @@ def _pack_planar_fill_chunks(
     """local boundaryとpacked hatchを詰め、world変換を一度だけ適用する。"""
 
     if not chunks:
-        return empty_geom()
+        return empty_packed_geometry()
     total_vertices = sum(int(chunk.shape[0]) for chunk in chunks)
     total_lines = sum(
         1 if int(chunk.shape[1]) == 3 else int(chunk.shape[0]) // 2 for chunk in chunks

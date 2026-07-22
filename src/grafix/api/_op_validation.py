@@ -4,12 +4,32 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from difflib import get_close_matches
-from typing import Any
+from typing import Any, Protocol
 
 from grafix.core.geometry import normalize_args
-from grafix.core.op_registry import OpSpec
+from grafix.core.operation_declaration import OpKind
+from grafix.core.operation_schema import ParameterOpSchema
 from grafix.core.parameters.validation import validate_parameter_value
 from grafix.core.value_validation import canonical_immutable_value
+
+
+class OperationParameterSpec(Protocol):
+    """operation kwargs validation に必要な immutable contract。"""
+
+    @property
+    def kind(self) -> OpKind: ...
+
+    @property
+    def schema(self) -> ParameterOpSchema: ...
+
+    @property
+    def accepted_args(self) -> tuple[str, ...]: ...
+
+    @property
+    def required_args(self) -> tuple[str, ...]: ...
+
+    @property
+    def accepts_var_kwargs(self) -> bool: ...
 
 
 def _suggest(name: str, candidates: tuple[str, ...]) -> str:
@@ -22,15 +42,15 @@ def _suggest(name: str, candidates: tuple[str, ...]) -> str:
 def validate_operation_kwargs(
     *,
     op: str,
-    spec: OpSpec[Any],
+    spec: OperationParameterSpec,
     params: Mapping[str, Any],
 ) -> dict[str, Any]:
     """明示指定された operation 引数を検証し、canonical 値で返す。
 
     ``activate`` のような wrapper 所有引数も受け入れるため、元 callable の
     signature だけでなく registry の defaults/meta も正規の引数集合に含める。
-    default は :class:`~grafix.core.op_registry.OpSpec` の生成時に同じ
-    parameter validator で正規化済みなので、ここでは明示引数だけを扱う。
+    default は declaration 構築時に同じ parameter validator で正規化済みなので、
+    ここでは明示引数だけを扱う。
     """
 
     if not isinstance(params, Mapping):
@@ -38,8 +58,11 @@ def validate_operation_kwargs(
     if any(type(name) is not str for name in params):
         raise TypeError("operation 引数名は exact str である必要があります")
 
+    schema = spec.schema
     allowed = tuple(
-        dict.fromkeys((*spec.accepted_args, *spec.defaults.keys(), *spec.meta.keys()))
+        dict.fromkeys(
+            (*spec.accepted_args, *schema.defaults.keys(), *schema.meta.keys())
+        )
     )
     unknown = (
         ()
@@ -61,7 +84,7 @@ def validate_operation_kwargs(
     dynamic: dict[str, Any] = {}
     fixed_args = frozenset(spec.accepted_args)
     for name, value in params.items():
-        meta = spec.meta.get(name)
+        meta = schema.meta.get(name)
         if meta is None:
             if name in fixed_args:
                 canonical[name] = canonical_immutable_value(
@@ -99,4 +122,4 @@ def validate_operation_kwargs(
     return canonical
 
 
-__all__ = ["validate_operation_kwargs"]
+__all__ = ["OperationParameterSpec", "validate_operation_kwargs"]

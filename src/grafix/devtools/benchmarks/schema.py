@@ -11,7 +11,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any, TypeAlias, cast
 
-from grafix.core.atomic_write import atomic_write_text_no_clobber
+from grafix.file_io import atomic_write_text_no_clobber
 from grafix.devtools.benchmarks import BENCHMARK_SCHEMA_VERSION
 
 _TAIL_MIN_SAMPLES = 20

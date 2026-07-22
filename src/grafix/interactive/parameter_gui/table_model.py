@@ -16,29 +16,21 @@ from grafix.core.parameters.store import ParamStore
 from grafix.core.parameters.view import ParameterRow
 from grafix.core.value_validation import exact_integer
 
+from .catalog import ParameterGuiCatalog
 from .group_blocks import GroupBlockLayout
 
-RegistryRevision: TypeAlias = tuple[int, int, int]
-ParameterTableCacheKey: TypeAlias = tuple[int, RegistryRevision]
+ParameterTableCacheKey: TypeAlias = tuple[int, ParameterGuiCatalog]
 
 EFFECT_ORDER_DUPLICATE_REASON = (
     "Effect step identity is duplicated; assign a unique key or instance_key."
 )
-EFFECT_ORDER_FILTERED_REASON = (
-    "Clear filters to reorder the complete effect chain."
-)
+EFFECT_ORDER_FILTERED_REASON = "Clear filters to reorder the complete effect chain."
 EFFECT_ORDER_INCOMPLETE_REASON = (
     "This chain includes effect steps that are not visible in the Parameter GUI."
 )
-EFFECT_ORDER_MULTI_INPUT_REASON = (
-    "A multi-input effect must remain the first step in its chain."
-)
-EFFECT_ORDER_SINGLE_STEP_REASON = (
-    "Add at least two effect steps to reorder this chain."
-)
-EFFECT_ORDER_TOPOLOGY_REASON = (
-    "Effect topology is incomplete; render a successful frame first."
-)
+EFFECT_ORDER_MULTI_INPUT_REASON = "A multi-input effect must remain the first step in its chain."
+EFFECT_ORDER_SINGLE_STEP_REASON = "Add at least two effect steps to reorder this chain."
+EFFECT_ORDER_TOPOLOGY_REASON = "Effect topology is incomplete; render a successful frame first."
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,8 +51,7 @@ class EffectChainTableState:
         if not isinstance(self.n_inputs, tuple):
             raise TypeError("EffectChainTableState.n_inputs は tuple である必要があります")
         n_inputs = tuple(
-            exact_integer(value, name="n_inputs", minimum=1)
-            for value in self.n_inputs
+            exact_integer(value, name="n_inputs", minimum=1) for value in self.n_inputs
         )
         if len(steps) != len(n_inputs):
             raise ValueError("steps と n_inputs の要素数が一致しません")
@@ -78,9 +69,7 @@ class EffectChainTableState:
         """effective order 内の index を返す。未登録または重複時は None。"""
 
         normalized = group_key(step, name="step")
-        matches = [
-            index for index, candidate in enumerate(self.steps) if candidate == normalized
-        ]
+        matches = [index for index, candidate in enumerate(self.steps) if candidate == normalized]
         return matches[0] if len(matches) == 1 else None
 
     def is_pinned(self, step: EffectStepKey) -> bool:
@@ -116,10 +105,7 @@ class EffectChainTableState:
             return False
 
         n_inputs_by_step = dict(zip(self.steps, self.n_inputs, strict=True))
-        return all(
-            n_inputs_by_step[step] <= 1 or index == 0
-            for index, step in enumerate(order)
-        )
+        return all(n_inputs_by_step[step] <= 1 or index == 0 for index, step in enumerate(order))
 
     def neighbor_move(
         self,
@@ -137,9 +123,7 @@ class EffectChainTableState:
         if target_index < 0 or target_index >= len(self.steps):
             return None
         target = self.steps[target_index]
-        placement: Literal["before", "after"] = (
-            "before" if direction_value < 0 else "after"
-        )
+        placement: Literal["before", "after"] = "before" if direction_value < 0 else "after"
         if not self.can_move(source, target, placement):
             return None
         return target, placement
@@ -152,10 +136,7 @@ class EffectChainTableState:
 
         if self.disabled_reason is not None:
             return self
-        normalized_visible = {
-            group_key(step, name="visible effect step")
-            for step in visible_steps
-        }
+        normalized_visible = {group_key(step, name="visible effect step") for step in visible_steps}
         if normalized_visible == set(self.steps):
             return self
         return replace(self, disabled_reason=EFFECT_ORDER_FILTERED_REASON)
@@ -174,10 +155,7 @@ def effect_chain_table_states(
     for chain_id, topology in topologies.items():
         identity_string(chain_id, name="chain_id")
         code_steps = tuple(step.key for step in topology)
-        n_inputs_by_step = {
-            step.key: step.n_inputs
-            for step in topology
-        }
+        n_inputs_by_step = {step.key: step.n_inputs for step in topology}
         duplicate = any(count > 1 for count in Counter(code_steps).values())
 
         indexed_effective: list[tuple[int, int, EffectStepKey]] = []
@@ -188,9 +166,7 @@ def effect_chain_table_states(
                 break
             indexed_effective.append((info[1], code_index, step))
         if len(indexed_effective) == len(code_steps):
-            effective_steps = tuple(
-                step for _index, _code_index, step in sorted(indexed_effective)
-            )
+            effective_steps = tuple(step for _index, _code_index, step in sorted(indexed_effective))
         else:
             effective_steps = code_steps
 
@@ -211,8 +187,7 @@ def effect_chain_table_states(
 
         n_inputs = tuple(n_inputs_by_step.get(step, 1) for step in effective_steps)
         if disabled_reason is None and any(
-            count > 1 and index != 0
-            for index, count in enumerate(n_inputs)
+            count > 1 and index != 0 for index, count in enumerate(n_inputs)
         ):
             disabled_reason = EFFECT_ORDER_MULTI_INPUT_REASON
 
@@ -228,7 +203,7 @@ def effect_chain_table_states(
 
 @dataclass(frozen=True, slots=True)
 class ParameterTableModel:
-    """store/registry revision にだけ依存する不変な表示構造。
+    """store revision と session catalog にだけ依存する不変な表示構造。
 
     MIDI の最新値、effective 値、active/loaded 状態などフレームごとの動的値は
     意図的に含めない。呼び出し側が描画直前に合成することで、行の構築・分類・
@@ -236,6 +211,7 @@ class ParameterTableModel:
     """
 
     cache_key: ParameterTableCacheKey
+    catalog: ParameterGuiCatalog
     value_revision: int
     snapshot: ParamSnapshot
     rows: tuple[ParameterRow, ...]
@@ -266,9 +242,7 @@ class ParameterTableModelCache:
     """ParamStore ごとに直近 1 revision のモデルだけを保持する。"""
 
     def __init__(self) -> None:
-        self._models: WeakKeyDictionary[ParamStore, ParameterTableModel] = (
-            WeakKeyDictionary()
-        )
+        self._models: WeakKeyDictionary[ParamStore, ParameterTableModel] = WeakKeyDictionary()
         self._build_count = 0
 
     @property
@@ -281,21 +255,17 @@ class ParameterTableModelCache:
         self,
         store: ParamStore,
         *,
-        registry_revision: RegistryRevision,
+        catalog: ParameterGuiCatalog,
         builder: ModelBuilder,
         refresher: ModelRefresher,
     ) -> ParameterTableModel:
-        """構造 revision が同じなら、変更 key の動的値だけを更新する。"""
+        """store revision/catalog generation が同じなら動的値だけを更新する。"""
 
-        primitive_revision, effect_revision, preset_revision = registry_revision
-        normalized_registry_revision: RegistryRevision = (
-            int(primitive_revision),
-            int(effect_revision),
-            int(preset_revision),
-        )
+        if type(catalog) is not ParameterGuiCatalog:
+            raise TypeError("catalog は exact ParameterGuiCatalog である必要があります")
         cache_key: ParameterTableCacheKey = (
             int(store.table_revision),
-            normalized_registry_revision,
+            catalog,
         )
         cached = self._models.get(store)
         if cached is not None and cached.cache_key == cache_key:
@@ -330,6 +300,5 @@ __all__ = [
     "ParameterTableCacheKey",
     "ParameterTableModel",
     "ParameterTableModelCache",
-    "RegistryRevision",
     "effect_chain_table_states",
 ]

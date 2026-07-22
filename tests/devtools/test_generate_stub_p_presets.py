@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grafix.core.runtime_config import set_config_path
+from grafix.core.runtime_config import load_runtime_config
 from grafix.devtools.generate_stub import generate_stubs_str
 
 
@@ -31,20 +31,18 @@ def test_generate_stub_lists_user_presets_on_p(tmp_path: Path) -> None:
             [
                 "from __future__ import annotations",
                 "",
-                "from pathlib import Path",
-                "",
                 "from grafix.api import preset",
                 "from grafix.core.geometry import Geometry",
                 "",
                 'meta = {"out": {"kind": "str"}}',
                 "",
                 "@preset(meta=meta)",
-                "def stubgen_path(*, out: Path = Path('out')) -> Geometry:",
-                '    """path を使う preset。',
+                "def stubgen_path(*, out: str = 'out') -> Geometry:",
+                '    """path 文字列を使う preset。',
                 "",
                 "    Parameters",
                 "    ----------",
-                "    out : Path",
+                "    out : str",
                 "        出力 path。",
                 '    """',
                 "    return Geometry.create(op='concat')",
@@ -57,14 +55,10 @@ def test_generate_stub_lists_user_presets_on_p(tmp_path: Path) -> None:
     cfg_path = tmp_path / "config.yaml"
     _write_config(path=cfg_path, preset_module_dir=preset_dir)
 
-    set_config_path(cfg_path)
-    try:
-        stub = generate_stubs_str()
-    finally:
-        set_config_path(None)
+    stub = generate_stubs_str(config=load_runtime_config(cfg_path))
 
     assert (
-        "def stubgen_path(self, *, activate: bool = ..., out: Path = ...) "
+        "def stubgen_path(self, *, activate: bool = ..., out: str = ...) "
         "-> SceneItem:" in stub
     )
     method = stub.split("    def stubgen_path(", 1)[1].split("\n    def ", 1)[0]

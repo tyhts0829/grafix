@@ -80,7 +80,7 @@ def test_clip_outside_empty_when_mask_covers_all() -> None:
 
 @pytest.mark.skipif(pyclipper is None, reason="pyclipper が未インストール")  # type: ignore[arg-type]
 def test_clip_restores_pose_from_rotated_plane() -> None:
-    from grafix.core.effects.util import PlanarFrame
+    from grafix.core.geometry_kernels.planar import PlanarFrame
 
     a0 = G.grid(nx=11, ny=11, scale=10.0)
     b0 = G.polygon(n_sides=6, scale=3.0)

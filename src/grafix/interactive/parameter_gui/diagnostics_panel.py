@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from grafix.interactive.runtime.diagnostics import DiagnosticCenter, DiagnosticEvent
+from grafix.interactive.diagnostics import DiagnosticCenter, DiagnosticEvent
 
 
 def render_diagnostics_panel(

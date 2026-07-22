@@ -20,7 +20,7 @@ from grafix.interactive.gl import utils as render_utils
 from grafix.interactive.gl.index_buffer import LineIndexStats, build_line_indices_and_stats
 from grafix.interactive.gl.line_mesh import LineMesh
 from grafix.interactive.gl.shader import Shader
-from grafix.interactive.runtime.diagnostics import DiagnosticCenter, DiagnosticEvent
+from grafix.interactive.diagnostics import DiagnosticCenter, DiagnosticEvent
 
 if TYPE_CHECKING:
     from pyglet.window import Window
@@ -129,10 +129,10 @@ class DrawRenderer:
         diagnostic_center: DiagnosticCenter | None = None,
     ) -> None:
         window.switch_to()
-        self.ctx = moderngl.create_context(require=410)
-        self.program = Shader.create_shader(self.ctx)
+        self._ctx = moderngl.create_context(require=410)
+        self.program = Shader.create_shader(self._ctx)
         # 動的更新用（キャッシュに乗らないケース）に 1 つだけ使い回す。
-        self._scratch_mesh = LineMesh(self.ctx, self.program)
+        self._scratch_mesh = LineMesh(self._ctx, self.program)
         # 静的ジオメトリ用の GPU メッシュキャッシュ（byte-budget LRU）。
         self._mesh_cache: OrderedDict[GeometryCacheKey, _MeshCacheEntry] = OrderedDict()
         # 初見を即キャッシュすると「毎フレーム別 id」ケースで逆効果になりうるため、
@@ -271,24 +271,50 @@ class DrawRenderer:
         size = (int(viewport[2]), int(viewport[3]))
         self._framebuffer_size = framebuffer_size
         self._viewport = viewport
-        self.ctx.viewport = viewport
+        self._ctx.viewport = viewport
         if size != self._viewport_size:
             self._viewport_size = size
             self._last_draw_style = None
             self.program["viewport_size"].value = (float(size[0]), float(size[1]))
 
+    def begin_frame(
+        self,
+        width: int,
+        height: int,
+        *,
+        background_color: tuple[float, float, float],
+    ) -> None:
+        """default framebuffer を bind し、viewport と背景を確定する。"""
+
+        self._ctx.screen.use()
+        self.viewport(width, height)
+        self.clear(background_color)
+
+    def read_frame_rgb24(self, width: int, height: int) -> bytes:
+        """default framebuffer 全体を tightly packed RGB24 として読む。"""
+
+        framebuffer_w = max(1, int(width))
+        framebuffer_h = max(1, int(height))
+        return bytes(
+            self._ctx.screen.read(
+                viewport=(0, 0, framebuffer_w, framebuffer_h),
+                components=3,
+                alignment=1,
+            )
+        )
+
     def clear(self, color: tuple[float, float, float]) -> None:
         """letterbox/pillarbox 領域を含む framebuffer 全体を背景色でクリアする。"""
 
         framebuffer_w, framebuffer_h = self._framebuffer_size
-        self.ctx.clear(
+        self._ctx.clear(
             *color,
             1.0,
             viewport=(0, 0, int(framebuffer_w), int(framebuffer_h)),
         )
         # backend によって clear(viewport=...) が GL viewport を変えても、
         # 後続の mesh draw は aspect-fit 領域に限定する。
-        self.ctx.viewport = self._viewport
+        self._ctx.viewport = self._viewport
 
     def render_layer(
         self,
@@ -477,7 +503,7 @@ class DrawRenderer:
         # VBO/IBO は別々に必要量まで成長させる。両方を大きい側の
         # サイズで予約すると、頂点だけ巨大な geometry で budget を浪費する。
         mesh = LineMesh(
-            self.ctx,
+            self._ctx,
             self.program,
             initial_reserve=_CACHED_MESH_INITIAL_RESERVE,
         )
@@ -560,7 +586,7 @@ class DrawRenderer:
             if estimated > self._dynamic_mesh_max_bytes:
                 return None
             mesh = LineMesh(
-                self.ctx,
+                self._ctx,
                 self.program,
                 initial_reserve=_CACHED_MESH_INITIAL_RESERVE,
             )
@@ -699,7 +725,7 @@ class DrawRenderer:
             self._last_draw_style = (normalized_thickness, color)
 
         # ボトルネックになりやすい: 多レイヤー/多 draw call 時はここ（ドライバ/GL 呼び出し）が支配しやすい。
-        mesh.vao.render(mode=self.ctx.LINE_STRIP, vertices=mesh.index_count)
+        mesh.vao.render(mode=self._ctx.LINE_STRIP, vertices=mesh.index_count)
 
     def release(self) -> None:
         """GPU リソースを解放する。"""
@@ -717,11 +743,11 @@ class DrawRenderer:
         self._dynamic_slot_count = 0
         self._last_draw_style = None
         self.program.release()
-        self.ctx.release()
+        self._ctx.release()
 
     def finish(self) -> None:
         """GPU の完了を待つ（計測用）。"""
-        self.ctx.finish()
+        self._ctx.finish()
 
 
 @dataclass(frozen=True, slots=True)

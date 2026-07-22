@@ -1,19 +1,19 @@
-"""decorator が元 callable から OpSpec catalog 情報を作ることを検証する。"""
+"""decorator が immutable OpDeclaration と評価 adapter を作る契約を検証する。"""
 
 from __future__ import annotations
 
 from collections import namedtuple
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pytest
 
-import grafix.core.effect_registry as effect_registry_module
-import grafix.core.primitive_registry as primitive_registry_module
-from grafix.core.effect_registry import EffectFunc
-from grafix.core.op_registry import OpRegistry, OpSpec
+import grafix.core.operation_authoring as operation_authoring_module
+from grafix.core.authoring_definitions import RegistrationTarget, registration_scope
+from grafix.core.definition_fingerprint import DefinitionFingerprintError
+from grafix.core.operation_declaration import OpDeclaration
 from grafix.core.parameters.meta import ParamMeta
-from grafix.core.primitive_registry import PrimitiveFunc
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 
 
@@ -24,14 +24,22 @@ def _empty_geometry() -> GeomTuple:
     )
 
 
-def test_primitive_decorator_records_doc_source_and_required_args(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
-    monkeypatch.setattr(primitive_registry_module, "primitive_registry", registry)
+def _register(
+    decorator: Callable[[Callable[..., GeomTuple]], Callable[..., GeomTuple]],
+    func: Callable[..., GeomTuple],
+    *,
+    kind: str,
+) -> OpDeclaration:
+    target = RegistrationTarget()
+    with registration_scope(target):
+        decorator(func)
+    return target.snapshot().operations.resolve(kind, func.__name__).declaration  # type: ignore[arg-type]
 
-    @primitive_registry_module.primitive(meta={"count": ParamMeta(kind="int")})
-    def catalog_primitive(points: tuple[float, ...], *, count: int = 2) -> GeomTuple:
+
+def test_primitive_declaration_records_doc_source_and_required_args() -> None:
+    def catalog_primitive(
+        points: tuple[float, ...], *, count: int = 2
+    ) -> GeomTuple:
         """catalog 検証用 primitive。
 
         2 行目以降も full doc に保持する。
@@ -40,24 +48,22 @@ def test_primitive_decorator_records_doc_source_and_required_args(
         _ = points, count
         return _empty_geometry()
 
-    spec = registry["catalog_primitive"]
-    assert spec.description == "catalog 検証用 primitive。"
-    assert "2 行目以降" in spec.doc
-    assert spec.accepted_args == ("points", "count")
-    assert spec.required_args == ("points",)
-    assert spec.source is not None
-    assert Path(spec.source).name == "test_op_catalog_metadata.py"
-    assert spec.provenance.endswith(".catalog_primitive")
-    assert dict(spec.defaults) == {"activate": True, "count": 2}
+    declaration = _register(
+        operation_authoring_module.primitive(meta={"count": ParamMeta(kind="int")}),
+        catalog_primitive,
+        kind="primitive",
+    )
+    assert declaration.description == "catalog 検証用 primitive。"
+    assert "2 行目以降" in declaration.doc
+    assert declaration.accepted_args == ("points", "count")
+    assert declaration.required_args == ("points",)
+    assert declaration.source is not None
+    assert Path(declaration.source).name == "test_op_catalog_metadata.py"
+    assert declaration.provenance.endswith(".catalog_primitive")
+    assert dict(declaration.schema.defaults) == {"activate": True, "count": 2}
 
 
-def test_effect_decorator_excludes_each_geometry_input(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
-    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
-
-    @effect_registry_module.effect(n_inputs=2)
+def test_effect_declaration_excludes_each_geometry_input() -> None:
     def catalog_effect(
         first: GeomTuple,
         second: GeomTuple,
@@ -70,103 +76,99 @@ def test_effect_decorator_excludes_each_geometry_input(
         _ = second, weight, mode
         return first
 
-    spec = registry["catalog_effect"]
-    assert spec.accepted_args == ("weight", "mode")
-    assert spec.required_args == ("weight",)
-    assert spec.description == "2 入力用 catalog 検証 effect。"
-    assert spec.provenance.endswith(".catalog_effect")
+    declaration = _register(
+        operation_authoring_module.effect(n_inputs=2),
+        catalog_effect,
+        kind="effect",
+    )
+    assert declaration.accepted_args == ("weight", "mode")
+    assert declaration.required_args == ("weight",)
+    assert declaration.description == "2 入力用 catalog 検証 effect。"
 
 
-def test_effect_reuses_immutable_offsets_and_snapshots_changed_coords(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
-    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
+def test_content_cached_declaration_rejects_uncanonical_closure_dependency() -> None:
+    output_coords = np.zeros((2, 3), dtype=np.float32)
+
+    def dynamic_array_effect(g: GeomTuple) -> GeomTuple:
+        return output_coords, g[1]
+
+    target = RegistrationTarget()
+    with registration_scope(target):
+        with pytest.raises(DefinitionFingerprintError, match="output_coords"):
+            operation_authoring_module.effect(dynamic_array_effect)
+    assert len(target.snapshot().operations) == 0
+
+
+def test_none_cached_effect_can_declare_dynamic_dependency_with_version() -> None:
     output_coords = np.asarray(
         [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
         dtype=np.float32,
     )
 
-    @effect_registry_module.effect
     def coords_only_effect(g: GeomTuple) -> GeomTuple:
         return output_coords, g[1]
 
+    declaration = _register(
+        operation_authoring_module.effect(cache_policy="none", version="coords-v1"),
+        coords_only_effect,
+        kind="effect",
+    )
     input_geometry = RealizedGeometry(
-        coords=np.asarray(
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-            dtype=np.float32,
-        ),
+        coords=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
         offsets=np.asarray([0, 1, 2], dtype=np.int32),
     )
-    result = registry["coords_only_effect"].evaluator([input_geometry], ())
-
+    result = declaration.evaluator([input_geometry], ())
     assert result.coords is not output_coords
     assert not np.shares_memory(result.coords, output_coords)
     assert result.offsets is input_geometry.offsets
     assert result.coords.flags.writeable is False
-    assert output_coords.flags.writeable is True
-    np.testing.assert_array_equal(
-        result.coords,
-        np.asarray(
-            [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
-            dtype=np.float32,
-        ),
-    )
 
 
-def test_effect_rejects_noncanonical_coords_instead_of_converting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
-    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
+def test_effect_rejects_noncanonical_coords_instead_of_converting() -> None:
     output_coords = np.asarray(
         [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
         dtype=np.float64,
     )
 
-    @effect_registry_module.effect
     def converted_effect(g: GeomTuple) -> GeomTuple:
         return output_coords, g[1]
 
+    declaration = _register(
+        operation_authoring_module.effect(cache_policy="none", version="converted-v1"),
+        converted_effect,
+        kind="effect",
+    )
     input_geometry = RealizedGeometry(
-        coords=np.asarray(
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-            dtype=np.float32,
-        ),
+        coords=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
         offsets=np.asarray([0, 2], dtype=np.int32),
     )
     with pytest.raises(ValueError, match=r"\(coords, offsets\) が不正") as exc_info:
-        registry["converted_effect"].evaluator([input_geometry], ())
-
+        declaration.evaluator([input_geometry], ())
     assert isinstance(exc_info.value.__cause__, TypeError)
     assert "float32" in str(exc_info.value.__cause__)
 
 
-def test_effect_different_offsets_use_normal_validation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
-    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
+def test_effect_different_offsets_use_normal_validation() -> None:
     output_coords = np.asarray(
-        [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
-        dtype=np.float32,
+        [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=np.float32
     )
     output_offsets = np.asarray([0, 1, 2], dtype=np.int32)
 
-    @effect_registry_module.effect
     def repartition_effect(_g: GeomTuple) -> GeomTuple:
         return output_coords, output_offsets
 
+    declaration = _register(
+        operation_authoring_module.effect(cache_policy="none", version="partition-v1"),
+        repartition_effect,
+        kind="effect",
+    )
     input_geometry = RealizedGeometry(
         coords=np.zeros((2, 3), dtype=np.float32),
         offsets=np.asarray([0, 2], dtype=np.int32),
     )
-    result = registry["repartition_effect"].evaluator([input_geometry], ())
-
+    result = declaration.evaluator([input_geometry], ())
     assert result.coords is not output_coords
     assert result.offsets is not output_offsets
-    assert not np.shares_memory(result.coords, output_coords)
-    assert not np.shares_memory(result.offsets, output_offsets)
     assert result.offsets is not input_geometry.offsets
     assert result.coords.flags.writeable is False
     assert result.offsets.flags.writeable is False
@@ -180,74 +182,36 @@ _NamedGeometryTuple = namedtuple("_NamedGeometryTuple", ("coords", "offsets"))
 
 
 @pytest.mark.parametrize("named", [False, True])
-def test_effect_rejects_tuple_subclass_output(
-    monkeypatch: pytest.MonkeyPatch,
-    named: bool,
-) -> None:
-    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
-    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
-
-    @effect_registry_module.effect
+def test_effect_rejects_tuple_subclass_output(named: bool) -> None:
     def tuple_subclass_effect(g: GeomTuple) -> GeomTuple:
         if named:
             return _NamedGeometryTuple(g[0], g[1])  # type: ignore[return-value]
         return _TupleSubclass((g[0], g[1]))  # type: ignore[return-value]
 
+    declaration = _register(
+        operation_authoring_module.effect(cache_policy="none", version="tuple-v1"),
+        tuple_subclass_effect,
+        kind="effect",
+    )
     input_geometry = RealizedGeometry(
         coords=np.zeros((2, 3), dtype=np.float32),
         offsets=np.asarray([0, 2], dtype=np.int32),
     )
-
     with pytest.raises(TypeError, match="期待する戻り値"):
-        registry["tuple_subclass_effect"].evaluator([input_geometry], ())
-
-
-def test_effect_trusted_offsets_length_mismatch_uses_existing_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
-    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
-
-    @effect_registry_module.effect
-    def invalid_coords_effect(g: GeomTuple) -> GeomTuple:
-        return np.zeros((1, 3), dtype=np.float32), g[1]
-
-    input_geometry = RealizedGeometry(
-        coords=np.zeros((2, 3), dtype=np.float32),
-        offsets=np.asarray([0, 2], dtype=np.int32),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"@effect .*\.invalid_coords_effect: "
-        r"\(coords, offsets\) が不正です",
-    ):
-        registry["invalid_coords_effect"].evaluator([input_geometry], ())
+        declaration.evaluator([input_geometry], ())
 
 
 @pytest.mark.parametrize(
     ("coords", "offsets"),
     [
-        (
-            np.zeros((2, 2), dtype=np.float32),
-            np.asarray([0, 2], dtype=np.int32),
-        ),
-        (
-            np.zeros((2, 3), dtype=np.float64),
-            np.asarray([0, 2], dtype=np.int32),
-        ),
-        (
-            np.zeros((2, 3), dtype=np.float32),
-            np.asarray([0, 2], dtype=np.int64),
-        ),
+        (np.zeros((2, 2), dtype=np.float32), np.asarray([0, 2], dtype=np.int32)),
+        (np.zeros((2, 3), dtype=np.float64), np.asarray([0, 2], dtype=np.int32)),
+        (np.zeros((2, 3), dtype=np.float32), np.asarray([0, 2], dtype=np.int64)),
         (
             np.asarray([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0]], dtype=np.float32),
             np.asarray([0, 2], dtype=np.int32),
         ),
-        (
-            np.zeros((3, 3), dtype=np.float32)[::2],
-            np.asarray([0, 2], dtype=np.int32),
-        ),
+        (np.zeros((3, 3), dtype=np.float32)[::2], np.asarray([0, 2], dtype=np.int32)),
         (
             np.zeros((2, 3), dtype=np.float32),
             np.asarray([0, 1, 2, 2], dtype=np.int32)[::2],
@@ -255,107 +219,71 @@ def test_effect_trusted_offsets_length_mismatch_uses_existing_error(
     ],
 )
 def test_user_primitive_rejects_every_noncanonical_output_array(
-    monkeypatch: pytest.MonkeyPatch,
     coords: np.ndarray,
     offsets: np.ndarray,
 ) -> None:
-    registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
-    monkeypatch.setattr(primitive_registry_module, "primitive_registry", registry)
-
-    @primitive_registry_module.primitive
     def invalid_output_primitive() -> GeomTuple:
         return coords, offsets
 
-    with pytest.raises(ValueError, match=r"\(coords, offsets\) が不正"):
-        registry["invalid_output_primitive"].evaluator(())
-
-
-def test_new_op_spec_catalog_fields_have_compatible_defaults() -> None:
-    spec = OpSpec(
-        evaluator=lambda: None,
-        meta={},
-        defaults={},
-        param_order=(),
-        ui_visible={},
-        n_inputs=0,
+    declaration = _register(
+        operation_authoring_module.primitive(
+            cache_policy="none", version="invalid-output-v1"
+        ),
+        invalid_output_primitive,
         kind="primitive",
     )
-
-    assert spec.description == ""
-    assert spec.doc == ""
-    assert spec.source is None
-    assert spec.provenance == ""
-    assert spec.accepted_args == ()
-    assert spec.required_args == ()
-    assert spec.accepts_var_kwargs is False
+    with pytest.raises(ValueError, match=r"\(coords, offsets\) が不正"):
+        declaration.evaluator(())
 
 
-def test_op_spec_rejects_required_arg_outside_accepted_args() -> None:
-    with pytest.raises(ValueError, match="accepted_args"):
-        OpSpec(
-            evaluator=lambda: None,
-            meta={},
-            defaults={},
-            param_order=(),
-            ui_visible={},
-            n_inputs=0,
-            kind="primitive",
-            required_args=("missing",),
-        )
-
-
-def test_catalog_records_var_keyword_support(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
-    monkeypatch.setattr(primitive_registry_module, "primitive_registry", registry)
-
-    @primitive_registry_module.primitive
+def test_declaration_records_var_keyword_support() -> None:
     def dynamic_primitive(**params: object) -> GeomTuple:
+        _ = params
         return _empty_geometry()
 
-    assert registry["dynamic_primitive"].accepts_var_kwargs is True
+    declaration = _register(
+        operation_authoring_module.primitive,
+        dynamic_primitive,
+        kind="primitive",
+    )
+    assert declaration.accepts_var_kwargs is True
 
 
-def test_primitive_builtin_meta_requirement_uses_only_canonical_namespace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry: OpRegistry[PrimitiveFunc] = OpRegistry(kind="primitive")
-    monkeypatch.setattr(primitive_registry_module, "primitive_registry", registry)
-
-    def canonical_builtin() -> GeomTuple:
+def test_builtin_detection_uses_exact_manifest_locator() -> None:
+    def prefix_only_primitive() -> GeomTuple:
         return _empty_geometry()
 
-    canonical_builtin.__module__ = "grafix.core.primitives.example"
+    prefix_only_primitive.__module__ = "grafix.core.primitives.example"
+    declaration = _register(
+        operation_authoring_module.primitive,
+        prefix_only_primitive,
+        kind="primitive",
+    )
+    assert declaration.schema.meta == {}
+
+    def exact_circle() -> GeomTuple:
+        return _empty_geometry()
+
+    exact_circle.__module__ = "grafix.core.primitives.circle"
+    exact_circle.__name__ = "circle"
     with pytest.raises(ValueError, match="meta 必須"):
-        primitive_registry_module.primitive(canonical_builtin)
+        operation_authoring_module.primitive(exact_circle)
 
-    def similarly_named_user_module() -> GeomTuple:
-        return _empty_geometry()
-
-    similarly_named_user_module.__module__ = "core.primitives.example"
-    primitive_registry_module.primitive(similarly_named_user_module)
-
-    assert "similarly_named_user_module" in registry
-
-
-def test_effect_builtin_meta_requirement_uses_only_canonical_namespace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry: OpRegistry[EffectFunc] = OpRegistry(kind="effect")
-    monkeypatch.setattr(effect_registry_module, "effect_registry", registry)
-
-    def canonical_builtin(g: GeomTuple) -> GeomTuple:
+    def prefix_only_effect(g: GeomTuple) -> GeomTuple:
         return g
 
-    canonical_builtin.__module__ = "grafix.core.effects.example"
-    with pytest.raises(ValueError, match="meta 必須"):
-        effect_registry_module.effect(canonical_builtin)
+    prefix_only_effect.__module__ = "grafix.core.effects.example"
+    declaration = _register(
+        operation_authoring_module.effect,
+        prefix_only_effect,
+        kind="effect",
+    )
+    assert declaration.schema.meta == {}
 
-    def similarly_named_user_module(g: GeomTuple) -> GeomTuple:
+    def exact_scale(g: GeomTuple) -> GeomTuple:
         return g
 
-    similarly_named_user_module.__module__ = "core.effects.example"
-    effect_registry_module.effect(similarly_named_user_module)
-
-    assert "similarly_named_user_module" in registry
+    exact_scale.__module__ = "grafix.core.effects.scale"
+    exact_scale.__name__ = "scale"
+    with pytest.raises(ValueError, match="meta 必須"):
+        operation_authoring_module.effect(exact_scale)

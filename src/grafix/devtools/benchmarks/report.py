@@ -8,7 +8,7 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
-from grafix.core.atomic_write import atomic_write_text
+from grafix.file_io import atomic_write_text
 from grafix.devtools.benchmarks.schema import (
     BenchmarkRun,
     BenchmarkSchemaError,
@@ -94,16 +94,8 @@ def render_report_html(loaded: LoadedRuns) -> str:
             stats = result.stats
             median_ms = "" if stats is None else _milliseconds(stats.median_ns)
             mad_ms = "" if stats is None else _milliseconds(stats.mad_ns)
-            p95_ms = (
-                ""
-                if stats is None or stats.p95_ns is None
-                else _milliseconds(stats.p95_ns)
-            )
-            p99_ms = (
-                ""
-                if stats is None or stats.p99_ns is None
-                else _milliseconds(stats.p99_ns)
-            )
+            p95_ms = "" if stats is None or stats.p95_ns is None else _milliseconds(stats.p95_ns)
+            p99_ms = "" if stats is None or stats.p99_ns is None else _milliseconds(stats.p99_ns)
             rss_mib = (
                 ""
                 if result.peak_rss_delta_bytes is None
@@ -118,8 +110,7 @@ def render_report_html(loaded: LoadedRuns) -> str:
             if previous_item is not None:
                 previous_run, previous_result = previous_item
                 if (
-                    previous_result.spec.compatibility_key
-                    == result.spec.compatibility_key
+                    previous_result.spec.compatibility_key == result.spec.compatibility_key
                     and _measurement_compatible(
                         previous_run,
                         previous_result,
@@ -140,14 +131,10 @@ def render_report_html(loaded: LoadedRuns) -> str:
             previous[previous_key] = (run, result)
 
             hard_contracts = [
-                contract
-                for contract in result.contracts
-                if contract.severity == "hard"
+                contract for contract in result.contracts if contract.severity == "hard"
             ]
             soft_contracts = [
-                contract
-                for contract in result.contracts
-                if contract.severity == "soft"
+                contract for contract in result.contracts if contract.severity == "soft"
             ]
             contract_html = _contract_summary(hard_contracts, soft_contracts)
             checksum_html = (
@@ -179,9 +166,7 @@ def render_report_html(loaded: LoadedRuns) -> str:
                 "</tr>"
             )
 
-    warning_items = "".join(
-        f"<li>{escape(warning)}</li>" for warning in loaded.warnings
-    )
+    warning_items = "".join(f"<li>{escape(warning)}</li>" for warning in loaded.warnings)
     if not warning_items:
         warning_items = "<li>none</li>"
     table_body = "\n".join(rows) or (
@@ -247,16 +232,9 @@ def _contract_summary(hard: list, soft: list) -> str:
             parts.append(f"{severity}: none")
             continue
         failed = [contract for contract in contracts if not contract.passed]
-        css_class = (
-            "pass"
-            if not failed
-            else ("fail" if severity == "hard" else "soft-fail")
-        )
+        css_class = "pass" if not failed else ("fail" if severity == "hard" else "soft-fail")
         label = "PASS" if not failed else "FAIL"
-        title = "; ".join(
-            f"{contract.contract_id}: {contract.reason}"
-            for contract in failed
-        )
+        title = "; ".join(f"{contract.contract_id}: {contract.reason}" for contract in failed)
         parts.append(
             f'{severity}: <span class="{css_class}" title="{escape(title)}">'
             f"{label} ({len(contracts) - len(failed)}/{len(contracts)})</span>"
@@ -317,10 +295,7 @@ def _measurement_compatible(
             "timeout_seconds",
         )
     )
-    return all(
-        getattr(base_run.meta, field) == getattr(head_run.meta, field)
-        for field in fields
-    )
+    return all(getattr(base_run.meta, field) == getattr(head_run.meta, field) for field in fields)
 
 
 def _metric_summary_priority(metric: Metric) -> int:
@@ -346,11 +321,7 @@ def _scaling_rows(runs: tuple[BenchmarkRun, ...]) -> str:
             if "scaling" not in result.spec.tags:
                 continue
             parameters = case_result_to_dict(result)["spec"]["parameters"]
-            median_ms = (
-                ""
-                if result.stats is None
-                else _milliseconds(result.stats.median_ns)
-            )
+            median_ms = "" if result.stats is None else _milliseconds(result.stats.median_ns)
             rows.append(
                 "<tr>"
                 f"<td>{escape(run.meta.run_id)}</td>"

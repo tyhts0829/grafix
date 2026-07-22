@@ -12,7 +12,7 @@ from grafix.core.effects.mirror3d import (
     _packed_polyhedral_transforms,
     _polyhedral_rotation_mats,
 )
-from grafix.core.primitive_registry import primitive
+from grafix.core.operation_authoring import primitive
 from grafix.core.realize import RealizeError, realize
 from grafix.core.realized_geometry import GeomTuple, RealizedGeometry
 

@@ -9,9 +9,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from grafix.core.builtins import ensure_builtin_ops_registered
-from grafix.core.effect_registry import effect_registry
-from grafix.core.primitive_registry import primitive_registry
+from grafix.core.operation_catalog import OperationCatalog, current_operation_catalog
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -26,16 +24,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _import_builtin_ops() -> None:
-    ensure_builtin_ops_registered()
+def _list_effects(catalog: OperationCatalog) -> list[str]:
+    return [entry.name for entry in catalog.public_entries(kind="effect")]
 
 
-def _list_effects() -> list[str]:
-    return sorted(name for name in effect_registry if not name.startswith("_"))
-
-
-def _list_primitives() -> list[str]:
-    return sorted(name for name in primitive_registry if not name.startswith("_"))
+def _list_primitives(catalog: OperationCatalog) -> list[str]:
+    return [entry.name for entry in catalog.public_entries(kind="primitive")]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,25 +39,25 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     target = str(args.target)
 
-    _import_builtin_ops()
+    catalog = current_operation_catalog()
 
     if target == "effects":
-        for name in _list_effects():
+        for name in _list_effects(catalog):
             print(name)
         return 0
 
     if target == "primitives":
-        for name in _list_primitives():
+        for name in _list_primitives(catalog):
             print(name)
         return 0
 
     if target == "all":
         print("effects:")
-        for name in _list_effects():
+        for name in _list_effects(catalog):
             print(name)
         print("")
         print("primitives:")
-        for name in _list_primitives():
+        for name in _list_primitives(catalog):
             print(name)
         return 0
 

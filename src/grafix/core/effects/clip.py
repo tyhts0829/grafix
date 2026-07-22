@@ -18,11 +18,18 @@ from collections.abc import Sequence
 import numpy as np
 import pyclipper  # type: ignore[import-not-found, import-untyped]
 
-from grafix.core.effect_registry import effect
+from grafix.core.operation_authoring import effect
 from grafix.core.parameters.meta import ParamMeta
 from grafix.core.realized_geometry import GeomTuple
 
-from .util import PlanarFrame, empty_geom, pack_polylines, planarity_threshold
+from grafix.core.geometry_kernels.packed import (
+    empty_packed_geometry,
+    pack_polylines,
+)
+from grafix.core.geometry_kernels.planar import (
+    PlanarFrame,
+    planarity_threshold,
+)
 
 # `ndarray.tolist()` は各座標を Python object 化する。1 vertex を 384 bytes、
 # 1 line を 256 bytes と保守的に見積もっても、list/tuple/int と量子化配列の
@@ -138,7 +145,7 @@ def _restore_and_pack_int_paths(
 
     valid_paths = tuple(path for path in paths if len(path) >= 2)
     if not valid_paths:
-        return empty_geom()
+        return empty_packed_geometry()
 
     counts = np.fromiter(
         (len(path) for path in valid_paths),
@@ -294,7 +301,7 @@ def clip(
     if not out_paths:
         if outline_lines:
             return pack_polylines(outline_lines)
-        return empty_geom()
+        return empty_packed_geometry()
 
     if batch_paths and not draw_outline:
         return _restore_and_pack_int_paths(
@@ -315,5 +322,5 @@ def clip(
 
     out_lines.extend(outline_lines)
     if not out_lines:
-        return empty_geom()
+        return empty_packed_geometry()
     return pack_polylines(out_lines)

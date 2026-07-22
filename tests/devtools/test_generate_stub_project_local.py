@@ -24,7 +24,10 @@ paths:
     )
     (project / "sketch/main.py").write_text(
         '''from __future__ import annotations
-
+'''
+        "from grafix.core.runtime_config import current_runtime_config\n"
+        f"assert str(current_runtime_config().output_dir) == {str(project / 'data/output')!r}\n"
+        '''
 import numpy as np
 
 from grafix import G, effect, preset, primitive

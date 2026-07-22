@@ -8,12 +8,9 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
-from grafix.core.atomic_write import atomic_write_text
-from grafix.core.output_paths import output_path_for_draw
+from grafix.file_io import atomic_write_text
 
 from .codec import (
     ParamStoreDecodeResult,
@@ -23,6 +20,7 @@ from .codec import (
     loads_param_store_result,
     param_store_schema_version,
 )
+from .known_operations import KnownOperationSchemaSnapshot
 from .prune_ops import prune_unknown_args_in_known_ops
 from .runtime import LoadProvenance, ParamStoreLoadDiagnostic
 from .store import ParamStore
@@ -68,16 +66,14 @@ def _finish_decoded_store(
         ParamStoreLoadDiagnostic(
             code="partial_quarantine",
             summary=(
-                f"ParamStore の不正 entry {len(result.issues)} 件を除外し、"
-                "原本を退避しました"
+                f"ParamStore の不正 entry {len(result.issues)} 件を除外し、原本を退避しました"
             ),
             details=details,
             backup_path=backup_path,
         )
     )
     _logger.warning(
-        "部分破損した ParamStore を退避しました: "
-        "source=%s backup=%s issues=%d\n%s",
+        "部分破損した ParamStore を退避しました: source=%s backup=%s issues=%d\n%s",
         source,
         backup_path,
         len(result.issues),
@@ -158,19 +154,6 @@ def _reject_unsupported_schema_file(path: Path) -> None:
         return
 
 
-def default_param_store_path(draw: Callable[[float], Any], *, run_id: str | None = None) -> Path:
-    """draw の定義元（sketch_dir）に基づく ParamStore の既定保存パスを返す。
-
-    Notes
-    -----
-    パスは `output/{kind}/` 配下で sketch_dir のサブディレクトリ構造をミラーする。
-    - sketch_dir 配下なら: `{output_root}/param_store/<sketch 相対 dir>/<stem>[_run_id].json`
-    - それ以外なら: `{output_root}/param_store/misc/<stem>[_run_id].json`
-    """
-
-    return output_path_for_draw(kind="param_store", ext="json", draw=draw, run_id=run_id)
-
-
 def load_param_store(path: Path) -> ParamStore:
     """JSON ファイルから ParamStore をロードして返す。無ければ空の ParamStore を返す。"""
 
@@ -215,15 +198,11 @@ def _quarantine_recovery_and_load_primary(
     corrupt_path, diagnostic = _quarantine_failure(
         source=recovery,
         error=error,
-        summary=(
-            "壊れた ParamStore session recovery を退避し、"
-            "primary を読み込みました"
-        ),
+        summary=("壊れた ParamStore session recovery を退避し、primary を読み込みました"),
         code="recovery_quarantine",
     )
     _logger.warning(
-        "壊れた ParamStore session recovery を退避しました: "
-        "source=%s backup=%s error=%s",
+        "壊れた ParamStore session recovery を退避しました: source=%s backup=%s error=%s",
         recovery,
         corrupt_path,
         error,
@@ -295,7 +274,7 @@ def load_param_store_with_recovery(path: Path) -> ParamStore:
 
 
 def save_param_store(store: ParamStore, path: Path) -> None:
-    """ParamStore を JSON として path に保存する（親ディレクトリは作成する）。
+    """ParamStore を変更せず JSON として path に保存する。
 
     Notes
     -----
@@ -305,18 +284,6 @@ def save_param_store(store: ParamStore, path: Path) -> None:
     ``prune_stale_loaded_groups`` または ``prune_groups`` を明示的に呼び出す。
     """
 
-    removed_unknown = prune_unknown_args_in_known_ops(store)
-    if removed_unknown:
-        pairs = sorted({(str(k.op), str(k.arg)) for k in removed_unknown})
-        preview = ", ".join(f"{op}.{arg}" for op, arg in pairs[:10])
-        suffix = "" if len(pairs) <= 10 else ", ..."
-        _logger.warning(
-            "未登録引数を永続化から削除しました: count=%d pairs=%d [%s%s]",
-            len(removed_unknown),
-            len(pairs),
-            preview,
-            suffix,
-        )
     atomic_write_text(path, dumps_param_store(store) + "\n")
 
 
@@ -329,8 +296,26 @@ def save_param_store_recovery(store: ParamStore, path: Path) -> None:
     )
 
 
-def finalize_param_store_session(store: ParamStore, path: Path) -> None:
-    """通常状態を保存し、成功した場合だけ session recovery を削除する。"""
+def finalize_param_store_session(
+    store: ParamStore,
+    path: Path,
+    *,
+    known_operations: KnownOperationSchemaSnapshot,
+) -> None:
+    """既知 schema で prune して保存し、成功時だけ recovery を削除する。"""
+
+    removed_unknown = prune_unknown_args_in_known_ops(store, known_operations)
+    if removed_unknown:
+        pairs = sorted({(str(k.op), str(k.arg)) for k in removed_unknown})
+        preview = ", ".join(f"{op}.{arg}" for op, arg in pairs[:10])
+        suffix = "" if len(pairs) <= 10 else ", ..."
+        _logger.warning(
+            "未登録引数を永続化から削除しました: count=%d pairs=%d [%s%s]",
+            len(removed_unknown),
+            len(pairs),
+            preview,
+            suffix,
+        )
 
     primary = Path(path)
     save_param_store(store, primary)
@@ -338,7 +323,6 @@ def finalize_param_store_session(store: ParamStore, path: Path) -> None:
 
 
 __all__ = [
-    "default_param_store_path",
     "finalize_param_store_session",
     "load_param_store",
     "load_param_store_with_recovery",

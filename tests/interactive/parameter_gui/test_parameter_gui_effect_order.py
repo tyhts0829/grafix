@@ -11,12 +11,13 @@ from grafix.core.parameters.frame_params import FrameEffectChainRecord
 from grafix.core.parameters.history import ParamStoreHistory
 from grafix.core.parameters.store import ParamStore
 from grafix.interactive.parameter_gui import store_bridge
-from grafix.interactive.parameter_gui.gui import apply_effect_order_command
+from grafix.interactive.parameter_gui.store_bridge import apply_effect_order_command
 from grafix.interactive.parameter_gui.snippet import snippet_for_block
 from grafix.interactive.parameter_gui.grouping import GroupType
 from grafix.interactive.parameter_gui.table import (
     EFFECT_STEP_DRAG_PAYLOAD_TYPE,
     EffectOrderCommand,
+    TableEdits,
     _decode_effect_step_drag_payload,
     _effect_step_drop_placement,
     _encode_effect_step_drag_payload,
@@ -777,7 +778,7 @@ def test_apply_effect_order_command_is_one_full_history_operation() -> None:
     assert store.effect_order_overrides() == {}
 
 
-def test_store_bridge_emits_command_without_mutating_store(
+def test_store_bridge_commits_effect_command_as_one_history_unit(
     monkeypatch,
 ) -> None:
     store = ParamStore()
@@ -802,18 +803,22 @@ def test_store_bridge_emits_command_without_mutating_store(
     )
     assert apply_effect_order_command(store, move) is True
     revision = store.revision
-    emitted: list[EffectOrderCommand] = []
+    history = ParamStoreHistory(store)
 
-    def fake_render(*, group_layout, model_rows, **kwargs):
+    def fake_render(render_input, **_kwargs):
         rows = [
-            model_rows[item.row_index]
-            for block in group_layout
+            render_input.model_rows[item.row_index]
+            for block in render_input.group_layout
             for item in block.items
         ]
-        kwargs["on_effect_order_command"](
-            EffectOrderCommand.reset(chain_id="chain")
+        return TableEdits(
+            rows=tuple(rows),
+            collapsed_headers=render_input.collapsed_headers,
+            midi_learn_state=render_input.midi_learn_state,
+            effect_order_commands=(
+                EffectOrderCommand.reset(chain_id="chain"),
+            ),
         )
-        return False, list(rows)
 
     monkeypatch.setattr(store_bridge, "render_parameter_table", fake_render)
 
@@ -821,16 +826,16 @@ def test_store_bridge_emits_command_without_mutating_store(
         store,
         show_inactive_params=True,
     )
-    assert (
-        store_bridge.render_store_parameter_table(
-            store,
-            table_view=view,
-            on_effect_order_command=emitted.append,
-        )
-        is False
+    result = store_bridge.render_store_parameter_table(
+        store,
+        table_view=view,
+        history=history,
     )
-    assert emitted == [EffectOrderCommand.reset(chain_id="chain")]
-    assert store.revision == revision
+    assert result.changed is True
+    assert store.revision == revision + 1
+    assert store.effect_order_overrides() == {}
+    assert history.undo_depth == 1
+    assert history.undo() is True
     assert "chain" in store.effect_order_overrides()
 
 
